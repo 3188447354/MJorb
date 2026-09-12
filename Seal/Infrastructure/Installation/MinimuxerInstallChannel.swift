@@ -428,11 +428,13 @@ actor MinimuxerInstallChannel: InstallChannel {
         for attempt in 1...maxAttempts {
             do {
                 let syncProgress: @Sendable (Double) -> Void = { [onProgress] p in
-                    // Rust 哨兵（101 → 1.01）表示上传结束、installd 安装命令即将下发。
-                    // 原值透传给上层；coordinator 收到 p > 1.0 时把阶段从「正在传输」切到
-                    // 「正在安装」（普通安装也消费该哨兵），避免进度条停在 100% 干等
-                    // installd 的几十秒解压/复制。UI 以 p <= 1 判断显示进度条，1.01 不会误显。
-                    if p > 1.0 {
+                    // 上传进度 0→100% 逐值透传；到达 100%（p == 1.0）即视为上传结束、立即
+                    // 发 1.01 把阶段切到「正在安装」，而不是等 Rust 在预检（连 instproxy +
+                    // lookup + afcd 快照）之后才发的 101 哨兵——预检在无线配对 + 大文件 +
+                    // 设备 IO 繁忙时可长达数十秒，进度条会假停在 100% 干等。后续 101 哨兵
+                    // 到达时 stage 已是 .installing，切阶段逻辑幂等无副作用。
+                    // 自更新路径（selfReplaceProgress）仍以 p > 1.0 为界，回主屏时机不变。
+                    if p >= 1.0 {
                         Task { await onProgress(1.01) }
                         return
                     }

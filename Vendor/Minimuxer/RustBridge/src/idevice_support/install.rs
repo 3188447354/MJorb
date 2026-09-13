@@ -384,7 +384,6 @@ where
     F: FnMut(u64),
 {
     let candidates = install_candidates(bundle_id, file_name);
-    let bundle_id = bundle_id.to_string();
 
     // 预检（lookup / afcd 快照）已在 `install_ipa_rppairing` 内完成，此刻即将向
     // installd 下发安装命令。自更新场景在此时回主屏（稍后 installd 会终止本进程
@@ -414,21 +413,8 @@ where
         }
     }
 
-    // 第二轮：卸载 lookup 看不到的残留记录后再试一轮全新 Install
-    let _ = inst_client.uninstall(bundle_id, None).await;
-    for (path, options) in &candidates {
-        let result = inst_client.install(path, Some(options.clone())).await;
-        match result {
-            Ok(()) => return Ok(()),
-            Err(e) if is_missing_package_path(&e) => continue,
-            Err(e) => {
-                return Err(ctx(
-                    e,
-                    &format!("install/卸载残留后组合（{path}）（fallback-tried）"),
-                ))
-            }
-        }
-    }
+    // MissingPackagePath only describes staging visibility, never a disposable app.
+    // Preserve installed apps and their sandboxes; report failure without uninstalling.
 
     Err(IdeviceError::UnexpectedResponse(format!(
         "install/installd 在所有候选组合均未找到暂存包（候选: {:?}）；最后错误: {:?}",

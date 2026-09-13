@@ -1171,8 +1171,12 @@ final class AppsViewModel: ObservableObject {
             .filter { $0.state == .failed }
             .map { $0.id } ?? []
         guard failedIDs.isEmpty == false else {
-            // 兜底：无法定位失败项时按全量处理，避免「重试失败项」变成空操作。
-            startBatchRefresh()
+            alertFailure = ImportFailure(
+                title: "无法定位失败项",
+                reason: "本轮没有可识别的失败应用，未重新处理已成功应用。",
+                recovery: "查看续签结果；如确需全部续签，请重新发起全部续签",
+                code: "SEAL-RENEW-QUEUE-006"
+            )
             return
         }
         startBatchRefresh(appIDs: failedIDs)
@@ -1536,7 +1540,11 @@ final class AppsViewModel: ObservableObject {
         let isRenewal = app.belongsInInstalledList
         let operationKind: OperationCoordinator.Kind = isRenewal ? .renewing : .signing
         guard let operationLease = await acquireOperation(operationKind, appID: app.id) else {
-            signingTask = nil
+            if Task.isCancelled {
+                signingSession = nil
+            } else if let operationCoordinator {
+                signingSession?.status = .failed(operationCoordinator.conflictFailure(requested: operationKind))
+            }
             return
         }
         defer { releaseOperation(operationLease) }

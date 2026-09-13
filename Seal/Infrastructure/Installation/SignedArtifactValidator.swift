@@ -148,16 +148,26 @@ enum SignedArtifactValidator {
             )
         }
 
-        // 8. 主可执行文件存在（从 Info.plist 的 CFBundleExecutable 读取）
-        if let executableName = plist["CFBundleExecutable"] as? String,
-           executableName.isEmpty == false {
-            let executablePath = "Payload/\(appDir)/\(executableName)"
-            guard entries.contains(where: { $0.path == executablePath }) else {
-                return .invalid(
-                    reason: "签名后 IPA 内缺少主可执行文件 \(executablePath)（CFBundleExecutable=\(executableName)）。",
-                    code: "SEAL-INSTALL-730"
-                )
-            }
+        // 8. The executable declaration is mandatory and must name a file in the app root.
+        guard let executableName = plist["CFBundleExecutable"] as? String,
+              executableName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+              executableName != ".", executableName != "..",
+              executableName.contains("/") == false,
+              executableName.contains("\\") == false,
+              executableName.contains("\0") == false else {
+            return .invalid(
+                reason: "Info.plist 缺少有效的 CFBundleExecutable，或可执行文件名包含非法路径。",
+                code: "SEAL-INSTALL-730"
+            )
+        }
+        let executablePath = "Payload/\(appDir)/\(executableName)"
+        guard entries.contains(where: {
+            $0.path == executablePath && $0.type == .file && $0.uncompressedSize > 0
+        }) else {
+            return .invalid(
+                reason: "签名后 IPA 内缺少非空主可执行文件 \(executablePath)。",
+                code: "SEAL-INSTALL-730"
+            )
         }
 
         return .valid

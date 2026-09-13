@@ -39,41 +39,21 @@ struct IPAParserService: Sendable {
         let entries = Array(archive)
         try validate(entries: entries)
 
-        // 检测嵌套 IPA：外层 zip 只有一个 .ipa 文件，没有 Payload 目录
-        // 部分第三方平台下载的 IPA 是这种结构，需要自动解包
+        // A wrapper is not a signable IPA. Do not parse inner metadata while committing
+        // the outer archive, or allocate the entire nested archive in memory.
         let hasPayload = entries.contains { entry in
             entry.path.hasPrefix("Payload/")
         }
         let nestedIPAEntries = entries.filter { entry in
             entry.type == .file && entry.path.lowercased().hasSuffix(".ipa")
         }
-        if hasPayload == false, let nestedIPAEntry = nestedIPAEntries.first, nestedIPAEntries.count == 1 {
-            // 解压嵌套 IPA 到临时文件，然后递归解析
-            let tempDir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("SealNestedIPA-\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(at: tempDir) }
-
-            let nestedIPATempURL = tempDir.appendingPathComponent("nested.ipa")
-            var nestedData = Data()
-            nestedData.reserveCapacity(Int(nestedIPAEntry.uncompressedSize))
-            _ = try archive.extract(nestedIPAEntry) { chunk in
-                nestedData.append(chunk)
-            }
-            try nestedData.write(to: nestedIPATempURL)
-
-            let nestedArchive: Archive
-            do {
-                nestedArchive = try Archive(url: nestedIPATempURL, accessMode: .read)
-            } catch {
-                throw failure(
-                    title: "无法读取 IPA",
-                    reason: "嵌套的 IPA 文件已损坏",
-                    recovery: "选择其他 IPA",
-                    code: "SEAL-IPA-101a"
-                )
-            }
-            return try parse(archive: nestedArchive, sourceURL: sourceURL)
+        if hasPayload == false, nestedIPAEntries.isEmpty == false {
+            throw failure(
+                title: "请导入压缩包内的 IPA",
+                reason: "此文件是包含 IPA 的外层压缩包，不能直接用于签名。",
+                recovery: "先在文件 App 中解压，再选择内部真正的 IPA 文件",
+                code: "SEAL-IPA-101b"
+            )
         }
 
         let appInfoEntries = entries.filter { entry in

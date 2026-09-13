@@ -690,7 +690,6 @@ actor ApplePortalSigningService {
 
         return try await createSigningIdentity(
             secret: secret,
-            certificates: certificates,
             team: team,
             session: session,
             deviceName: deviceName,
@@ -700,7 +699,6 @@ actor ApplePortalSigningService {
 
     private func createSigningIdentity(
         secret: AccountSecret,
-        certificates: [ALTX509Certificate],
         team: ALTTeam,
         session: ALTAppleAPISession,
         deviceName: String,
@@ -713,20 +711,20 @@ actor ApplePortalSigningService {
                 session: session,
                 deviceName: deviceName
             )
-            try Task.checkCancellation()
             requested = created
         } catch {
             guard Self.isCertificateLimitError(error) else { throw error }
-            requested = try await recoverCertificateCapacityAndCreate(
-                initialCertificates: certificates,
-                protectedSerialNumber: secret.certificateSerialNumber,
-                team: team,
-                session: session,
-                deviceName: deviceName
+            throw Self.failure(
+                title: "签名证书数量已达上限",
+                reason: "Seal 不会自动撤销其他证书，以免影响已安装应用或其他设备。",
+                recovery: "在「我的」页面确认影响范围后手动撤销不再使用的证书，再重试",
+                code: "SEAL-CERT-204b"
             )
         }
 
         do {
+            // Cancellation after creation must enter the new-certificate cleanup path.
+            try Task.checkCancellation()
             guard let certificate = try await waitForCreatedCertificate(
                 serialNumber: requested.serialNumber,
                 team: team,
@@ -815,47 +813,6 @@ actor ApplePortalSigningService {
         }
         return nil
     }
-    private func recoverCertificateCapacityAndCreate(
-        initialCertificates: [ALTX509Certificate],
-        protectedSerialNumber: String?,
-        team: ALTTeam,
-        session: ALTAppleAPISession,
-        deviceName: String
-    ) async throws -> ALTCertificate {
-        let latest = (try? await fetchCertificates(team: team, session: session))
-            ?? initialCertificates
-        let protected = protectedSerialNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let candidates = latest.filter { certificate in
-            guard let protected, protected.isEmpty == false else { return true }
-            return certificate.serialNumber.caseInsensitiveCompare(protected) != .orderedSame
-        }
-
-        for certificate in candidates {
-            try Task.checkCancellation()
-            guard (try? await revokeCertificate(certificate, team: team, session: session)) != nil else {
-                continue
-            }
-            do {
-                let created = try await addCertificate(
-                    team: team,
-                    session: session,
-                    deviceName: deviceName
-                )
-                try Task.checkCancellation()
-                return created
-            } catch {
-                guard Self.isCertificateLimitError(error) else { throw error }
-            }
-        }
-
-        throw Self.failure(
-            title: "无法创建签名证书",
-            reason: "该账号证书数量已达上限，或本次证书请求无效。",
-            recovery: "在「我的」页面撤销一个旧签名证书后重试",
-            code: "SEAL-CERT-204b"
-        )
-    }
-
     private func cleanUpNewCertificate(
         serialNumber: String,
         certificate: ALTCertificate,

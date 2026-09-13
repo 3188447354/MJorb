@@ -79,6 +79,37 @@ struct RefreshPlannerTests {
         #expect(queue.map(\.appID) == [app.id])
     }
 
+    @Test
+    func sealTeamMatchTakesPriorityOverUnrelatedDefaultAccount() {
+        let correct = AppleAccountRecord(maskedEmail: "b***", accountIdentifier: "b", teamID: "TEAM-B", teamName: "B", lastVerifiedAt: Date())
+        let unrelated = AppleAccountRecord(maskedEmail: "a***", accountIdentifier: "a", teamID: "TEAM-A", teamName: "A", lastVerifiedAt: Date())
+        var seal = app(name: "Seal", expiry: nil, accountID: nil, isSeal: true)
+        seal.signingTeamID = "team-b"
+        let queue = RefreshPlanner().makeQueue(apps: [seal], fallbackAccountID: unrelated.id, accounts: [unrelated, correct])
+        #expect(queue.first?.accountID == correct.id)
+    }
+
+    @Test
+    func sealDoesNotSelectUnrelatedDefaultWhenTeamHasNoMatch() {
+        let unrelated = AppleAccountRecord(maskedEmail: "a***", accountIdentifier: "a", teamID: "TEAM-A", teamName: "A", lastVerifiedAt: Date())
+        var seal = app(name: "Seal", expiry: nil, accountID: nil, isSeal: true)
+        seal.signingTeamID = "TEAM-B"
+        #expect(RefreshPlanner().makeQueue(apps: [seal], fallbackAccountID: unrelated.id, accounts: [unrelated]).isEmpty)
+    }
+
+    @Test(arguments: ["SEAL-AUTH-107", "SEAL-AUTH-105a", "SEAL-CERT-204b", "SEAL-SIGN-405", "SEAL-INSTALL-702", "SEAL-INSTALL-702l", "SEAL-INSTALL-730"])
+    func deterministicAndAlreadyRetriedFailuresAreNotRetried(code: String) {
+        let failure = ImportFailure(title: "失败", reason: "fixture", recovery: "人工处理", code: code)
+        #expect(RenewalCoordinator.isRetryable(failure) == false)
+    }
+
+    @Test
+    func transientNetworkFailureIsRetryableButCancellationIsNot() {
+        let failure = ImportFailure(title: "网络失败", reason: "fixture", recovery: "重试", code: "SEAL-NET-001")
+        #expect(RenewalCoordinator.isRetryable(failure))
+        #expect(RenewalCoordinator.isRetryable(CancellationError()) == false)
+    }
+
     private func app(
         name: String,
         expiry: Date?,

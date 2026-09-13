@@ -106,6 +106,18 @@ struct IPAParserServiceTests {
         }
     }
 
+    @Test
+    func rejectsNestedIPAWrapperBeforeReadingInnerArchive() throws {
+        let url = try IPAArchiveFixture.make(
+            apps: [], includeIcon: false,
+            extraEntries: [("nested.ipa", Data("not-an-archive".utf8))]
+        )
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        assertFailure(code: "SEAL-IPA-101b") {
+            _ = try IPAParserService().parse(url: url)
+        }
+    }
+
     private func assertFailure(
         code: String,
         operation: () throws -> Void,

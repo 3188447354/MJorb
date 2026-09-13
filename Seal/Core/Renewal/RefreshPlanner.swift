@@ -14,12 +14,15 @@ struct RefreshPlanner: Sendable {
             }
             .compactMap { app in
                 var accountID = app.accountID ?? fallbackAccountID
-                // Seal 应用：如果 accountID 为空，尝试根据 signingTeamID 重新匹配账号
-                // 解决"先添加非签名账号，后添加签名账号"导致续签选不到正确账号的问题
-                if app.isSeal, accountID == nil, let teamID = app.signingTeamID {
-                    accountID = accounts.first { account in
-                        account.teamID.caseInsensitiveCompare(teamID) == .orderedSame
-                    }?.id
+                // Match Seal's installed Team before considering a global default account.
+                if app.isSeal, let teamID = app.signingTeamID, teamID.isEmpty == false {
+                    let matchingAccounts = accounts.filter {
+                        $0.teamID.caseInsensitiveCompare(teamID) == .orderedSame
+                            && AccountAvailabilityPolicy.isSelectable($0)
+                    }
+                    accountID = matchingAccounts.first(where: { $0.id == app.accountID })?.id
+                        ?? matchingAccounts.first?.id
+                        ?? app.accountID
                 }
                 guard let accountID else { return nil }
                 return RefreshQueueItem(appID: app.id, accountID: accountID)

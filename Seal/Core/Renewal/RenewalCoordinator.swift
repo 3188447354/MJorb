@@ -23,7 +23,7 @@ actor RenewalCoordinator {
     private let defaultAccountIDProvider: (@Sendable () async -> UUID?)?
     private let accountsProvider: (@Sendable () async -> [AppleAccountRecord])?
 
-    /// 单个应用续签失败后的最大自动重试次数（即总共最多尝试 1 + maxRetries 次）
+    /// 单个应用续签总尝试次数上限，仅临时网络故障允许重试。
     private let maxAttempts = 3
     /// 重试前等待的基础秒数，第 n 次重试等待 baseRetryDelay * n。
     /// 涉及 Apple 限流自愈，刻意保守、不缩短；激进缩短会让 503 场景退避不足反而更慢。
@@ -99,26 +99,15 @@ actor RenewalCoordinator {
         return try await process(queue: queue, progress: progress)
     }
 
-    /// 判断某个错误是否值得自动重试。
-    /// 原则：除了用户主动取消，其余一律重试——通道抖动、Apple 限流、证书同步、
-    /// 网络超时、甚至账号/凭据读取的瞬时异常都可能在下一次恢复。
-    private func isRetryable(_ error: Error) -> Bool {
+    /// Retry only classified transient network errors. Authentication, certificate,
+    /// storage and package failures need an explicit recovery action. Installation
+    /// already has its own retry budget; do not multiply it by resigning the app.
+    nonisolated static func isRetryable(_ error: Error) -> Bool {
         if error is CancellationError { return false }
         if let failure = error as? ImportFailure {
-            // 本地确实没有这条应用记录，重试也找不回来
-            if failure.code == "SEAL-RENEW-404" { return false }
-            // 确定性失败：重试/重新安装都无法改变结果，必须立即终止不做无效重试，
-            // 与单签路径 SigningProgressView.isNonRetryableFailure 对齐。
-            // 批量续签已传 bypassFreeAccountDeviceLimit: true 跳过本机 3-app 预检，
-            // 超限/拒绝会真正打到 installd 返回 702l；若不排除，将完整重签+上传+等待 3 次。
-            if failure.code == "SEAL-APPID-DEVICELIMIT"   // 免费账号 3 应用上限（本机预检）
-                || failure.code == "SEAL-INSTALL-702l"     // 安装被 iOS 拒绝（3 应用上限/完整性校验）
-                || failure.code == "SEAL-INSTALL-702s" {   // 设备存储空间不足
-                return false
-            }
-            return true
+            return failure.code.hasPrefix("SEAL-NET-")
         }
-        return true
+        return AppleServiceFailurePolicy.isNetworkError(error)
     }
 
     /// 把任意错误归一化成 ImportFailure，同时保留原始错误描述，不再吞掉根因
@@ -227,7 +216,7 @@ actor RenewalCoordinator {
                 } catch {
                     lastError = error
                     // 还能重试就等待后继续
-                    if attempt < maxAttempts && isRetryable(error) {
+                    if attempt < maxAttempts && Self.isRetryable(error) {
                         let delay = baseRetryDelay * UInt64(attempt)
                         try? await Task.sleep(nanoseconds: delay)
                         continue

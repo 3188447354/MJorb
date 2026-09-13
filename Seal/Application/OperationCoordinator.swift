@@ -54,10 +54,15 @@ final class OperationCoordinator {
     func beginWaiting(_ kind: Kind, appID: UUID? = nil, timeout: TimeInterval = 30) async -> Lease? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            guard Task.isCancelled == false else { return nil }
             if let lease = begin(kind, appID: appID) {
                 return lease
             }
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            do {
+                try await Task.sleep(nanoseconds: 200_000_000)
+            } catch {
+                return nil
+            }
         }
         return nil
     }

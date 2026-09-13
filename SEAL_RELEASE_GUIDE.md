@@ -17,7 +17,7 @@
 - [ ] **bump `MARKETING_VERSION`**：`project.yml` 里 `MARKETING_VERSION: X.Y.Z`（Seal 主 target 与 SealTunnel
       扩展是同一处/同一值，用替换即可）。新旧版本对比驱动内置更新弹窗，忘记 bump = 用户检测不到新版本。
 - [ ] **写 `RELEASE_NOTES.md`**：这就是发布正文，随 `gh release create` 直接上。可按场景写：
-      - 面向内测：末尾加「测试中，等作者通知再更新」（避免用户误更新半成品）。
+      - 面向内测：仅出构建产物，保持 `publish_release=false`；文案警告不能防止客户端检测到已发布版本。
 - [ ] 提交并推送：`git add ... && git commit -m "..." && git push`。
 
 > 不用手动改 `CURRENT_PROJECT_VERSION`：CI 用 `GITHUB_RUN_NUMBER` 覆盖，`project.yml` 里的只是本地兜底。
@@ -36,7 +36,7 @@
 
 ```bash
 # 快速档（默认，日常 90% 用它）
-gh workflow run ios-release.yml
+gh workflow run ios-release.yml -f publish_release=true
 
 # 完整档（大改动、需回归门）
 gh workflow run ios.yml --ref main -f publish_release=true
@@ -86,8 +86,7 @@ gh release view v<你的版本> --repo sunuannian1/Seal-Releases --json tagName,
   现 workflow 已正确省略，默认指向 Seal-Releases 的 main。**别把它加回去**。
 - **tag 不对齐** → 用户检测不到更新（`1.1.0` vs `v1.1.0-build4` 字符串不相等）。
 - **重复发布同一 tag** 会被 `gh release create` 拒绝：先删旧 Release 或 bump 版本再发。
-- **用户需要「不发版但验证」**：用 `ios-release.yml` 也能出包，但写不进用户更新通道；
-  想真机回归又不想推用户 → 保持 `RELEASE_NOTES.md` 尾部「测试中，等作者通知再更新」即可。
+- **用户需要「不发版但验证」**：两条 workflow 的 `publish_release` 默认均为 false，仅生成构建产物。Release notes 的「测试中」文案不能代替发布隔离。本轮涉及 Rust/安装链路，须使用完整 `ios.yml` 且 `publish_release=false` 验证；确认运行的是本批审查分支，所有验收通过后才显式允许发布。
 
 ## 7. 发布 → 更新提示 一句话
 

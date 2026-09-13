@@ -674,29 +674,11 @@ actor SigningCoordinator {
             removeStaleProfiles(signedData: signedData, effectiveBundleID: effectiveBundleID)
             return updated
         } catch {
-            // 安装/验证失败时，应用可能实际已装到设备上（如 installd 后台安装中）。
-            // 多次重试查设备状态，已装则静默标记为已安装，不弹失败。
-            for _ in 0..<5 {
-                try? await Task.sleep(for: .seconds(3))
-                let deviceHasApp = (try? await InstalledAppDeviceVerifier.isInstalled(
-                    bundleIdentifier: effectiveBundleID
-                )) ?? false
-                if deviceHasApp {
-                    updated.state = .installed
-                    updated.signedArtifactStatus = .installed
-                    updated.lastInstallFailureCode = nil
-                    updated.lastInstallFailureReason = nil
-                    updated.hasPendingSelfUpdateSource = false
-                    updated.expiryDate = expirationDate
-                    updated.lastInstalledAt = Date()
-                    try? await appStore.save(updated)
-                    removeStaleProfiles(signedData: signedData, effectiveBundleID: effectiveBundleID)
-                    return updated
-                }
-            }
-            // 多次查询仍未找到，保留原始错误信息，不要统一报"设备连接断开"。
-            // installd 安装失败（签名/描述文件问题）和连接断开是不同原因，
-            // 统一提示会误导用户排查方向。
+            // An existing Bundle ID may belong to the previous signing generation.
+            // Never convert an installation/verification/persistence failure into success
+            // using lookup alone, and never clean profiles on this failure path.
+            if error is CancellationError { throw CancellationError() }
+            // Preserve the original rejection instead of replacing it with a connection error.
             if let importFailure = error as? ImportFailure {
                 throw await installDiagnosticsAppended(importFailure, signedPath: signedPath)
             }

@@ -31,6 +31,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
 
+      - name: Check release safety invariants
+        run: python3 Scripts/verify-release-safety.py
+
       - name: Cache Rust toolchain and cargo artifacts
         uses: actions/cache@v5
         with:
@@ -234,6 +237,10 @@ jobs:
           VER="$(python3 -c "import plistlib;print(plistlib.load(open('release/Seal-Info.plist','rb'))['CFBundleShortVersionString'])")"
           TAG="$INPUT_TAG"
           if [ -z "$TAG" ]; then TAG="v${VER}"; fi
+          if [ "${TAG#v}" != "$VER" ]; then
+            echo "Release tag must match the IPA marketing version" >&2
+            exit 1
+          fi
           NOTES="$(cat RELEASE_NOTES.md)"
           ARGS=(--title "Seal $TAG" --notes "$NOTES")
           if [ "$PRERELEASE" = "true" ]; then ARGS+=(--prerelease); fi

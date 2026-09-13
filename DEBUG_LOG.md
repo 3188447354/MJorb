@@ -128,9 +128,30 @@
 - **规矩**：`ios.yml` 发布到 `sunuannian1/Seal-Releases` 时不传 `--target`；如要锁定发布源版本，用 Release notes/title
   或资产里的 `Seal-Info.plist` 表达，不要把源仓库 SHA 塞给目标仓库。
 
+### 12. 覆盖续签的补验不能只看 Bundle ID 存在；恢复动作不能扩大破坏范围
+- **本次静态审查发现，尚未修复**：旧 App 本来存在时，lookup 命中不证明本轮覆盖成功，不能据此写新到期日或删除旧 profile；MissingPackagePath 不证明是可安全卸载的占位，证书名额不足也不证明非当前证书无人使用。
+- **后续改动约束**：安装明确拒绝须保留错误；不确定结果使用 pending/unknown，确认本轮安装凭据后才提交成功。检查/启动恢复/后台清理若会写库、删文件或改变共享会话，同样要受业务租约保护。超时返回不等于底层副作用停止，未结束的安装不得叠加重试。
+
 ---
 
 ## 二、历史记录
+
+### 2026-09-13 · 发布整改第一批（候选 1.1.9，已改代码，未通过云 CI/真机验收）
+- **现象/根因**：见此前链路复审 R01/R02/R03/R10/R11/R12；额外确认嵌套 IPA 解析将内层元数据与外层原包混用，并整块缓冲嵌套包。快速构建原先默认执行发布。
+- **已实施**：删除 Rust/LockDown 安装失败自动卸载；删除覆盖失败后仅凭旧 Bundle ID 存在而写新有效期的补验；证书限额明确失败、不撤其他证书，创建后取消进入新证书清理区；主可执行文件声明/路径/非空校验；Seal 队列先匹配 Team；批量仅对已归类网络故障重试，安装不在外层重跑；失败项缺失不退回全量；取消等待不抢租约，单签等待超时有失败终态；嵌套外包明确提示先解压；快速构建默认不发布，两发布流程校验 tag 与 IPA 版本。
+- **测试/防回归**：补充 11 个 Swift 测试函数（参数展开后 25 个用例，未执行）；修正旧 ZIPFoundation 测试夹具的 throwing 初始化与 Int64 API。增加 `Scripts/verify-release-safety.py`，14 项源码规则+3 项变异检查，接入完整/快速 CI。独立复核指出非法路径夹具问题已修正；R02 增加源码禁止补验的规则补足单元测试不能模拟旧设备记录的局限。
+- **涉及文件**：SigningCoordinator、ApplePortalSigningService、SignedArtifactValidator、OperationCoordinator、AppsViewModel、RenewalCoordinator、RefreshPlanner、IPAParserService、Minimuxer Rust install.rs/Swift Install.swift、4 个测试文件、2 个 CI、project.yml。
+- **验证状态**：本机安全规则与变异检查、Rust FFI 源码审计、git diff --check 通过；仅 CRLF 规范化提示。Windows 无 Swift/Xcode；GitHub CLI 未登录，不能取得本次云构建证据。未提交/推送/发布；Rust 源码变化尚未重建为 iOS 二进制。
+- **发布阻断仍在**：R04 硬超时/取消、R05 未结束 FFI 与会话单飞、R06 无锁恢复/清理、R07 自续签可信确认、R08 文件/DB 事务、R09 缓存完整校验及外围更新真实性等；不能宣称企业级可发布。
+- **方案**：`outputs/Seal_企业级发布整改方案_20260913.md`。回归必须先隔离测试账号和无重要数据的 App，禁止以恢复旧自动卸载/撤证逻辑作为兼容性回退。
+
+### 2026-09-13 · 签名检查—安装—续签复审（基线 59117d8 / 1.1.8，仅静态审查，未修复）
+- **现象/触发条件**：覆盖续签遇到 MissingPackagePath、确定性安装拒绝、回调不返回、进程中断，或启动检查与写操作交错时，可能出现应用数据丢失、假成功、长期等待和记录不一致；本次未提供新的真机复现证据。
+- **代码根因**：① Rust `run_install_chain` 的第二轮未区分真实已装应用，直接 uninstall；② `SigningCoordinator.installSignedIPA` 的失败补验仅凭 Bundle ID 存在就提交新有效期并清理旧 profile；③证书容量恢复自动撤销非当前证书；④ `withAppleTimeout` 仍用 task group 包装不能取消的 callback continuation；⑤超时遗弃 FFI、无锁的 load/recovery/清理与共享 RSD 缓存存在交错窗口；⑥ Seal 上传前就持久化批量完成结果，恢复不验证新 profile 是否生效。
+- **修复建议（未实施）**：先禁止有破坏性的自动卸载/撤证、禁止以旧应用存在代替本轮安装成功；再统一副作用操作租约、取消/超时、pending/confirmed 状态和文件/数据库提交边界。最小回归应先用可注入故障的 mock，真机只用无重要数据的样本。
+- **涉及文件**：`Vendor/Minimuxer/RustBridge/src/idevice_support/install.rs`、`rsd.rs`；`SigningCoordinator.swift`、`ApplePortalSigningService.swift`、`HardTimeout.swift`、`MinimuxerInstallChannel.swift`、`AppsViewModel.swift`、`AppRecordRecovery.swift`、`AppFileStore.swift`、`RenewalCoordinator.swift`、`SelfAppRegistrar.swift`、`RefreshPlanner.swift`。
+- **审查报告**：`outputs/Seal_链路审查_20260913.html`（分级问题、精确源码位置、边界条件、最小回归矩阵）。
+- **验证状态**：仅源码证据核对；未改业务代码/测试/版本，未运行云 CI 或真机测试。旧报告中证书 >7 天复用、正常失败项重试、711–730 重新签名分流等已落地，不再按旧结论重复报错；签名期间不自动 2FA 是现行设计，不是本次缺陷。
 
 ### 2026-09-13 · 签名卡 93% 桌面「无法安装」：installd 拒绝错误名未进终态表，确定性失败被当网络抖动重传
 - **现象**：部分应用签名安装卡在 93% 长时间不动，桌面图标显示「无法安装」。

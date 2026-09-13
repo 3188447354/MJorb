@@ -371,7 +371,43 @@
   本来就是「未执行」，**不需要改载荷格式**。
 - **涉及文件**：`Seal/Features/Apps/AppsViewModel.swift`、`Seal/Core/Renewal/RenewalCoordinator.swift`。
 
+### 25. 签名产物 ≠ 已安装快照：顶层 profile 字段提前推进会让 UI 显示不存在的到期日
+- **现象**：已安装的应用重签后，即使安装失败（或进程在安装中被杀），界面仍显示**新**的到期日。
+  用户以为续签成功，直到应用被吊销才发现问题。
+- **根因**：`AppRecord` 同时承载两件事 —— 刚签出来的**产物**，以及设备上正在跑的**构建**。
+  UI 展示的到期日取 `provisioningProfileExpirationDate ?? expiryDate`（`AppPresentation`、
+  `ImportedAppRow`、`SigningProgressView`、`AppleAccountDetailView` 都是这个口径）；
+  而 `applySigningResult` 在**安装之前**就把顶层 `provisioningProfile*` 推进到了新产物，
+  `signedArtifactStatus` 也直接标成 `.installed`。
+  这样「顶层 profile 字段」就同时被当成产物身份和已安装快照用，谁也说不清它描述的是哪一个。
+- **为什么已有的设备对账补不了**：`reconcileInstalledAppsWithDevice` 只在**设备上查不到**
+  这个 Bundle ID 时才纠正（而且是直接删记录）。应用确实装着、只是跑的是旧构建时，
+  它查得到 → 不会纠正 → 假日期一直留着。
+- **规矩**：顶层 `provisioningProfile*` / `expiryDate` 只描述**设备上正在运行的那份构建**；
+  产物身份由 `signingTargets` 承载（每个 target 各自带 profile UUID/有效期/team/证书），
+  顶层快照等**安装校验通过**后再推进。签名完成后产物状态标 `.awaitingVerification`，不是 `.installed`。
+- **唯一例外**：Seal 自身。自更新安装会替换本进程，安装前那次写入是唯一机会；
+  且它的顶层快照由启动同步从**运行中的 Bundle** 结算（坑位 23 / D 包），装失败会被推翻。
+- **涉及文件**：`Seal/Core/Signing/SignedArtifactSnapshot.swift`（新增）、`SigningCoordinator.swift`。
+- **验证状态**：护栏 59 检查 + 29 变异 PASS；新增 5 例测试。**Swift 编译与单测待 CI。**
+
 ## 二、历史记录
+
+### 2026-09-14 · E 包（R08）：区分签名产物与已安装快照
+- **现象/风险**：已安装应用重签后，安装失败时界面仍显示新的到期日（详见坑位 25）。
+- **修复**：
+  1. 新增 `Seal/Core/Signing/SignedArtifactSnapshot.swift`：`statusAfterSigning(...)`
+     与 `advanceInstalled(of:bundleIdentifier:expiryDate:)`。
+  2. `applySigningResult` 新增 `advancesInstalledSnapshot` 参数 —— 已安装的第三方应用
+     重签时**不**推进顶层 `provisioningProfile*`；签名完成标 `.awaitingVerification`。
+  3. 安装校验通过（`verifyInstalled` 之后）才调用 `advanceInstalled` 推进快照。
+  4. Seal 自身例外：自更新会替换本进程，且顶层快照由启动同步从运行包结算。
+- **设计取舍**：纯函数放在独立 enum 而不是 `SigningCoordinator` 的 static 成员 ——
+  后者是 actor，static 成员的隔离语义有风险，且 `PreInstallValidation` 已有先例。
+  顺带让测试无需构造 actor 实例即可直接覆盖。
+- **涉及文件**：`Seal/Core/Signing/SignedArtifactSnapshot.swift`（新增）、
+  `SigningCoordinator.swift`、`SealTests/Signing/SignedArtifactSnapshotTests.swift`（新增 5 例）。
+- **验证状态**：护栏 59 检查 + 29 变异 PASS。**Swift 编译与单测待 CI（本机无 Xcode）。**
 
 ### 2026-09-14 · D 包（R07）：同版本自续签按 profile 身份结算
 - **现象/风险**：自更新失败或进程在安装中被杀时，「安装前乐观写入」的新有效期不会被推翻，

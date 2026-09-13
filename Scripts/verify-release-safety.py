@@ -204,6 +204,32 @@ def violations(load=read):
     check("needsAction:" in restored_call and "remaining:" not in restored_call,
           "G: every BatchRefreshResult construction site must fill needsAction")
 
+    # ── E 包（R08：签名产物 vs 已安装快照）──────────────────────────────────
+    # UI 到期日取 `provisioningProfileExpirationDate ?? expiryDate`。签名阶段就推进顶层
+    # profile 字段，安装失败/进程被杀时界面会显示设备上并不存在的日期 —— 用户以为续签成功，
+    # 直到应用被吊销才发现。顶层字段必须只描述设备上正在运行的那份构建。
+    apply_result = section(
+        signing_coord,
+        "private func applySigningResult(",
+        "app.entitlementValidationStatus"
+    )
+    check("if advancesInstalledSnapshot {" in apply_result,
+          "E: top-level profile fields must not advance before install verification")
+    snapshot = load("Seal/Core/Signing/SignedArtifactSnapshot.swift")
+    check("static func statusAfterSigning(" in snapshot
+          and "static func advanceInstalled(" in snapshot
+          and "awaitingVerification" in snapshot,
+          "E: signed artifact and installed snapshot must be separated")
+    # 必须排除被注释掉的调用：单纯 `in` 匹配会把 `// SignedArtifactSnapshot.advanceInstalled(`
+    # 也算进去（守卫自己的变异检查抓到了这一点）。
+    advance_lines = [
+        line for line in signing_coord.splitlines()
+        if "SignedArtifactSnapshot.advanceInstalled(" in line
+        and line.strip().startswith("//") == False
+    ]
+    check(len(advance_lines) >= 1,
+          "E: the install-verified path must advance the snapshot")
+
     parser = load("Seal/Core/Import/IPAParserService.swift")
     check("nestedData" not in parser and 'code: "SEAL-IPA-101b"' in parser,
           "Import: nested wrappers must not be buffered or committed as inner IPAs")
@@ -374,6 +400,18 @@ def main():
          "needsAction: max(0, total - succeeded - failed)",
          "remaining: max(0, total - succeeded - failed)",
          "G: every BatchRefreshResult construction site"),
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "if advancesInstalledSnapshot {",
+         "if true {",
+         "E: top-level profile fields must not advance"),
+        ("Seal/Core/Signing/SignedArtifactSnapshot.swift",
+         "return isSeal ? .installed : .awaitingVerification",
+         "return .installed",
+         "E: signed artifact and installed snapshot must be separated"),
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "SignedArtifactSnapshot.advanceInstalled(",
+         "// SignedArtifactSnapshot.advanceInstalled(",
+         "E: the install-verified path must advance the snapshot"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

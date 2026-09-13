@@ -217,14 +217,21 @@ actor SigningCoordinator {
                 appID: appID
             )
             let signedSHA256 = try await fileStore.sha256(relativePath: signedPath)
+            // Seal 自身例外：自更新安装会替换本进程，这是安装前唯一的写入机会；
+            // 而且它的顶层快照由启动同步从**运行中的 Bundle** 结算（R07/D 包），
+            // 装失败时这份乐观值会被推翻，不会留下假日期。
             applySigningResult(
                 portalResult,
                 signedPath: signedPath,
                 accountID: accountID,
+                advancesInstalledSnapshot: originalState != .installed || app.isSeal,
                 to: &app
             )
             app.signedIPASHA256 = signedSHA256
-            app.signedArtifactStatus = originalState == .installed ? .installed : .available
+            app.signedArtifactStatus = SignedArtifactSnapshot.statusAfterSigning(
+                originalState: originalState,
+                isSeal: app.isSeal
+            )
             app.lastInstallFailureCode = nil
             app.lastInstallFailureReason = nil
             app.state = originalState == .installed ? .installed : .signed
@@ -433,10 +440,21 @@ actor SigningCoordinator {
         }
     }
 
+    /// 把签名产物的信息落进记录。
+    ///
+    /// `advancesInstalledSnapshot` 决定**是否推进顶层 profile 字段**
+    /// （`provisioningProfile*` 四个）。这些顶层字段描述的是「设备上正在运行的那份构建」，
+    /// UI 展示的到期日取的是 `provisioningProfileExpirationDate ?? expiryDate`。
+    /// 已安装的第三方应用重签时若提前推进，一旦安装失败或进程中途被杀，
+    /// 界面就会显示一个设备上并不存在的到期日（R08：新旧日期混用），
+    /// 用户以为续签成功，直到应用被吊销才发现问题。
+    /// 产物身份由 `signingTargets` 承载，顶层快照等安装校验通过后再由
+    /// `advanceInstalledSnapshot(of:bundleIdentifier:expiryDate:)` 推进。
     private func applySigningResult(
         _ result: PortalSigningResult,
         signedPath: String,
         accountID: UUID,
+        advancesInstalledSnapshot: Bool,
         to app: inout AppRecord
     ) {
         let mainBinding = result.profileBindings[result.mappedMainBundleID]
@@ -447,10 +465,12 @@ actor SigningCoordinator {
         app.certificateSerialNumber = result.certificateSerialNumber
         app.signedDeviceIdentifier = result.deviceIdentifier
         app.signedIPARelativePath = signedPath
-        app.provisioningProfileUUID = mainBinding?.profileUUID
-        app.provisioningProfileName = mainBinding?.profileName
-        app.provisioningProfileCreationDate = mainBinding?.creationDate
-        app.provisioningProfileExpirationDate = mainBinding?.expirationDate
+        if advancesInstalledSnapshot {
+            app.provisioningProfileUUID = mainBinding?.profileUUID
+            app.provisioningProfileName = mainBinding?.profileName
+            app.provisioningProfileCreationDate = mainBinding?.creationDate
+            app.provisioningProfileExpirationDate = mainBinding?.expirationDate
+        }
         app.entitlementValidationStatus = "已按 embedded.mobileprovision 校验"
         app.capabilityValidationStatus = "已按 Apple App ID 与描述文件校验"
         app.lastSignedAt = Date()
@@ -648,7 +668,13 @@ actor SigningCoordinator {
             updated.lastInstallFailureCode = nil
             updated.lastInstallFailureReason = nil
             updated.hasPendingSelfUpdateSource = false
-            updated.expiryDate = expirationDate
+            // 安装校验已通过 —— 此刻才允许把「设备上运行的构建」的顶层 profile 身份
+            // 推进到刚装上的这一份（R08）。
+            SignedArtifactSnapshot.advanceInstalled(
+                of: &updated,
+                bundleIdentifier: effectiveBundleID,
+                expiryDate: expirationDate
+            )
             updated.lastInstalledAt = Date()
             try await appStore.save(updated)
             removeStaleProfiles(signedData: signedData, effectiveBundleID: effectiveBundleID)

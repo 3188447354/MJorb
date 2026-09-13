@@ -111,9 +111,45 @@
 - **规矩**：下载产物前先清空目标目录；发布前用 `python` 读 IPA 内 `Payload/Seal.app/Info.plist` 的
   `CFBundleShortVersionString` + `CFBundleVersion` 复核版本，别只凭文件名 `Seal.ipa` 判断。
 
+### 10. Minimuxer 连设备只能经「隧道真转发」，内置反射隧道替代不了外部 LocalDevVPN
+- **现象**：升级后安装/续签卡在「正在连接设备」，用户开 Wi-Fi + 外部 LocalDevVPN 仍不走。
+- **根因**：Minimuxer 连设备**唯一**端点是 `10.7.0.1:49152/62078`（Rust `rsd.rs:174`），没有
+  无线/局域网直连设备真实 IP 的备用路径；该地址必须由「能把虚拟网卡流量真正转发到设备」的隧道提供。
+  外部 LocalDevVPN 靠电脑端 usbmuxd 转发、能打通；而一个「只反射 `10.7.0.0↔10.7.0.1`、不转发到设备」的
+  内置隧道（如 SealTunnel）永远连不上，还可能跟外部隧道抢 `10.7.0.0/24`。
+- **规矩**：判断某隧道能不能用于安装，先确认 10.7.0.1 上那个端口是否有真 listener（能把流量送到设备
+  lockdown/RSD）；纯 IP 反射 ≠ 设备转发。别用「能起 VPN 虚拟网卡」当作「连得上设备」。
+
 ---
 
 ## 二、历史记录
+
+### 2026-09-13 · v1.1.0 内置 SealTunnel 无法替代外部 LocalDevVPN：续签卡「正在连接设备」，已回退运行时假隧道
+- **现象**：升级到 v1.1.0 后，续签 Seal 自身停在进度 6%（`.waitingForChannel`「正在连接设备」）
+  一直不前进；用户已开 Wi-Fi 且打开外部 LocalDevVPN，仍卡住。
+- **根因**：Minimuxer(Rust) 连设备**唯一**路径是 `TcpStream::connect(10.7.0.1:49152)`
+  （`Vendor/Minimuxer/RustBridge/src/idevice_support/rsd.rs:174`），**没有任何无线/局域网直连设备
+  真实 IP 的备用路径**（Seal 侧 `bindTunnelConfiguration` 的 `getOverrideFakeIP` 固定返回
+  `"10.7.0.1"`，所有路由收敛到 VPN utun 的 peer）。而 v1.1.0（提交 `551308e`）把「首次探测不通
+  就自动拉起内置 SealTunnel」当成能替代外部 LocalDevVPN，但内置 `PacketTunnelProvider` **只是把
+  `10.7.0.0↔10.7.0.1` 两个 IP 来回反射、不把流量转发到设备**，所以 `10.7.0.1:49152` 上永远没有
+  真 listener：probe 不通 → Minimuxer connect 连不上 → 卡「正在连接设备」。且内置隧道与外部
+  LocalDevVPN 共用 `10.7.0.0/24`，可能把它挤出 utun，导致"外部软件开着也没转发"。
+- **修复**：删掉「运行时假隧道」这一层，回归 v1.0.13 及以前的「纯依赖外部 LocalDevVPN 真转发」：
+  - `MinimuxerInstallChannel.diagnose()`：首次探测不通**不再** `onDemandActivator.activate()`（去自动拉起）；
+  - `LocalDevVPNOnDemandActivator`：从协议与实现中删除 `activate()`，仅保留 `probeTunnel()`；
+  - `LocalDevVPNSettingsView`：移除伪装成「启动并验证 LocalDevVPN」的 `sealTunnelCard`（它实际启动的是
+    内置假隧道，易误导）；
+  - `SettingsViewModel`：删除仅被该卡片引用的 `testSealTunnelChannel()` 及 `SEAL-TUNNEL-001/002`；
+  - 删除孤立的 `SealTunnelManager.swift`。
+  **保留** `SealTunnel.appex` 扩展 target 与 `PacketTunnelProvider.swift`（签名链路硬依赖
+  「Seal 自身必须保留 SealTunnel 扩展」，见 `ApplePortalSigningService` 注释）。
+- **涉及文件**：`Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`、
+  `Seal/Infrastructure/Installation/LocalDevVPNOnDemandActivator.swift`、
+  `Seal/Features/Settings/LocalDevVPNSettingsView.swift`、
+  `Seal/Features/Settings/SettingsViewModel.swift`、删除 `Seal/Infrastructure/Tunnel/SealTunnelManager.swift`。
+- **验证状态**：本地 Windows 无法编译 Swift，静态检查已确认无悬空引用（绿色基线）；待云编译 +
+  真机回归：免费账号 + 外部 LocalDevVPN 续签应恢复正常，不再自动拉内置隧道。
 
 ### 2026-09-12 · 免费账号 App ID 上限本地预检（SEAL-APPID-305）误拦：拿「存活数」当「7 天窗口」
 - **现象**：用户 Apple 账号里已有 11 个 App ID，Apple 照样能签名安装；但 Seal 报

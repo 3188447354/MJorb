@@ -1670,51 +1670,6 @@ final class SettingsViewModel: ObservableObject {
         await runInstallChannelCheck(successMessage: "LocalDevVPN 正常")
     }
 
-    func testSealTunnelChannel() async {
-        await load(force: true)
-        guard diagnosticState != .running, let installChannel else { return }
-        guard pairingRecord != nil else {
-            diagnosticState = .failed(
-                Self.failure(
-                    title: "尚未配对",
-                    reason: "验证 Seal 内置通道前，需要先完成当前 iPhone 的首次配对。",
-                    recovery: "使用 Seal 配对助手完成首次配对",
-                    code: "SEAL-TUNNEL-001"
-                )
-            )
-            return
-        }
-
-        diagnosticState = .running
-        let diagnostics = await installChannel.diagnose()
-        installDiagnostics = diagnostics
-
-        if diagnostics.isReady, let deviceIdentifier = diagnostics.deviceIdentifier {
-            diagnosticState = .ready(deviceIdentifier: deviceIdentifier)
-            try? await logStore?.append(
-                category: .installation,
-                message: "LocalDevVPN 已通过验证"
-            )
-        } else {
-            let failure = diagnostics.failure ?? Self.failure(
-                title: "LocalDevVPN 不可用",
-                reason: "LocalDevVPN 已开启，但当前状态尚未就绪。",
-                recovery: "重新验证 LocalDevVPN",
-                code: "SEAL-TUNNEL-002"
-            )
-            diagnosticState = .failed(failure)
-            try? await logStore?.append(
-                category: .installation,
-                level: .error,
-                message: "LocalDevVPN 验证失败",
-                code: failure.code
-            )
-        }
-
-        logs = (try? await logStore?.entries()) ?? logs
-        refreshLogExportText()
-    }
-
     private func runInstallChannelCheck(successMessage: String) async {
         guard let installChannel else { return }
         diagnosticState = .running

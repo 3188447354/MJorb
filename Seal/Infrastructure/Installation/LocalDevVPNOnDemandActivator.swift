@@ -2,7 +2,6 @@ import Foundation
 import Network
 
 protocol VPNOnDemandActivating: Sendable {
-    func activate() async
     func probeTunnel() async -> Bool
 }
 
@@ -12,14 +11,10 @@ struct LocalDevVPNOnDemandActivator: VPNOnDemandActivating {
         qos: .userInitiated
     )
 
-    func activate() async {
-        // 真正拉起 Seal 自带的 SealTunnel 扩展（10.7.0.0/24 反射隧道），
-        // 取代对外部 LocalDevVPN 软件的依赖；probeTunnel 只是探测，这里才是“按需拉起”。
-        await SealTunnelManager.shared.start()
-        // 给 VPN 建立虚拟网卡留出时间后再探测。
-        try? await Task.sleep(for: .milliseconds(1500))
-        _ = await probeTunnel()
-    }
+    // 注意：不再提供 activate()/“自动拉起内置隧道”。内置 SealTunnel 只反射
+    // 10.7.0.0↔10.7.0.1、不把流量转发到设备，拉起也连不上 Minimuxer 要访问的
+    // 10.7.0.1:49152；免费账号必须依赖外部 LocalDevVPN 软件的真转发。
+    // 这里只负责探测外部 LocalDevVPN 是否就绪。
 
     func probeTunnel() async -> Bool {
         // A short TCP probe nudges iOS to bring up LocalDevVPN on demand. 62078

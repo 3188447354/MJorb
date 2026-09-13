@@ -116,17 +116,14 @@ actor MinimuxerInstallChannel: InstallChannel {
 
             run(.vpnTunnel)
             await waitForNetworkRefresh(rounds: 2, delay: .milliseconds(250))
-            var tunnelReachable = await onDemandActivator.probeTunnel()
+            let tunnelReachable = await onDemandActivator.probeTunnel()
             if tunnelReachable {
                 pass(.vpnTunnel)
-            } else {
-                // 首次探测不通：真正拉起 Seal 自带的 SealTunnel 扩展，
-                // 而非继续依赖外部 LocalDevVPN 软件。activate() 会启动
-                // SealTunnelManager，建 10.7.0.0/24 虚拟网卡。
-                await onDemandActivator.activate()
-                tunnelReachable = await onDemandActivator.probeTunnel()
-                if tunnelReachable { pass(.vpnTunnel) }
             }
+            // 不再自动拉起内置 SealTunnel：它只会把 10.7.0.0↔10.7.0.1 来回反射、
+            // 不把流量真正转发到设备，Minimuxer 经 10.7.0.1:49152 仍连不上设备，
+            // 反而会和外部 LocalDevVPN 抢 10.7.0.0/24 网段。
+            // 免费账号一律走外部 LocalDevVPN 软件的真转发（回到 v1.0.13 及以前行为）。
 
             if let udid = try await readyDeviceIdentifier() {
                 pass(.vpnTunnel)

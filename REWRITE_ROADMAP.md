@@ -12,6 +12,7 @@
 | 安装（RSD shim 通道） | MissingPackagePath | **隧道会话绑定**：RSD shim 服务的 afcd 暂存视图绑定在建立它的 RemotePairing 隧道会话上；此前"首选 CoreDevice 隧道上传/安装"每次 FFI 调用都新建隧道，会话 A 上传的包在会话 B 的 installd 眼中不存在 | ✅ 已修复（见下） |
 | 安装（CoreDeviceProxy） | ConnectionReset | devicecompute 服务在 WiFi/RSD 通道上硬重置连接（独占连接+重试均无效） | ✅ 整个 fresh-tunnel 模块已删除 |
 | Apple ID / 续签 | 503 | 国内直连 gsa.apple.com 线路时通时断 + **复用上次失败的 idle 连接被 Apple 拒**（代理/TUN 切换后残留连接未关闭就被后续请求复用）。上游 iloader 2.3.3 同根因修复（isideload reqwest `.pool_max_idle_per_host(0)`） | ✅ 已加修复：altsign-mod `ALTAppleAPI.swift` 认证 session 设 `Connection: close`（登录/2FA GSA 请求每次走新连接）；叠加既有 3s/8s 自动重试。待随 AltSign fork 发版 + 真机回归 |
+| 安装（隧道依赖） | v1.1.0 内置 SealTunnel（`551308e`）试图**用内置隧道替代外部 LocalDevVPN**，续签 Seal 自身卡「正在连接设备」（6%） | Minimuxer 连设备**唯一**端点 `10.7.0.1:49152/62078`（Rust `rsd.rs:174`），无无线/局域网直连备用路径；内置 `PacketTunnelProvider` 只反射 `10.7.0.0↔10.7.0.1`、**不把流量转发到设备**，且与外部 LocalDevVPN 抢 `10.7.0.0/24` | ✅ 已**回退运行时假隧道**（2026-09-13）：去掉「首次探测不通自动拉内置隧道」、删 `SealTunnelManager.swift`、移除设置页伪装「启动 LocalDevVPN」卡片，回归「纯依赖外部 LocalDevVPN 真转发」。**保留** `SealTunnel.appex` 扩展 target（签名硬依赖）。待云编译 + 真机回归 |
 
 ## 安装链路修复（2026-09-08 落地，OTA 同日下线）
 

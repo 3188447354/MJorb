@@ -231,6 +231,14 @@ struct UpdateNoticeView: View {
                         phase = .downloading(received, total)
                     }
                 )
+                // 交叉校验：Release 声称的版本（tag_name，来自 API 元数据）
+                // vs IPA 内真实的 CFBundleShortVersionString（来自二进制本身）。
+                // 只校验下载域名不够 —— 同一仓库、同一域名下的资产仍可能被替换。
+                let parsed = try IPAParserService().parse(url: localURL)
+                guard UpdateChecker.advertisedVersion(notice.version, matchesIPAVersion: parsed.version) else {
+                    phase = .failed("更新包内容与版本 \(notice.version) 不符，已中止安装")
+                    return
+                }
                 onInstall(localURL)
             } catch is CancellationError {
                 phase = .idle

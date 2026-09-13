@@ -62,6 +62,21 @@ struct UpdateCheckerAssetTests {
         )
     }
 
+    /// 交叉校验：声称的版本要与包内真实版本对得上（tag 允许带 v 前缀）。
+    @Test
+    func advertisedVersionMatchesTheIPAVersionIgnoringTheVPrefix() {
+        #expect(UpdateChecker.advertisedVersion("v1.0.13", matchesIPAVersion: "1.0.13"))
+        #expect(UpdateChecker.advertisedVersion("1.0.13", matchesIPAVersion: "1.0.13"))
+    }
+
+    /// 核心：声称是新版本、包里却是旧的 —— 典型的「资产被替换」。
+    /// 只校验下载域名看不出这种情况（域名完全合法）。
+    @Test
+    func aMismatchedIPAVersionIsRejected() {
+        #expect(UpdateChecker.advertisedVersion("1.0.13", matchesIPAVersion: "1.0.12") == false)
+        #expect(UpdateChecker.advertisedVersion("2.0.0", matchesIPAVersion: "1.0.0") == false)
+    }
+
     private func asset(name: String, url: String) -> [String: Any] {
         ["name": name, "browser_download_url": url]
     }

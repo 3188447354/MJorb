@@ -261,6 +261,12 @@ def violations(load=read):
           "Update: asset URLs must be pinned to GitHub over HTTPS")
     check("guard candidates.count == 1 else { return nil }" in update_checker,
           "Update: an ambiguous set of IPA assets must not yield a direct link")
+    # 只校验下载域名不够：同一仓库、同一合法域名下的资产仍可被替换。
+    # 必须把「API 元数据声称的版本」与「IPA 内真实版本」交叉校验。
+    # 必须查比较逻辑本身：只查「函数存在/被调用」会被 return true 骗过去（变异检查当场抓到）。
+    check("Version.compare(advertised, ipaVersion) == .orderedSame" in update_checker
+          and "UpdateChecker.advertisedVersion(" in load("Seal/Features/UpdateNoticeView.swift"),
+          "Update: the installed IPA version must be cross-checked against the advertised tag")
 
     # ── 外围专项：通知偏好 ─────────────────────────────────────────────────
     # leadHours 曾是个静默 no-op：getter 恒返回固定值、setter 忽略 newValue，
@@ -491,6 +497,10 @@ def main():
          "guard candidates.count == 1 else { return nil }",
          "guard candidates.isEmpty == false else { return nil }",
          "Update: an ambiguous set of IPA assets"),
+        ("Seal/Infrastructure/UpdateChecker.swift",
+         "Version.compare(advertised, ipaVersion) == .orderedSame",
+         "true",
+         "Update: the installed IPA version must be cross-checked"),
         ("Seal/Core/Notifications/NotificationPreferences.swift",
          "return stored > 0 ? stored : Self.fixedLeadHours",
          "return Self.fixedLeadHours",

@@ -81,6 +81,20 @@ struct UpdateChecker {
 
     // MARK: - 更新资产的真实性
 
+    /// Release 声称的版本（`tag_name`）与 IPA 内真实版本是否一致。
+    ///
+    /// 这是一次**跨源交叉验证**：`tag_name` 来自 GitHub API 的元数据，
+    /// `CFBundleShortVersionString` 来自**下载到的二进制本身**。
+    /// 只校验下载域名是不够的 —— 同一仓库、同一合法域名下的资产仍然可以被替换，
+    /// 那种情况下域名校验完全看不出异常。两边对不上，说明这个包要么不属于这个
+    /// Release、要么内容被换过，装下去就是远程代码执行。
+    ///
+    /// 用 `Version.compare` 而不是字符串相等：tag 可能是 `v1.0.13`，
+    /// IPA 内是 `1.0.13`，而 `Version` 已经处理了 `v` 前缀与多段版本号。
+    static func advertisedVersion(_ advertised: String, matchesIPAVersion ipaVersion: String) -> Bool {
+        Version.compare(advertised, ipaVersion) == .orderedSame
+    }
+
     /// Release 资产的下载直链必须来自 GitHub 官方域名，且必须是 HTTPS。
     ///
     /// `browser_download_url` 来自 API 响应。仓库名虽然是硬编码的，但响应内容本身

@@ -124,6 +124,19 @@
 
 ## 二、历史记录
 
+### 2026-09-13 · 完整 iOS 发布 UI 测试 `testTwoStageNavigationCanBeTappedWithoutChangingHeaderAlignment` 失败（启动时序竞态）
+- **现象**：`iOS` 完整发布 workflow「Run Swift unit and UI regression tests」失败，`ImportFlowUITests.swift:42`
+  `XCTAssertTrue(app.staticTexts["已安装应用"].waitForExistence(timeout: 5))` 超时（exit 65）；同一 run 里
+  `testTwoStageNavigationSupportsHorizontalSwipe` 通过。
+- **根因**：测试时序竞态，**非产品回归**。`AppsRootView.mode` 初始为 `.installed`，`.task` 里
+  `resolveInitialModeIfNeeded()` 在 empty 场景会异步改成 `.unsigned`，形成中转窗口。失败的 tap 测试只等
+  `待签名，0 个` 按钮（顶部 tab 恒存在、立即返回），未等初始 mode 稳定就 tap，命中中转窗口时 TabView selection
+  回写竞态、页面不切，header 5 秒未出现。对比 swipe 测试先 `waitForExistence("待签名应用")` 稳定初始态，故始终通过。
+  09-12 成功 run 属侥幸通过；本轮模拟器 data migration 变慢放大竞态窗口而暴露。
+- **修复**：tap 测试在 tap 前补 `XCTAssertTrue(app.staticTexts["待签名应用"].waitForExistence(timeout: 10))` 稳定初始态。
+- **涉及文件**：`SealUITests/ImportFlowUITests.swift`。
+- **验证状态**：待重发完整 iOS workflow 验证（Fast IPA 不跑 UI 测试）。
+
 ### 2026-09-13 · 云编译报 openssl/err.h not found：`Refresh local SPM binary artifacts` 误删 OpenSSL 二进制包
 - **现象**：`iOS Fast IPA` workflow「Build fast unsigned IPA」步骤偶发失败，`native_bridge_ldid.cpp:46` 报
   `fatal error: 'openssl/err.h' file not found`（exit code 65）；相同 workflow 此前多次成功（同 revision、同缓存 key）。

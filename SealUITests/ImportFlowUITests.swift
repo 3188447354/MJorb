@@ -37,6 +37,9 @@ final class ImportFlowUITests: XCTestCase {
         let app = launch(with: "--ui-testing-empty")
         XCTAssertTrue(app.buttons["待签名，0 个"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["已安装，0 个"].exists)
+        // 稳定初始态：等 resolveInitialModeIfNeeded 把 mode 从初始 .installed 异步切到 .unsigned
+        // 完成后再点，避免 tap 命中中转窗口导致 TabView 不切页（header 竞态）。
+        XCTAssertTrue(app.staticTexts["待签名应用"].waitForExistence(timeout: 10))
 
         app.buttons["已安装，0 个"].tap()
         XCTAssertTrue(app.staticTexts["已安装应用"].waitForExistence(timeout: 5))

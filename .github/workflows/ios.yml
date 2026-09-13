@@ -235,7 +235,7 @@ jobs:
           TAG="$INPUT_TAG"
           if [ -z "$TAG" ]; then TAG="v${VER}"; fi
           NOTES="$(cat RELEASE_NOTES.md)"
-          ARGS=(--target "$SHA" --title "Seal $TAG" --notes "$NOTES")
+          ARGS=(--title "Seal $TAG" --notes "$NOTES")
           if [ "$PRERELEASE" = "true" ]; then ARGS+=(--prerelease); fi
           gh release create "$TAG" "${ARGS[@]}" --repo sunuannian1/Seal-Releases \
             release/Seal.ipa \

@@ -120,9 +120,28 @@
 - **规矩**：判断某隧道能不能用于安装，先确认 10.7.0.1 上那个端口是否有真 listener（能把流量送到设备
   lockdown/RSD）；纯 IP 反射 ≠ 设备转发。别用「能起 VPN 虚拟网卡」当作「连得上设备」。
 
+### 11. 跨仓库发 Release 别传源仓库 SHA 当 `target_commitish`
+- **现象**：主仓库构建/测试全绿，发布步骤 `gh release create --repo sunuannian1/Seal-Releases --target "$SHA"` 报
+  `HTTP 422: Release.target_commitish is invalid`。
+- **根因**：`$SHA` 是源仓库 `Trae-seal` 的提交；Release 建在 `Seal-Releases` 时，GitHub 只接受**目标仓库**里存在的
+  branch/tag/commit。跨仓库发布要么省略 `--target`（用目标仓库默认分支 HEAD），要么先把目标仓库的 ref 准备好。
+- **规矩**：`ios.yml` 发布到 `sunuannian1/Seal-Releases` 时不传 `--target`；如要锁定发布源版本，用 Release notes/title
+  或资产里的 `Seal-Info.plist` 表达，不要把源仓库 SHA 塞给目标仓库。
+
 ---
 
 ## 二、历史记录
+
+### 2026-09-13 · 发布到 Seal-Releases 报 422：`target_commitish` 误传源仓库 SHA
+- **现象**：完整 `iOS` workflow 的 `build-package`、`rork-sign-tests` 已绿，`publish-release` 步骤
+  `gh release create v1.1.0 --repo sunuannian1/Seal-Releases --target f1caf1d...` 报
+  `HTTP 422: Release.target_commitish is invalid`。
+- **根因**：发布目标仓库是 `sunuannian1/Seal-Releases`，但 `--target` 传的是源仓库 `sunuannian1/Trae-seal` 的提交
+  SHA；该 SHA 在目标仓库不存在，GitHub 无法把它作为 Release 的 target commit。
+- **修复**：`.github/workflows/ios.yml` 的发布命令移除 `--target "$SHA"`，让 `gh release create --repo ...`
+  默认指向 Seal-Releases 默认分支 `main` 的 HEAD；版本来源仍由 IPA 内 `Seal-Info.plist` 与输入 tag 表达。
+- **涉及文件**：`.github/workflows/ios.yml`、`DEBUG_LOG.md`。
+- **验证状态**：本地可确认 `Seal-Releases` 默认分支为 `main`；待用手动补发/下次发布验证端到端。
 
 ### 2026-09-13 · 完整 iOS 发布 UI 测试 `testTwoStageNavigationCanBeTappedWithoutChangingHeaderAlignment` 失败（启动时序竞态）
 - **现象**：`iOS` 完整发布 workflow「Run Swift unit and UI regression tests」失败，`ImportFlowUITests.swift:42`

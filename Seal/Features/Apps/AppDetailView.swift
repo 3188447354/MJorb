@@ -50,7 +50,9 @@ struct AppDetailView: View {
             Alert(
                 title: Text(failure.title),
                 message: Text(failure.userMessage),
-                dismissButton: .default(Text(failure.recovery))
+                dismissButton: .default(Text(failure.recovery)) {
+                    viewModel.performAlertRecovery(for: failure)
+                }
             )
         }
     }

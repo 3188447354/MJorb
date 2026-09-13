@@ -39,6 +39,14 @@ final class AppsViewModel: ObservableObject {
     @Published private(set) var signingChannelStatus: SigningChannelStatus = .idle
     @Published private(set) var installingCachedPackageAppID: UUID?
 
+    private struct PendingTeamSwitch {
+        let app: AppRecord
+        let account: AppleAccountRecord
+        let requestedBundleIdentifier: String?
+        let completionMode: SigningCompletionMode
+    }
+    private var pendingTeamSwitch: PendingTeamSwitch?
+
     private let workflow: ImportWorkflow?
     private let appStore: (any AppStore)?
     private let fileStore: AppFileStore?
@@ -704,6 +712,18 @@ final class AppsViewModel: ObservableObject {
 
     func performAlertRecovery(for failure: ImportFailure) {
         alertFailure = nil
+        if failure.code == "SEAL-AUTH-105c",
+           let pending = pendingTeamSwitch {
+            pendingTeamSwitch = nil
+            let isRenewal = pending.app.belongsInInstalledList
+            startSigning(
+                app: pending.app,
+                account: pending.account,
+                requestedBundleIdentifier: isRenewal ? nil : pending.requestedBundleIdentifier,
+                completionMode: pending.completionMode
+            )
+            return
+        }
         let recovery = failure.recovery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard recovery != "知道了" else { return }
         if failure.code.hasPrefix("SEAL-IPA-") {
@@ -774,12 +794,19 @@ final class AppsViewModel: ObservableObject {
                     message: "Seal 自更新沿用同 Team 账号 \(sameTeamAccount.maskedEmail)，避免更新后 Apple ID 失效"
                 )
             } else {
+                pendingTeamSwitch = PendingTeamSwitch(
+                    app: app,
+                    account: account,
+                    requestedBundleIdentifier: requestedBundleIdentifier,
+                    completionMode: completionMode
+                )
                 alertFailure = ImportFailure(
                     title: "更新将重置本地数据",
                     reason: "当前 Seal 由另一 Team 签名，改用所选 Apple ID 覆盖安装会清空已添加的 Apple ID 与已安装应用，需重新添加。",
-                    recovery: "知道了",
+                    recovery: "继续签名",
                     code: "SEAL-AUTH-105c"
                 )
+                return
             }
         }
 

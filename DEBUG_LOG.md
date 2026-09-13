@@ -291,7 +291,134 @@
 - **验证状态**：护栏新增 2 项源码检查 + 1 条变异；新增 4 例测试（含「`outstanding()` 必须排除
   `completed`」——这是 §4「恢复不能重做已成功的项」的落点）。**Swift 编译与测试待 CI。**
 
+### 21. 读取路径上的「顺手写」：清理会删掉并发导入的中间目录（真实数据丢失路径）
+- **现象**：应用列表加载（纯读取动作）会顺带做三件写操作 —— 记录恢复、Seal 自注册、
+  孤儿文件清理。它们没有租约、不受加载代次约束，可与用户的签名/安装/续签交错执行。
+- **根因**（两个独立缺陷叠加）：
+  1. **`clearOrphanedAppFiles` 无条件删除 `Apps/` 下所有隐藏目录**。而 `.pending-<txid>` /
+     `.backup-<txid>` 正是**进行中导入事务**的中间态目录。并发导入时把它们删掉，
+     导入会失败并可能丢数据。旧实现里 `if name.hasPrefix(".") { removeItem }` 就是这个坑。
+  2. **`validAppIDs` 是调用方更早时刻的快照**。快照之后新建的记录，其目录会被当孤儿删掉。
+- **规矩**（三重保护，缺一不可）：
+  - **跳过 journal 仍在的事务目录**：判定依据是 `Transactions/import-<txid>.json` 是否还存在
+    （`AppFileStore.liveImportTransactionIDs()`）。
+  - **新建保护期**：修改时间在 `minimumAge` 内的目录一律不删，用来兜住
+    「检查点通过之后用户才开始导入」的时序窗口。用户主动清理（已持 `.maintainingStorage`
+    租约、单槽协调器保证无并发写入）才可传 `minimumAge: 0`。
+  - **删除前复核 DB 引用**：删除前**重新** `fetchAll()` 取有效 ID，不复用更早的快照。
+- **规矩（读取路径只读）**：`load()` 不得写 DB、不得删文件。恢复/自注册/清理收敛为
+  独立维护作业（`AppMaintenanceJob`），在空闲时运行；后台派生任务（邮箱/图标/历史/通知）
+  逐步校验**加载代次**，旧代次不得回写 UI 状态。
+- **涉及文件**：`Seal/Infrastructure/Storage/AppFileStore.swift`、
+  `Seal/Core/Maintenance/AppMaintenanceJob.swift`、`MaintenanceGate.swift`、
+  `Seal/Features/Apps/AppsViewModel.swift`、`AppsRootView.swift`、`Seal/Application/AppContainer.swift`。
+- **验证状态**：护栏新增 9 项源码检查 + 5 条变异（42+17 → 51+22 PASS）；新增 14 例测试。
+  **Swift 编译与测试待 CI。**
+
+### 22. 后台维护不能抢全局单槽：用户不该等后台清理
+- **现象（设计取舍）**：给维护作业加互斥时，最自然的做法是复用它自己的
+  `OperationCoordinator` 单槽租约。但那会让**用户点「签名」时等后台清理跑完**，
+  或直接被 `conflictFailure` 挡住 —— 用卫生任务拖慢用户操作，是本末倒置。
+- **规矩**：采用「低优先级、可抢占」模型（`MaintenanceGate`）：
+  - 前台操作永远不等待维护；维护**只在空闲时**取租约，取不到就**跳过本轮**（不排队、不阻塞）。
+  - 维护持租约期间前台操作一旦启动，租约**立即失效**；作业必须在检查点 `shouldAbort(_:)`
+    退出。因此**删除必须放在作业最后一步** —— 越早退出越不会留下半成品。
+- **反面教训**：不要为了测试方便给生产代码加时序假设。测试里复现「用户操作恰好在作业中途开始」
+  靠 `Task`/`yield` 调度是不可靠的；正确做法是把闸门抽成 `MaintenanceLeasing` 协议，
+  测试注入「第 N 次检查点起返回失效」的替身，确定性复现。
+- **涉及文件**：`Seal/Core/Maintenance/MaintenanceGate.swift`、`AppMaintenanceJob.swift`、
+  `SealTests/Maintenance/`。
+- **验证状态**：新增 6 例 `MaintenanceGateTests` + 8 例 `AppMaintenanceJobTests`。
+  **Swift 编译与测试待 CI。**
+
+### 23. 同版本续签换 profile 但不换版本号：只比版本会漏掉结算
+- **现象**：自更新（Seal 替换自身）后，UI 显示的到期日与设备上真实生效的 profile 不一致。
+  更糟的是自更新**失败**时，界面显示的是新到期日，而设备上跑的还是旧 profile ——
+  用户以为还有很久，实际几天后就被吊销。
+- **根因**：`SigningCoordinator` 的自更新路径在**安装之前**就把 `state = .installed`、
+  `expiryDate = 新有效期` 乐观写进 DB（因为 installd 替换 App 时本进程会被杀掉，
+  那是唯一的写入机会）。而推翻这份乐观值的责任在启动同步 `SelfAppRegistrar.ensureRegistered()`，
+  它的「版本一致」分支却只回补 Team/账号就 `return`。
+  **同版本续签换掉 profile 但版本号不变**，所以这个分支正是唯一会走的路径，
+  于是乐观写入的值永远没人推翻。
+- **规矩**：结算必须按 **profile 身份**（UUID / Name / CreationDate / 有效期），不能只看版本号。
+  运行中的 Bundle 是**唯一可信证据**：装成功 ⇒ 新包读到新 profile；装失败 ⇒ 旧包读到旧 profile。
+  每次启动都收敛，因此**不需要**额外落盘 pending 标记 —— 多一层持久化只会多一处可能与真实状态不同步。
+- **顺带修正**：`SelfAppMetadata` 原先用 `ProvisioningProfileReader.summary(from:)`，
+  而 `summary` 不含 UUID/Name/CreationDate；改用 `details(from:)`（超集）。
+- **安全边界**：运行包解析不到 profile 身份时（`details` 失败）**不得凭空改写**已有值，
+  只保留 Team/账号回补 —— 否则会把「读不到」误当成「变了」。
+- **涉及文件**：`Seal/Core/Renewal/SelfAppMetadata.swift`、`SelfAppRegistrar.swift`、
+  `Seal/Core/Signing/SigningCoordinator.swift`（乐观写入处，本次未改，注释已说明可被结算推翻）。
+- **验证状态**：护栏 55 检查 + 25 变异 PASS；新增 3 例测试（同版本结算 / 安装失败回滚 /
+  身份缺失不误改）。**Swift 编译与单测待 CI。**
+
+### 24. 给结果类型加字段 = 必须 grep 所有构造点（本机无编译器时只有 CI 能发现）
+- **现象**：G 包把 `BatchRefreshResult.remaining` 从存储属性改成计算属性、新增 `needsAction` 桶。
+  `Scripts/verify-release-safety.py` 全绿，本机无从编译，CI `build-package` 直接失败：
+  `AppsViewModel.swift: incorrect argument label in call (have 'total:succeeded:failed:remaining:',
+  expected 'total:succeeded:failed:needsAction:')`。
+- **根因**：只改了「定义 + 新调用点」，漏了**恢复上一轮批量结果**处的那个 `.init(...)`。
+  本仓 Windows 环境**没有 Swift 编译器**，这类错误静态脚本抓不到、只有云 CI 能暴露，
+  而一次 CI 往返约 10 分钟。
+- **规矩**：
+  1. 给结果类型加字段/改标签后，**必须 grep 构造点**（`.init(total:`、类型名 + `(`），
+     不能只改自己新写的那处。
+  2. 能在静态守卫里表达的编译期约束就写成守卫 + 变异。本轮已补：
+     `restored.status = .completed(.init(` 之后必须出现 `needsAction:` 且不得出现 `remaining:`。
+- **修复**：`ba3b3c9`。第三个桶改用 `needsAction`，取值仍由差值还原 ——
+  计数不变量 `成功+失败+未执行 == 总数` 成立，因此旧持久化载荷（没有该字段）还原出的差值
+  本来就是「未执行」，**不需要改载荷格式**。
+- **涉及文件**：`Seal/Features/Apps/AppsViewModel.swift`、`Seal/Core/Renewal/RenewalCoordinator.swift`。
+
 ## 二、历史记录
+
+### 2026-09-14 · D 包（R07）：同版本自续签按 profile 身份结算
+- **现象/风险**：自更新失败或进程在安装中被杀时，「安装前乐观写入」的新有效期不会被推翻，
+  UI 显示设备上不存在的到期日（详见坑位 23）。
+- **修复**：`SelfAppMetadata` 改用 `details(from:)` 暴露 profile 身份；
+  `reconcileSealRecordBindingIfNeeded` 扩展为 `reconcileSealRecordFromRunningBundleIfNeeded`，
+  按 profile UUID / Name / CreationDate / 有效期结算；身份解析失败时不误改已有值。
+- **设计取舍**：不引入 pending 落盘 journal —— 运行中的 Bundle 已是地面真值，每次启动自然收敛。
+- **涉及文件**：`Seal/Core/Renewal/SelfAppMetadata.swift`、`SelfAppRegistrar.swift`、
+  `SealTests/Renewal/SelfAppRegistrarTests.swift`（新增 3 例）。
+- **验证状态**：护栏 55 检查 + 25 变异 PASS。**Swift 编译与单测待 CI（本机无 Xcode）。**
+
+### 2026-09-14 · C 包（R06）：读取路径只读化 + 维护作业空闲租约 + 清理三重保护
+- **现象/风险**：应用列表加载（读取路径）顺手做记录恢复、Seal 自注册、孤儿文件清理；
+  这些写操作既无租约也无代次约束，与用户的签名/安装/续签交错，存在**删掉并发导入中间目录**
+  的真实数据丢失路径（详见坑位 21）。
+- **修复**：
+  1. `load()` 只读化 —— 移除 `restoreMissingRecords()` / `ensureRegistered()` /
+     `clearOrphanedAppFiles()`；后台派生任务逐步校验 `loadGeneration`。
+  2. 新增 `Seal/Core/Maintenance/`：`MaintenanceGate`（空闲租约、非阻塞、可抢占）+
+     `AppMaintenanceJob`（恢复 → 自注册 → 清理，三步带检查点，删除放最后）。
+  3. `AppFileStore.clearOrphanedAppFiles` 三重保护：跳过 journal 仍在的事务目录、
+     新建保护期、删除前复核 DB 引用；返回 `OrphanSweepReport` 便于审计。
+  4. 组合根注入维护作业；启动流程 `runMaintenanceIfIdle()` 先于首次 `load()`。
+- **顺带简化**：`AppsViewModel` 不再持有 `appRecordRecovery` / `selfAppRegistrar`（改由作业持有），
+  避免「视图模型里还留着恢复对象」误导后续调用。
+- **涉及文件**：`Seal/Core/Maintenance/{MaintenanceGate,AppMaintenanceJob}.swift`（新增）、
+  `Seal/Infrastructure/Storage/AppFileStore.swift`、`Seal/Features/Apps/AppsViewModel.swift`、
+  `AppsRootView.swift`、`Seal/Application/AppContainer.swift`、
+  `Seal/Features/Settings/SettingsViewModel.swift`、`SealTests/Maintenance/`（新增 14 例）。
+- **验证状态**：护栏 51 检查 + 22 变异 PASS。**Swift 编译与单测待 CI（本机无 Xcode）。**
+
+### 2026-09-14 · F 包（R09）：三入口统一预安装校验，扩展 target 不再漏检
+- **现象/风险**：手工安装路径只校验**主 target** 的 profile 过期/设备归属；
+  缓存复用路径（`installCachedSignedIPAIfPossible`）**完全不校验 target 明细**。
+  扩展 target（Widget / Notification）的 profile 过期、设备不在列表、team 不匹配、
+  证书序列号不匹配，都会一路装到设备上才失败 —— 表现为「装上就闪退」或安装被拒。
+- **修复**：新增 `Seal/Core/Signing/PreInstallValidation.swift` 纯函数校验，
+  两个安装入口统一走它：
+  - 覆盖**每个** target（主 + 扩展）：profile 有效期余量、设备归属、team 归属、
+    证书序列号（经 `SigningCertificateSelectionPolicy.normalizedSerialNumber` 归一化后比对，见坑位 1）。
+  - Bundle ID 合法性、主 target 必须存在于记录中；旧记录无 target 明细时回退到
+    `signedDeviceIdentifier`，缺关键元数据则要求重签。
+  - `artifactStatus(forCode:)` 把拒绝原因映射回 `SignedArtifactStatus`，UI 状态不再失真。
+- **涉及文件**：`Seal/Core/Signing/PreInstallValidation.swift`（新增）、
+  `Seal/Core/Signing/SigningCoordinator.swift`、`SealTests/Signing/PreInstallValidationTests.swift`（新增 13 例）。
+- **验证状态**：护栏 42 检查 + 17 变异 PASS。**Swift 编译与单测待 CI。**
 
 ### 2026-09-14 · G 包（R10/R11）：队列不再静默丢项 + 启动恢复 + 计数分桶
 - **范围**：`outputs/Seal_企业级发布整改方案_20260913.md` §4 工作包 G。

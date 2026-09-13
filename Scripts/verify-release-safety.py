@@ -192,7 +192,7 @@ def violations(load=read):
     reconcile = section(
         self_registrar,
         "private func reconcileSealRecordFromRunningBundleIfNeeded(",
-        "// 防御性对齐"
+        "try await appStore.save(updated)"
     )
     check("metadata.provisioningProfileUUID" in reconcile
           and "metadata.expirationDate" in reconcile,

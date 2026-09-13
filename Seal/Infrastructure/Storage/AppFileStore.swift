@@ -850,7 +850,7 @@ actor AppFileStore {
     /// 用反向查找，因为 UUID 里不含 `.`，最后一个标记之后就是事务 ID。
     private static func transactionID(fromDirectoryName name: String) -> String? {
         for marker in [".pending-", ".backup-"] {
-            if let range = name.range(of: marker, options: .backward) {
+            if let range = name.range(of: marker, options: .backwards) {
                 return String(name[range.upperBound...]).lowercased()
             }
         }

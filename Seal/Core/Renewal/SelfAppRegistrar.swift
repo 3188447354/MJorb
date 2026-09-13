@@ -254,16 +254,9 @@ actor SelfAppRegistrar {
             changed = true
         }
 
-        // 防御性对齐：运行中的版本号才是事实。同版本分支下这两条是空操作，
-        // 但函数若被其它入口复用，缺了它们会留下「DB 版本 ≠ 运行版本」的脏数据。
-        if existing.version != metadata.version {
-            updated.version = metadata.version
-            changed = true
-        }
-        if existing.buildNumber != metadata.buildNumber {
-            updated.buildNumber = metadata.buildNumber
-            changed = true
-        }
+        // version / buildNumber **不在这里对齐**：它们是 AppRecord 的 `let` 常量。
+        // 版本变化时走的是 `atomicallyUpdateSealRecord`（用运行包重打包并整体重建记录），
+        // 本函数只在「版本一致」分支被调用，因此不存在「DB 版本 ≠ 运行版本」的窗口。
 
         guard changed else { return }
         try await appStore.save(updated)

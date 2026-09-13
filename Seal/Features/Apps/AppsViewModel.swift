@@ -1500,7 +1500,14 @@ final class AppsViewModel: ObservableObject {
         let failed = payload["failed"] as? Int ?? 0
         let total = payload["total"] as? Int ?? max(succeeded + failed, 0)
         var restored = BatchRefreshSession()
-        restored.status = .completed(.init(total: total, succeeded: succeeded, failed: failed, remaining: max(0, total - succeeded - failed)))
+        // 旧持久化载荷没有 needsAction 字段，但计数不变量 `成功+失败+未执行 == 总数` 成立，
+        // 因此第三个桶可以直接由差值还原（旧载荷的差值本来就是「未完成」）。
+        restored.status = .completed(.init(
+            total: total,
+            succeeded: succeeded,
+            failed: failed,
+            needsAction: max(0, total - succeeded - failed)
+        ))
         restored.currentIndex = total
         restored.total = total
         if let itemPayload = payload["items"] as? [[String: Any]] {

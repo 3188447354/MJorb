@@ -198,6 +198,12 @@ def violations(load=read):
           and "metadata.expirationDate" in reconcile,
           "D: settlement must compare profile identity and expiry")
 
+    # G 的 BatchRefreshResult 把 remaining 改成了计算属性，构造点必须改用 needsAction。
+    # 漏改一个构造点就是编译错误（2026-09-14 真的漏了一处，CI build-package 挂掉）。
+    restored_call = section(apps_view, "restored.status = .completed(.init(", ")")
+    check("needsAction:" in restored_call and "remaining:" not in restored_call,
+          "G: every BatchRefreshResult construction site must fill needsAction")
+
     parser = load("Seal/Core/Import/IPAParserService.swift")
     check("nestedData" not in parser and 'code: "SEAL-IPA-101b"' in parser,
           "Import: nested wrappers must not be buffered or committed as inner IPAs")
@@ -364,6 +370,10 @@ def main():
          "if let uuid = metadata.provisioningProfileUUID,",
          "if let uuid = existing.provisioningProfileUUID,",
          "D: settlement must compare profile identity and expiry"),
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "needsAction: max(0, total - succeeded - failed)",
+         "remaining: max(0, total - succeeded - failed)",
+         "G: every BatchRefreshResult construction site"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

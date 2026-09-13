@@ -137,8 +137,8 @@ struct SignedArtifactSnapshotTests {
             state: .installed,
             provisioningProfileUUID: profileUUID,
             provisioningProfileName: "Old",
-            ipaRelativePath: "Apps/Example.ipa",
             signingTargets: targets,
+            ipaRelativePath: "Apps/Example.ipa",
             importedAt: Date(timeIntervalSince1970: 1_700_000_000)
         )
     }

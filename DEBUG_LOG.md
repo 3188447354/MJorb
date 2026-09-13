@@ -132,6 +132,20 @@
 
 ## 二、历史记录
 
+### 2026-09-13 · 清理零效果根因坐实：`RPProvision.dumpProfiles` 返回不存在的 PROVISION 子目录
+- **现象**：v1.1.3 真机日志显示「自更新安装前清理：描述文件清理：扫描 0，匹配 0，删除 0」——
+  dump「成功」却一个文件都没扫到。
+- **根因**：`RPProvision.dumpProfiles`（RSD 路径）调 `RustIdevice.dumpProfiles(path)`，Rust `dump_profiles`
+  把 `<UUID>.mobileprovision` **直接写在传入目录根**；但函数返回的却是 `"\(path)/PROVISION"`——
+  一个从未创建、永远为空的子目录。清理器按返回值枚举 → 扫描恒为 0。LockDown 路径恰好把文件写进
+  PROVISION 子目录再返回它（行为正确），所以 iOS 16 USB 路径不受影响；iOS 17+ RSD 路径全中。
+- **修复**：`RPProvision.dumpProfiles` 返回实际写入目录 `path`。纯 Swift vendor 补丁，Rust 零改动，
+  Seal 内唯一调用方就是 `DeviceProfileCleaner`。
+- **涉及文件**：`Vendor/Minimuxer/Sources/Provision.swift`、`project.yml`（1.1.4）、`RELEASE_NOTES.md`。
+- **教训**：「按返回路径枚举」依赖被调方契约，被调方契约错误时静默吞掉一切——先加观测（v1.1.3 的
+  摘要日志）才一轮定位到根因；供应商代码也要当可疑代码审。
+- **验证状态**：待 v1.1.4 发布后真机续签验证（预期日志「扫描 110+，删除 100+」，StikDebug 只剩最新一份）。
+
 ### 2026-09-13 · v1.1.2 清理仍零效果：全程静默无观测，补日志定位
 - **现象**：用户升 v1.1.2 后「更新→续签→重开再续签」，StikDebug 查 Seal 仍剩 109 条旧 profile
   （LiveContainer 也剩 7 条——说明普通应用的事后清理也从未删成过，是**全链路零效果**，非仅自更新时机问题）。

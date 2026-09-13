@@ -13,10 +13,12 @@ actor SealLogStore {
     private var bufferLoaded = false
     private var pendingFlush = false
     private var hasProtectedOnce = false
+    /// 自上次清空以来被环形丢弃的更早日志条数（导出时提示，避免误以为历史完整）
+    private var droppedSinceClear = 0
 
     init(
         fileURL: URL,
-        maximumEntries: Int = 200,
+        maximumEntries: Int = 1000,
         fileProtector: any FileProtecting = CompleteFileProtector()
     ) {
         self.fileURL = fileURL
@@ -42,7 +44,10 @@ actor SealLogStore {
                 code: code.map(LogPrivacyRedactor.redact)
             )
         )
-        buffer = Array(buffer.suffix(maximumEntries))
+        if buffer.count > maximumEntries {
+            droppedSinceClear += buffer.count - maximumEntries
+            buffer = Array(buffer.suffix(maximumEntries))
+        }
         scheduleFlush()
     }
 
@@ -54,6 +59,7 @@ actor SealLogStore {
     func clear() throws {
         buffer = []
         bufferLoaded = true
+        droppedSinceClear = 0
         if FileManager.default.fileExists(atPath: fileURL.path) {
             try FileManager.default.removeItem(at: fileURL)
         }
@@ -61,7 +67,10 @@ actor SealLogStore {
 
     func exportText() throws -> String {
         loadBufferIfNeeded()
-        return SealLogTextFormatter.exportText(buffer.reversed())
+        let notice = droppedSinceClear > 0
+            ? "（自上次清空以来已有 \(droppedSinceClear) 条更早日志被滚动丢弃）"
+            : nil
+        return SealLogTextFormatter.exportText(buffer.reversed(), capacity: maximumEntries, notice: notice)
     }
 
     private static func redacted(_ entry: SealLogEntry) -> SealLogEntry {

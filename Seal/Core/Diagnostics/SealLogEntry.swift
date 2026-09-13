@@ -67,15 +67,21 @@ extension SealLogEntry.Level {
 
 /// 日志导出统一排版：北京时间 + 中文固定宽度栏目，便于阅读。
 enum SealLogTextFormatter {
-    static func exportText(_ entries: [SealLogEntry]) -> String {
+    static func exportText(_ entries: [SealLogEntry], capacity: Int = 1000, notice: String? = nil) -> String {
         let formatter = DateFormatter()
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return entries.map { entry in
+        var lines = ["Seal 日志 · 北京时间 · 保留最近 \(capacity) 条"]
+        if let notice {
+            lines.append(notice)
+        }
+        lines.append("")
+        lines.append(contentsOf: entries.map { entry in
             let code = entry.code.map { "  [\($0)]" } ?? ""
             let time = formatter.string(from: entry.timestamp)
             return "\(time)  \(entry.level.displayName)  \(entry.category.displayName)\(code)  \(entry.message)"
-        }.joined(separator: "\n")
+        })
+        return lines.joined(separator: "\n")
     }
 }

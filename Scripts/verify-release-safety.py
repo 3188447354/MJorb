@@ -230,6 +230,15 @@ def violations(load=read):
     check(len(advance_lines) >= 1,
           "E: the install-verified path must advance the snapshot")
 
+    # ── B 包（R05 安装单飞：超时不得重试）──────────────────────────────────
+    # 安装 FFI 是同步阻塞、无法取消：超时只代表上层不再等待，底下那次安装很可能还在跑。
+    # 重试就会在同一个 Bundle ID 上出现两个并发 installd —— 即「第二次安装」。
+    install_channel = load("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift")
+    check(install_channel.count("if Self.isTimeoutInstallError(error) {") == 2,
+          "B: both install retry loops must treat timeout as terminal")
+    check("error is HardTimeout.TimeoutError" in install_channel,
+          "B: timeout detection must not depend on error text")
+
     parser = load("Seal/Core/Import/IPAParserService.swift")
     check("nestedData" not in parser and 'code: "SEAL-IPA-101b"' in parser,
           "Import: nested wrappers must not be buffered or committed as inner IPAs")
@@ -412,6 +421,10 @@ def main():
          "SignedArtifactSnapshot.advanceInstalled(",
          "// SignedArtifactSnapshot.advanceInstalled(",
          "E: the install-verified path must advance the snapshot"),
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "if Self.isTimeoutInstallError(error) {",
+         "if false {",
+         "B: both install retry loops must treat timeout as terminal"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

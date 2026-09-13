@@ -399,6 +399,11 @@ actor MinimuxerInstallChannel: InstallChannel {
             } catch {
                 lastError = error
                 guard attempt < maxAttempts else { break }
+                // 超时必须按「确定性拒绝」处理 —— 立即终止，不再重传重试（R05）。
+                // 原因见 isTimeoutInstallError 的注释：底下那次安装很可能还在跑。
+                if Self.isTimeoutInstallError(error) {
+                    break
+                }
                 let detail = Self.errorDetail(error)
                 if Self.isTerminalInstallError(detail) {
                     break
@@ -476,6 +481,11 @@ actor MinimuxerInstallChannel: InstallChannel {
             } catch {
                 lastError = error
                 guard attempt < maxAttempts else { break }
+                // 超时必须按「确定性拒绝」处理 —— 立即终止，不再重传重试（R05）。
+                // 原因见 isTimeoutInstallError 的注释：底下那次安装很可能还在跑。
+                if Self.isTimeoutInstallError(error) {
+                    break
+                }
                 let detail = Self.errorDetail(error)
                 if Self.isTerminalInstallError(detail) {
                     break
@@ -680,6 +690,26 @@ actor MinimuxerInstallChannel: InstallChannel {
     /// 确定性安装拒绝（空间不足 / 完整性校验失败 / 免费账号 3 应用上限）：
     /// 这类 installd 拒绝重传重试无意义，应首次即失败，避免把大包空推 3 轮。
     /// 与 `installationFailure` 的分类标记保持一致。
+    /// 安装超时 **不等于** 安装失败。
+    ///
+    /// `Minimuxer.stageAndInstall` 是同步阻塞 FFI，没有取消机制：
+    /// `offThread` 的「超时」只是**上层不再等待**，底下这次安装**很可能还在跑**。
+    /// 因此超时后一旦重试，就会在同一个 Bundle ID 上出现两个并发的 installd
+    /// （旧的还在装、新的已经开始传包）—— 这正是 R05 要防的「第二次安装」，
+    /// 表现为 `ApplicationVerificationFailed`、白图标、或装到一半的应用。
+    ///
+    /// 判定不依赖错误文本（文案会漂移），而是看错误本身是不是超时：
+    /// - `HardTimeout.TimeoutError`：直接来自竞速包装；
+    /// - `installTimeoutFailure`：`offThread` 返回 nil 后由调用方抛出的那种。
+    private static func isTimeoutInstallError(_ error: Error) -> Bool {
+        if error is HardTimeout.TimeoutError { return true }
+        if let failure = error as? ImportFailure,
+           failure.code == installTimeoutFailure.code {
+            return true
+        }
+        return false
+    }
+
     private static func isTerminalInstallError(_ detail: String) -> Bool {
         let lower = detail.lowercased()
         if lower.contains("no space")

@@ -391,6 +391,25 @@
 - **涉及文件**：`Seal/Core/Signing/SignedArtifactSnapshot.swift`（新增）、`SigningCoordinator.swift`。
 - **验证状态**：护栏 59 检查 + 29 变异 PASS；新增 5 例测试。**Swift 编译与单测待 CI。**
 
+### 26. 安装超时 ≠ 安装失败：超时后重试就是「第二次安装」
+- **现象（风险）**：大包安装超时后自动重试，同一个 Bundle ID 上出现两个并发的 installd
+  （旧的还在装、新的已经开始传包）—— 表现为 `ApplicationVerificationFailed`、白图标、或装到一半的应用。
+- **根因**：`Minimuxer.stageAndInstall` 是**同步阻塞 FFI，没有取消机制**。
+  `offThread` 的「超时」只是 `HardTimeout.run` 的竞速先到，**上层不再等待**，
+  底下那次安装**仍在后台继续**。而两个 `install` 重载都带 `for attempt in 1...maxAttempts` 重试循环，
+  且 `isTerminalInstallError` 的词表里**没有超时** —— 于是超时被当成「可重试」，
+  直接发出第二次 `stageAndInstall`。
+- **规矩**：**超时必须按确定性拒绝处理 —— 立即终止，不再重传重试。**
+  这与 AGENTS.md §3「写 API 超时 ≠ 失败」是同一条原则：无法取消的操作，
+  超时只代表「结果未知」，重试等于并发执行第二次。
+- **判定不依赖错误文本**（文案会漂移）：用 `error is HardTimeout.TimeoutError`
+  与 `ImportFailure.code == installTimeoutFailure.code` 双路识别。
+- **涉及文件**：`Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`
+  （两个 `install` 重载的重试循环 + 新增 `isTimeoutInstallError`）。
+- **未做（需单独评审）**：B 包剩余部分 —— 操作 ID 贯穿 UI→Swift→FFI、
+  租约持有到真实 FFI 结束、RSD 创建 single-flight + 会话代次绑定（含 Rust `rsd.rs`）。
+- **验证状态**：护栏 61 检查 + 30 变异 PASS。**Swift 编译与单测待 CI。**
+
 ## 二、历史记录
 
 ### 2026-09-14 · E 包（R08）：区分签名产物与已安装快照

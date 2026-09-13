@@ -5,6 +5,7 @@ struct SigningCertificateSettingsView: View {
     let relatedApps: [AppRecord]
     let certificateExportHandler: CertificateExportHandler
     @State private var selectedAccountID: UUID?
+    @State private var certificatePendingRevocation: ApplePortalCertificateSnapshot?
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -28,6 +29,25 @@ struct SigningCertificateSettingsView: View {
                 message: Text(failure.userMessage),
                 dismissButton: .default(Text(failure.recovery))
             )
+        }
+        .confirmationDialog(
+            "撤销这个证书？",
+            isPresented: Binding(
+                get: { certificatePendingRevocation != nil },
+                set: { if !$0 { certificatePendingRevocation = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: certificatePendingRevocation
+        ) { certificate in
+            Button("撤销证书", role: .destructive) {
+                guard let account = activeAccount else { return }
+                let serialNumber = certificate.serialNumber
+                certificatePendingRevocation = nil
+                Task { await viewModel.revokeCertificate(serialNumber: serialNumber, for: account) }
+            }
+            Button("取消", role: .cancel) { certificatePendingRevocation = nil }
+        } message: { certificate in
+            Text(revocationWarning(for: certificate))
         }
         .task {
             if selectedAccountID == nil {
@@ -125,6 +145,7 @@ struct SigningCertificateSettingsView: View {
             } else {
                 missingCertificateCard
             }
+            teamCertificatesCard(account: account)
         } else {
             noAccountCard
         }
@@ -261,6 +282,103 @@ struct SigningCertificateSettingsView: View {
     private func usableAppIDCountText(_ health: CertificateHealthStatus?) -> String {
         guard let count = health?.usableOnCurrentDeviceAppIDCount else { return "无法确认" }
         return "\(count) 个 App ID"
+    }
+
+    @ViewBuilder
+    private func teamCertificatesCard(account: AppleAccountRecord) -> some View {
+        let certificates = viewModel.certificateInventory(for: account.id)?.certificates ?? []
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text("账号下的全部证书")
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.88)
+                Spacer(minLength: 12)
+                Text(certificates.isEmpty ? "—" : "\(certificates.count) 个")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.sealTextSecondary)
+            }
+            .padding(.bottom, 14)
+
+            if certificates.isEmpty {
+                Text("下拉刷新以从 Apple 服务器获取证书清单。")
+                    .font(.subheadline)
+                    .foregroundStyle(Color.sealTextSecondary)
+                    .padding(.vertical, 12)
+            } else {
+                ForEach(Array(certificates.enumerated()), id: \.element.id) { index, certificate in
+                    if index > 0 { Divider() }
+                    certificateRow(certificate, account: account)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .glassSurface(cornerRadius: 24)
+    }
+
+    private func certificateRow(
+        _ certificate: ApplePortalCertificateSnapshot,
+        account: AppleAccountRecord
+    ) -> some View {
+        let isLocal = CertificateRevocationImpact.isLocalCertificate(
+            serialNumber: certificate.serialNumber,
+            account: account
+        )
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(certificate.displayName)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if isLocal {
+                    Text("本机在用")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.sealAccent)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.sealAccent.opacity(0.12), in: Capsule())
+                }
+                Spacer(minLength: 8)
+                Button("撤销", role: .destructive) {
+                    certificatePendingRevocation = certificate
+                }
+                .font(.subheadline.weight(.semibold))
+                .disabled(viewModel.isCertificateOperationRunning)
+            }
+            Text(serialText(certificate.serialNumber))
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(Color.sealTextSecondary)
+            Text(expirationLine(certificate))
+                .font(.caption)
+                .foregroundStyle(Color.sealTextSecondary)
+        }
+        .padding(.vertical, 12)
+    }
+
+    private func serialText(_ serialNumber: String) -> String {
+        let normalized = SigningCertificateSelectionPolicy.normalizedSerialNumber(serialNumber)
+        return "序列号 …\(normalized.suffix(12))"
+    }
+
+    private func expirationLine(_ certificate: ApplePortalCertificateSnapshot) -> String {
+        guard let expirationDate = certificate.expirationDate else {
+            return "有效期：无法确认"
+        }
+        return "有效期至 \(SealSettingsDateFormatter.string(from: expirationDate))"
+    }
+
+    private func revocationWarning(for certificate: ApplePortalCertificateSnapshot) -> String {
+        guard let account = activeAccount else { return "" }
+        return CertificateRevocationImpact.warningMessage(
+            serialNumber: certificate.serialNumber,
+            apps: relatedApps,
+            isLocalCertificate: CertificateRevocationImpact.isLocalCertificate(
+                serialNumber: certificate.serialNumber,
+                account: account
+            )
+        )
     }
 
     private var missingCertificateCard: some View {

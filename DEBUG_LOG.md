@@ -152,6 +152,29 @@
 
 ## 二、历史记录
 
+### 2026-09-14 · 证书撤销「有文案、没入口」：签名证书页补上证书清单与撤销入口
+- **现象**：撞到证书数量上限时，Seal 提示「在「我的」页面撤销一个旧签名证书后重试」，
+  但用户翻遍 App 找不到撤销入口 —— 走到这里是**死路**。
+- **根因**：底层能力齐备（`ApplePortalCertificateService.revokeCertificate(serialNumber:)` 支持按序列号
+  撤销**指定的单个**证书，`SettingsViewModel.revokeCertificate` 也已包好），但**没有任何 View 调用它**
+  （`grep -rn "撤销" Seal/Features/` 只命中 SettingsViewModel 内部的错误文案）。
+  而 **7 处文案**（`SigningCoordinator:436`、`ApplePortalCertificateService:71`/`:125`、
+  `ApplePortalSigningService:178`/`:210`/`:769`，含本批新增的 `:720`）一直在指路这个不存在的入口。
+  审查盲点：验证了「不再自动撤证」这个行为，却没验证「让用户手动撤」的出路是否真实存在。
+- **修复**：
+  - `SigningCertificateSettingsView` 新增「账号下的全部证书」，逐张列出并可撤销（二次确认）。
+  - 确认框列出会被影响的**已安装**应用，按 `AppRecord.certificateSerialNumber` 精确匹配
+    （经 `normalizedSerialNumber` 归一化，见坑位 1）；本机在用证书额外提示会清本机证书并自动重建。
+  - 新增 `CertificateRevocationImpact`（纯函数，可单测）。
+  - `SEAL-CERT-204b` 文案改为指向具体入口「我的」→「签名证书」。
+  - `verify-release-safety.py` 新增护栏：界面必须存在 `revokeCertificate` 调用。
+- **涉及文件**：`Seal/Features/Settings/SigningCertificateSettingsView.swift`、
+  `Seal/Core/Signing/CertificateRevocationImpact.swift`（新）、
+  `SealTests/Settings/CertificateRevocationImpactTests.swift`（新，8 个用例）、
+  `Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、`Scripts/verify-release-safety.py`。
+- **验证状态**：静态护栏 17 项 + 4 变异 PASS；**Swift 编译、单测与真机未验证**。
+- **遗留**：另外 6 处既有文案仍写「在「我的」页面撤销」，未精确到「签名证书」页，待后续统一。
+
 ### 2026-09-13 · 发布整改第一批（候选 1.1.9，已改代码，未通过云 CI/真机验收）
 - **现象/根因**：见此前链路复审 R01/R02/R03/R10/R11/R12；额外确认嵌套 IPA 解析将内层元数据与外层原包混用，并整块缓冲嵌套包。快速构建原先默认执行发布。
 - **已实施**：删除 Rust/LockDown 安装失败自动卸载；删除覆盖失败后仅凭旧 Bundle ID 存在而写新有效期的补验；证书限额明确失败、不撤其他证书，创建后取消进入新证书清理区；主可执行文件声明/路径/非空校验；Seal 队列先匹配 Team；批量仅对已归类网络故障重试，安装不在外层重跑；失败项缺失不退回全量；取消等待不抢租约，单签等待超时有失败终态；嵌套外包明确提示先解压；快速构建默认不发布，两发布流程校验 tag 与 IPA 版本。

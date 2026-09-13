@@ -717,7 +717,7 @@ actor ApplePortalSigningService {
             throw Self.failure(
                 title: "签名证书数量已达上限",
                 reason: "Seal 不会自动撤销其他证书，以免影响已安装应用或其他设备。",
-                recovery: "在「我的」页面确认影响范围后手动撤销不再使用的证书，再重试",
+                recovery: "在「我的」→「签名证书」中撤销不再使用的证书，再重试",
                 code: "SEAL-CERT-204b"
             )
         }

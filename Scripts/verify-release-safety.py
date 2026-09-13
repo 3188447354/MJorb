@@ -55,6 +55,12 @@ def violations(load=read):
     check("startBatchRefresh()" not in retry,
           "R10: failed-only retry must never silently rerun every app")
 
+    # Copy tells users to revoke a certificate in-app, so the UI must actually offer an entry.
+    # Regression: 7 strings promised "在「我的」页面撤销" while no view ever called revokeCertificate.
+    ui = load("Seal/Features/Settings/SigningCertificateSettingsView.swift")
+    check("revokeCertificate(" in ui,
+          "Copy: in-app certificate revocation must have a real UI entry")
+
     versions = re.findall(r"MARKETING_VERSION:\s*(\S+)", load("project.yml"))
     check(len(versions) == 2 and len(set(versions)) == 1,
           "Release: Seal and SealTunnel versions must match")

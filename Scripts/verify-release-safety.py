@@ -138,6 +138,43 @@ def violations(load=read):
     check(signing_coord.count("PreInstallValidation.validate(") == 2,
           "F: both install entries must route through PreInstallValidation")
 
+    # ── C 包（R06 检查 / 维护互斥）──────────────────────────────────────────
+    # 读取路径必须是只读的：记录恢复、Seal 自注册、孤儿文件清理曾挂在 load() 里，
+    # 于是「看列表」这种纯读取动作会顺手改 DB 和删文件，并与用户操作交错。
+    apps_view = load("Seal/Features/Apps/AppsViewModel.swift")
+    load_body = section(apps_view, "func load(force: Bool = false) async {", "func isCurrentLoad(")
+    check("restoreMissingRecords" not in load_body
+          and "clearOrphanedAppFiles" not in load_body
+          and "ensureRegistered" not in load_body,
+          "C: the app-list read path must not write records or delete files")
+    check(load_body.count("await self.isCurrentLoad(generation)") >= 3,
+          "C: every background write-back must be guarded by the load generation")
+
+    job = load("Seal/Core/Maintenance/AppMaintenanceJob.swift")
+    check("guard gate.shouldAbort(token) == false else" in job,
+          "C: the sweep must re-check the lease before deleting anything")
+    check(job.count("gate.shouldAbort(token)") >= 3,
+          "C: every maintenance stage must have an abort checkpoint")
+    check("fetchAll()" in section(job, "3. 孤儿文件清理", "private static func unexpectedFailure"),
+          "C: valid app ids must be re-read from the DB right before deleting")
+
+    file_store = load("Seal/Infrastructure/Storage/AppFileStore.swift")
+    sweep = section(file_store, "func clearOrphanedAppFiles(", "private static func transactionID(")
+    check("liveTransactionIDs.contains(transactionID)" in sweep,
+          "C: in-flight import transaction directories must never be swept")
+    check("now.timeIntervalSince(modifiedAt) < minimumAge" in sweep,
+          "C: freshly created directories need a grace period")
+
+    gate = load("Seal/Core/Maintenance/MaintenanceGate.swift")
+    check("beginWaiting" not in gate,
+          "C: maintenance must never wait on a foreground lease")
+
+    root_view = load("Seal/Features/Apps/AppsRootView.swift")
+    maintenance_at = root_view.find("runMaintenanceIfIdle()")
+    first_load_at = root_view.find("await viewModel.load()")
+    check(maintenance_at != -1 and first_load_at != -1 and maintenance_at < first_load_at,
+          "C: maintenance must run before the first read so recovered records are visible")
+
     parser = load("Seal/Core/Import/IPAParserService.swift")
     check("nestedData" not in parser and 'code: "SEAL-IPA-101b"' in parser,
           "Import: nested wrappers must not be buffered or committed as inner IPAs")
@@ -272,6 +309,26 @@ def main():
          'recovery: "在「我的」→「签名证书」中撤销一个旧签名证书后重试"',
          'recovery: "在「我的」页面撤销一个旧签名证书后重试"',
          "Copy: revoke guidance"),
+        ("Seal/Core/Maintenance/AppMaintenanceJob.swift",
+         "guard gate.shouldAbort(token) == false else",
+         "guard true else",
+         "C: the sweep must re-check the lease"),
+        ("Seal/Infrastructure/Storage/AppFileStore.swift",
+         "liveTransactionIDs.contains(transactionID)",
+         "false",
+         "C: in-flight import transaction directories"),
+        ("Seal/Infrastructure/Storage/AppFileStore.swift",
+         "now.timeIntervalSince(modifiedAt) < minimumAge",
+         "false",
+         "C: freshly created directories need a grace period"),
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "await self.isCurrentLoad(generation)",
+         "true",
+         "C: every background write-back must be guarded"),
+        ("Seal/Features/Apps/AppsRootView.swift",
+         "await viewModel.runMaintenanceIfIdle()",
+         "",
+         "C: maintenance must run before the first read"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

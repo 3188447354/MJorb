@@ -121,6 +121,16 @@ struct AppContainer {
                     fileStore: fileStore
                 )
             }
+            // 维护作业：记录恢复 / Seal 自注册 / 孤儿文件清理。
+            // 通过 MaintenanceGate 只在空闲时运行，永不阻塞用户的前台操作。
+            let maintenanceJob = AppMaintenanceJob(
+                gate: MaintenanceGate(coordinator: operationCoordinator),
+                appStore: appStore,
+                fileStore: fileStore,
+                recovery: appRecordRecovery,
+                selfAppRegistrar: selfAppRegistrar,
+                logStore: logStore
+            )
 
             return AppContainer(
                 appsViewModel: AppsViewModel(
@@ -132,14 +142,13 @@ struct AppContainer {
                     signingCoordinator: signingCoordinator,
                     installChannel: installChannel,
                     renewalCoordinator: renewalCoordinator,
-                    appRecordRecovery: appRecordRecovery,
-                    selfAppRegistrar: selfAppRegistrar,
                     logStore: logStore,
                     signingHistoryStore: signingHistoryStore,
                     notificationScheduler: notificationScheduler,
                     notificationPreferences: notificationPreferences,
                     signingPreferenceStore: signingPreferenceStore,
-                    operationCoordinator: operationCoordinator
+                    operationCoordinator: operationCoordinator,
+                    maintenanceJob: maintenanceJob
                 ),
                 settingsViewModel: SettingsViewModel(
                     accountRepository: accountRepository,

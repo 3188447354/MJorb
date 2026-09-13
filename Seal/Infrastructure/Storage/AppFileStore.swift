@@ -34,6 +34,30 @@ struct StoredOriginalIPA: Sendable {
     let url: URL
 }
 
+/// 孤儿目录清理的结果。删除是不可逆动作，必须可审计：
+/// 删了什么、跳过了什么、为什么跳过。
+struct OrphanSweepReport: Equatable, Sendable {
+    /// 被删除的应用目录（`Apps/<uuid>` 形式，DB 已无引用）。
+    var removedAppDirectories = 0
+    /// 被删除的事务残留目录（`.<uuid>.pending-*` / `.<uuid>.backup-*`，对应 journal 已不存在）。
+    var removedTransactionDirectories = 0
+    /// 因导入事务仍在进行而跳过的目录 —— 跳对了就是避免了一次数据丢失。
+    var skippedInFlightTransactions = 0
+    /// 因处于新建保护期内而跳过的目录。
+    var skippedRecent = 0
+
+    static let empty = OrphanSweepReport()
+
+    var removedTotal: Int { removedAppDirectories + removedTransactionDirectories }
+
+    var isEmpty: Bool {
+        removedAppDirectories == 0
+            && removedTransactionDirectories == 0
+            && skippedInFlightTransactions == 0
+            && skippedRecent == 0
+    }
+}
+
 actor AppFileStore {
     private let documentsDirectory: URL
     private let applicationSupportDirectory: URL
@@ -742,27 +766,95 @@ actor AppFileStore {
             .appending(path: appID.uuidString, directoryHint: .isDirectory)
     }
 
-    func clearOrphanedAppFiles(validAppIDs: Set<UUID>) throws {
+    /// 清理孤儿应用目录。
+    ///
+    /// 三重保护（缺一不可）：
+    ///
+    /// 1. **跳过进行中的导入事务目录**。`.pending-<txid>` / `.backup-<txid>` 是导入事务的中间态：
+    ///    只要 `Transactions/import-<txid>.json` 还在，这次导入就还没结束。删掉它会让正在进行的
+    ///    导入失败并可能丢数据。旧实现无条件删除所有隐藏目录，是一条真实的数据丢失路径。
+    /// 2. **新目录保护期**。修改时间在 `minimumAge` 内的目录一律不删，避免与
+    ///    「DB 记录刚写入 / 目录刚建好」的时序窗口赛跑 —— 后台清理是可被前台操作抢占的，
+    ///    检查点通过之后用户仍可能开始导入并新建目录。
+    /// 3. **删除前复核 DB 引用**由调用方保证：`validAppIDs` 必须是**调用时刻**刚取到的有效 ID 集合，
+    ///    不能复用更早的快照（`AppMaintenanceJob` 在删除前重新 `fetchAll()`）。
+    ///
+    /// - Parameters:
+    ///   - minimumAge: 新建保护期秒数。用户主动清理（已持有操作租约、不会有并发写入）可传 0。
+    ///   - now: 注入当前时间，便于测试。
+    @discardableResult
+    func clearOrphanedAppFiles(
+        validAppIDs: Set<UUID>,
+        minimumAge: TimeInterval = 600,
+        now: Date = Date()
+    ) throws -> OrphanSweepReport {
         let fileManager = FileManager.default
         let appsRoot = documentsDirectory.appending(path: "Apps", directoryHint: .isDirectory)
-        guard fileManager.fileExists(atPath: appsRoot.path) else { return }
+        guard fileManager.fileExists(atPath: appsRoot.path) else { return .empty }
 
+        let liveTransactionIDs = try liveImportTransactionIDs()
         let directories = try fileManager.contentsOfDirectory(
             at: appsRoot,
-            includingPropertiesForKeys: [.isDirectoryKey],
+            includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
             options: []
         )
+
+        var report = OrphanSweepReport.empty
         for directory in directories {
             let name = directory.lastPathComponent
-            if name.hasPrefix(".") {
-                try fileManager.removeItem(at: directory)
+            let values = try? directory.resourceValues(forKeys: [.contentModificationDateKey])
+            if let modifiedAt = values?.contentModificationDate,
+               now.timeIntervalSince(modifiedAt) < minimumAge {
+                report.skippedRecent += 1
                 continue
             }
-            guard let appID = UUID(uuidString: name) else { continue }
-            if validAppIDs.contains(appID) == false {
+
+            if name.hasPrefix(".") {
+                if let transactionID = Self.transactionID(fromDirectoryName: name),
+                   liveTransactionIDs.contains(transactionID) {
+                    report.skippedInFlightTransactions += 1
+                    continue
+                }
                 try fileManager.removeItem(at: directory)
+                report.removedTransactionDirectories += 1
+                continue
+            }
+
+            guard let appID = UUID(uuidString: name) else { continue }
+            guard validAppIDs.contains(appID) == false else { continue }
+            try fileManager.removeItem(at: directory)
+            report.removedAppDirectories += 1
+        }
+        return report
+    }
+
+    /// `Transactions/import-<txid>.json` → 仍在进行中的事务 ID（小写）。
+    private func liveImportTransactionIDs() throws -> Set<String> {
+        let directory = importTransactionsDirectory
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        var ids: Set<String> = []
+        for url in urls where url.pathExtension == "json" {
+            let stem = url.deletingPathExtension().lastPathComponent
+            guard stem.hasPrefix("import-") else { continue }
+            ids.insert(String(stem.dropFirst("import-".count)).lowercased())
+        }
+        return ids
+    }
+
+    /// `.<appID>.pending-<txid>` / `.<appID>.backup-<txid>` → `<txid>`（小写）。
+    /// 用反向查找，因为 UUID 里不含 `.`，最后一个标记之后就是事务 ID。
+    private static func transactionID(fromDirectoryName name: String) -> String? {
+        for marker in [".pending-", ".backup-"] {
+            if let range = name.range(of: marker, options: .backward) {
+                return String(name[range.upperBound...]).lowercased()
             }
         }
+        return nil
     }
 
     func removeApp(appID: UUID) throws {

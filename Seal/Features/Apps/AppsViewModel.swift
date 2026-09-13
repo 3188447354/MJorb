@@ -55,14 +55,13 @@ final class AppsViewModel: ObservableObject {
     private let signingCoordinator: SigningCoordinator?
     private let installChannel: (any InstallChannel)?
     private let renewalCoordinator: RenewalCoordinator?
-    private let appRecordRecovery: AppRecordRecovery?
-    private let selfAppRegistrar: SelfAppRegistrar?
     private let logStore: SealLogStore?
     private let signingHistoryStore: SigningHistoryStore?
     private let notificationScheduler: ExpiryNotificationScheduler?
     private let notificationPreferences: NotificationPreferences?
     private let signingPreferenceStore: SigningPreferenceStore?
     private let operationCoordinator: OperationCoordinator?
+    private let maintenanceJob: AppMaintenanceJob?
     private var signingTask: Task<Void, Never>?
     private var batchRefreshTask: Task<Void, Never>?
     private var channelTask: Task<Bool, Never>?
@@ -91,14 +90,13 @@ final class AppsViewModel: ObservableObject {
         signingCoordinator: SigningCoordinator,
         installChannel: any InstallChannel,
         renewalCoordinator: RenewalCoordinator,
-        appRecordRecovery: AppRecordRecovery,
-        selfAppRegistrar: SelfAppRegistrar?,
         logStore: SealLogStore,
         signingHistoryStore: SigningHistoryStore,
         notificationScheduler: ExpiryNotificationScheduler,
         notificationPreferences: NotificationPreferences,
         signingPreferenceStore: SigningPreferenceStore,
-        operationCoordinator: OperationCoordinator? = nil
+        operationCoordinator: OperationCoordinator? = nil,
+        maintenanceJob: AppMaintenanceJob? = nil
     ) {
         self.workflow = workflow
         self.appStore = appStore
@@ -108,14 +106,13 @@ final class AppsViewModel: ObservableObject {
         self.signingCoordinator = signingCoordinator
         self.installChannel = installChannel
         self.renewalCoordinator = renewalCoordinator
-        self.appRecordRecovery = appRecordRecovery
-        self.selfAppRegistrar = selfAppRegistrar
         self.logStore = logStore
         self.signingHistoryStore = signingHistoryStore
         self.notificationScheduler = notificationScheduler
         self.notificationPreferences = notificationPreferences
         self.signingPreferenceStore = signingPreferenceStore
         self.operationCoordinator = operationCoordinator
+        self.maintenanceJob = maintenanceJob
         apps = []
         accounts = []
         iconData = [:]
@@ -132,14 +129,13 @@ final class AppsViewModel: ObservableObject {
         signingCoordinator = nil
         installChannel = nil
         renewalCoordinator = nil
-        appRecordRecovery = nil
-        selfAppRegistrar = nil
         logStore = nil
         signingHistoryStore = nil
         notificationScheduler = nil
         notificationPreferences = nil
         signingPreferenceStore = nil
         operationCoordinator = nil
+        maintenanceJob = nil
         apps = []
         accounts = []
         iconData = [:]
@@ -158,14 +154,13 @@ final class AppsViewModel: ObservableObject {
         signingCoordinator = nil
         installChannel = nil
         renewalCoordinator = nil
-        appRecordRecovery = nil
-        selfAppRegistrar = nil
         logStore = nil
         signingHistoryStore = nil
         notificationScheduler = nil
         notificationPreferences = nil
         signingPreferenceStore = nil
         operationCoordinator = nil
+        maintenanceJob = nil
         self.apps = apps
         accounts = []
         iconData = [:]
@@ -334,16 +329,17 @@ final class AppsViewModel: ObservableObject {
         return ready
     }
 
+    /// 加载应用列表。**只读**：不写 DB、不动文件。
+    ///
+    /// 记录恢复 / Seal 自注册 / 孤儿文件清理曾经挂在这里，会让「看列表」这种纯读取动作
+    /// 顺手改数据，并与用户正在进行的签名 / 安装交错。它们现在归 `runMaintenanceIfIdle()`，
+    /// 由启动流程在空闲时单独执行。
     func load(force: Bool = false) async {
         guard force || hasLoaded == false, let appStore else { return }
         loadGeneration &+= 1
         let generation = loadGeneration
 
         do {
-            // 优化：先快速显示数据，自注册等耗时操作移到后台
-            try await appRecordRecovery?.restoreMissingRecords()
-            guard generation == loadGeneration else { return }
-
             let fetched = try await appStore.fetchAll()
             guard generation == loadGeneration else { return }
 
@@ -380,50 +376,34 @@ final class AppsViewModel: ObservableObject {
             hasLoaded = true
             restorePendingBatchResultIfNeeded()
 
-            // 后台执行耗时操作
+            // 后台只做「读取 + 派生」：邮箱、图标、签名历史、通知调度。
+            // 每一步都校验加载代次 —— 快速连续 load（导入/签名/删除后都会触发）会同时存在
+            // 多个后台任务，旧代次的任务不得回写 UI 状态，否则新数据会被旧数据覆盖。
             Task.detached(priority: .userInitiated) { [weak self] in
                 guard let self else { return }
 
-                // Seal 自身注册后，重新获取最新数据，确保后续操作用最新列表
-                var latestApps = fetched
-                if let selfAppRegistrar = self.selfAppRegistrar {
-                    do {
-                        try await selfAppRegistrar.ensureRegistered()
-                        if let refreshed = try? await self.appStore?.fetchAll() {
-                            latestApps = refreshed
-                            await MainActor.run { self.apps = refreshed }
-                        }
-                    } catch {
-                        try? await self.logStore?.append(category: .system, level: .error, message: "Seal 自身记录同步失败", code: "SEAL-SELF-REG-001")
-                    }
-                }
-
-                // 用最新数据清理孤儿文件，避免误删新创建的 Seal 文件夹
-                if let fileStore = self.fileStore {
-                    try? await fileStore.clearOrphanedAppFiles(validAppIDs: Set(latestApps.map { $0.id }))
-                }
-
                 let emails = await self.loadFullAccountEmails(for: fetchedAccounts)
+                guard await self.isCurrentLoad(generation) else { return }
                 await MainActor.run { self.fullAccountEmails = emails }
 
-                // 用最新数据加载图标
                 var icons: [UUID: Data] = [:]
                 if let fileStore = self.fileStore {
-                    for app in latestApps {
+                    for app in fetched {
                         guard let path = app.displayIconRelativePath,
                               let data = try? await fileStore.read(relativePath: path) else { continue }
                         icons[app.id] = data
                     }
                 }
+                guard await self.isCurrentLoad(generation) else { return }
                 await MainActor.run { self.iconData = icons }
 
-                await self.seedSigningHistoryIfNeeded(apps: latestApps, accounts: fetchedAccounts)
+                await self.seedSigningHistoryIfNeeded(apps: fetched, accounts: fetchedAccounts)
 
-                // 用最新数据调度通知
+                guard await self.isCurrentLoad(generation) else { return }
                 if let notificationScheduler = self.notificationScheduler,
                    let notificationPreferences = self.notificationPreferences {
                     do {
-                        try await notificationScheduler.reschedule(apps: latestApps, enabled: notificationPreferences.isEnabled, leadHours: notificationPreferences.leadHours)
+                        try await notificationScheduler.reschedule(apps: fetched, enabled: notificationPreferences.isEnabled, leadHours: notificationPreferences.leadHours)
                     } catch {
                         try? await self.logStore?.append(category: .system, level: .error, message: "通知调度失败", code: "SEAL-NOTIFY-002a")
                     }
@@ -441,6 +421,52 @@ final class AppsViewModel: ObservableObject {
                 code: "SEAL-APP-002"
             )
         }
+    }
+
+    /// 后台任务的加载代次校验。`loadGeneration` 属于主 actor，后台任务必须 `await` 访问。
+    private func isCurrentLoad(_ generation: Int) -> Bool {
+        loadGeneration == generation
+    }
+
+    /// 空闲时执行维护作业：记录恢复 → Seal 自注册 → 孤儿文件清理。
+    ///
+    /// 互斥由 `MaintenanceGate` 保证：非空闲（用户正在签名 / 安装 / 续签，或已有维护作业在跑）
+    /// 时直接跳过本轮，**不做任何写入或删除**，也不阻塞用户操作。
+    /// 调用方在拿到 `.completed` 之后应当重新 `load()` —— 恢复与自注册可能新增或更新了记录。
+    @discardableResult
+    func runMaintenanceIfIdle() async -> AppMaintenanceJob.Outcome {
+        guard let maintenanceJob else { return .skipped }
+        let outcome = await maintenanceJob.run()
+        switch outcome {
+        case .skipped:
+            break
+        case .completed(let report):
+            if report.removedTotal > 0 {
+                try? await logStore?.append(
+                    category: .system,
+                    message: "已清理 \(report.removedTotal) 个未使用的应用目录",
+                    code: "SEAL-STORAGE-005"
+                )
+            }
+            if report.skippedInFlightTransactions > 0 {
+                // 跳过说明确实存在进行中的导入事务；留痕便于排查「为什么没清干净」。
+                try? await logStore?.append(
+                    category: .system,
+                    message: "有 \(report.skippedInFlightTransactions) 个导入事务目录仍在进行，本轮未清理",
+                    code: "SEAL-STORAGE-008"
+                )
+            }
+        case .aborted(let stage, let reason):
+            try? await logStore?.append(
+                category: .system,
+                level: .warning,
+                message: "维护作业在「\(stage)」阶段被打断（\(reason)），未执行的步骤已跳过",
+                code: "SEAL-STORAGE-006"
+            )
+        case .failed(let failure):
+            alertFailure = failure
+        }
+        return outcome
     }
 
     func fullEmail(for account: AppleAccountRecord) -> String {

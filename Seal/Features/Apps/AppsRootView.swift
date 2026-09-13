@@ -131,6 +131,10 @@ struct AppsRootView: View {
                 // 先做队列恢复：上一轮被中断留下的 running 项必须在任何新一轮续签覆盖队列文件之前
                 // 降级为 unknown，否则它们既不会被重试也不会被清理，永久停在「运行中」。
                 await viewModel.recoverInterruptedQueueIfNeeded()
+                // 维护作业（记录恢复 / Seal 自注册 / 孤儿文件清理）只在空闲时执行；
+                // 启动瞬间没有前台操作，因此会正常跑。放在 load 之前，
+                // 保证恢复出来的记录能出现在列表里。
+                await viewModel.runMaintenanceIfIdle()
                 await viewModel.load()
                 await viewModel.refreshInstalledApps(userInitiated: false)
                 resolveInitialModeIfNeeded()

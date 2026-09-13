@@ -1961,7 +1961,13 @@ final class SettingsViewModel: ObservableObject {
         do {
             let apps = try await appStore.fetchAll()
             try await fileStore.clearTemporaryFiles()
-            try await fileStore.clearOrphanedAppFiles(validAppIDs: Set(apps.map(\.id)))
+            // 这里是用户主动清理，且整个清理期间持有 .maintainingStorage 租约
+            // （OperationCoordinator 单槽 ⇒ 不会有并发导入新建目录），
+            // 因此不需要「新建保护期」——用户就是要立刻把空间释放出来。
+            try await fileStore.clearOrphanedAppFiles(
+                validAppIDs: Set(apps.map(\.id)),
+                minimumAge: 0
+            )
             await refreshStorageUsage()
             try? await logStore?.append(
                 category: .system,

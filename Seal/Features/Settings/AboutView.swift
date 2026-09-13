@@ -3,7 +3,6 @@ import UIKit
 
 struct AboutView: View {
     private let version = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.0.0"
-    private let build = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? "1"
     private let bundleID = Bundle.main.bundleIdentifier ?? "com.mjorb.seal"
 
     /// 应用内更新安装回调（下载完成后触发）；为 nil 时回退跳转浏览器。
@@ -44,7 +43,7 @@ struct AboutView: View {
         .alert("已是最新版本", isPresented: $showNoUpdateAlert) {
             Button("好的", role: .cancel) { }
         } message: {
-            Text("当前版本 \(version) (\(build))")
+            Text("当前版本 \(version)")
         }
     }
 
@@ -86,7 +85,7 @@ struct AboutView: View {
 
     private var versionCard: some View {
         VStack(spacing: 0) {
-            infoRow("版本", "\(version) (\(build))")
+            infoRow("版本", "\(version)")
             Divider()
             infoRow("Bundle ID", bundleID)
             Divider()

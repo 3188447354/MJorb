@@ -631,13 +631,23 @@ actor MinimuxerInstallChannel: InstallChannel {
             )
         }
 
-        // 2) 完整性校验失败 / 免费账号 3 应用上限（installd 的 APIInternalError）
+        // 2) 完整性校验失败 / 免费账号 3 应用上限（installd 的 APIInternalError /
+        //    ApplicationVerificationFailed——免费上限的设备级拒绝就是它）
         if lower.contains("integrity")
             || lower.contains("could not be verified")
             || lower.contains("cannot be verified")
+            || lower.contains("applicationverificationfailed")
+            || lower.contains("verificationfailed")
+            || lower.contains("failed to verify")
+            || lower.contains("code signature")
+            || lower.contains("signed resource")
+            || lower.contains("invalidsignature")
+            || lower.contains("profileexpired")
+            || lower.contains("untrusted")
             || lower.contains("maximum")
             || lower.contains("limit")
             || detail.contains("无法验证")
+            || detail.contains("无法安装")
             || detail.contains("完整性")
             || detail.contains("上限")
             || detail.contains("已达") {
@@ -680,6 +690,14 @@ actor MinimuxerInstallChannel: InstallChannel {
             || lower.contains("integrity")
             || lower.contains("could not be verified")
             || lower.contains("cannot be verified")
+            || lower.contains("applicationverificationfailed")
+            || lower.contains("verificationfailed")
+            || lower.contains("failed to verify")
+            || lower.contains("code signature")
+            || lower.contains("signed resource")
+            || lower.contains("invalidsignature")
+            || lower.contains("profileexpired")
+            || lower.contains("untrusted")
             || lower.contains("maximum")
             || lower.contains("limit") {
             return true
@@ -688,6 +706,7 @@ actor MinimuxerInstallChannel: InstallChannel {
             || detail.contains("储存空间")
             || detail.contains("存储空间")
             || detail.contains("无法验证")
+            || detail.contains("无法安装")
             || detail.contains("完整性")
             || detail.contains("上限")
             || detail.contains("已达")

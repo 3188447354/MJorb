@@ -132,6 +132,20 @@
 
 ## 二、历史记录
 
+### 2026-09-13 · 签名卡 93% 桌面「无法安装」：installd 拒绝错误名未进终态表，确定性失败被当网络抖动重传
+- **现象**：部分应用签名安装卡在 93% 长时间不动，桌面图标显示「无法安装」。
+- **根因**：两层叠加。①设备端 installd 已拒绝安装（免费账号设备级 3 应用上限的拒绝错误名是
+  `ApplicationVerificationFailed`，真机日志早已证实）；②Seal 的 `isTerminalInstallError`（重试前终态判定）
+  和 `installationFailure`（最终归类）两张表里都**没有** `ApplicationVerificationFailed` → 确定性拒绝被误判为
+  瞬时网络问题 → 整包重传重试最多 3 轮（单轮 mergedTimeout 上限 40 分钟）→ 用户看到的就是「卡 93% 一小时」；
+  即便重试耗尽，最终归类也会错过 702l（iOS 拒绝）而给出错误引导。
+- **修复**：两张表同步补入 installd 校验类拒绝错误名（`applicationverificationfailed`/`verificationfailed`/
+  `failed to verify`/`code signature`/`signed resource`/`invalidsignature`/`profileexpired`/`untrusted`/
+  「无法安装」），此类失败首次即弹出 `SEAL-INSTALL-702l`，不再空转重传。
+- **涉及文件**：`Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`、`project.yml`（1.1.8）。
+- **教训**：终态判定表与最终归类表必须同一份词表（本次就是两处各漏一词）；新增错误分类时先 grep 两张表。
+- **验证状态**：待 v1.1.8 真机验证：触发免费上限时应几秒内弹「安装被 iOS 拒绝」而非卡进度。
+
 ### 2026-09-13 · 日志满量设计：环形保留 1000 条 + 丢弃计数提示
 - **设计**：内存/磁盘同一份缓冲，上限 200 → 1000 条（txt 约 0.5MB，整文件重写永远写不满磁盘）；
   满后滚动丢弃最旧条目而非停止记录；`droppedSinceClear` 计数被丢条数，导出头部固定

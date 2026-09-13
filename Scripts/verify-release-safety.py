@@ -124,6 +124,20 @@ def violations(load=read):
     check("item.isExecutable" in coordinator,
           "G: requiresAction items must be counted and shown, not silently skipped")
 
+    # F（R09）：三条安装入口必须共用同一份校验，且必须覆盖**每一个** target。
+    # 只查主 target 会放过「主 profile 有效、扩展 profile 已过期」的包 ——
+    # 它一路走到设备端，只换来一个 ApplicationVerificationFailed 之类的模糊错误。
+    pre_install = load("Seal/Core/Signing/PreInstallValidation.swift")
+    check("guard target.profileExpirationDate > now else" in pre_install
+          and "for target in targets" in pre_install,
+          "F: pre-install validation must check every target, not just the main one")
+    check("Set(target.certificateSerialNumbers.map(" in pre_install
+          and "SigningCertificateSelectionPolicy.normalizedSerialNumber" in pre_install,
+          "F: certificate serial comparison must be normalized across sources")
+    signing_coord = load("Seal/Core/Signing/SigningCoordinator.swift")
+    check(signing_coord.count("PreInstallValidation.validate(") == 2,
+          "F: both install entries must route through PreInstallValidation")
+
     parser = load("Seal/Core/Import/IPAParserService.swift")
     check("nestedData" not in parser and 'code: "SEAL-IPA-101b"' in parser,
           "Import: nested wrappers must not be buffered or committed as inner IPAs")
@@ -242,6 +256,18 @@ def main():
          "items[index].state = .unknown",
          "items[index].state = .completed",
          "G: launch recovery must downgrade"),
+        ("Seal/Core/Signing/PreInstallValidation.swift",
+         "guard target.profileExpirationDate > now else",
+         "guard true else",
+         "F: pre-install validation must check every target"),
+        ("Seal/Core/Signing/PreInstallValidation.swift",
+         "Set(target.certificateSerialNumbers.map(",
+         "Set(target.certificateSerialNumbers",
+         "F: certificate serial comparison"),
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "if case .rejected = PreInstallValidation.validate(",
+         "if false {",
+         "F: both install entries"),
         ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",
          'recovery: "在「我的」→「签名证书」中撤销一个旧签名证书后重试"',
          'recovery: "在「我的」页面撤销一个旧签名证书后重试"',

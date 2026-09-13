@@ -341,55 +341,19 @@ actor SigningCoordinator {
 
         await progress(.waitingForChannel)
         let currentDeviceIdentifier = try await installChannel.start()
-        if let mainTarget = app.signingTargets.first(where: {
-            $0.bundleIdentifier.caseInsensitiveCompare(bundleIdentifier) == .orderedSame
-        }) {
-            guard mainTarget.profileExpirationDate > Date(),
-                  mainTarget.deviceIdentifiers.contains(where: {
-                      $0.caseInsensitiveCompare(currentDeviceIdentifier) == .orderedSame
-                  }) else {
-                app.signedArtifactStatus = .deviceUnavailable
-                try await persistAppState(app)
-                throw Self.failure(
-                    reason: "当前设备不在此签名包的描述文件设备列表中，或描述文件已经过期。",
-                    recovery: "重新签名",
-                    code: "SEAL-INSTALL-714"
-                )
-            }
-            if let signingTeamID = app.signingTeamID,
-               mainTarget.teamIdentifier.caseInsensitiveCompare(signingTeamID) != .orderedSame {
-                app.signedArtifactStatus = .damaged
-                try await persistAppState(app)
-                throw Self.failure(
-                    reason: "本机签名包的 Team 与保存的签名记录不一致。",
-                    recovery: "重新签名",
-                    code: "SEAL-INSTALL-717"
-                )
-            }
-            if let serial = app.certificateSerialNumber {
-                let expected = SigningCertificateSelectionPolicy.normalizedSerialNumber(serial)
-                let serials = Set(mainTarget.certificateSerialNumbers.map {
-                    SigningCertificateSelectionPolicy.normalizedSerialNumber($0)
-                })
-                guard serials.contains(expected) else {
-                    app.signedArtifactStatus = .damaged
-                    try await persistAppState(app)
-                    throw Self.failure(
-                        reason: "本机签名包的描述文件不包含保存的签名证书。",
-                        recovery: "重新签名",
-                        code: "SEAL-INSTALL-718"
-                    )
-                }
-            }
-        } else if let signedDeviceIdentifier = app.signedDeviceIdentifier,
-                  signedDeviceIdentifier.caseInsensitiveCompare(currentDeviceIdentifier) != .orderedSame {
-            app.signedArtifactStatus = .deviceUnavailable
+        // 三入口共用校验：**逐个 target** 核对（主程序 + 每个扩展）。
+        // 此前这里只查主 target，于是「主 profile 有效、扩展 profile 已过期」的包
+        // 能一路走到设备端，失败信息还是设备端的模糊错误。
+        if case let .rejected(failure) = PreInstallValidation.validate(
+            app: app,
+            bundleIdentifier: bundleIdentifier,
+            deviceIdentifier: currentDeviceIdentifier,
+            accountTeamID: app.signingTeamID,
+            certificateSerialNumber: app.certificateSerialNumber
+        ) {
+            app.signedArtifactStatus = PreInstallValidation.artifactStatus(forCode: failure.code)
             try await persistAppState(app)
-            throw Self.failure(
-                reason: "当前设备不在此签名包使用的设备记录中。",
-                recovery: "重新签名",
-                code: "SEAL-INSTALL-714a"
-            )
+            throw failure
         }
 
         do {
@@ -531,11 +495,27 @@ actor SigningCoordinator {
               app.signingTeamID?.caseInsensitiveCompare(account.teamID) == .orderedSame,
               let storedSerial = app.certificateSerialNumber,
               let certificateSerialNumber,
-              storedSerial.caseInsensitiveCompare(certificateSerialNumber) == .orderedSame,
+              // 序列号跨来源比对必须归一化（去前导零）：直接字符串比对会把同一张证书
+              // 判成「已被轮换」，于是缓存永远命中不了、每次都白重签一遍。
+              SigningCertificateSelectionPolicy.normalizedSerialNumber(storedSerial)
+                == SigningCertificateSelectionPolicy.normalizedSerialNumber(certificateSerialNumber),
               app.signedDeviceIdentifier?.caseInsensitiveCompare(deviceIdentifier) == .orderedSame,
               let pendingExpiration = app.provisioningProfileExpirationDate,
               pendingExpiration > Date(),
               app.state != .installed || app.expiryDate != pendingExpiration else {
+            return nil
+        }
+
+        // 缓存复用路径此前**完全不查 target 明细**：主 profile 有效、扩展 profile 已过期的包
+        // 会被直接复用并装到设备上。这里补上与其他两条入口相同的校验；
+        // 不通过就返回 nil，让调用方回落到重新签名（而不是把坏包装到设备上）。
+        if case .rejected = PreInstallValidation.validate(
+            app: app,
+            bundleIdentifier: mappedBundleIdentifier,
+            deviceIdentifier: deviceIdentifier,
+            accountTeamID: account.teamID,
+            certificateSerialNumber: certificateSerialNumber
+        ) {
             return nil
         }
 

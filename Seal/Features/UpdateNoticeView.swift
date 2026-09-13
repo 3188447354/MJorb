@@ -37,8 +37,6 @@ struct UpdateNoticeView: View {
             let full = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
             items = full.isEmpty ? ["点击查看详情并更新"] : [full]
         }
-        // 更新内容列表底部追加测试版提醒
-        items.append("测试中，等作者通知再更新")
         return items
     }
 

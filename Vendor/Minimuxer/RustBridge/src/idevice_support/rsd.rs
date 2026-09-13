@@ -44,6 +44,47 @@ fn connection_state() -> &'static Mutex<Option<CachedRsdConnection>> {
     RPPAIRING_RSD_CONNECTION.get_or_init(|| Mutex::new(None))
 }
 
+/// RSD 创建门禁（R05：RSD 创建必须 single-flight）。
+///
+/// `create_rppairing_rsd_connection()` 是 async 的 —— TCP 连接、配对握手、
+/// 建 TLS 隧道、RSD 握手，耗时可达数秒；而连接缓存用的是**标准库 Mutex**，
+/// **await 期间锁是释放的**。因此两个并发调用会各自建一条隧道，
+/// 后者覆盖前者，被丢弃的那条既不关闭也不可达：泄漏的连接 + 设备端 RSD 状态混乱。
+static RSD_CREATION_GATE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+fn creation_gate() -> &'static tokio::sync::Mutex<()> {
+    RSD_CREATION_GATE.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// 保证缓存中存在一条与当前配对代次匹配的 RSD 连接。
+///
+/// 创建在门禁内串行执行；**拿到门禁后会再看一次缓存** ——
+/// 等待期间先前的调用者可能已经建好了，这正是 double-checked 的关键，
+/// 否则门禁只会把「两个并发创建」变成「两个顺序创建」，照样泄漏一条。
+async fn ensure_cached_rsd_connection() -> Result<(), IdeviceError> {
+    let _gate = creation_gate().lock().await;
+    let generation = current_generation();
+    {
+        let mut guard = lock_recover(connection_state(), "rsd_connection");
+        if let Some(connection) = guard.as_ref() {
+            if connection.generation == generation {
+                info!("reusing RSD connection created by a concurrent caller");
+                return Ok(());
+            }
+            *guard = None;
+        }
+    }
+
+    let connection = create_rppairing_rsd_connection().await?;
+    if current_generation() != connection.generation {
+        warn!("Pairing identity changed while creating RSD connection");
+        return Err(IdeviceError::UserDeniedPairing);
+    }
+    *lock_recover(connection_state(), "rsd_connection") = Some(connection);
+    info!("RSD connection created");
+    Ok(())
+}
+
 fn lock_recover<T>(mutex: &'static Mutex<T>, name: &str) -> MutexGuard<'static, T> {
     match mutex.lock() {
         Ok(guard) => guard,
@@ -115,15 +156,9 @@ pub async fn connect_to_rsd_services<Service: RsdService>() -> Result<Service, I
         }
     }
 
-    let connection = create_rppairing_rsd_connection().await?;
-    let connection_generation = connection.generation;
-    if current_generation() != connection_generation {
-        warn!("Pairing identity changed while creating RSD connection");
-        return Err(IdeviceError::UserDeniedPairing);
-    }
+    ensure_cached_rsd_connection().await?;
 
     let mut guard = lock_recover(connection_state(), "rsd_connection");
-    *guard = Some(connection);
     let Some(connection) = guard.as_mut() else {
         return Err(IdeviceError::InvalidArgument);
     };
@@ -153,15 +188,9 @@ pub async fn get_or_create_rppairing_rsd_connection(
         }
     }
 
-    let connection = create_rppairing_rsd_connection().await?;
-    let connection_generation = connection.generation;
-    if current_generation() != connection_generation {
-        warn!("Pairing identity changed while creating RSD connection");
-        return Err(IdeviceError::UserDeniedPairing);
-    }
+    ensure_cached_rsd_connection().await?;
 
-    let mut guard = lock_recover(connection_state(), "rsd_connection");
-    *guard = Some(connection);
+    let guard = lock_recover(connection_state(), "rsd_connection");
     Ok(guard)
 }
 

@@ -239,6 +239,18 @@ def violations(load=read):
     check("error is HardTimeout.TimeoutError" in install_channel,
           "B: timeout detection must not depend on error text")
 
+    # ── B 包（R05 · Rust 侧：RSD 创建 single-flight）───────────────────────
+    # create_rppairing_rsd_connection() 是 async 的，创建期间标准库 Mutex 的锁已释放；
+    # 没有门禁时两个并发调用会各自建一条隧道，后者覆盖前者 → 泄漏连接 + 设备端 RSD 状态混乱。
+    rsd = load("Vendor/Minimuxer/RustBridge/src/idevice_support/rsd.rs")
+    check("static RSD_CREATION_GATE: OnceLock<tokio::sync::Mutex<()>>" in rsd
+          and "async fn ensure_cached_rsd_connection(" in rsd,
+          "B: RSD creation must be single-flight behind a creation gate")
+    # 光有门禁不够：拿到门禁后必须再看一次缓存，否则只是把「两个并发创建」
+    # 变成「两个顺序创建」，照样泄漏一条。用「创建调用只应有一处」来锁住这点。
+    check(rsd.count("create_rppairing_rsd_connection().await?") == 1,
+          "B: RSD creation must happen in exactly one place (inside the gate)")
+
     parser = load("Seal/Core/Import/IPAParserService.swift")
     check("nestedData" not in parser and 'code: "SEAL-IPA-101b"' in parser,
           "Import: nested wrappers must not be buffered or committed as inner IPAs")
@@ -425,6 +437,10 @@ def main():
          "if Self.isTimeoutInstallError(error) {",
          "if false {",
          "B: both install retry loops must treat timeout as terminal"),
+        ("Vendor/Minimuxer/RustBridge/src/idevice_support/rsd.rs",
+         "ensure_cached_rsd_connection().await?;",
+         "create_rppairing_rsd_connection().await?;",
+         "B: RSD creation must happen in exactly one place"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

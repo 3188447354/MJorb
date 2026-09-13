@@ -406,8 +406,22 @@
   与 `ImportFailure.code == installTimeoutFailure.code` 双路识别。
 - **涉及文件**：`Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`
   （两个 `install` 重载的重试循环 + 新增 `isTimeoutInstallError`）。
-- **未做（需单独评审）**：B 包剩余部分 —— 操作 ID 贯穿 UI→Swift→FFI、
-  租约持有到真实 FFI 结束、RSD 创建 single-flight + 会话代次绑定（含 Rust `rsd.rs`）。
+- **未做（需单独评审）**：操作 ID 贯穿 UI→Swift→FFI、租约持有到真实 FFI 结束。
+
+### 27. async 创建 + std Mutex 缓存 = 并发创建会泄漏一条连接（RSD single-flight）
+- **现象（风险）**：两个并发的 RSD 服务调用各自建一条隧道，后者覆盖前者，
+  被丢弃的那条**既不关闭也不可达** —— 泄漏的连接，还可能让设备端 RSD 状态混乱。
+- **根因**：`rsd.rs` 用**标准库 `Mutex`** 缓存 RSD 连接，而 `create_rppairing_rsd_connection()`
+  是 **async** 的（TCP 连接 → 配对握手 → 建 TLS 隧道 → RSD 握手，耗时可达数秒）。
+  `await` 期间锁**已经释放**，所以「先查缓存、没有就创建」这个典型写法在这里**并不互斥**。
+- **修法**：加 `tokio::sync::Mutex` 创建门禁，并且**拿到门禁后再看一次缓存**
+  （double-checked）—— 只加门禁会把「两个并发创建」变成「两个顺序创建」，照样泄漏一条。
+  两个入口统一走 `ensure_cached_rsd_connection()`，创建调用只剩一处。
+- **规矩**：凡「检查缓存 → async 创建 → 回填」的写法，缓存锁与创建过程**必须串行化**；
+  标准库 Mutex 不能跨 `await` 持有，改用 async 锁或独立门禁。
+- **验证状态**：**本机 `cargo check --offline` 通过**（`Vendor/Minimuxer/RustBridge`），
+  无新增 warning。这是 Rust 相对 Swift 的优势 —— 本机就能验证编译。
+  护栏 63 检查 + 31 变异 PASS。**运行时/真机行为待验证。**
 - **验证状态**：护栏 61 检查 + 30 变异 PASS。**Swift 编译与单测待 CI。**
 
 ## 二、历史记录

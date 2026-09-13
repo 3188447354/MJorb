@@ -134,6 +134,22 @@
 
 ---
 
+### 13. OneDrive 路径下的仓库：含斜杠的分支名可能写出「未出生」分支
+- **现象**：`git checkout -b release/x` 提示成功，但随后 `git status` 把整仓 **596 个文件全显示为新增**（`A`）；
+  `git rev-parse HEAD` 报 `fatal: ambiguous argument 'HEAD'`；`git ls-tree HEAD` 报 `Not a valid object name`；
+  `git branch` 列不出当前分支。极易误判成「仓库被清空 / 改动全丢」。
+- **根因**：仓库位于 OneDrive 同步路径（`.../OneDrive/Desktop/Seal`）。新建**子目录形态**的 ref
+  （`refs/heads/release/x`）写入被静默丢弃，分支停在「未出生」状态（HEAD 指向不存在的 ref），
+  索引便相对空树比较，全仓显示为新增。对照证据：`git update-ref refs/heads/release/x <sha>` 返回 `rc=0`
+  但 `refs/heads/release/` 目录随后消失；而**改写已存在的** `refs/heads/main`、写 `.git/HEAD` 可持久化。
+- **恢复**：`git symbolic-ref HEAD refs/heads/main`——索引/暂存内容不受影响，**改动不会丢**。
+- **规避**：① 分支名**不要带斜杠**（用 `release-1.1.9-candidate` 而非 `release/1.1.9-candidate`）；
+  ② 把「建分支 + commit + push」放在**同一次 shell 调用**内完成，push 落到远端即持久；
+  ③ 动手前先确认 `git rev-parse HEAD` 能解析出提交。
+- **附带能力（细化 AGENTS.md §0「Windows 本机无法编译」）**：**Rust 层可做本机部分校验**——
+  `cd Vendor/Minimuxer/RustBridge && cargo check --offline`（cargo/rustc 1.98，依赖已缓存，约 10s）能查语法、
+  类型与未使用绑定；`cfg(target_os="ios")` 分支与最终链接仍需云 CI。**Swift 层本机无工具链，只能靠云 CI。**
+
 ## 二、历史记录
 
 ### 2026-09-13 · 发布整改第一批（候选 1.1.9，已改代码，未通过云 CI/真机验收）

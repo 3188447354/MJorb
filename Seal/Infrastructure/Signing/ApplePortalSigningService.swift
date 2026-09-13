@@ -175,7 +175,7 @@ enum ApplePortalSigningFailure {
             return ImportFailure(
                 title: "无法创建签名证书",
                 reason: "Apple 拒绝创建签名证书：该账号证书数量已达上限，或本次证书请求无效（Apple 错误 \(diagnostic)）。",
-                recovery: "在「我的」页面撤销一个旧签名证书后重试",
+                recovery: "在「我的」→「签名证书」中撤销一个旧签名证书后重试",
                 code: "SEAL-CERT-204a"
             )
         }
@@ -207,7 +207,7 @@ enum ApplePortalSigningFailure {
         return ImportFailure(
             title: "证书准备失败",
             reason: "Apple 服务器未能准备好签名证书。\nApple 返回：\(diagnostic)",
-            recovery: "检查网络后重试；如持续失败请在「我的」中撤销旧证书后再试",
+            recovery: "检查网络后重试；如持续失败请在「我的」→「签名证书」中撤销旧证书后再试",
             code: "SEAL-CERT-203"
         )
     }
@@ -766,7 +766,7 @@ actor ApplePortalSigningService {
                 throw Self.failure(
                     title: "证书清理未完成",
                     reason: "签名证书已创建，但后续处理失败；自动撤销该证书也失败，可能残留一个占用名额的证书。",
-                    recovery: "在「我的」页面手动撤销多余证书后重试",
+                    recovery: "在「我的」→「签名证书」中手动撤销多余证书后重试",
                     code: "SEAL-CERT-215c"
                 )
             }

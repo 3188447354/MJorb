@@ -2,15 +2,18 @@ name: iOS
 
 on:
   pull_request:
-  # 特性/发布分支推送即自动编译（PR 驱动之外的第二条通路）。
+  # 特性/发布分支推送即自动跑完整门（PR 驱动之外的第二条通路）。
   # 排除 main：main 由 ios-fast.yml 负责出包。
   # publish-release 仍只在 workflow_dispatch 触发，push 路径绝不会自动发布 Release。
   #
-  # 时间预算（2026-09-14 调整）：原先 push 一律跑完整门 = 全量构建两遍（Debug 给测试、
-  # Release 给 IPA）+ 一遍模拟器 UI 回归 ≈ 20 分钟，日常改 UI/文案等得太久。
-  # 现在由 classify-change 判定：非高风险改动只跑「编译 + 打包 + rork-sign」（约 10 分钟），
-  # 只有命中签名/安装/配对/RustBridge/工程配置等高风险路径才补跑 UI 回归。
-  # PR 与手动 dispatch 一律跑完整门（发布路径必须有 UI 回归背书）。
+  # 时间预算（2026-09-14 实测调整）：原先测试步骤嵌在 build-package 里，同一份代码被全量构建两遍
+  # （xcodebuild test 走 Debug、build-unsigned-ipa 走 Release，DerivedData 增量互相用不上），
+  # 串行叠加后 push 一次要 20m33s。现在测试拆成独立的 swift-regression job 与 build-package **并行**，
+  # 墙钟时间取 max 而非 sum：实测 20m33s → 9m38s（build-package 8m59s / swift-regression 7m38s）。
+  #
+  # 注意：build-package 比 swift-regression 还长，所以「跳过测试」省不到任何墙钟时间。
+  # 因此**不做按路径判定的闸门**（曾短暂加过 classify-change，实测无收益且会漏跑 UI 回归），
+  # 每次 push 都跑全量：速度一样、覆盖更全、逻辑更简单。
   push:
     branches-ignore: [main]
     paths:
@@ -46,55 +49,6 @@ permissions:
   contents: read
 
 jobs:
-  # 时间预算闸门：判断本次改动是否需要「完整门」（UI 回归）。
-  # push 到非 main 分支时，只有命中高风险路径才跑；PR 与手动 dispatch 一律跑。
-  # 目的：日常改 UI/文案不必每次等 20 分钟，而真会伤到用户的改动（签名/安装/配对）仍自动跑全量。
-  # 判定取不到 diff 时一律按「需要完整门」处理（fail-closed，宁可慢不可漏）。
-  classify-change:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      full: ${{ steps.classify.outputs.full }}
-    steps:
-      - uses: actions/checkout@v6.0.2
-        with:
-          fetch-depth: 0
-
-      - name: Decide whether the full gate is required
-        id: classify
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.before }}
-          HEAD_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          # PR 与手动 dispatch 一律视为需要完整门（发布路径必须有 UI 回归背书）。
-          if [ "$EVENT_NAME" != "push" ]; then
-            echo "full=true" >> "$GITHUB_OUTPUT"
-            echo "event=$EVENT_NAME -> full gate"
-            exit 0
-          fi
-          # 新分支 / force-push 时 before 可能不是有效提交，取不到 diff 就按完整门处理。
-          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
-            echo "full=true" >> "$GITHUB_OUTPUT"
-            echo "no usable base commit -> full gate"
-            exit 0
-          fi
-          CHANGED="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
-          printf 'changed files:\n%s\n' "$CHANGED"
-          if [ -z "$CHANGED" ]; then
-            echo "full=true" >> "$GITHUB_OUTPUT"
-            echo "empty diff -> full gate"
-            exit 0
-          fi
-          if printf '%s\n' "$CHANGED" | grep -Eq '^(Vendor/Minimuxer/RustBridge/|SealTunnel/|Seal/Core/Signing/|Seal/Core/Apps/|Seal/Core/Import/|Seal/Infrastructure/Signing/|Seal/Infrastructure/Installation/|Seal/Application/|Seal/Features/Settings/|SealTests/|SealUITests/|project.yml|Config/|Scripts/|\.github/workflows/)'; then
-            echo "full=true" >> "$GITHUB_OUTPUT"
-            echo "high-risk paths touched -> full gate"
-          else
-            echo "full=false" >> "$GITHUB_OUTPUT"
-            echo "non-risky change -> compile-only"
-          fi
-
   build-package:
     runs-on: macos-26
     timeout-minutes: 45
@@ -222,13 +176,12 @@ jobs:
             build/SealTunnel-Info.plist
           retention-days: 14
 
-  # 单元 + UI 回归门。从 build-package 里拆出来独立成 job，有两个好处：
-  # 1) 与 build-package 并行：PR/发布不再「先等 Debug 全量构建+测试、再等 Release 全量构建」串行叠加；
-  # 2) 非高风险 push 直接跳过（见 classify-change），日常改动省掉约 10 分钟。
+  # 单元 + UI 回归门。从 build-package 里拆出来独立成 job，与它**并行**跑：
+  # 原先测试嵌在 build-package 内，等于「先 Debug 全量构建+测试、再等 Release 全量构建」串行叠加。
+  # 实测并行后总时长 20m33s → 9m38s；且 build-package 比本 job 更长，
+  # 所以每次 push 都跑全量也**不额外增加墙钟时间**（取 max 而非 sum）。
   # 注意：本 job 是发布的前置（publish-release 的 needs 含它），不得从 needs 里摘掉。
   swift-regression:
-    needs: [classify-change]
-    if: needs.classify-change.outputs.full == 'true'
     runs-on: macos-26
     timeout-minutes: 45
     steps:
@@ -243,6 +196,27 @@ jobs:
           key: spm-${{ runner.os }}-${{ hashFiles('project.yml') }}
           restore-keys: |
             spm-${{ runner.os }}-
+
+      - name: Cache Rust toolchain and cargo artifacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.cargo/registry
+            ~/.cargo/git
+            Vendor/Minimuxer/RustBridge/target
+          key: rustbridge-${{ runner.os }}-${{ hashFiles('Vendor/Minimuxer/RustBridge/Cargo.lock') }}
+          restore-keys: |
+            rustbridge-${{ runner.os }}-
+
+      # 必须：本仓允许预编译 RustBridge.xcframework 落后于 Rust 源码，
+      # ensure-rustbridge.sh 会按源码指纹发现不一致并当场重编。
+      # 漏跑这一步会链接到缺符号的旧库，报一堆 `_rust_bridge_*` undefined symbols。
+      # 2026-09-14 实测：把测试拆成独立 job 时漏了它 → build-package 成功而本 job 链接失败。
+      - name: Ensure RustBridge matches Rust source
+        env:
+          RUST_TOOLCHAIN: 1.97.1
+        run: bash Scripts/ensure-rustbridge.sh
 
       - name: Select pinned Xcode 26.5
         run: |
@@ -270,6 +244,9 @@ jobs:
           xcrun simctl boot "$SIMULATOR_UDID" || true
           xcrun simctl bootstatus "$SIMULATOR_UDID" -b
           rm -rf build/TestResults.xcresult
+          mkdir -p build
+          # 落盘日志供下一步提炼失败原因（tee 保留 xcodebuild 的退出码，pipefail 保证失败可见）
+          set -o pipefail
           xcodebuild test \
             -project Seal.xcodeproj \
             -scheme Seal \
@@ -277,7 +254,23 @@ jobs:
             -parallel-testing-enabled NO \
             -resultBundlePath build/TestResults.xcresult \
             CODE_SIGNING_ALLOWED=NO \
-            OTHER_SWIFT_FLAGS='$(inherited) -continue-building-after-errors'
+            OTHER_SWIFT_FLAGS='$(inherited) -continue-building-after-errors' \
+            2>&1 | tee build/TestLog.txt
+
+      # GitHub 的原始日志要登录才能看，注解不用。把编译错误与失败用例提炼成 ::error::，
+      # 失败原因会直接显示在 run 页上，避免「只知道 exit 65、不知道哪条挂了」。
+      - name: Surface failures as annotations
+        if: failure()
+        run: |
+          LOG=build/TestLog.txt
+          if [ ! -f "$LOG" ]; then
+            echo "::error::测试步骤未产出日志（失败可能发生在 xcodebuild 之前的脚本位置）"
+            exit 0
+          fi
+          { grep -nE "error:|fatal error:|Testing failed|Test Case .* failed|Assertion Failure" "$LOG" | head -20 || true; } \
+            | while IFS= read -r line; do echo "::error::$line"; done
+          echo "----- 日志尾部 80 行 -----"
+          tail -80 "$LOG"
 
       - name: Upload regression test result bundle
         if: always()
@@ -323,8 +316,8 @@ jobs:
   # Release 资产永久保留，弥补 upload-artifact 30 天自动过期；只下载+上传，用 ubuntu 即可。
   publish-release:
     # swift-regression 必须在 needs 里：测试已从 build-package 拆出，
-    # 否则发布可能在 UI 回归还没跑完时就发出去。dispatch 路径 full 恒为 true，不会被跳过。
-    needs: [classify-change, build-package, rork-sign-tests, swift-regression]
+    # 否则发布可能在 UI 回归还没跑完时就发出去。
+    needs: [build-package, rork-sign-tests, swift-regression]
     if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true
     runs-on: ubuntu-latest
     timeout-minutes: 15

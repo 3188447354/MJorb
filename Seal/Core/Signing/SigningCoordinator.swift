@@ -433,7 +433,7 @@ actor SigningCoordinator {
                   certificate.serialNumber.caseInsensitiveCompare(serialNumber) == .orderedSame else {
                 throw Self.failure(
                     reason: "签名证书已从 Apple 获取，但写入本机 Keychain 后未能通过校验（重载的证书序列号与预期不一致）。",
-                    recovery: "重试；如持续失败请到「我的」页面撤销旧证书后重试",
+                    recovery: "重试；如持续失败请到「我的」→「签名证书」中撤销旧证书后重试",
                     code: "SEAL-CERT-210"
                 )
             }

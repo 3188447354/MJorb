@@ -61,6 +61,18 @@ def violations(load=read):
     check("revokeCertificate(" in ui,
           "Copy: in-app certificate revocation must have a real UI entry")
 
+    # 指引「撤销证书」的 recovery 文案必须点名真实入口（「我的」→「签名证书」）。
+    # 只写「我的」会把用户丢在 Apple ID 列表上，还要自己猜下一步点哪里。
+    stale_copy = []
+    for path in ("Seal/Core/Signing/SigningCoordinator.swift",
+                 "Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",
+                 "Seal/Infrastructure/Signing/ApplePortalSigningService.swift"):
+        for line in load(path).splitlines():
+            if "撤销" in line and "recovery:" in line and "「签名证书」" not in line:
+                stale_copy.append(path + " -> " + line.strip())
+    check(not stale_copy,
+          "Copy: revoke guidance must name 我的 -> 签名证书 (" + " | ".join(stale_copy) + ")")
+
     versions = re.findall(r"MARKETING_VERSION:\s*(\S+)", load("project.yml"))
     check(len(versions) == 2 and len(set(versions)) == 1,
           "Release: Seal and SealTunnel versions must match")
@@ -76,13 +88,21 @@ def violations(load=read):
               workflow + ": release tag must match built IPA version")
 
     # UI 回归已从 build-package 拆成独立的 swift-regression job。它一旦脱离发布依赖，
-    # 发布就可能在回归尚未跑完时把包发出去；一旦脱离 classify-change 闸门，就又会每次全量跑 20 分钟。
+    # 发布就可能在回归尚未跑完时把包发出去。测试失败原因必须能直接看到（GitHub 原始日志要登录，
+    # 注解不用），否则只会留下「exit 65」这种无法定位的失败。
     ios = load(".github/workflows/ios.yml")
     check(re.search(r"\n  publish-release:[\s\S]{0,600}?\n    needs: \[[^\]]*swift-regression", ios) is not None,
           "ios.yml: publish must wait for the swift-regression gate")
-    check(re.search(r"\n  swift-regression:[\s\S]{0,400}?\n    if: needs\.classify-change\.outputs\.full == 'true'",
-                    ios) is not None,
-          "ios.yml: swift-regression must stay gated by classify-change")
+    check("tee build/TestLog.txt" in ios and "::error::" in ios,
+          "ios.yml: test failures must be surfaced as annotations")
+
+    # 任何构建 App 的 job 都必须先跑 ensure-rustbridge.sh：本仓允许预编译 RustBridge.xcframework
+    # 落后于 Rust 源码（脚本按源码指纹当场重编）。漏跑就会链接到缺符号的旧库，
+    # 报一堆 `_rust_bridge_*` undefined symbols —— 2026-09-14 拆分 job 时真实踩到。
+    check("ensure-rustbridge.sh" in section(ios, "\n  build-package:", "\n  swift-regression:"),
+          "ios.yml: build-package must run ensure-rustbridge.sh")
+    check("ensure-rustbridge.sh" in section(ios, "\n  swift-regression:", "\n  rork-sign-tests:"),
+          "ios.yml: swift-regression must run ensure-rustbridge.sh")
     return checks, failures
 
 def main():
@@ -103,9 +123,17 @@ def main():
          "if: inputs.publish_release == true",
          "ios.yml: publish job"),
         (".github/workflows/ios.yml",
-         "needs: [classify-change, build-package, rork-sign-tests, swift-regression]",
+         "needs: [build-package, rork-sign-tests, swift-regression]",
          "needs: [build-package, rork-sign-tests]",
          "ios.yml: publish must wait"),
+        (".github/workflows/ios.yml",
+         "run: bash Scripts/ensure-rustbridge.sh",
+         "run: echo skipped",
+         "ios.yml: build-package must run ensure-rustbridge"),
+        ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",
+         'recovery: "在「我的」→「签名证书」中撤销一个旧签名证书后重试"',
+         'recovery: "在「我的」页面撤销一个旧签名证书后重试"',
+         "Copy: revoke guidance"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

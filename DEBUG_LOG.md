@@ -150,43 +150,62 @@
   `cd Vendor/Minimuxer/RustBridge && cargo check --offline`（cargo/rustc 1.98，依赖已缓存，约 10s）能查语法、
   类型与未使用绑定；`cfg(target_os="ios")` 分支与最终链接仍需云 CI。**Swift 层本机无工具链，只能靠云 CI。**
 
-### 14. CI 里「测试步骤嵌在构建 job 内」= 同一份代码被全量构建两遍
-- **现象**：`ios.yml` 一次运行 20m33s，而内容更少的 `ios-release.yml` 只要 7–10 分钟，差了一倍多。
+### 14. CI：测试步骤嵌在构建 job 内 = 同一份代码被全量构建两遍；拆 job 时有两处必查
+- **现象**：`ios.yml` 一次运行 20m33s，而内容更少的 `ios-release.yml` 只要 3–10 分钟，差了一倍多。
 - **根因**：`xcodebuild test` 默认 **Debug** 配置，会先全量构建一遍；紧接着 `build-unsigned-ipa.sh` 用
   **Release** 配置再全量构建一遍。两个配置的产物目录不同，DerivedData 增量完全用不上 → 两次全量编译。
-  再叠加模拟器 UI 回归（本身就很慢），并且这些在 push 时**无差别全跑**，与改动风险无关。
-- **规矩**：① 测试与打包要拆成**并行 job**，别在同一个 job 里串行两遍构建；
-  ② 一旦把测试拆出去，**发布的 `needs` 必须补上测试 job**，否则会「回归还没跑完就发版」——
-  这是拆分动作自带的副作用，改工作流时必须同步检查；
-  ③ 自动触发的档位要跟改动风险挂钩（本仓用 `classify-change` 按路径判定），
-  但**取不到 diff / 新分支 / force-push 一律按完整门处理（fail-closed）**，宁可慢不可漏。
+  再串行叠加模拟器 UI 回归。
+- **规矩**：
+  ① 测试与打包拆成**并行 job**，别在同一个 job 里串行两遍构建。墙钟时间取 max 而非 sum
+  （实测 20m33s → 9m38s）。
+  ② **拆完先量一遍再决定要不要「跳过测试」**。本仓曾加过按路径判定的闸门，实测发现
+  `build-package`（8m59s）比 `swift-regression`（7m38s）还长 —— 跳过测试省到的时间是 **0**，
+  纯属增加「漏跑 UI 回归」的风险。**闸门已删除**：每次 push 都跑全量。
+  ③ **拆出去的测试 job 必须自带构建前置**。本仓允许预编译 `RustBridge.xcframework` 落后于 Rust 源码，
+  `ensure-rustbridge.sh` 按源码指纹当场重编。测试原来跑在 `build-package` 内、白蹭了这一步；
+  拆成独立 job 后漏跑 → 链接到缺符号的旧库 → `_rust_bridge_*` undefined symbols
+  （实测现象极具误导性：**build-package 成功、swift-regression 失败**）。
+  **凡构建 App 的 job 都必须显式跑 `ensure-rustbridge.sh`。**
+  ④ 一旦把测试拆出去，**发布的 `needs` 必须补上测试 job**，否则会「回归还没跑完就发版」。
+  ⑤ CI 失败原因要能在**不登录**的情况下看到：`xcodebuild` 输出 `tee` 到文件，失败时提炼成
+  `::error::` 注解（GitHub 原始日志需登录，注解不需要）。
 - **涉及文件**：`.github/workflows/ios.yml`、`Scripts/verify-release-safety.py`。
-- **验证状态**：YAML 解析 + 闸门逻辑样本实测 + 护栏 19 项/5 变异 PASS；实际耗时待 CI 验证。
+- **验证状态**：实测 9m38s；护栏 22 项源码检查 + 7 变异 PASS（含「删掉 ensure-rustbridge 必须报错」）。
+  链接修复待下一次运行验证。
 
 ## 二、历史记录
 
-### 2026-09-14 · CI 每次等 20 分钟：测试从 build-package 拆出 + 按路径判定是否跑完整门
-- **现象**：往 `release-1.1.9-candidate` 推一次提交要等 **20m33s**（iOS #11 实测）。改一行 UI 文案也是这个价，
-  迭代时干等，用户体验极差。
+### 2026-09-14 · CI 每次等 20 分钟：把测试从 build-package 拆成并行 job（20m33s → 9m38s）
+- **现象**：往 `release-1.1.9-candidate` 推一次提交要等 **20m33s**（iOS #11 实测）。改一行 UI 文案也是这个价。
 - **根因**：`ios.yml` 把「单测 + 模拟器 UI 回归」这一步**嵌在 `build-package` 里**，于是同一个 job 里
   **同一份代码被全量构建两遍** —— `xcodebuild test` 先构建一遍 Debug，`build-unsigned-ipa.sh` 再构建一遍 Release
-  —— 外加一遍模拟器 UI 回归（最慢的一段）。而且 push 触发时**无差别**跑这一整套，跟改动风险完全无关。
-  对比：`ios-release.yml`（快速档）只构建一遍、不跑 UI，实测只要 7–10 分钟。
-- **修复**：把 `ios.yml` 拆成 4 个 job，并按改动路径做时间预算：
-  - `classify-change`（ubuntu，~10s）：`git diff --name-only $before $sha` 判定改动是否命中高风险路径
-    （签名 / 安装 / 配对 / RustBridge / 隧道 / 工程配置 / 测试 / 工作流自身）。命中 → `full=true`。
-  - `swift-regression`：承载原先的单测 + UI 回归，`if: needs.classify-change.outputs.full == 'true'`，
-    与 `build-package` **并行**（不再串行叠加）。PR 与手动 dispatch 恒为完整门。
-  - `build-package`：只留「校验 + 编译 + 打包」，约 10 分钟。
-  - `publish-release`：`needs` 补上 `swift-regression` —— 测试拆出去后若不同步加依赖，
-    **发布可能在 UI 回归还没跑完时就发出去**（这是拆分引入的新风险，必须堵）。
-  - **fail-closed**：取不到 diff（新分支 / force-push，`before` 是 40 个 0）、diff 为空、或非 push 事件 → 一律完整门。
-  - 护栏 `verify-release-safety.py` 新增 2 项源码检查（发布依赖 `swift-regression`、`swift-regression` 挂
-    `classify-change` 闸门）+ 1 项变异自检（把 `needs` 里的 `swift-regression` 删掉必须报错）。
+  （两个配置的产物目录不同，DerivedData 增量互相用不上）—— 外加一遍模拟器 UI 回归。
+  对比：`ios-release.yml`（快速档）只构建一遍、不跑 UI，实测只要 3–10 分钟。
+- **修复（两轮，第二轮推翻了第一轮的设计）**：
+  - **第一轮**：拆成 4 个 job，并加了 `classify-change` 闸门按改动路径决定是否跑测试。
+  - **第二轮（iOS #13 实测后修正）**：闸门**删掉**。实测拆开后 `build-package` = 8m59s、
+    `swift-regression` = 7m38s，**build-package 反而更长** → 跳过测试省到的墙钟时间是 **0**，
+    却要承担「UI 回归被漏跑」的风险。所以改为 3 个 job **每次 push 都并行跑全量**：
+    总时长 **9m38s**（取 max 而非 sum），覆盖更全、逻辑更简单。
+  - `publish-release` 的 `needs` 补上 `swift-regression` —— 测试拆出去后若不同步加依赖，
+    **发布可能在 UI 回归还没跑完时就发出去**（拆分引入的新风险，必须堵）。
+- **第二轮同时修掉的、由拆分引入的真实缺陷**：iOS #13 的 `swift-regression` **链接失败**
+  （`exit 65`），`Undefined symbols: _rust_bridge_ota_serve / _rust_bridge_ota_configure /
+  _rust_bridge_ota_identity_generate / _rust_bridge_idevice_stage_and_install /
+  _rust_bridge_idevice_invalidate_rsd_connection / _rust_bridge_instproxy_upgrade`。
+  **根因**：本仓允许预编译 `RustBridge.xcframework` 落后于 Rust 源码，`ensure-rustbridge.sh`
+  按源码指纹发现不一致会**当场重编**。旧流程里测试跑在 `build-package` 内、前面已跑过这一步；
+  新建的 `swift-regression` **漏了它**，于是链接到仓库里那份缺符号的旧 `librust_bridge.a`。
+  这解释了「build-package 成功、swift-regression 失败」的诡异组合。
+  **修复**：给 `swift-regression` 补上 Rust 缓存 + `Ensure RustBridge matches Rust source`，
+  并在护栏里加两项检查（两个构建 job 都必须有该步骤）+ 一项变异自检。
+- **可诊断性**：GitHub 原始日志要登录才能看，注解不用。`swift-regression` 把 `xcodebuild` 输出
+  `tee` 到 `build/TestLog.txt`，失败时由新增的「Surface failures as annotations」步骤提炼成 `::error::`
+  注解，避免再出现「只知道 exit 65、不知道哪条挂了」。
 - **涉及文件**：`.github/workflows/ios.yml`、`Scripts/verify-release-safety.py`、`AGENTS.md`（§7）。
-- **验证状态**：YAML 经 pyyaml 解析通过（jobs = classify-change / build-package / swift-regression /
-  rork-sign-tests / publish-release）；闸门逻辑用 5 组路径样本实测符合预期；护栏 19 项源码检查 + 5 项变异 PASS。
-  **CI 实际耗时待下次运行验证**。
+- **验证状态**：iOS #13 实测总时长 **9m38s**（20m33s → 9m38s，build-package 8m59s 成功出包）。
+  YAML 经 pyyaml 解析通过；护栏 **22 项源码检查 + 7 项变异 PASS**。
+  **链接修复与注解步骤待下一次运行验证**。
 
 ### 2026-09-14 · 证书撤销「有文案、没入口」：签名证书页补上证书清单与撤销入口
 - **现象**：撞到证书数量上限时，Seal 提示「在「我的」页面撤销一个旧签名证书后重试」，
@@ -209,7 +228,11 @@
   `SealTests/Settings/CertificateRevocationImpactTests.swift`（新，8 个用例）、
   `Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、`Scripts/verify-release-safety.py`。
 - **验证状态**：静态护栏 17 项 + 4 变异 PASS；**Swift 编译、单测与真机未验证**。
-- **遗留**：另外 6 处既有文案仍写「在「我的」页面撤销」，未精确到「签名证书」页，待后续统一。
+- **遗留已闭环（2026-09-14 后续提交）**：另外 6 处既有文案（`SigningCoordinator:436`、
+  `ApplePortalCertificateService:71`/`:125`、`ApplePortalSigningService:178`/`:210`/`:769`）
+  仍写「在「我的」页面撤销」，只指到 Apple ID 列表、还要用户自己猜下一步。已统一为
+  「在「我的」→「签名证书」中撤销…」，并在 `verify-release-safety.py` 加护栏：**凡
+  `recovery:` 行含「撤销」就必须出现「签名证书」**（护栏 20 项 + 6 变异）。
 
 ### 2026-09-13 · 发布整改第一批（候选 1.1.9，已改代码，未通过云 CI/真机验收）
 - **现象/根因**：见此前链路复审 R01/R02/R03/R10/R11/R12；额外确认嵌套 IPA 解析将内层元数据与外层原包混用，并整块缓冲嵌套包。快速构建原先默认执行发布。

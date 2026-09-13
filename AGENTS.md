@@ -107,21 +107,24 @@
   （`branches-ignore: [main]` + `paths` 过滤，纯文档推送会跳过）。`main` 由 `ios-fast.yml` 负责出包。
   `publish-release` 始终只在 `workflow_dispatch` + `publish_release=true` 时触发，**push 路径绝不自动发布**；
   该不变量由 `Scripts/verify-release-safety.py` 静态守护（含变异自检）。
-- **时间预算（2026-09-14 起）**：`ios.yml` 拆成 4 个 job —— `classify-change`（闸门）、`build-package`
-  （编译 + 打包）、`swift-regression`（单测 + UI 回归）、`rork-sign-tests`。原先测试步骤嵌在
-  `build-package` 里，导致**同一份代码被全量构建两遍**（Debug 给测试、Release 给 IPA）再叠加一遍 UI 回归
-  ≈ 20 分钟。现在：
-  - `classify-change` 按改动路径判定是否需要完整门：命中
-    `Vendor/Minimuxer/RustBridge|SealTunnel|Seal/Core/Signing|Seal/Core/Apps|Seal/Core/Import|
-    Seal/Infrastructure/Signing|Seal/Infrastructure/Installation|Seal/Application|Seal/Features/Settings|
-    SealTests|SealUITests|project.yml|Config|Scripts|.github/workflows` → 完整门（约 20 分钟）；
-    其余改动 → 只编译打包（约 10 分钟）。
-  - 取不到 diff（新分支 / force-push）、diff 为空、或事件是 PR/dispatch → **一律完整门（fail-closed）**。
-  - `swift-regression` 与 `build-package` **并行**，所以 PR/发布的墙钟时间也短于原先的串行叠加。
+- **时间预算（2026-09-14 实测）**：`ios.yml` 拆成 3 个并行 job —— `build-package`（编译 + 打包）、
+  `swift-regression`（单测 + UI 回归）、`rork-sign-tests`。原先测试步骤嵌在 `build-package` 里，
+  导致**同一份代码被全量构建两遍**（`xcodebuild test` 走 Debug、`build-unsigned-ipa.sh` 走 Release，
+  两个配置的产物目录不同、DerivedData 增量互相用不上），再串行叠加一遍 UI 回归 → **20m33s**。
+  拆开后墙钟时间取 max 而非 sum：**实测 9m38s**（build-package 8m59s / swift-regression 7m38s / rork 2m6s）。
+  - **不要加「按路径判定是否跑测试」的闸门**。曾短暂加过 `classify-change`，实测无收益：
+    `build-package` 比 `swift-regression` 还长，跳过测试省不到任何墙钟时间，却要承担漏跑 UI 回归的风险。
   - `publish-release` 的 `needs` **必须包含 `swift-regression`**：测试拆出去后若不同步加依赖，
     发布可能在 UI 回归还没跑完时就发出去（护栏已守护）。
+- **构建 App 的 job 必须跑 `ensure-rustbridge.sh`**。本仓允许预编译 `RustBridge.xcframework` 落后于
+  Rust 源码，该脚本按源码指纹发现不一致会**当场重编**。漏跑会链接到缺符号的旧库，报一堆
+  `_rust_bridge_*` undefined symbols —— 2026-09-14 拆 job 时真实踩到（build-package 成功、
+  swift-regression 链接失败）。护栏已守护 `build-package` 与 `swift-regression` 两处。
+- **CI 失败原因必须能在不登录的情况下看到**：GitHub 原始日志需登录，注解不需要。
+  `swift-regression` 把 `xcodebuild` 输出 `tee` 到 `build/TestLog.txt`，失败时由
+  「Surface failures as annotations」步骤提炼成 `::error::` 注解。
 - 改工作流触发条件前，先跑 `Scripts/verify-release-safety.py`，并确认 `publish-release` 的 `if:` 门未被削弱、
-  `swift-regression` 的 `classify-change` 闸门与发布依赖仍在。
+  `swift-regression` 的发布依赖与 `ensure-rustbridge.sh` 步骤仍在。
 - CI 缓存「Refresh local SPM binary artifacts」只清 `SourcePackages/checkouts`，**不许 rm 整个 SourcePackages**
   （会删 OpenSSL.xcframework 二进制 → `openssl/err.h not found`）。
 - CI 校验 `IPHONEOS_DEPLOYMENT_TARGET=17.0`；改部署目标时同步查 `ios.yml`/`ios-release.yml` 断言。

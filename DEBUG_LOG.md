@@ -150,7 +150,43 @@
   `cd Vendor/Minimuxer/RustBridge && cargo check --offline`（cargo/rustc 1.98，依赖已缓存，约 10s）能查语法、
   类型与未使用绑定；`cfg(target_os="ios")` 分支与最终链接仍需云 CI。**Swift 层本机无工具链，只能靠云 CI。**
 
+### 14. CI 里「测试步骤嵌在构建 job 内」= 同一份代码被全量构建两遍
+- **现象**：`ios.yml` 一次运行 20m33s，而内容更少的 `ios-release.yml` 只要 7–10 分钟，差了一倍多。
+- **根因**：`xcodebuild test` 默认 **Debug** 配置，会先全量构建一遍；紧接着 `build-unsigned-ipa.sh` 用
+  **Release** 配置再全量构建一遍。两个配置的产物目录不同，DerivedData 增量完全用不上 → 两次全量编译。
+  再叠加模拟器 UI 回归（本身就很慢），并且这些在 push 时**无差别全跑**，与改动风险无关。
+- **规矩**：① 测试与打包要拆成**并行 job**，别在同一个 job 里串行两遍构建；
+  ② 一旦把测试拆出去，**发布的 `needs` 必须补上测试 job**，否则会「回归还没跑完就发版」——
+  这是拆分动作自带的副作用，改工作流时必须同步检查；
+  ③ 自动触发的档位要跟改动风险挂钩（本仓用 `classify-change` 按路径判定），
+  但**取不到 diff / 新分支 / force-push 一律按完整门处理（fail-closed）**，宁可慢不可漏。
+- **涉及文件**：`.github/workflows/ios.yml`、`Scripts/verify-release-safety.py`。
+- **验证状态**：YAML 解析 + 闸门逻辑样本实测 + 护栏 19 项/5 变异 PASS；实际耗时待 CI 验证。
+
 ## 二、历史记录
+
+### 2026-09-14 · CI 每次等 20 分钟：测试从 build-package 拆出 + 按路径判定是否跑完整门
+- **现象**：往 `release-1.1.9-candidate` 推一次提交要等 **20m33s**（iOS #11 实测）。改一行 UI 文案也是这个价，
+  迭代时干等，用户体验极差。
+- **根因**：`ios.yml` 把「单测 + 模拟器 UI 回归」这一步**嵌在 `build-package` 里**，于是同一个 job 里
+  **同一份代码被全量构建两遍** —— `xcodebuild test` 先构建一遍 Debug，`build-unsigned-ipa.sh` 再构建一遍 Release
+  —— 外加一遍模拟器 UI 回归（最慢的一段）。而且 push 触发时**无差别**跑这一整套，跟改动风险完全无关。
+  对比：`ios-release.yml`（快速档）只构建一遍、不跑 UI，实测只要 7–10 分钟。
+- **修复**：把 `ios.yml` 拆成 4 个 job，并按改动路径做时间预算：
+  - `classify-change`（ubuntu，~10s）：`git diff --name-only $before $sha` 判定改动是否命中高风险路径
+    （签名 / 安装 / 配对 / RustBridge / 隧道 / 工程配置 / 测试 / 工作流自身）。命中 → `full=true`。
+  - `swift-regression`：承载原先的单测 + UI 回归，`if: needs.classify-change.outputs.full == 'true'`，
+    与 `build-package` **并行**（不再串行叠加）。PR 与手动 dispatch 恒为完整门。
+  - `build-package`：只留「校验 + 编译 + 打包」，约 10 分钟。
+  - `publish-release`：`needs` 补上 `swift-regression` —— 测试拆出去后若不同步加依赖，
+    **发布可能在 UI 回归还没跑完时就发出去**（这是拆分引入的新风险，必须堵）。
+  - **fail-closed**：取不到 diff（新分支 / force-push，`before` 是 40 个 0）、diff 为空、或非 push 事件 → 一律完整门。
+  - 护栏 `verify-release-safety.py` 新增 2 项源码检查（发布依赖 `swift-regression`、`swift-regression` 挂
+    `classify-change` 闸门）+ 1 项变异自检（把 `needs` 里的 `swift-regression` 删掉必须报错）。
+- **涉及文件**：`.github/workflows/ios.yml`、`Scripts/verify-release-safety.py`、`AGENTS.md`（§7）。
+- **验证状态**：YAML 经 pyyaml 解析通过（jobs = classify-change / build-package / swift-regression /
+  rork-sign-tests / publish-release）；闸门逻辑用 5 组路径样本实测符合预期；护栏 19 项源码检查 + 5 项变异 PASS。
+  **CI 实际耗时待下次运行验证**。
 
 ### 2026-09-14 · 证书撤销「有文案、没入口」：签名证书页补上证书清单与撤销入口
 - **现象**：撞到证书数量上限时，Seal 提示「在「我的」页面撤销一个旧签名证书后重试」，

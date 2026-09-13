@@ -103,11 +103,25 @@
 
 - `ios.yml` 完整档：RustBridge 一致性 + UI 回归 + 签名测试，大改动走它。
 - `ios-release.yml` 快速档：Release 编译 + 发布，跳过 UI/rork 门，改 Swift 业务逻辑用。
-- **触发方式**：`ios.yml` 除 PR 外，**推到非 `main` 分支、且改动命中相关路径也会自动跑完整门**
+- **触发方式**：`ios.yml` 除 PR 外，**推到非 `main` 分支、且改动命中相关路径也会自动编译**
   （`branches-ignore: [main]` + `paths` 过滤，纯文档推送会跳过）。`main` 由 `ios-fast.yml` 负责出包。
   `publish-release` 始终只在 `workflow_dispatch` + `publish_release=true` 时触发，**push 路径绝不自动发布**；
   该不变量由 `Scripts/verify-release-safety.py` 静态守护（含变异自检）。
-- 改工作流触发条件前，先跑 `Scripts/verify-release-safety.py`，并确认 `publish-release` 的 `if:` 门未被削弱。
+- **时间预算（2026-09-14 起）**：`ios.yml` 拆成 4 个 job —— `classify-change`（闸门）、`build-package`
+  （编译 + 打包）、`swift-regression`（单测 + UI 回归）、`rork-sign-tests`。原先测试步骤嵌在
+  `build-package` 里，导致**同一份代码被全量构建两遍**（Debug 给测试、Release 给 IPA）再叠加一遍 UI 回归
+  ≈ 20 分钟。现在：
+  - `classify-change` 按改动路径判定是否需要完整门：命中
+    `Vendor/Minimuxer/RustBridge|SealTunnel|Seal/Core/Signing|Seal/Core/Apps|Seal/Core/Import|
+    Seal/Infrastructure/Signing|Seal/Infrastructure/Installation|Seal/Application|Seal/Features/Settings|
+    SealTests|SealUITests|project.yml|Config|Scripts|.github/workflows` → 完整门（约 20 分钟）；
+    其余改动 → 只编译打包（约 10 分钟）。
+  - 取不到 diff（新分支 / force-push）、diff 为空、或事件是 PR/dispatch → **一律完整门（fail-closed）**。
+  - `swift-regression` 与 `build-package` **并行**，所以 PR/发布的墙钟时间也短于原先的串行叠加。
+  - `publish-release` 的 `needs` **必须包含 `swift-regression`**：测试拆出去后若不同步加依赖，
+    发布可能在 UI 回归还没跑完时就发出去（护栏已守护）。
+- 改工作流触发条件前，先跑 `Scripts/verify-release-safety.py`，并确认 `publish-release` 的 `if:` 门未被削弱、
+  `swift-regression` 的 `classify-change` 闸门与发布依赖仍在。
 - CI 缓存「Refresh local SPM binary artifacts」只清 `SourcePackages/checkouts`，**不许 rm 整个 SourcePackages**
   （会删 OpenSSL.xcframework 二进制 → `openssl/err.h not found`）。
 - CI 校验 `IPHONEOS_DEPLOYMENT_TARGET=17.0`；改部署目标时同步查 `ios.yml`/`ios-release.yml` 断言。

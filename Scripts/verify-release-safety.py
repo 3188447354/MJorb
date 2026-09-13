@@ -74,6 +74,15 @@ def violations(load=read):
               workflow + ": publish job must stay gated to workflow_dispatch (never run on push)")
         check('${TAG#v}' in text and '!= "$VER"' in text,
               workflow + ": release tag must match built IPA version")
+
+    # UI 回归已从 build-package 拆成独立的 swift-regression job。它一旦脱离发布依赖，
+    # 发布就可能在回归尚未跑完时把包发出去；一旦脱离 classify-change 闸门，就又会每次全量跑 20 分钟。
+    ios = load(".github/workflows/ios.yml")
+    check(re.search(r"\n  publish-release:[\s\S]{0,600}?\n    needs: \[[^\]]*swift-regression", ios) is not None,
+          "ios.yml: publish must wait for the swift-regression gate")
+    check(re.search(r"\n  swift-regression:[\s\S]{0,400}?\n    if: needs\.classify-change\.outputs\.full == 'true'",
+                    ios) is not None,
+          "ios.yml: swift-regression must stay gated by classify-change")
     return checks, failures
 
 def main():
@@ -93,6 +102,10 @@ def main():
          "if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true",
          "if: inputs.publish_release == true",
          "ios.yml: publish job"),
+        (".github/workflows/ios.yml",
+         "needs: [classify-change, build-package, rork-sign-tests, swift-regression]",
+         "needs: [build-package, rork-sign-tests]",
+         "ios.yml: publish must wait"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

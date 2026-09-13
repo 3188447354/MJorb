@@ -62,14 +62,10 @@ struct UpdateChecker {
                 .flatMap(URL.init(string:))
                 ?? URL(string: "https://github.com/\(repo)/releases")
 
-            // 从 attachments 里找 .ipa 附件，供应用内直接下载覆盖安装
-            let ipaAsset = (json["assets"] as? [[String: Any]])?
-                .first { attachment in
-                    let name = attachment["name"] as? String ?? ""
-                    return name.lowercased().hasSuffix(".ipa")
-                }
-            let ipaDownloadURL = (ipaAsset?["browser_download_url"] as? String)
-                .flatMap(URL.init(string:))
+            // 从 attachments 里挑 IPA，供应用内直接下载覆盖安装
+            let ipaDownloadURL = Self.ipaDownloadURL(
+                from: json["assets"] as? [[String: Any]] ?? []
+            )
 
             return UpdateNotice(
                 version: tagName,
@@ -81,6 +77,46 @@ struct UpdateChecker {
         } catch {
             return nil
         }
+    }
+
+    // MARK: - 更新资产的真实性
+
+    /// Release 资产的下载直链必须来自 GitHub 官方域名，且必须是 HTTPS。
+    ///
+    /// `browser_download_url` 来自 API 响应。仓库名虽然是硬编码的，但响应内容本身
+    /// 是不可信输入：一旦它指向攻击者的域名，「应用内更新」就会变成远程代码投递通道。
+    /// 因此这里独立校验 scheme 与 host，不信任响应里说什么就是什么。
+    static func isTrustedDownloadURL(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), scheme == "https",
+              let host = url.host?.lowercased() else {
+            return false
+        }
+        return host == "github.com"
+            || host == "objects.githubusercontent.com"
+            || host.hasSuffix(".github.com")
+            || host.hasSuffix(".githubusercontent.com")
+    }
+
+    /// 确定性地挑出 IPA 直链。
+    ///
+    /// 旧实现取**第一个**后缀为 `.ipa` 的附件：一次 Release 挂了多个 IPA 时
+    /// （不同架构、测试包、或后补的附件）装哪个全看 API 返回顺序 ——
+    /// 既不确定，也让「往 Release 里多加一个附件」成为可行的投毒手法。
+    /// 现在改为：**恰好一个**才给直链；没有或多个都不给，
+    /// 回退到 Release 详情页由用户在浏览器里自己选。
+    static func ipaDownloadURL(from assets: [[String: Any]]) -> URL? {
+        let candidates = assets.compactMap { attachment -> URL? in
+            guard let name = attachment["name"] as? String,
+                  name.lowercased().hasSuffix(".ipa"),
+                  let raw = attachment["browser_download_url"] as? String,
+                  let url = URL(string: raw),
+                  isTrustedDownloadURL(url) else {
+                return nil
+            }
+            return url
+        }
+        guard candidates.count == 1 else { return nil }
+        return candidates[0]
     }
 }
 

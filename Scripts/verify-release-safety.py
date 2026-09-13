@@ -251,6 +251,17 @@ def violations(load=read):
     check(rsd.count("create_rppairing_rsd_connection().await?") == 1,
           "B: RSD creation must happen in exactly one place (inside the gate)")
 
+    # ── 外围专项：更新真实性 ───────────────────────────────────────────────
+    # 应用内更新是一条远程代码投递通道。browser_download_url 是不可信输入：
+    # 不校验 host 就等于允许从任意域名拉 IPA；取「第一个 .ipa」则让多附件 Release
+    # 的装载结果取决于 API 返回顺序 —— 「往 Release 多加一个附件」就成了投毒手法。
+    update_checker = load("Seal/Infrastructure/UpdateChecker.swift")
+    check("static func isTrustedDownloadURL(" in update_checker
+          and "hasSuffix(\".githubusercontent.com\")" in update_checker,
+          "Update: asset URLs must be pinned to GitHub over HTTPS")
+    check("guard candidates.count == 1 else { return nil }" in update_checker,
+          "Update: an ambiguous set of IPA assets must not yield a direct link")
+
     parser = load("Seal/Core/Import/IPAParserService.swift")
     check("nestedData" not in parser and 'code: "SEAL-IPA-101b"' in parser,
           "Import: nested wrappers must not be buffered or committed as inner IPAs")
@@ -441,6 +452,10 @@ def main():
          "ensure_cached_rsd_connection().await?;",
          "create_rppairing_rsd_connection().await?;",
          "B: RSD creation must happen in exactly one place"),
+        ("Seal/Infrastructure/UpdateChecker.swift",
+         "guard candidates.count == 1 else { return nil }",
+         "guard candidates.isEmpty == false else { return nil }",
+         "Update: an ambiguous set of IPA assets"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

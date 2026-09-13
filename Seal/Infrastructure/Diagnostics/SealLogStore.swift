@@ -12,7 +12,6 @@ actor SealLogStore {
     private var buffer: [SealLogEntry] = []
     private var bufferLoaded = false
     private var pendingFlush = false
-    private var pendingMirror = false
     private var hasProtectedOnce = false
 
     init(
@@ -44,9 +43,6 @@ actor SealLogStore {
             )
         )
         buffer = Array(buffer.suffix(maximumEntries))
-        if level == .error {
-            pendingMirror = true
-        }
         scheduleFlush()
     }
 
@@ -58,7 +54,6 @@ actor SealLogStore {
     func clear() throws {
         buffer = []
         bufferLoaded = true
-        pendingMirror = false
         if FileManager.default.fileExists(atPath: fileURL.path) {
             try FileManager.default.removeItem(at: fileURL)
         }
@@ -103,10 +98,9 @@ actor SealLogStore {
     /// 立即把内存缓冲落盘（供测试及需要即时持久的场景；日常 append 仍走节流批量落盘）
     func flush() {
         persist(buffer)
-        if pendingMirror {
-            pendingMirror = false
-            mirrorToDocuments()
-        }
+        // 每次落盘都同步镜像到 Documents：只镜像 error 会导致顺利签名/续签后
+        // 文件 App 的 Seal 文件夹里根本没有 Seal-log.txt 可查。
+        mirrorToDocuments()
     }
 
     /// 把最近日志镜像到 Documents（文件 App → 我的 iPhone → Seal → Seal-log.txt）

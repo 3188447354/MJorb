@@ -66,6 +66,9 @@ struct AppContainer {
                 fileStore: fileStore,
                 appStore: appStore
             )
+            let logStore = SealLogStore(
+                fileURL: sealDirectory.appending(path: AppConfiguration.Paths.sealLogFile)
+            )
             let signingCoordinator = SigningCoordinator(
                 appStore: appStore,
                 accountRepository: accountRepository,
@@ -74,13 +77,11 @@ struct AppContainer {
                 installChannel: installChannel,
                 portal: ApplePortalSigningService(
                     anisetteProvider: anisetteProvider
-                )
+                ),
+                logStore: logStore
             )
             let refreshQueueStore = RefreshQueueStore(
                 fileURL: sealDirectory.appending(path: AppConfiguration.Paths.refreshQueueFile)
-            )
-            let logStore = SealLogStore(
-                fileURL: sealDirectory.appending(path: AppConfiguration.Paths.sealLogFile)
             )
             let signingHistoryStore = SigningHistoryStore(
                 fileURL: sealDirectory.appending(path: AppConfiguration.Paths.signingHistoryFile)

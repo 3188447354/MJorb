@@ -132,6 +132,21 @@
 
 ## 二、历史记录
 
+### 2026-09-13 · v1.1.2 清理仍零效果：全程静默无观测，补日志定位
+- **现象**：用户升 v1.1.2 后「更新→续签→重开再续签」，StikDebug 查 Seal 仍剩 109 条旧 profile
+  （LiveContainer 也剩 7 条——说明普通应用的事后清理也从未删成过，是**全链路零效果**，非仅自更新时机问题）。
+- **根因（待真机日志确认）**：清理全程「最佳努力+静默」，dump/parse/remove 任一步失败都无痕迹。
+  已排除的嫌疑：bundle ID 前缀解析正确（`ProvisioningProfileReader` 会剥 TeamID）；dump 文件命名
+  `<UUID>.mobileprovision` 与枚举匹配；RSD 配对文件在签名流程早期已注入 Rust。
+  待排查：misagent `copy_all` 是否失败、`details(from:)` 是否逐个解析失败、`remove` 是否逐个被拒。
+- **修复（本轮先做可观测性）**：`DeviceProfileCleaner` 三个入口返回 `ProfileCleanupSummary`
+  （扫描/匹配/删除/失败计数 + 中断阶段 + 首个错误）；`SigningCoordinator` 持有 `logStore`，
+  自更新安装前清理与普通应用安装后清理的摘要都写入 Seal 日志（设置页可导出）。
+- **涉及文件**：`Seal/Infrastructure/Installation/DeviceProfileCleaner.swift`、
+  `Seal/Core/Signing/SigningCoordinator.swift`、`Seal/Application/AppContainer.swift`、
+  `project.yml`（1.1.3）、`RELEASE_NOTES.md`。
+- **验证状态**：待 v1.1.3 发布后真机续签一次并导出日志，按摘要定位真实失败点。
+
 ### 2026-09-13 · v1.1.0 仍闪退+描述文件不删：自更新清理任务活不到执行，证书列表命中漏查有效期
 - **现象**：用户已升 v1.1.0（含 09-13 早些时候的「清理+证书有效期」修复），Seal 仍打开闪退「无法验证」，
   且设备端历史描述文件一个都没少。

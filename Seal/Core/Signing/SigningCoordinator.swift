@@ -10,6 +10,7 @@ actor SigningCoordinator {
     private let fileStore: AppFileStore
     private let installChannel: any InstallChannel
     private let portal: ApplePortalSigningService
+    private let logStore: SealLogStore?
 
     init(
         appStore: any AppStore,
@@ -17,7 +18,8 @@ actor SigningCoordinator {
         keychain: KeychainVault,
         fileStore: AppFileStore,
         installChannel: any InstallChannel,
-        portal: ApplePortalSigningService = ApplePortalSigningService()
+        portal: ApplePortalSigningService = ApplePortalSigningService(),
+        logStore: SealLogStore? = nil
     ) {
         self.appStore = appStore
         self.accountRepository = accountRepository
@@ -25,6 +27,7 @@ actor SigningCoordinator {
         self.fileStore = fileStore
         self.installChannel = installChannel
         self.portal = portal
+        self.logStore = logStore
     }
 
     func signAndInstall(
@@ -627,8 +630,12 @@ actor SigningCoordinator {
             // 新 profile 随安装落设备，此刻凡匹配的都是旧文件；安装失败也不影响旧应用启动
             // （启动校验只看包内 embedded.mobileprovision，与设备 profile 列表无关）。
             // 匹配范围含：当前运行 ID + 记录目标 ID + 包内真实 ID，覆盖历史改 ID 残留。
-            await DeviceProfileCleaner.removeAllProfiles(
+            let cleanupSummary = await DeviceProfileCleaner.removeAllProfiles(
                 for: [Bundle.main.bundleIdentifier, bundleIdentifier, effectiveBundleID].compactMap { $0 }
+            )
+            try? await logStore?.append(
+                category: .installation,
+                message: "自更新安装前清理：\(cleanupSummary.logMessage)"
             )
             try await installChannel.install(
                 ipaData: signedData,
@@ -712,9 +719,13 @@ actor SigningCoordinator {
             return
         }
         Task {
-            await DeviceProfileCleaner.removeStaleProfiles(
+            let summary = await DeviceProfileCleaner.removeStaleProfiles(
                 for: effectiveBundleID,
                 keeping: profileUUID
+            )
+            try? await logStore?.append(
+                category: .installation,
+                message: "安装后旧描述文件清理（\(effectiveBundleID)）：\(summary.logMessage)"
             )
         }
     }

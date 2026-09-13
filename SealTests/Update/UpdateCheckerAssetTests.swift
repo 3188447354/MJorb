@@ -13,7 +13,8 @@ struct UpdateCheckerAssetTests {
             "https://objects.githubusercontent.com/github-production-release-asset/x/y"
         ] {
             let url = try #require(URL(string: raw))
-            #expect(UpdateChecker.isTrustedDownloadURL(url), raw)
+            // 第二参数要的是 Comment?，变量不能隐式转换 —— 用插值字面量
+            #expect(UpdateChecker.isTrustedDownloadURL(url), "\(raw)")
         }
     }
 

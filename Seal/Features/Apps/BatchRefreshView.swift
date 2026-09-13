@@ -148,7 +148,7 @@ struct BatchRefreshView: View {
         case .completed(let result):
             VStack(spacing: 10) {
                 if result.failed > 0 {
-                    Button("重试失败项") { viewModel.refreshAll() }
+                    Button("重试失败项") { viewModel.refreshFailedItems() }
                         .sealOutlineAction(cornerRadius: 14)
                 }
                 Button("完成") { viewModel.dismissBatchRefresh(); dismiss() }

@@ -201,13 +201,15 @@ actor ApplePortalInventoryService {
         account: ALTAccount,
         session: ALTAppleAPISession
     ) async throws -> [ALTTeam] {
-        let box: LegacyBox<[ALTTeam]> = try await withCheckedThrowingContinuation {
-            continuation in
-            ALTAppleAPI.shared.fetchTeams(for: account, session: session) { teams, error in
-                if let teams {
-                    continuation.resume(returning: LegacyBox(teams))
-                } else {
-                    continuation.resume(throwing: error ?? URLError(.badServerResponse))
+        let box: LegacyBox<[ALTTeam]> = try await withAppleTimeout {
+            try await withCheckedThrowingContinuation {
+                continuation in
+                ALTAppleAPI.shared.fetchTeams(for: account, session: session) { teams, error in
+                    if let teams {
+                        continuation.resume(returning: LegacyBox(teams))
+                    } else {
+                        continuation.resume(throwing: error ?? URLError(.badServerResponse))
+                    }
                 }
             }
         }
@@ -218,13 +220,15 @@ actor ApplePortalInventoryService {
         team: ALTTeam,
         session: ALTAppleAPISession
     ) async throws -> [ALTX509Certificate] {
-        let box: LegacyBox<[ALTX509Certificate]> = try await withCheckedThrowingContinuation {
-            continuation in
-            ALTAppleAPI.shared.fetchCertificates(for: team, session: session) { certificates, error in
-                if let certificates {
-                    continuation.resume(returning: LegacyBox(certificates))
-                } else {
-                    continuation.resume(throwing: error ?? URLError(.badServerResponse))
+        let box: LegacyBox<[ALTX509Certificate]> = try await withAppleTimeout {
+            try await withCheckedThrowingContinuation {
+                continuation in
+                ALTAppleAPI.shared.fetchCertificates(for: team, session: session) { certificates, error in
+                    if let certificates {
+                        continuation.resume(returning: LegacyBox(certificates))
+                    } else {
+                        continuation.resume(throwing: error ?? URLError(.badServerResponse))
+                    }
                 }
             }
         }
@@ -235,13 +239,15 @@ actor ApplePortalInventoryService {
         team: ALTTeam,
         session: ALTAppleAPISession
     ) async throws -> [ALTAppID] {
-        let box: LegacyBox<[ALTAppID]> = try await withCheckedThrowingContinuation {
-            continuation in
-            ALTAppleAPI.shared.fetchAppIDs(for: team, session: session) { appIDs, error in
-                if let appIDs {
-                    continuation.resume(returning: LegacyBox(appIDs))
-                } else {
-                    continuation.resume(throwing: error ?? URLError(.badServerResponse))
+        let box: LegacyBox<[ALTAppID]> = try await withAppleTimeout {
+            try await withCheckedThrowingContinuation {
+                continuation in
+                ALTAppleAPI.shared.fetchAppIDs(for: team, session: session) { appIDs, error in
+                    if let appIDs {
+                        continuation.resume(returning: LegacyBox(appIDs))
+                    } else {
+                        continuation.resume(throwing: error ?? URLError(.badServerResponse))
+                    }
                 }
             }
         }

@@ -124,6 +124,28 @@
 
 ## 二、历史记录
 
+### 2026-09-13 · 链路恢复闭环批量修复（#2/#3/#6/#7/#8/#9/#10，一次提交一次编译）
+- **范围**：对齐 `SIGNING_CHAIN_ANALYSIS_20260913.md` 恢复链问题，本次批量落地：
+  1. **#2 安装错误恢复分类**：`SigningProgressView.isResignRequired()` 按 `SEAL-INSTALL-71/72/73` 前驱识别「必须重新签名」，
+     按钮改「重新签名」→ `AppsViewModel.retrySigningFromScratch()` 穿透 `forceResign: true`，避免对坏包无限「重新安装」。
+  2. **#3 批量「重试失败项」只重试失败项**：`RenewalCoordinator.refreshFailedItems(appIDs:)` 仅过滤上一轮失败队列
+     （抽 `makeQueue`/`run` 复用），`AppsViewModel.refreshFailedItems()` 从 `batchRefreshSession.items` 收敛失败 ID；
+     `BatchRefreshView` 按钮改调 `refreshFailedItems()`，不再全量 `refreshAll()`。
+  3. **#6 设置页证书/库存超时对齐**：`withAppleTimeout` 升为 module 级，`ApplePortalCertificateService` /
+     `ApplePortalInventoryService` 的 fetchTeams/fetchCertificates/addCertificate/revoke/fetchAppIDs 全部套超时。
+  4. **#7 自更新导入失败保留源 IPA**：`importSelfUpdateFile` 改返回 `Bool`（读 `workflow.state` 是否 `.completed`），
+     `RootTabView.installSelfUpdate` 仅成功才 `deleteDownloadedFile`，失败保留供重试。
+  5. **#8 更新检查语义版本比较**：`UpdateChecker` 改用 `Version.compare` 判「远端严格高于当前」才提示，旧版/回滚 tag 不再误弹。
+  6. **#9 删除伪保护层**：`SelfRenewalContextValidator` + `SelfRenewalTracker`（含测试）未接生产、且与 `startSigning`
+     已有 Team 保真逻辑冲突，删死代码，保留生产侧真实保护。
+  7. **#10 诊断 catch 不再掩盖真实步骤**：`MinimuxerInstallChannel.diagnose()` 加 `currentKind` 追踪，顶层 catch
+     按当前步骤 + `connectionFailure(error)` 归因，取代一律 `.pairingFile` 误报。
+- **涉及文件**：`AppsViewModel.swift`、`SigningProgressView.swift`、`BatchRefreshView.swift`、`RenewalCoordinator.swift`、
+  `RootTabView.swift`、`UpdateChecker.swift`、`ApplePortalSigningService.swift`、`ApplePortalCertificateService.swift`、
+  `ApplePortalInventoryService.swift`、`MinimuxerInstallChannel.swift`；删 `SelfRenewalContextValidator.swift`、
+  `SelfRenewalTracker.swift`、`SelfRenewalContextValidatorTests.swift`。
+- **验证状态**：已改码，待一次云编译 + 真机回归；#1/#5（Apple ID 会话恢复）涉产品决策，后置讨论。
+
 ### 2026-09-13 · 设备端描述文件只增不删（累积 100+ profile）+ 出问题设备 Seal 次日「尚未验证」闪退排查
 - **现象**：① 用户设备 App Expiry 列出 106 个历史描述文件残留；② 另一台设备签名后的 Seal 次日
   「尚未验证」闪退打不开（同一开发者证书下 Sollin Player 仍「已验证」），日志满屏 `SEAL-AUTH-105a`/

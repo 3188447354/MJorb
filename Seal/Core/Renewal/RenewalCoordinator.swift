@@ -53,6 +53,22 @@ actor RenewalCoordinator {
         progress: @Sendable (BatchRefreshEvent) async -> Void
     ) async throws -> BatchRefreshResult {
         let apps = try await appStore.fetchAll()
+        let queue = try await makeQueue(apps: apps)
+        return try await run(queue: queue, progress: progress)
+    }
+
+    /// 只重试上一轮失败的应用，避免对已成功应用重复签名/上传/安装。
+    func refreshFailedItems(
+        appIDs: [UUID],
+        progress: @Sendable (BatchRefreshEvent) async -> Void
+    ) async throws -> BatchRefreshResult {
+        let apps = try await appStore.fetchAll()
+        let failedIDs = Set(appIDs)
+        let queue = try await makeQueue(apps: apps).filter { failedIDs.contains($0.appID) }
+        return try await run(queue: queue, progress: progress)
+    }
+
+    private func makeQueue(apps: [AppRecord]) async throws -> [RefreshQueueItem] {
         let fallbackAccountID: UUID?
         if let provider = defaultAccountIDProvider {
             fallbackAccountID = await provider()
@@ -65,7 +81,18 @@ actor RenewalCoordinator {
         } else {
             allAccounts = []
         }
-        let queue = planner.makeQueue(apps: apps, fallbackAccountID: fallbackAccountID, accounts: allAccounts)
+        return planner.makeQueue(
+            apps: apps,
+            fallbackAccountID: fallbackAccountID,
+            accounts: allAccounts
+        )
+    }
+
+    private func run(
+        queue: [RefreshQueueItem],
+        progress: @Sendable (BatchRefreshEvent) async -> Void
+    ) async throws -> BatchRefreshResult {
+        let apps = try await appStore.fetchAll()
         let queuedApps = queue.compactMap { item in apps.first(where: { $0.id == item.appID }) }
         await progress(.prepared(apps: queuedApps))
         try await queueStore.replace(with: queue)

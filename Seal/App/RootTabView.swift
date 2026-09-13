@@ -110,8 +110,10 @@ struct RootTabView: View {
     private func installSelfUpdate(_ localURL: URL) {
         selection = .apps
         Task {
-            await appsViewModel.importSelfUpdateFile(localURL)
-            UpdateIPADownloader.shared.deleteDownloadedFile(at: localURL)
+            let imported = await appsViewModel.importSelfUpdateFile(localURL)
+            if imported {
+                UpdateIPADownloader.shared.deleteDownloadedFile(at: localURL)
+            }
         }
     }
 

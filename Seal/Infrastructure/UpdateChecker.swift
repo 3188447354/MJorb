@@ -35,8 +35,9 @@ struct UpdateChecker {
             // 本地版本
             let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
 
-            // 如果最新版本和当前版本相同，不提示
-            if tagName == currentVersion || tagName == "v\(currentVersion)" {
+            // 只有远端版本「严格高于」当前版本才提示更新；
+            // 回滚、发布顺序错乱或 tag 异常返回旧版本时静默忽略，避免提示下载旧 IPA。
+            if Version.compare(tagName, currentVersion) != .orderedDescending {
                 return nil
             }
 

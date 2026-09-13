@@ -393,6 +393,7 @@ struct SigningProgressView: View {
     private func primaryRecoveryTitle(_ failure: ImportFailure) -> String {
         if isNonRetryableFailure(failure) { return "知道了" }
         if failure.code.hasPrefix("SEAL-NET-") { return "重试" }
+        if isResignRequired(failure) { return "重新签名" }
         if isInstallChannelFailure(failure) { return "重新安装" }
         if isTeamFailure(failure) { return "选择 Team" }
         if isAuthFailure(failure) { return "重新验证 Apple ID" }
@@ -411,6 +412,8 @@ struct SigningProgressView: View {
             dismiss()
         } else if failure.code.hasPrefix("SEAL-NET-") {
             viewModel.retrySigning()
+        } else if isResignRequired(failure) {
+            viewModel.retrySigningFromScratch()
         } else if isInstallChannelFailure(failure) {
             Task { await viewModel.retryInstallationForCurrentSigningSession() }
         } else if isTeamFailure(failure) {
@@ -469,6 +472,16 @@ struct SigningProgressView: View {
 
     private func isInstallChannelFailure(_ failure: ImportFailure) -> Bool {
         failure.code.hasPrefix("SEAL-INSTALL-")
+    }
+
+    /// 签名包「内容本身」出错（缺失/损坏/过期/设备不符/Team 不符/结构不完整），
+    /// 重复安装同一个坏包不会改变结果，必须重新签名。对应错误码区间：
+    /// SEAL-INSTALL-700~710 = 设备/安装通道（可重装或确定性）；711~730 = 重新签名。
+    private func isResignRequired(_ failure: ImportFailure) -> Bool {
+        let code = failure.code
+        return code.hasPrefix("SEAL-INSTALL-71")
+            || code.hasPrefix("SEAL-INSTALL-72")
+            || code.hasPrefix("SEAL-INSTALL-73")
     }
 
     /// 确定性失败：重试 / 重新安装都无法改变结果，只能按指引手动处理后重试。

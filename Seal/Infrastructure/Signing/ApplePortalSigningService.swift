@@ -216,7 +216,7 @@ enum ApplePortalSigningFailure {
 
 /// AltSign 回调式 API 的 async 包装 + 超时保护。
 /// AltSign 内部 URLSession 没有设置超时，Apple 服务器不响应时回调永远不触发，UI 会永久卡住。
-private func withAppleTimeout<T: Sendable>(
+func withAppleTimeout<T: Sendable>(
     _ seconds: UInt64 = 20,
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {

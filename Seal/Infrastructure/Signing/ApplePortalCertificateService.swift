@@ -212,10 +212,12 @@ actor ApplePortalCertificateService {
         account: ALTAccount,
         session: ALTAppleAPISession
     ) async throws -> [ALTTeam] {
-        let box: LegacyBox<[ALTTeam]> = try await withCheckedThrowingContinuation {
-            continuation in
-            ALTAppleAPI.shared.fetchTeams(for: account, session: session) { teams, error in
-                Self.resume(continuation, value: teams, error: error)
+        let box: LegacyBox<[ALTTeam]> = try await withAppleTimeout {
+            try await withCheckedThrowingContinuation {
+                continuation in
+                ALTAppleAPI.shared.fetchTeams(for: account, session: session) { teams, error in
+                    Self.resume(continuation, value: teams, error: error)
+                }
             }
         }
         return box.value
@@ -225,10 +227,12 @@ actor ApplePortalCertificateService {
         team: ALTTeam,
         session: ALTAppleAPISession
     ) async throws -> [ALTX509Certificate] {
-        let box: LegacyBox<[ALTX509Certificate]> = try await withCheckedThrowingContinuation {
-            continuation in
-            ALTAppleAPI.shared.fetchCertificates(for: team, session: session) { certificates, error in
-                Self.resume(continuation, value: certificates, error: error)
+        let box: LegacyBox<[ALTX509Certificate]> = try await withAppleTimeout {
+            try await withCheckedThrowingContinuation {
+                continuation in
+                ALTAppleAPI.shared.fetchCertificates(for: team, session: session) { certificates, error in
+                    Self.resume(continuation, value: certificates, error: error)
+                }
             }
         }
         return box.value
@@ -239,14 +243,16 @@ actor ApplePortalCertificateService {
         session: ALTAppleAPISession,
         deviceName: String
     ) async throws -> ALTCertificate {
-        let box: LegacyBox<ALTCertificate> = try await withCheckedThrowingContinuation {
-            continuation in
-            ALTAppleAPI.shared.addCertificate(
-                machineName: Self.certificateMachineName(team: team, deviceName: deviceName),
-                to: team,
-                session: session
-            ) { certificate, error in
-                Self.resume(continuation, value: certificate, error: error)
+        let box: LegacyBox<ALTCertificate> = try await withAppleTimeout {
+            try await withCheckedThrowingContinuation {
+                continuation in
+                ALTAppleAPI.shared.addCertificate(
+                    machineName: Self.certificateMachineName(team: team, deviceName: deviceName),
+                    to: team,
+                    session: session
+                ) { certificate, error in
+                    Self.resume(continuation, value: certificate, error: error)
+                }
             }
         }
         return box.value
@@ -257,13 +263,15 @@ actor ApplePortalCertificateService {
         team: ALTTeam,
         session: ALTAppleAPISession
     ) async throws {
-        try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<Void, any Error>) in
-            ALTAppleAPI.shared.revoke(certificate, for: team, session: session) { success, error in
-                if success {
-                    continuation.resume()
-                } else {
-                    continuation.resume(throwing: error ?? URLError(.badServerResponse))
+        try await withAppleTimeout {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, any Error>) in
+                ALTAppleAPI.shared.revoke(certificate, for: team, session: session) { success, error in
+                    if success {
+                        continuation.resume()
+                    } else {
+                        continuation.resume(throwing: error ?? URLError(.badServerResponse))
+                    }
                 }
             }
         }

@@ -623,17 +623,20 @@ final class AppsViewModel: ObservableObject {
     }
 
     func importSelectedFile(_ url: URL) async {
-        await importSelectedFile(url, autoOpenSigning: false)
+        _ = await importSelectedFile(url, autoOpenSigning: false)
     }
 
     /// 应用内更新下载完成后导入 Seal 自身 IPA，成功后自动打开签名抽屉覆盖安装。
-    func importSelfUpdateFile(_ url: URL) async {
+    /// 返回 true 表示 IPA 已成功入库（记录已提交）；失败时保留下载源供用户重试。
+    @discardableResult
+    func importSelfUpdateFile(_ url: URL) async -> Bool {
         await importSelectedFile(url, autoOpenSigning: true)
     }
 
-    private func importSelectedFile(_ url: URL, autoOpenSigning: Bool) async {
-        guard let workflow, phase == .idle else { return }
-        guard let operationLease = await acquireOperation(.importing) else { return }
+    @discardableResult
+    private func importSelectedFile(_ url: URL, autoOpenSigning: Bool) async -> Bool {
+        guard let workflow, phase == .idle else { return false }
+        guard let operationLease = await acquireOperation(.importing) else { return false }
         defer { releaseOperation(operationLease) }
         let hasSecurityScope = url.startAccessingSecurityScopedResource()
         defer {
@@ -649,6 +652,10 @@ final class AppsViewModel: ObservableObject {
         phase = .preparing
         await workflow.prepare(sourceURL: url)
         await consumeWorkflowState()
+        if case .completed = await workflow.state {
+            return true
+        }
+        return false
     }
 
     func confirmImport() async {
@@ -917,6 +924,17 @@ final class AppsViewModel: ObservableObject {
         )
     }
 
+    /// 「重新签名」场景：签名包已缺失/损坏/过期/设备不符/结构不完整，
+    /// 必须强制重新走完整签名（不复用本机缓存的旧签名包），否则会对同一个坏包反复安装。
+    func retrySigningFromScratch() {
+        guard let session = signingSession else { return }
+        restartSigning(
+            session,
+            allowDroppingExtensions: session.allowsDroppingExtensions,
+            forceResign: true
+        )
+    }
+
     /// 用户已在 Lara 完成 3-App Bypass 后继续签名：跳过免费账号设备上限预检，
     /// 交回 installd 最终裁决（未真正绕过时 installd 仍会拒绝并落到 iOS 拒绝分支）。
     func continueBypassingDeviceLimit() {
@@ -1152,6 +1170,19 @@ final class AppsViewModel: ObservableObject {
         startBatchRefresh()
     }
 
+    /// 「重试失败项」：只重试上一轮失败的 App，避免对已成功应用重复签名/上传/安装。
+    func refreshFailedItems() {
+        let failedIDs = batchRefreshSession?.items
+            .filter { $0.state == .failed }
+            .map { $0.id } ?? []
+        guard failedIDs.isEmpty == false else {
+            // 兜底：无法定位失败项时按全量处理，避免「重试失败项」变成空操作。
+            startBatchRefresh()
+            return
+        }
+        startBatchRefresh(appIDs: failedIDs)
+    }
+
     func cancelBatchRefresh() {
         batchRefreshTask?.cancel()
         batchRefreshSession = nil
@@ -1170,7 +1201,7 @@ final class AppsViewModel: ObservableObject {
         }
     }
 
-    private func startBatchRefresh() {
+    private func startBatchRefresh(appIDs: [UUID]? = nil) {
         guard batchRefreshTask == nil,
               signingTask == nil,
               renewalCoordinator != nil else { return }
@@ -1182,7 +1213,7 @@ final class AppsViewModel: ObservableObject {
                 self.batchRefreshSession?.status = .failed(Self.connectionRecoveryFailure)
                 return
             }
-            await self.runBatchRefresh()
+            await self.runBatchRefresh(appIDs: appIDs)
         }
     }
 
@@ -1196,7 +1227,7 @@ final class AppsViewModel: ObservableObject {
         )
     }
 
-    private func runBatchRefresh() async {
+    private func runBatchRefresh(appIDs: [UUID]? = nil) async {
         guard let renewalCoordinator else { return }
         guard let operationLease = await acquireOperation(.renewing) else {
             batchRefreshSession = nil
@@ -1213,7 +1244,12 @@ final class AppsViewModel: ObservableObject {
             let progress: @Sendable (BatchRefreshEvent) async -> Void = { [weak self] event in
                 await self?.consumeBatchEvent(event)
             }
-            let result = try await renewalCoordinator.refreshAll(progress: progress)
+            let result: BatchRefreshResult
+            if let appIDs {
+                result = try await renewalCoordinator.refreshFailedItems(appIDs: appIDs, progress: progress)
+            } else {
+                result = try await renewalCoordinator.refreshAll(progress: progress)
+            }
             if result.total == 0 {
                 batchRefreshSession = nil
                 alertFailure = ImportFailure(
@@ -1472,7 +1508,8 @@ final class AppsViewModel: ObservableObject {
     private func restartSigning(
         _ session: SigningSession,
         allowDroppingExtensions: Bool,
-        bypassFreeAccountDeviceLimit: Bool = false
+        bypassFreeAccountDeviceLimit: Bool = false,
+        forceResign: Bool = false
     ) {
         guard signingTask == nil,
               batchRefreshTask == nil,
@@ -1487,7 +1524,8 @@ final class AppsViewModel: ObservableObject {
                 selectedCertificateSerialNumber: session.selectedCertificateSerialNumber,
                 completionMode: session.completionMode,
                 allowDroppingExtensions: allowDroppingExtensions,
-                bypassFreeAccountDeviceLimit: bypassFreeAccountDeviceLimit
+                bypassFreeAccountDeviceLimit: bypassFreeAccountDeviceLimit,
+                forceResign: forceResign
             )
         }
     }
@@ -1499,7 +1537,8 @@ final class AppsViewModel: ObservableObject {
         selectedCertificateSerialNumber: String?,
         completionMode: SigningCompletionMode,
         allowDroppingExtensions: Bool,
-        bypassFreeAccountDeviceLimit: Bool = false
+        bypassFreeAccountDeviceLimit: Bool = false,
+        forceResign: Bool = false
     ) async {
         guard let signingCoordinator else { return }
         defer { signingTask = nil }
@@ -1527,7 +1566,7 @@ final class AppsViewModel: ObservableObject {
                 requestedBundleIdentifier: requestedBundleIdentifier,
                 selectedCertificateSerialNumber: selectedCertificateSerialNumber,
                 allowDroppingExtensions: allowDroppingExtensions,
-                forceResign: isRenewal,
+                forceResign: forceResign || isRenewal,
                 bypassFreeAccountDeviceLimit: bypassFreeAccountDeviceLimit,
                 progress: { [weak self] stage in
                     await self?.updateSigningStage(stage)

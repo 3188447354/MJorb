@@ -58,6 +58,9 @@ actor MinimuxerInstallChannel: InstallChannel {
     func diagnose() async -> InstallChannelDiagnostics {
         var steps = InstallChannelDiagnostics.empty.steps
         var deviceIdentifier: String?
+        // 追踪当前正进行到哪一步，顶层 catch 据此归因，避免配对/目录/设备断开等
+        // 无关异常被一律误报成「配对文件损坏」。
+        var currentKind: InstallDiagnosticStepKind = .pairingFile
 
         func pass(_ kind: InstallDiagnosticStepKind) {
             if let index = steps.firstIndex(where: { $0.kind == kind }) {
@@ -80,6 +83,7 @@ actor MinimuxerInstallChannel: InstallChannel {
         }
 
         func run(_ kind: InstallDiagnosticStepKind) {
+            currentKind = kind
             if let index = steps.firstIndex(where: { $0.kind == kind }) {
                 steps[index].status = .running
             }
@@ -203,9 +207,10 @@ actor MinimuxerInstallChannel: InstallChannel {
             )
             #endif
         } catch let failure as ImportFailure {
-            return fail(.pairingFile, failure)
+            return fail(currentKind, failure)
         } catch {
-            return fail(.pairingFile, Self.missingPairingFailure)
+            lastDiscoveryDetail = Self.diagnostic(error)
+            return fail(currentKind, Self.connectionFailure(error))
         }
     }
 

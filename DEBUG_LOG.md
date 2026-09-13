@@ -1491,3 +1491,14 @@
 - **涉及文件**：`Seal/Infrastructure/Storage/AppFileStore.swift`、
   `SealTests/Storage/AppFileStorePathEscapeTests.swift`（新增 3 例）。
 - **验证状态**：护栏 66+33 → 67+34 PASS。**Swift 编译与单测待 CI。**
+
+### 31. 浮动 major tag 的 GitHub Action：CI 是一段可被上游改写的远程代码
+- **风险**：`actions/cache@v5` / `actions/download-artifact@v7` 这类浮动 major tag
+  **可以被上游移动**。只要上游账号或仓库被入侵，我们的 CI 就会执行攻击者的代码，
+  而 CI 恰恰持有发布用的凭据 —— 这是整条供应链里最值钱的目标。
+- **修法**：钉到 40 位 commit SHA，并保留 `# v5` 注释（便于人读与 Dependabot 识别）。
+  钉的是**当前正在跑的那个 commit**，所以是零功能变化，不引入升级风险。
+- **为什么不顺手升级 major**：v5→v6、v7→v8 都可能有 breaking change，
+  而本次目标是消除「可被移动」这个属性，不是升级。两者应当分开做。
+- **守卫口径**：只禁 `@vN`（单个版本段）。`@v6.0.2` 精确到 patch、风险远低，不在禁止之列。
+- **涉及文件**：`.github/workflows/*.yml`（cache 12 处、download-artifact 2 处）。

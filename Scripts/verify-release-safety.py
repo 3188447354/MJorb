@@ -279,6 +279,24 @@ def violations(load=read):
           and "candidate.resolvingSymlinksInPath()" in file_store,
           "Storage: descendant checks must resolve symlinks on both sides")
 
+    # ── 外围专项：供应链（GitHub Action 必须钉到 commit SHA）──────────────
+    # actions/cache@v5 这类浮动 major tag 可以被上游移动指向任意代码 ——
+    # 只要上游账号或仓库被入侵，CI 就会执行攻击者的代码，并拿到发布用的凭据。
+    # 必须钉到 40 位 commit SHA（保留 `# v5` 注释便于人读与 Dependabot 识别）。
+    # 注意：@v6.0.2 这种精确到 patch 的标签不在禁止之列（风险远低于 @vN）。
+    floating_actions = []
+    for name in ("ios.yml", "ios-release.yml", "ios-fast.yml", "pairing-assistant.yml"):
+        for line in load(".github/workflows/" + name).splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("uses:") or "@" not in stripped:
+                continue
+            ref = stripped.split("@", 1)[1].strip().split()[0]
+            if ref.startswith("v") and ref.count(".") == 0:
+                floating_actions.append(name + " -> " + stripped)
+    check(not floating_actions,
+          "Supply chain: GitHub Actions must be pinned to a commit SHA ("
+          + " | ".join(floating_actions) + ")")
+
     parser = load("Seal/Core/Import/IPAParserService.swift")
     check("nestedData" not in parser and 'code: "SEAL-IPA-101b"' in parser,
           "Import: nested wrappers must not be buffered or committed as inner IPAs")
@@ -481,6 +499,10 @@ def main():
          "candidate.resolvingSymlinksInPath().standardizedFileURL.path",
          "candidate.standardizedFileURL.path",
          "Storage: descendant checks must resolve symlinks"),
+        (".github/workflows/ios.yml",
+         "uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5",
+         "uses: actions/cache@v5",
+         "Supply chain: GitHub Actions must be pinned"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

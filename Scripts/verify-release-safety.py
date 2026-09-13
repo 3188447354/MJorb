@@ -175,6 +175,29 @@ def violations(load=read):
     check(maintenance_at != -1 and first_load_at != -1 and maintenance_at < first_load_at,
           "C: maintenance must run before the first read so recovered records are visible")
 
+    # ── D 包（R07 自续签确认）──────────────────────────────────────────────
+    # 同版本续签会换掉 profile（新 UUID、新有效期）但版本号不变 ⇒ 结算必须按 profile 身份，
+    # 只比版本号会把「那次自更新其实失败了」当成成功，UI 显示一个设备上不存在的有效期。
+    self_metadata = load("Seal/Core/Renewal/SelfAppMetadata.swift")
+    check("provisioningProfileUUID" in self_metadata
+          and "ProvisioningProfileReader().details(from:" in self_metadata,
+          "D: the running bundle must expose its provisioning profile identity")
+    self_registrar = load("Seal/Core/Renewal/SelfAppRegistrar.swift")
+    check("reconcileSealRecordFromRunningBundleIfNeeded" in self_registrar
+          and "reconcileSealRecordBindingIfNeeded" not in self_registrar,
+          "D: the same-version branch must settle from the running bundle")
+    same_version = section(self_registrar, "// 版本一致且文件存在", "// 版本变更或文件缺失")
+    check("reconcileSealRecordFromRunningBundleIfNeeded" in same_version,
+          "D: the same-version branch must reconcile from the running bundle")
+    reconcile = section(
+        self_registrar,
+        "private func reconcileSealRecordFromRunningBundleIfNeeded(",
+        "// 防御性对齐"
+    )
+    check("metadata.provisioningProfileUUID" in reconcile
+          and "metadata.expirationDate" in reconcile,
+          "D: settlement must compare profile identity and expiry")
+
     parser = load("Seal/Core/Import/IPAParserService.swift")
     check("nestedData" not in parser and 'code: "SEAL-IPA-101b"' in parser,
           "Import: nested wrappers must not be buffered or committed as inner IPAs")
@@ -329,6 +352,18 @@ def main():
          "await viewModel.runMaintenanceIfIdle()",
          "",
          "C: maintenance must run before the first read"),
+        ("Seal/Core/Renewal/SelfAppMetadata.swift",
+         "ProvisioningProfileReader().details(from:",
+         "ProvisioningProfileReader().summary(from:",
+         "D: the running bundle must expose its provisioning profile identity"),
+        ("Seal/Core/Renewal/SelfAppRegistrar.swift",
+         "try await reconcileSealRecordFromRunningBundleIfNeeded(",
+         "try await cleanupDuplicateSealRecords(records: records, keepID: existing.id) // ",
+         "D: the same-version branch must reconcile"),
+        ("Seal/Core/Renewal/SelfAppRegistrar.swift",
+         "if let uuid = metadata.provisioningProfileUUID,",
+         "if let uuid = existing.provisioningProfileUUID,",
+         "D: settlement must compare profile identity and expiry"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

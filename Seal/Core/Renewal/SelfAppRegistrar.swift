@@ -59,9 +59,10 @@ actor SelfAppRegistrar {
            existing.ipaRelativePath.isEmpty == false,
            try await fileStore.exists(relativePath: existing.ipaRelativePath) {
             try await cleanupDuplicateSealRecords(records: records, keepID: existing.id)
-            // 版本一致也回补 Team/账号：首次未记录时，后续启动从自身描述文件补全，
-            // 避免续签时退化成"选第一个账号"导致 Bundle ID 被占用。
-            try await reconcileSealRecordBindingIfNeeded(
+            // 版本一致也回补：Team/账号（首次未记录时从自身描述文件补全，避免续签时退化成
+            // "选第一个账号"导致 Bundle ID 被占用），**以及 profile 身份与有效期**。
+            // 后者是 R07：同版本续签会换掉 profile 但版本号不变，只比版本就会漏掉结算。
+            try await reconcileSealRecordFromRunningBundleIfNeeded(
                 existing: existing,
                 metadata: metadata,
                 accounts: accounts
@@ -196,9 +197,16 @@ actor SelfAppRegistrar {
         }
     }
 
-    /// 版本一致时的轻量回补：只更新 Team/账号绑定，不重打包 IPA。
-    /// 解决"首次启动未记录账号 → 之后版本不变永远未记录 → 续签错选第一个账号"的问题。
-    private func reconcileSealRecordBindingIfNeeded(
+    /// 版本一致时的轻量回补：从**当前运行包**回补 Team/账号绑定与 profile 身份，不重打包 IPA。
+    ///
+    /// 为什么不能只看版本（R07）：同版本续签会换掉 profile（新 UUID、新有效期）但**版本号不变**。
+    /// 旧实现在这个分支只回补 Team/账号就 `return`，于是数据库里的有效期始终停留在
+    /// 「安装前乐观写入」的那一份 —— 一旦那次自更新实际失败（或进程在安装中被系统杀掉），
+    /// UI 会显示一个设备上并不存在的有效期，用户直到应用被吊销都收不到提醒。
+    ///
+    /// **运行中的 Bundle 才是唯一可信证据**：它要么是新包（续签生效，读到新 profile），
+    /// 要么是旧包（续签失败，读到旧 profile）。因此这里按 profile 身份结算，而不是按版本号。
+    private func reconcileSealRecordFromRunningBundleIfNeeded(
         existing: AppRecord,
         metadata: SelfAppMetadata,
         accounts: [AppleAccountRecord]
@@ -209,13 +217,55 @@ actor SelfAppRegistrar {
             accounts: accounts,
             fallbackAccountID: existing.accountID
         )
-        guard existing.signingTeamID != resolvedTeamID
-                || existing.accountID != resolvedAccountID else {
-            return
-        }
+
         var updated = existing
-        updated.signingTeamID = resolvedTeamID
-        updated.accountID = resolvedAccountID
+        var changed = false
+
+        if existing.signingTeamID != resolvedTeamID {
+            updated.signingTeamID = resolvedTeamID
+            changed = true
+        }
+        if existing.accountID != resolvedAccountID {
+            updated.accountID = resolvedAccountID
+            changed = true
+        }
+
+        // ── profile 身份：同版本续签唯一的可观测差异 ──
+        if let uuid = metadata.provisioningProfileUUID,
+           uuid != existing.provisioningProfileUUID {
+            updated.provisioningProfileUUID = uuid
+            changed = true
+        }
+        if let name = metadata.provisioningProfileName,
+           name != existing.provisioningProfileName {
+            updated.provisioningProfileName = name
+            changed = true
+        }
+        if let creationDate = metadata.provisioningProfileCreationDate,
+           creationDate != existing.provisioningProfileCreationDate {
+            updated.provisioningProfileCreationDate = creationDate
+            changed = true
+        }
+        if let expiry = metadata.expirationDate,
+           expiry != existing.expiryDate || expiry != existing.provisioningProfileExpirationDate {
+            // 结算：以运行包内的真实 profile 为准（可能是新包，也可能是回滚后的旧包）
+            updated.expiryDate = expiry
+            updated.provisioningProfileExpirationDate = expiry
+            changed = true
+        }
+
+        // 防御性对齐：运行中的版本号才是事实。同版本分支下这两条是空操作，
+        // 但函数若被其它入口复用，缺了它们会留下「DB 版本 ≠ 运行版本」的脏数据。
+        if existing.version != metadata.version {
+            updated.version = metadata.version
+            changed = true
+        }
+        if existing.buildNumber != metadata.buildNumber {
+            updated.buildNumber = metadata.buildNumber
+            changed = true
+        }
+
+        guard changed else { return }
         try await appStore.save(updated)
     }
 }

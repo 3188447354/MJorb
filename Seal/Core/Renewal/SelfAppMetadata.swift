@@ -12,6 +12,11 @@ struct SelfAppMetadata: Sendable {
     let expirationDate: Date?
     let signingTeamIdentifier: String?
     let signingApplicationIdentifier: String?
+    /// 运行中包内 `embedded.mobileprovision` 的身份。同版本续签会换掉 profile 但**版本号不变**，
+    /// 因此 profile 身份是判断「续签是否真的生效」的唯一可观测证据（见 R07）。
+    var provisioningProfileUUID: String? = nil
+    var provisioningProfileName: String? = nil
+    var provisioningProfileCreationDate: Date? = nil
 
     @MainActor
     static func current(bundle: Bundle = .main) -> SelfAppMetadata? {
@@ -26,9 +31,11 @@ struct SelfAppMetadata: Sendable {
             forInfoDictionaryKey: "CFBundleVersion"
         ) as? String) ?? "1"
         let profileURL = bundle.url(forResource: "embedded", withExtension: "mobileprovision")
-        let profileSummary = profileURL
+        // 用 details 而不是 summary：summary 不含 UUID/Name/CreationDate，
+        // 而「同版本续签是否生效」只能靠 profile 身份判断。
+        let profileDetails = profileURL
             .flatMap { try? Data(contentsOf: $0, options: .mappedIfSafe) }
-            .flatMap { try? ProvisioningProfileReader().summary(from: $0) }
+            .flatMap { try? ProvisioningProfileReader().details(from: $0) }
 
         return SelfAppMetadata(
             bundleURL: bundle.bundleURL,
@@ -40,9 +47,12 @@ struct SelfAppMetadata: Sendable {
             version: version,
             buildNumber: buildNumber,
             iconData: iconData(bundle: bundle),
-            expirationDate: profileSummary?.expirationDate,
-            signingTeamIdentifier: profileSummary?.teamIdentifier,
-            signingApplicationIdentifier: profileSummary?.applicationIdentifier
+            expirationDate: profileDetails?.expirationDate,
+            signingTeamIdentifier: profileDetails?.teamIdentifier,
+            signingApplicationIdentifier: profileDetails?.applicationIdentifier,
+            provisioningProfileUUID: profileDetails?.uuid,
+            provisioningProfileName: profileDetails?.name,
+            provisioningProfileCreationDate: profileDetails?.creationDate
         )
     }
 

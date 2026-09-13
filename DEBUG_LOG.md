@@ -145,7 +145,9 @@
 - **涉及文件**：`Seal/Infrastructure/Installation/DeviceProfileCleaner.swift`、
   `Seal/Core/Signing/SigningCoordinator.swift`、`Seal/Application/AppContainer.swift`、
   `project.yml`（1.1.3）、`RELEASE_NOTES.md`。
-- **验证状态**：待 v1.1.3 发布后真机续签一次并导出日志，按摘要定位真实失败点。
+- **验证状态**：`iOS Release Fast` 云编译+发布已通过（run `34747712847`），`v1.1.3` 已发布到
+  `sunuannian1/Seal-Releases`（资产含 `Seal.ipa` / `.sha256` / 两份 Info.plist，`target=main`）。
+  待真机：升 v1.1.3 → 对 Seal 续签一次 → 设置页导出日志，按「描述文件清理」摘要定位真实失败点。
 
 ### 2026-09-13 · v1.1.0 仍闪退+描述文件不删：自更新清理任务活不到执行，证书列表命中漏查有效期
 - **现象**：用户已升 v1.1.0（含 09-13 早些时候的「清理+证书有效期」修复），Seal 仍打开闪退「无法验证」，

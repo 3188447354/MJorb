@@ -157,8 +157,10 @@
 - **涉及文件**：`Seal/Infrastructure/Installation/DeviceProfileCleaner.swift`、
   `Seal/Core/Signing/SigningCoordinator.swift`、`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、
   `.github/workflows/ios-release.yml`、`project.yml`（1.1.2）、`RELEASE_NOTES.md`。
-- **验证状态**：待 `iOS Release Fast` 云编译+发布验证。真机回归重点：自更新后设置→通用→VPN与设备管理里
-  Seal 的旧 profile 只剩最新一份；续签后次日不再「尚未验证」闪退。
+- **验证状态**：`iOS Release Fast` 云编译+发布已通过（run `34746602401`，提交 `fddb661`），`v1.1.2` 已发布到
+  `sunuannian1/Seal-Releases`（资产含 `Seal.ipa` / `.sha256` / 两份 Info.plist，`target=main`）。
+  真机回归重点：升到 v1.1.2 后对 Seal 做一次续签，StikDebug 里 Seal 的历史描述文件应只剩最新一份；
+  之后每次续签/自更新自动保持清洁；续签后次日不再「尚未验证」闪退。
 
 ### 2026-09-13 · #1/#5 闭环：签名页死验证码移除，账号验证状态按错误码家族落库
 - **现象**：签名链路持有 `verificationCodeProvider` / `reauthenticate()` 但生产从不调用，会话过期只能跳设置页；

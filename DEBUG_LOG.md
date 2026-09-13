@@ -124,6 +124,32 @@
 
 ## 二、历史记录
 
+### 2026-09-13 · 设备端描述文件只增不删（累积 100+ profile）+ 出问题设备 Seal 次日「尚未验证」闪退排查
+- **现象**：① 用户设备 App Expiry 列出 106 个历史描述文件残留；② 另一台设备签名后的 Seal 次日
+  「尚未验证」闪退打不开（同一开发者证书下 Sollin Player 仍「已验证」），日志满屏 `SEAL-AUTH-105a`/
+  `1100 session expired`/`SEAL-EXT-401`。
+- **根因（两层，勿混）**：
+  1. **设备端 profile 只增不删**：provisioning profile 随签名安装自动注册进设备（misagent `copy_all` 可见），
+     Seal 安装链路从不调用 `misagent.remove` 清理旧的；叠加「免费账号云端 profile 自 2023-03-20 起无法删除，
+     每次签名都生成新 profile」（`fetchProvisioningProfile` 已对齐 AltStore 处理），设备端持续累积。
+  2. **Seal「尚未验证」是证书/凭证层，非 profile 过期**（同证书下其他 app 能验证过 = 证书整体没吊销）：
+     高度怀疑 `signingIdentity` 快速路径「拉不到 Apple 证书列表（网络失败/限流）→ 直接退回本地旧证书、
+     不校验其是否已过期」降级分支（`ApplePortalSigningService.swift:644-646`），与当日 1100 会话过期环境吻合。
+- **修复（已实施）**：签名/续签安装成功后按「当前 Bundle ID」精确清理，**严禁「删全部」**：
+  1. `SignedArtifactProfileReader` 从签名后 IPA 读主应用 `embedded.mobileprovision` 的 UUID（作为「保留的新 profile」依据）；
+  2. `DeviceProfileCleaner.removeStaleProfiles(for:keeping:)`：`Provision.dumpProfiles`（misagent `copy_all`）枚举 →
+     按 Bundle ID 过滤（case 不敏感）→ `Provision.removeProvisioningProfile` 删掉 UUID ≠ 新 profile 的旧文件；
+     全链路静默失败，绝不阻断安装结果。
+  3. `SigningCoordinator.installSignedIPA` 三条「已安装」出口（isSeal 自更新 / 普通安装 / retry 后设备已装）均挂接清理。
+  4. `ApplePortalSigningService.signingIdentity` 降级分支「网络失败→退回本地证书」前新增 `X509CertificateValidityReader`
+     过期校验，本地证书已过期则**不复用**、落入慢速路径重新申请（复用过期证书正是「次日尚未验证闪退」的高度可疑根因）。
+  底层 `remove`/`copy_all` 能力已齐（RSD + LockDown 双路径），仅 Swift 编排，Rust 零新增。
+- **涉及文件**：新增 `Seal/Infrastructure/Installation/DeviceProfileCleaner.swift`、
+  `Seal/Infrastructure/Installation/SignedArtifactProfileReader.swift`；改 `SigningCoordinator.swift`（installSignedIPA 三个安装出口）、
+  `ApplePortalSigningService.swift`（signingIdentity 降级分支）；复用 `Vendor/Minimuxer/Sources/Provision.swift`、
+  `Seal/Infrastructure/Renewal/ProvisioningProfileReader.swift`（`details(from:)` 读 UUID/BundleID）。
+- **验证状态**：已改码，待 Xcode 云编译 + 真机回归；闪退最终定性仍缺「出问题设备 Seal 内嵌 profile 过期时间」这一块证据（profile 是否已过期尚未取到）。
+
 ### 2026-09-13 · v1.1.0 内置 SealTunnel 无法替代外部 LocalDevVPN：续签卡「正在连接设备」，已回退运行时假隧道
 - **现象**：升级到 v1.1.0 后，续签 Seal 自身停在进度 6%（`.waitingForChannel`「正在连接设备」）
   一直不前进；用户已开 Wi-Fi 且打开外部 LocalDevVPN，仍卡住。

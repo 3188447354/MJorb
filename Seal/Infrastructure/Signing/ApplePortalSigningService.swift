@@ -641,8 +641,13 @@ actor ApplePortalSigningService {
                 }
                 // 证书已不在 Apple 生效列表，落到慢速路径重新申请新证书
             } else {
-                // 网络失败/限流：退回本地证书，保留提速效果
-                return SigningIdentity(certificate: local, secret: secret)
+                // 网络失败/限流：退回本地证书，保留提速效果。
+                // 但免费账号证书可能已过期；复用过期证书会让 iOS 次日判定"尚未验证"导致闪退，
+                // 因此本地证书已过期时必须落入慢速路径重新申请，不得复用。
+                if let validity = local.data.flatMap(X509CertificateValidityReader.validity(from:)),
+                   validity.isExpired() == false {
+                    return SigningIdentity(certificate: local, secret: secret)
+                }
             }
         }
 

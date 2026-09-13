@@ -623,6 +623,7 @@ actor SigningCoordinator {
             )
             updated.hasPendingSelfUpdateSource = false
             try await appStore.save(updated)
+            removeStaleProfiles(signedData: signedData, effectiveBundleID: effectiveBundleID)
             return updated
         }
 
@@ -648,6 +649,7 @@ actor SigningCoordinator {
             updated.expiryDate = expirationDate
             updated.lastInstalledAt = Date()
             try await appStore.save(updated)
+            removeStaleProfiles(signedData: signedData, effectiveBundleID: effectiveBundleID)
             return updated
         } catch {
             // 安装/验证失败时，应用可能实际已装到设备上（如 installd 后台安装中）。
@@ -666,6 +668,7 @@ actor SigningCoordinator {
                     updated.expiryDate = expirationDate
                     updated.lastInstalledAt = Date()
                     try? await appStore.save(updated)
+                    removeStaleProfiles(signedData: signedData, effectiveBundleID: effectiveBundleID)
                     return updated
                 }
             }
@@ -683,6 +686,21 @@ actor SigningCoordinator {
                 code: "SEAL-INSTALL-702b"
             )
             throw await installDiagnosticsAppended(base, signedPath: signedPath)
+        }
+    }
+
+    /// 安装成功后清理设备端「同一 Bundle ID」的旧描述文件，保留刚安装的新 profile。
+    /// 免费账号 7 天续签/反复重签会在设备端累积 profile，旧文件过期可能误导后续校验。
+    /// 全程「最佳努力」：读不到新 profile UUID 或任何一步失败都静默跳过，绝不阻断安装结果。
+    private func removeStaleProfiles(signedData: Data, effectiveBundleID: String) {
+        guard let profileUUID = SignedArtifactProfileReader.embeddedProfileUUID(in: signedData) else {
+            return
+        }
+        Task {
+            await DeviceProfileCleaner.removeStaleProfiles(
+                for: effectiveBundleID,
+                keeping: profileUUID
+            )
         }
     }
 

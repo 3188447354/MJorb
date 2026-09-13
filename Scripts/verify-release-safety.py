@@ -270,6 +270,15 @@ def violations(load=read):
           and "return stored > 0 ? stored : Self.fixedLeadHours" in notif_prefs,
           "Notify: lead time must read what was written and not clobber on init")
 
+    # ── 外围专项：存储路径（符号链接逃逸）─────────────────────────────────
+    # standardizedFileURL 只规范化 . / .. ，不解析 symlink：Apps/<uuid> 一旦被换成
+    # 指向别处的链接，字符串前缀比较照样通过，写入就落到 Apps 之外。两侧都要解析
+    # （iOS 上 Documents 本身就可能位于链接路径下，只解析一侧会得出错误结论）。
+    # 明确检查两侧各自都解析：只数总数会被「另一侧还在」掩盖掉单侧退化。
+    check("parent.resolvingSymlinksInPath()" in file_store
+          and "candidate.resolvingSymlinksInPath()" in file_store,
+          "Storage: descendant checks must resolve symlinks on both sides")
+
     parser = load("Seal/Core/Import/IPAParserService.swift")
     check("nestedData" not in parser and 'code: "SEAL-IPA-101b"' in parser,
           "Import: nested wrappers must not be buffered or committed as inner IPAs")
@@ -468,6 +477,10 @@ def main():
          "return stored > 0 ? stored : Self.fixedLeadHours",
          "return Self.fixedLeadHours",
          "Notify: lead time must read what was written"),
+        ("Seal/Infrastructure/Storage/AppFileStore.swift",
+         "candidate.resolvingSymlinksInPath().standardizedFileURL.path",
+         "candidate.standardizedFileURL.path",
+         "Storage: descendant checks must resolve symlinks"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

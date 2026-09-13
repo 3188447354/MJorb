@@ -1002,10 +1002,18 @@ actor AppFileStore {
         try fileProtector.protect(url)
     }
 
+    /// 判断 `candidate` 是否真的位于 `parent` 之内。
+    ///
+    /// **必须解析符号链接**：`standardizedFileURL` 只规范化 `.` / `..`，
+    /// **不解析 symlink**。于是 `Apps/<uuid>` 一旦被换成指向别处的符号链接，
+    /// 纯字符串前缀比较依然通过，写入就会落到 Apps 目录之外（路径逃逸）。
+    /// 这里两侧都用 `resolvingSymlinksInPath()` 先取真实路径再比较 ——
+    /// 两侧都解析很重要：iOS 上 `Documents` 本身就可能位于符号链接路径下，
+    /// 只解析一侧会得出错误的结论。
     private func isDescendant(_ candidate: URL, of parent: URL) -> Bool {
-        let parentPath = parent.standardizedFileURL.path
+        let parentPath = parent.resolvingSymlinksInPath().standardizedFileURL.path
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let candidatePath = candidate.standardizedFileURL.path
+        let candidatePath = candidate.resolvingSymlinksInPath().standardizedFileURL.path
         return candidatePath.hasPrefix("/\(parentPath)/")
     }
 

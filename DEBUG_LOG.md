@@ -1478,3 +1478,16 @@
 - **涉及文件**：`Seal/Core/Notifications/NotificationPreferences.swift`、
   `SealTests/Notifications/NotificationPreferencesTests.swift`（新增 5 例）。
 - **验证状态**：护栏 65+32 → 66+33 PASS。**Swift 编译与单测待 CI。**
+
+### 30. standardizedFileURL 不解析符号链接 —— 前缀比较挡不住路径逃逸
+- **风险**：`AppFileStore.isDescendant` 用 `standardizedFileURL` + 字符串前缀比较。
+  但该 API **只**规范化 `.` / `..`，**不解析 symlink**。一旦 `Apps/<uuid>` 被换成
+  指向别处的符号链接，前缀比较照样通过，写入就落到 Apps 目录之外（路径逃逸）。
+- **修法**：两侧都用 `resolvingSymlinksInPath()` 先取真实路径再比较。
+  **两侧都要解析** —— iOS 上 `Documents` 本身就可能位于符号链接路径下，
+  只解析一侧会得出错误结论（这也是最容易写错的地方）。
+- **说明**：`FileManager.removeItem` 删 symlink 时删的是链接本身、不跟随，
+  所以删除侧的风险有限；真正的风险在**写入逃逸**（`storeSignedIPA` / `prepareImportCommit`）。
+- **涉及文件**：`Seal/Infrastructure/Storage/AppFileStore.swift`、
+  `SealTests/Storage/AppFileStorePathEscapeTests.swift`（新增 3 例）。
+- **验证状态**：护栏 66+33 → 67+34 PASS。**Swift 编译与单测待 CI。**

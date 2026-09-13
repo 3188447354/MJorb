@@ -130,9 +130,9 @@ public class RPProvision: ProvisionProvider {
     public func dumpProfiles(docsPath: String) throws -> String {
         let path = docsPath.hasPrefix("file://") ? String(docsPath.dropFirst(7)) : docsPath
         try RustIdevice.dumpProfiles(path)
-        // Rust 侧把 <UUID>.mobileprovision 直接写在 path 根目录（provision.rs dump_profiles），
-        // 返回不存在的 PROVISION 子目录会让调用方枚举到 0 个文件。
-        return path
+        // Rust dump_provisioning_profile_rppairing 实际写入 path/PROVISION 子目录
+        // （provision.rs: dump_dir = docs_path/PROVISION），返回它才指得到文件。
+        return "\(path)/PROVISION"
     }
     
     public func installProvisioningProfile(profile: Data) throws {

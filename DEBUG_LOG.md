@@ -132,7 +132,25 @@
 
 ## 二、历史记录
 
-### 2026-09-13 · 清理零效果根因坐实：`RPProvision.dumpProfiles` 返回不存在的 PROVISION 子目录
+### 2026-09-13 · 清理零效果真根因：dump 文件名是 `unknown_N.plist`，清理器只认 `.mobileprovision`
+- **现象**：v1.1.4（含「返回真实写入目录」修复）真机日志仍「扫描 0」，StikDebug 仍见 104 条旧 profile。
+- **根因**：描述文件存在**手机系统 profile 存储**（profiled 守护进程），经 misagent `copy_all` 取出的是
+  **CMS 签名包裹的二进制**。Rust `dump_provisioning_profile_rppairing` 对每条 profile 先尝试
+  `plist::from_bytes` 解析命名：CMS 包裹解不动 → 落盘为 `unknown_{i}.plist`（扩展名是 `.plist`！），
+  解析成功才是 `<UUID>.mobileprovision`。清理器此前只枚举 `.mobileprovision` → 全盘被跳过 → 扫描恒 0。
+  附带纠正：v1.1.4 把 `RPProvision.dumpProfiles` 返回值改成根目录是**误判**——Rust RSD 实现确实写
+  `docs_path/PROVISION` 子目录，原返回值本就正确，本次回退。
+- **修复**：① `RPProvision.dumpProfiles` 回退为返回 `path/PROVISION`；② `DeviceProfileCleaner` 不再按
+  扩展名过滤，目录内所有文件都交给 `ProvisioningProfileReader`（内置 CMS 解包：搜 `<?xml…</plist>` /
+  `bplist00` 段）识别；③ 按解析出的 UUID 去重（LockDown 路径同一 profile 会落 raw+plist 两份）。
+- **涉及文件**：`Vendor/Minimuxer/Sources/Provision.swift`（回退）、
+  `Seal/Infrastructure/Installation/DeviceProfileCleaner.swift`、`project.yml`（1.1.5）。
+- **教训**：修 bug 前要亲眼看一眼被调方的真实实现（Rust 源码行 27 的 `format!("{docs_path}/PROVISION")`
+  和行 38 的 `unknown_{i}.plist` 命名分支都在，我却凭猜测改了 Swift 返回路径）——「先观测、再动刀」；
+  观测加对了（v1.1.3 日志）也要把数据读到最后一环（文件扩展名）。
+- **验证状态**：待 v1.1.5 发布后真机续签验证（预期「扫描 100+，删除 100+」，StikDebug 只剩最新一份）。
+
+### 2026-09-13 · 清理零效果根因坐实：`RPProvision.dumpProfiles` 返回不存在的 PROVISION 子目录（**误判，已被上条推翻**）
 - **现象**：v1.1.3 真机日志显示「自更新安装前清理：描述文件清理：扫描 0，匹配 0，删除 0」——
   dump「成功」却一个文件都没扫到。
 - **根因**：`RPProvision.dumpProfiles`（RSD 路径）调 `RustIdevice.dumpProfiles(path)`，Rust `dump_profiles`

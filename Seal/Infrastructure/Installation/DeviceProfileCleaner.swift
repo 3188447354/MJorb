@@ -87,9 +87,10 @@ struct DeviceProfileCleaner: Sendable {
             options: [.skipsHiddenFiles]
         )) ?? []
 
+        var handledUUIDs = Set<String>()
         for fileURL in profileURLs {
-            guard fileURL.pathExtension.lowercased() == "mobileprovision" else { continue }
-            summary.scanned += 1
+            // 不按扩展名过滤：misagent 返回的是 CMS 签名包裹的二进制，
+            // Rust 端解析不了会落成 unknown_N.plist；真正的识别靠 ProvisioningProfileReader 解 CMS。
             guard let data = try? Data(contentsOf: fileURL),
                   let details = try? reader.details(from: data),
                   let profileUUID = details.uuid,
@@ -99,6 +100,9 @@ struct DeviceProfileCleaner: Sendable {
                 }
                 continue
             }
+            // LockDown 路径同一 profile 会落 raw + plist 两个文件，按 UUID 去重
+            guard handledUUIDs.insert(profileUUID).inserted else { continue }
+            summary.scanned += 1
             guard bundleIdentifiers.contains(where: {
                 profileBundleID.caseInsensitiveCompare($0) == .orderedSame
             }) else {

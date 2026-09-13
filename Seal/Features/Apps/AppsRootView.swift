@@ -128,6 +128,9 @@ struct AppsRootView: View {
             }
             .task {
                 await settingsViewModel.load()
+                // 先做队列恢复：上一轮被中断留下的 running 项必须在任何新一轮续签覆盖队列文件之前
+                // 降级为 unknown，否则它们既不会被重试也不会被清理，永久停在「运行中」。
+                await viewModel.recoverInterruptedQueueIfNeeded()
                 await viewModel.load()
                 await viewModel.refreshInstalledApps(userInitiated: false)
                 resolveInitialModeIfNeeded()

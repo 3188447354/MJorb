@@ -56,11 +56,22 @@ struct RefreshPlannerTests {
         #expect(queue.map(\.appID) == [regular.id, seal.id])
     }
 
+    /// 缺账号**不能静默省略**。
+    ///
+    /// 旧实现在这里 `return nil`，于是「批量续签完成」看起来一切正常，实际有应用
+    /// 根本没被处理，用户既看不到它、也不知道为什么。现在必须显式进队列并带上原因。
     @Test
-    func skipsAppsWithoutBoundAccounts() {
+    func appsWithoutBoundAccountsBecomeExplicitRequiresAction() {
         let app = app(name: "Unsigned", expiry: nil, accountID: nil)
 
-        #expect(RefreshPlanner().makeQueue(apps: [app]).isEmpty)
+        let queue = RefreshPlanner().makeQueue(apps: [app])
+
+        #expect(queue.map(\.appID) == [app.id])
+        #expect(queue.first?.state == .requiresAction)
+        #expect(queue.first?.accountID == nil)
+        #expect(queue.first?.requiresActionReason?.isEmpty == false)
+        // 原因必须可执行：只写「跳过」等于没告诉用户下一步做什么
+        #expect(queue.first?.requiresActionReason?.contains("账号") == true)
     }
 
     @Test
@@ -94,7 +105,24 @@ struct RefreshPlannerTests {
         let unrelated = AppleAccountRecord(maskedEmail: "a***", accountIdentifier: "a", teamID: "TEAM-A", teamName: "A", lastVerifiedAt: Date())
         var seal = app(name: "Seal", expiry: nil, accountID: nil, isSeal: true)
         seal.signingTeamID = "TEAM-B"
-        #expect(RefreshPlanner().makeQueue(apps: [seal], fallbackAccountID: unrelated.id, accounts: [unrelated]).isEmpty)
+        let queue = RefreshPlanner().makeQueue(apps: [seal], fallbackAccountID: unrelated.id, accounts: [unrelated])
+        // 不选无关账号是对的；但也不能静默丢掉这个应用 —— 必须显式挂起等用户处理。
+        #expect(queue.count == 1)
+        #expect(queue.first?.state == .requiresAction)
+        #expect(queue.first?.accountID == nil)
+    }
+
+    /// `needsAction(in:)` 必须只挑出「本轮未执行」的项，不能把普通待办也算进去。
+    @Test
+    func needsActionSelectsOnlyRequiresActionItems() {
+        let accountID = UUID()
+        let runnable = RefreshQueueItem(appID: UUID(), accountID: accountID)
+        let pending = RefreshQueueItem(appID: UUID(), accountID: nil, state: .requiresAction, requiresActionReason: "缺账号")
+        let failed = RefreshQueueItem(appID: UUID(), accountID: accountID, state: .failed, lastErrorCode: "SEAL-NET-001")
+
+        let selected = RefreshPlanner.needsAction(in: [runnable, pending, failed])
+
+        #expect(selected.map(\.appID) == [pending.appID])
     }
 
     @Test(arguments: ["SEAL-AUTH-107", "SEAL-AUTH-105a", "SEAL-CERT-204b", "SEAL-SIGN-405", "SEAL-INSTALL-702", "SEAL-INSTALL-702l", "SEAL-INSTALL-730"])

@@ -1226,6 +1226,35 @@ final class AppsViewModel: ObservableObject {
         )
     }
 
+    /// 启动恢复：把上一轮被中断留下的 `running` 项降级为 `unknown`。
+    ///
+    /// 必须放在**启动路径**上，不能等到续签前：`run(queue:)` 会用新队列整体覆盖队列文件，
+    /// 一旦开始新一轮，上一轮的 `running` 残留就被冲掉了，再恢复也来不及。
+    ///
+    /// 恢复只改状态、不做任何签名/安装动作 —— 被中断的项结果未知，贸然重做可能造成
+    /// 第二次安装或误删新 profile。此处只让用户知情，由用户决定下一步。
+    func recoverInterruptedQueueIfNeeded() async {
+        guard let renewalCoordinator else { return }
+        do {
+            let recovered = try await renewalCoordinator.recoverInterruptedQueue()
+            guard recovered > 0 else { return }
+            try? await logStore?.append(
+                category: .renewal,
+                level: .warning,
+                message: "上次续签被中断，\(recovered) 个应用的结果未知，需要重新核验",
+                code: "SEAL-RENEW-007"
+            )
+        } catch {
+            let nsError = error as NSError
+            try? await logStore?.append(
+                category: .renewal,
+                level: .warning,
+                message: "续签队列恢复失败：\(nsError.domain) \(nsError.code)",
+                code: "SEAL-RENEW-008"
+            )
+        }
+    }
+
     private func runBatchRefresh(appIDs: [UUID]? = nil) async {
         guard let renewalCoordinator else { return }
         guard let operationLease = await acquireOperation(.renewing) else {
@@ -1249,17 +1278,30 @@ final class AppsViewModel: ObservableObject {
                 batchRefreshSession = nil
                 alertFailure = ImportFailure(
                     title: "没有可续签的应用",
-                    reason: "已安装应用尚未绑定账号",
+                    reason: "当前没有已安装的应用记录",
                     recovery: "知道了",
                     code: "SEAL-RENEW-001"
                 )
             } else {
                 batchRefreshSession?.status = .completed(result)
+                // 计数分桶写进日志：`total == succeeded + failed + needsAction` 不成立就说明
+                // 有项被静默丢了 —— 这正是旧实现「批量续签完成」却漏跑应用的病根。
                 try? await logStore?.append(
                     category: .renewal,
-                    level: result.failed == 0 ? .info : .warning,
-                    message: "全部续签完成"
+                    level: (result.failed == 0 && result.needsAction == 0) ? .info : .warning,
+                    message: "续签完成：共 \(result.total)，成功 \(result.succeeded)，失败 \(result.failed)，未执行 \(result.needsAction)",
+                    code: "SEAL-RENEW-009"
                 )
+                if result.needsAction > 0 {
+                    // 必须显式说出来：这些应用**根本没被处理**，而列表里它们只是「等待中」，
+                    // 不说清楚用户会以为整轮都成功了。
+                    alertFailure = ImportFailure(
+                        title: "有 \(result.needsAction) 个应用本轮未执行",
+                        reason: "它们缺少续签所需的前置条件，常见原因是没有可用的 Apple 账号。",
+                        recovery: "到「我的」添加并完成账号验证后重新续签",
+                        code: "SEAL-RENEW-010"
+                    )
+                }
                 await cleanTemporaryFilesIfNeeded()
             }
             await load(force: true)
@@ -1337,8 +1379,19 @@ final class AppsViewModel: ObservableObject {
             batchRefreshSession?.currentIndex = index
             batchRefreshSession?.total = total
             batchRefreshSession?.currentAppName = app.displayName
-            batchRefreshSession?.failed += 1
-            updateBatchItem(appID: app.id, name: app.displayName, isSeal: app.isSeal, state: .failed)
+            // 「本轮未执行」不是失败：它根本没被尝试过，下一步动作也不同（去补前置条件，
+            // 不是重试）。复用失败事件只是为了让它在列表里可见，计数与状态都必须分开，
+            // 否则用户会以为「重试就能好」，而真实原因是缺账号。
+            let isNeedsAction = failure.code == RenewalCoordinator.requiresActionCode
+            if isNeedsAction == false {
+                batchRefreshSession?.failed += 1
+            }
+            updateBatchItem(
+                appID: app.id,
+                name: app.displayName,
+                isSeal: app.isSeal,
+                state: isNeedsAction ? .waiting : .failed
+            )
             Task { [weak self] in
                 await self?.recordSigningHistory(
                     app: app,

@@ -4,7 +4,18 @@ struct BatchRefreshResult: Equatable, Sendable {
     let total: Int
     let succeeded: Int
     let failed: Int
-    let remaining: Int
+    /// 本轮**根本没执行**、等用户先处理的项（缺可用账号等）。
+    /// 与 `failed` 分开计数：「试过了没成」和「没试，缺前置条件」需要不同的下一步动作。
+    let needsAction: Int
+
+    /// 仍未成功（失败 + 待处理）。保留原有语义供既有 UI 使用。
+    var remaining: Int { max(0, total - succeeded) }
+
+    /// 每一项都必须落进恰好一个桶里。等式不成立就说明有项被静默丢了 ——
+    /// 这正是旧实现「批量续签完成，其实有应用没被处理」的病根。
+    var isBalanced: Bool {
+        succeeded + failed + needsAction == total
+    }
 }
 
 enum BatchRefreshEvent: Sendable {
@@ -66,6 +77,22 @@ actor RenewalCoordinator {
         let failedIDs = Set(appIDs)
         let queue = try await makeQueue(apps: apps).filter { failedIDs.contains($0.appID) }
         return try await run(queue: queue, progress: progress)
+    }
+
+    /// 启动恢复：把上一轮被中断留下的 `running` 项降级为 `unknown`。
+    ///
+    /// 进程被杀（崩溃 / 被系统回收）时正在跑的项，签名+安装可能已落地、也可能只做了一半，
+    /// **既不能当成功也不能当失败**。不做这一步它就会永久停在 `running`：
+    /// 既不在失败列表（不会被重试），也不是 `completed`（不会被清理）。
+    /// 返回被降级的条数，供启动日志与 UI 说明使用。
+    @discardableResult
+    func recoverInterruptedQueue() async throws -> Int {
+        try await queueStore.recoverInterrupted()
+    }
+
+    /// 本轮结束后仍需处理的项（失败 / 未执行 / 结果未知），保持持久化顺序。
+    func outstandingQueueItems() async throws -> [RefreshQueueItem] {
+        try await queueStore.outstanding()
     }
 
     private func makeQueue(apps: [AppRecord]) async throws -> [RefreshQueueItem] {
@@ -130,9 +157,25 @@ actor RenewalCoordinator {
         await progress(.started(total: queue.count))
         var succeeded = 0
         var failed = 0
+        var needsAction = 0
 
         for (offset, item) in queue.enumerated() {
             try Task.checkCancellation()
+
+            // 本轮不执行的项（缺可用账号等）。**不静默跳过**：计入 needsAction，
+            // 并复用失败条目的呈现把原因摊给用户 —— 否则「批量续签完成」会掩盖
+            // 「有应用根本没被处理」这个事实。
+            guard item.isExecutable, let accountID = item.accountID else {
+                needsAction += 1
+                await emitFailure(
+                    progress: progress,
+                    offset: offset,
+                    total: queue.count,
+                    item: item,
+                    failure: Self.requiresActionFailure(reason: item.requiresActionReason)
+                )
+                continue
+            }
 
             // 应用之间留出缓冲，避免连续请求 Apple 服务器触发限流；第一个不用等
             if offset > 0 {
@@ -178,7 +221,7 @@ actor RenewalCoordinator {
                     let latestApp = app
                     let updated = try await signingCoordinator.signAndInstall(
                         appID: item.appID,
-                        accountID: item.accountID,
+                        accountID: accountID,
                         requestedBundleIdentifier: latestApp.mappedBundleIdentifier ?? latestApp.preferredBundleIdentifier,
                         selectedCertificateSerialNumber: nil,
                         forceResign: true,
@@ -267,7 +310,23 @@ actor RenewalCoordinator {
             total: queue.count,
             succeeded: succeeded,
             failed: failed,
-            remaining: max(0, queue.count - succeeded)
+            needsAction: needsAction
+        )
+    }
+
+    /// `requiresAction` 项使用的错误码。
+    ///
+    /// UI 靠它把「本轮未执行」与「尝试后失败」分开计数：前者下一步是去补前置条件
+    /// （例如添加账号），后者才是重试。混在一起会让用户以为「重试就能好」。
+    static let requiresActionCode = "SEAL-RENEW-006"
+
+    /// `requiresAction` 项复用失败条目的呈现，但错误码独立、文案必须是可执行引导。
+    private static func requiresActionFailure(reason: String?) -> ImportFailure {
+        ImportFailure(
+            title: "本轮未执行，需要先处理",
+            reason: reason ?? "该应用缺少续签所需的前置条件。",
+            recovery: "按上述说明处理后重新续签",
+            code: requiresActionCode
         )
     }
 

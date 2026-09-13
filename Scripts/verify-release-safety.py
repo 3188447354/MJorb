@@ -101,6 +101,29 @@ def violations(load=read):
     check('\\b"?\\s*[：:=]' in redactor,
           "Log: JSON keys are quoted, so an optional closing quote before the separator is required")
 
+    # G（R10/R11）：缺账号不能静默省略。旧实现 `guard let accountID else { return nil }`
+    # 会让「批量续签完成」掩盖「有应用根本没被处理」——用户既看不到它也不知道为什么。
+    planner = load("Seal/Core/Renewal/RefreshPlanner.swift")
+    planner_code = "\n".join(
+        line for line in planner.splitlines() if line.strip().startswith("//") is False
+    )
+    check("return nil" not in planner_code,
+          "G: planner must not silently drop apps without an account")
+    check("state: .requiresAction" in planner and "missingAccountReason" in planner,
+          "G: apps without an account must enter the queue as requiresAction with a reason")
+    store = load("Seal/Infrastructure/Renewal/RefreshQueueStore.swift")
+    check("func recoverInterrupted()" in store
+          and "state == .running" in store
+          and "state = .unknown" in store,
+          "G: launch recovery must downgrade interrupted running items to unknown")
+    check("func outstanding()" in store,
+          "G: outstanding() is required so recovery never redoes completed work")
+    coordinator = load("Seal/Core/Renewal/RenewalCoordinator.swift")
+    check("needsAction: needsAction" in coordinator and "isBalanced" in coordinator,
+          "G: batch result must count needsAction separately and expose the balance invariant")
+    check("item.isExecutable" in coordinator,
+          "G: requiresAction items must be counted and shown, not silently skipped")
+
     parser = load("Seal/Core/Import/IPAParserService.swift")
     check("nestedData" not in parser and 'code: "SEAL-IPA-101b"' in parser,
           "Import: nested wrappers must not be buffered or committed as inner IPAs")
@@ -211,6 +234,14 @@ def main():
          "redacted = redactPEMBlocks(in: redacted)",
          "",
          "Log: PEM private key blocks"),
+        ("Seal/Core/Renewal/RefreshPlanner.swift",
+         "state: .requiresAction,",
+         "state: .pending,",
+         "G: apps without an account must enter the queue"),
+        ("Seal/Infrastructure/Renewal/RefreshQueueStore.swift",
+         "items[index].state = .unknown",
+         "items[index].state = .completed",
+         "G: launch recovery must downgrade"),
         ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",
          'recovery: "在「我的」→「签名证书」中撤销一个旧签名证书后重试"',
          'recovery: "在「我的」页面撤销一个旧签名证书后重试"',

@@ -252,7 +252,63 @@
 - **验证状态**：用 Python 复刻正则跑了 12 条语料 + 2 条「不得过度脱敏」，全过；并用旧正则
   对比证明四个缺口真实存在。护栏新增 3 项源码检查 + 1 条变异。**Swift 编译与测试待 CI。**
 
+### 19. 「批量续签完成」可以是假的：缺前置条件的项被静默省略
+- **现象**：批量续签报告全部完成，但确实有应用没被处理 —— 用户既看不到那个应用，也不知道为什么。
+- **根因**：`RefreshPlanner.makeQueue` 里 `guard let accountID else { return nil }`，
+  没绑定账号的应用**直接从队列里消失**。`compactMap` 让「丢项」看起来像正常过滤，
+  结果计数 `total` 也不含它，于是没有任何地方能发现少了东西。
+- **规矩**：**队列构建不允许静默丢项**。缺前置条件（账号缺失、多候选无法唯一确定）的项
+  必须显式进队列并带上 `requiresAction` 状态与**可执行的原因**（「请到「我的」添加并验证账号」，
+  而不是「跳过」）。
+- **配套三件**（缺一个就还是假成功）：
+  1. `BatchRefreshResult` 计数分桶：`needsAction` 与 `failed` 分开 —— 「没试」和「试了没成」
+     的下一步动作不同（去补前置条件 vs 重试）。并暴露 `isBalanced`
+     （`succeeded + failed + needsAction == total`）作为不变量，等式不成立就是有项被丢了。
+  2. UI 计数也必须分开：`consumeBatchEvent` 的 `.appFailed` 分支要按错误码
+     （`RenewalCoordinator.requiresActionCode`）判断，不能一律 `failed += 1`，
+     否则用户以为「重试就能好」。
+  3. 整轮结束后若 `needsAction > 0`，必须显式弹一条说明 —— 列表里它们只是「等待中」，
+     不说明用户会以为整轮都成功了。
+- **涉及文件**：`Seal/Core/Renewal/RefreshPlanner.swift`、`RefreshQueueItem.swift`、
+  `Seal/Infrastructure/Renewal/RefreshQueueStore.swift`、`Seal/Core/Renewal/RenewalCoordinator.swift`、
+  `Seal/Features/Apps/AppsViewModel.swift`。
+- **验证状态**：护栏新增 6 项源码检查 + 2 条变异；新增/改写 9 例测试。**Swift 编译与测试待 CI。**
+
+### 20. 被中断的续签会永久停在 `running`：既不被重试也不被清理
+- **现象**：进程在续签中途被杀（崩溃 / 被系统回收）后，队列里那些应用**永远停在「运行中」**，
+  既不会出现在失败列表（所以「只重试失败项」跳过它们），也不是 `completed`（所以不会被清理）。
+- **根因**：状态机里根本没有「结果未知」这一态。`running` 是**瞬时态**，只在进程活着时有意义；
+  进程一死它就变成了**永久脏数据**。
+- **规矩**：任何持久化的「运行中」状态都必须在启动时收敛。本仓做法：新增 `unknown` 态，
+  启动时 `RefreshQueueStore.recoverInterrupted()` 把 `running` 一律降级为 `unknown`。
+- **关键顺序**：恢复必须放在**启动路径**上（`AppsRootView` 的 `.task` 最先执行），
+  **不能**放在续签前 —— `run(queue:)` 会 `queueStore.replace(with:)` 用新队列整体覆盖文件，
+  一旦开始新一轮，上一轮的 `running` 残留就被冲掉了，再恢复也来不及。
+- **安全边界**：恢复**只改状态，不做任何签名/安装动作**。被中断的项可能已经装好、也可能只做了一半，
+  贸然重做会造成第二次安装或误删新 profile。只让用户知情，由用户决定下一步。
+- **涉及文件**：`Seal/Core/Renewal/RefreshQueueItem.swift`、`RefreshQueueStore.swift`、
+  `RenewalCoordinator.swift`、`Seal/Features/Apps/AppsViewModel.swift`、`AppsRootView.swift`。
+- **验证状态**：护栏新增 2 项源码检查 + 1 条变异；新增 4 例测试（含「`outstanding()` 必须排除
+  `completed`」——这是 §4「恢复不能重做已成功的项」的落点）。**Swift 编译与测试待 CI。**
+
 ## 二、历史记录
+
+### 2026-09-14 · G 包（R10/R11）：队列不再静默丢项 + 启动恢复 + 计数分桶
+- **范围**：`outputs/Seal_企业级发布整改方案_20260913.md` §4 工作包 G。
+- **改动 1（不静默丢项）**：`RefreshPlanner.makeQueue` 的 `guard let accountID else { return nil }`
+  改为产出 `.requiresAction` 项 + 可执行原因。`compactMap` → `map`。
+- **改动 2（启动恢复）**：`RefreshQueueItem.State` 新增 `unknown` / `requiresAction`；
+  `accountID` 改为可选（requiresAction 项没有可确定账号）；新增 `requiresActionReason`。
+  `RefreshQueueStore` 新增 `markUnknown` / `markRequiresAction` / `recoverInterrupted()` /
+  `outstanding()`。恢复挂在 `AppsRootView` 的 `.task` 最前面。
+- **改动 3（计数分桶）**：`BatchRefreshResult` 新增 `needsAction`，`remaining` 改为计算属性，
+  新增 `isBalanced` 不变量；协调器里 requiresAction 项计入 `needsAction` 而非 `failed`；
+  `consumeBatchEvent` 按错误码区分，不把「未执行」记成失败；整轮后若 `needsAction > 0` 显式弹说明。
+- **护栏**：`verify-release-safety.py` 由 33 项 + 12 变异 → **39 项 + 14 变异，PASS**。
+- **新增/改写测试**：`RefreshPlannerTests`（2 处改写 + 1 例新增）、`RefreshQueueStoreTests`（4 例新增）。
+- **验证状态**：静态守卫全绿；**Swift 编译与单测待 CI**。
+- **顺带确认**：CI run `34773587332`（`7915e76`）三 job 全绿 —— R04 的 22 个套盒、
+  HardTimeout 迁移、写 API 对账全部编译通过且单测通过。`build-package` 8m25s。
 
 ### 2026-09-14 · 日志脱敏补齐四个明文外泄盲区（§5 专项）
 - **范围**：`outputs/Seal_企业级发布整改方案_20260913.md` §5「日志格式」专项。

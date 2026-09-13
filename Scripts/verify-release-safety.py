@@ -89,6 +89,18 @@ def violations(load=read):
     check("case inconclusive" in portal and "case found(serialNumber:" in portal,
           "R04: reconciliation must distinguish unknown from not-created")
 
+    # 日志脱敏：导出/上报的日志会离开设备。以下四类形态旧实现全都盖不住，属于真实明文外泄，
+    # 2026-09-14 补齐。改脱敏器时别把这四条规则删掉或写窄。
+    redactor = load("Seal/Infrastructure/Diagnostics/LogPrivacyRedactor.swift")
+    check("redacted = redactPEMBlocks(in: redacted)" in redactor
+          and "BEGIN [A-Z0-9 ]*PRIVATE KEY" in redactor,
+          "Log: PEM private key blocks must be redacted as a whole")
+    check("redacted = redactAuthorizationSchemes(in: redacted)" in redactor
+          and "Bearer|Basic|Token|Digest" in redactor,
+          "Log: credentials following an auth scheme word must be redacted")
+    check('\\b"?\\s*[：:=]' in redactor,
+          "Log: JSON keys are quoted, so an optional closing quote before the separator is required")
+
     parser = load("Seal/Core/Import/IPAParserService.swift")
     check("nestedData" not in parser and 'code: "SEAL-IPA-101b"' in parser,
           "Import: nested wrappers must not be buffered or committed as inner IPAs")
@@ -195,6 +207,10 @@ def main():
          "guard Self.isTimeoutError(error) else { throw error }",
          "guard false else { throw error }",
          "R04: certificate creation timeout"),
+        ("Seal/Infrastructure/Diagnostics/LogPrivacyRedactor.swift",
+         "redacted = redactPEMBlocks(in: redacted)",
+         "",
+         "Log: PEM private key blocks"),
         ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",
          'recovery: "在「我的」→「签名证书」中撤销一个旧签名证书后重试"',
          'recovery: "在「我的」页面撤销一个旧签名证书后重试"',

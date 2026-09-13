@@ -227,7 +227,45 @@
   新增 `SealTests/Signing/PortalWriteTimeoutSemanticsTests.swift`（7 例，锁定错误码与文案口径）。
   **Swift 编译与测试待 CI。**
 
+### 18. 日志脱敏的四个盲区：JSON key、含空格的值、PEM 私钥块、Bearer 后的凭据
+- **现象**：导出的日志看着「有脱敏」，但 JSON 日志里的密码/token、多行私钥、`Authorization` 头
+  全是**明文**。日志要离开设备，等于直接把凭据交出去。
+- **根因（四个独立缺口，都用 Python 复刻正则逐条证实过旧行为）**：
+  1. **JSON 的键带引号**。旧规则是 `(\b(?:KEY)\b\s*[：:=]\s*)`，要求键后**紧跟**冒号；
+     而 JSON 是 `"password": "..."`，键后是 `"` → **整条规则从未匹配过 JSON**。
+     修法：键后允许一个可选闭引号 `"?`。
+  2. **值含空格**。旧值是 `[^\s,;\]\}]+`，在第一个空格截断：`password = hunter2 with spaces`
+     只脱敏成 `[redacted] with spaces`，后半截外泄。修法：值增加「带引号串」分支
+     `"(?:[^"\\]|\\.)*"`（JSON 值必带引号，含空格也能整段吃掉）。
+  3. **PEM 私钥块**。`-----BEGIN PRIVATE KEY-----` 里没有 `key: value`，正文是纯字母数字、
+     还被换行切开 → 键值对、base64、长标识符三条规则**全都不命中**。修法：新增
+     `redactPEMBlocks`，按 `BEGIN...END` 成对整块替换，`(?s)` 跨行。
+  4. **`Authorization: Bearer <opaque>`**。键值对在 `authorization` 后只看到 `Bearer` 词，
+     把 `Bearer` 换掉就收工，真 token 留在明文里。修法：新增 `redactAuthorizationSchemes`，
+     吃掉 scheme 词（Bearer/Basic/Token/Digest）之后的凭据。
+- **规矩**：脱敏规则**按形态**覆盖，不能假设「结构化格式都长一样」。新增格式（JSON、YAML、
+  多行块、header）时必须补对应形态的**固定秘密语料**用例，断言「秘密不得出现在输出里」。
+- **坑位**：断言要写「不得含秘密」而不是「等于某固定串」—— 后者会锁死实现，前者只锁安全性质。
+  同时必须补「**不得过度脱敏**」的用例（普通诊断行原样保留），过删同样毁掉可诊断性。
+- **涉及文件**：`Seal/Infrastructure/Diagnostics/LogPrivacyRedactor.swift`（三个新/改函数）、
+  新增 `SealTests/Diagnostics/LogPrivacyRedactorTests.swift`（12 例）。
+- **验证状态**：用 Python 复刻正则跑了 12 条语料 + 2 条「不得过度脱敏」，全过；并用旧正则
+  对比证明四个缺口真实存在。护栏新增 3 项源码检查 + 1 条变异。**Swift 编译与测试待 CI。**
+
 ## 二、历史记录
+
+### 2026-09-14 · 日志脱敏补齐四个明文外泄盲区（§5 专项）
+- **范围**：`outputs/Seal_企业级发布整改方案_20260913.md` §5「日志格式」专项。
+- **做法**：先用 Python 复刻 `LogPrivacyRedactor` 的 11 条规则，跑固定秘密语料（JSON 带引号 key、
+  含空格值、转义引号、多行 PEM、RSA/EC 私钥头、Bearer/Basic 头、plist XML）+ 2 条「不得过度脱敏」，
+  再用**旧正则**跑同一批语料做对照 —— 四个缺口全部复现，确认不是臆测。
+- **改动**：`LogPrivacyRedactor.swift` 新增 `redactPEMBlocks`、`redactAuthorizationSchemes`，
+  键值对规则改为「键后允许可选闭引号 + 值支持带引号串」。
+- **护栏**：`verify-release-safety.py` 由 30 项 + 11 变异 → **33 项 + 12 变异，PASS**。
+- **新增测试**：`SealTests/Diagnostics/LogPrivacyRedactorTests.swift`（12 例）。
+- **验证状态**：正则逻辑已用 Python 复刻验证；**Swift 编译与单测待 CI**。
+- **说明**：裸值（不带引号）仍按「到第一个空白为止」处理，这是**有意**的 —— 放宽会吃掉普通
+  诊断文本，过删同样毁掉可诊断性。JSON/plist/header/PEM 这四类真实载体已覆盖。
 
 ### 2026-09-14 · R04 收尾：22 个回调创建点套盒 + 写 API 超时按「未知」处理
 - **范围**：把 R04（取消/超时）从「修超时写法」推进到「回调层与写 API 语义都收口」。

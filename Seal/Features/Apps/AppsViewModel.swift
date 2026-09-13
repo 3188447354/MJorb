@@ -63,7 +63,6 @@ final class AppsViewModel: ObservableObject {
     private let notificationPreferences: NotificationPreferences?
     private let signingPreferenceStore: SigningPreferenceStore?
     private let operationCoordinator: OperationCoordinator?
-    let signingVerificationBroker: VerificationCodeBroker
     private var signingTask: Task<Void, Never>?
     private var batchRefreshTask: Task<Void, Never>?
     private var channelTask: Task<Bool, Never>?
@@ -99,8 +98,7 @@ final class AppsViewModel: ObservableObject {
         notificationScheduler: ExpiryNotificationScheduler,
         notificationPreferences: NotificationPreferences,
         signingPreferenceStore: SigningPreferenceStore,
-        operationCoordinator: OperationCoordinator? = nil,
-        signingVerificationBroker: VerificationCodeBroker
+        operationCoordinator: OperationCoordinator? = nil
     ) {
         self.workflow = workflow
         self.appStore = appStore
@@ -118,7 +116,6 @@ final class AppsViewModel: ObservableObject {
         self.notificationPreferences = notificationPreferences
         self.signingPreferenceStore = signingPreferenceStore
         self.operationCoordinator = operationCoordinator
-        self.signingVerificationBroker = signingVerificationBroker
         apps = []
         accounts = []
         iconData = [:]
@@ -127,7 +124,6 @@ final class AppsViewModel: ObservableObject {
     }
 
     init(startupFailure: ImportFailure) {
-        self.signingVerificationBroker = VerificationCodeBroker()
         workflow = nil
         appStore = nil
         fileStore = nil
@@ -153,7 +149,6 @@ final class AppsViewModel: ObservableObject {
     }
 
     private init(apps: [AppRecord], draft: ImportDraft?) {
-        self.signingVerificationBroker = VerificationCodeBroker()
         alertFailure = nil
         workflow = nil
         appStore = nil
@@ -719,7 +714,7 @@ final class AppsViewModel: ObservableObject {
 
     func performAlertRecovery(for failure: ImportFailure) {
         alertFailure = nil
-        if failure.code == "SEAL-AUTH-105c",
+        if failure.code == "SEAL-AUTH-115",
            let pending = pendingTeamSwitch {
             pendingTeamSwitch = nil
             let isRenewal = pending.app.belongsInInstalledList
@@ -811,7 +806,7 @@ final class AppsViewModel: ObservableObject {
                     title: "更新将重置本地数据",
                     reason: "当前 Seal 由另一 Team 签名，改用所选 Apple ID 覆盖安装会清空已添加的 Apple ID 与已安装应用，需重新添加。",
                     recovery: "继续签名",
-                    code: "SEAL-AUTH-105c"
+                    code: "SEAL-AUTH-115"
                 )
                 return
             }
@@ -1235,11 +1230,7 @@ final class AppsViewModel: ObservableObject {
             return
         }
         defer { releaseOperation(operationLease) }
-        // 批量续签只应使用已保存会话；LocalDevVPN 隔离 gsa.apple.com，交互式 2FA
-        // 在此路径必败。关闭验证码弹窗，结束（含取消/失败）后务必恢复，避免影响
-        // 后续用户主动签名安装时的正常 2FA 输入。
-        signingVerificationBroker.setInteractivePromptAllowed(false)
-        defer { signingVerificationBroker.setInteractivePromptAllowed(true) }
+        // 批量续签只使用已保存会话；会话过期会快速失败，并统一引导到「我的」页重新验证。
         do {
             let progress: @Sendable (BatchRefreshEvent) async -> Void = { [weak self] event in
                 await self?.consumeBatchEvent(event)

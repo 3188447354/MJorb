@@ -132,6 +132,30 @@
 
 ## 二、历史记录
 
+### 2026-09-13 · #1/#5 闭环：签名页死验证码移除，账号验证状态按错误码家族落库
+- **现象**：签名链路持有 `verificationCodeProvider` / `reauthenticate()` 但生产从不调用，会话过期只能跳设置页；
+  同时 `persistVerificationFailure()` 为空实现，策略层只认精确旧码 `102/105/106`，生产后缀码 `102d/105a/105e`
+  不会写入 `needsVerification`，启动修复又会把无原因旧状态修回可离线使用，状态模型前后不一致。
+- **根因**：产品策略未落地——签名/续签处于 LocalDevVPN 环境，不能可靠自动重登 Apple；应统一引导到
+  「我的」页重新验证，而不是保留不会触发的签名页 2FA。状态层则缺「哪些错误真的写 needsVerification」的生产规则。
+- **修复**：
+  - 删除签名路径死成员：`ApplePortalSigningService.verificationCodeProvider`、`AppContainer` 注入、
+    `AppsViewModel.signingVerificationBroker`、`SigningProgressView` 签名验证码弹窗；批量续签不再切换不存在的交互开关。
+  - `AppleServiceFailurePolicy.verificationFailureReason` 改为按 `SEAL-AUTH-102/105/106` 前缀归族，显式排除
+    `SEAL-AUTH-105f`（Team 查询失败）与全部 `SEAL-AUTH-107*`（会话过期/超时，不标 ID 失效）。
+  - `SigningCoordinator` 在 Keychain 凭据缺失（105a）和签名抛出明确验证失败时写入
+    `status = needsVerification` + `verificationFailureReason`；网络/限流/107 不写。`SettingsViewModel.persistVerificationFailure`
+    改为真实保存（失败用 `try?`，不掩盖原始错误）。
+  - 拆掉重复占用的 `SEAL-AUTH-105c`：Seal 自更新跨 Team 提示改用空闲码 `SEAL-AUTH-115`，设置页 105c 保留给本地凭据缺失。
+  - 版本号 bump 到 `1.1.1`（Seal 主 target 与 SealTunnel 两处），`RELEASE_NOTES.md` 切换为本轮修复清单。
+- **涉及文件**：`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、`Seal/Application/AppContainer.swift`、
+  `Seal/Features/Apps/AppsViewModel.swift`、`Seal/Features/Apps/SigningProgressView.swift`、
+  `Seal/Core/Accounts/AppleServiceFailurePolicy.swift`、`Seal/Core/Signing/SigningCoordinator.swift`、
+  `Seal/Features/Settings/SettingsViewModel.swift`、`SealTests/Accounts/AppleServiceFailurePolicyTests.swift`、
+  `project.yml`、`RELEASE_NOTES.md`。
+- **验证状态**：本机 Windows 无法编译；待触发 `iOS Fast IPA` 云编译验证。真机回归重点：会话过期仍只引导去「我的」；
+  凭据被拒绝/Keychain 缺失后账号变为不可选并提示重新验证；网络失败/105f/107 不误标 needsVerification。
+
 ### 2026-09-13 · 发布到 Seal-Releases 报 422：`target_commitish` 误传源仓库 SHA
 - **现象**：完整 `iOS` workflow 的 `build-package`、`rork-sign-tests` 已绿，`publish-release` 步骤
   `gh release create v1.1.0 --repo sunuannian1/Seal-Releases --target f1caf1d...` 报

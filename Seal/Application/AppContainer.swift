@@ -61,7 +61,6 @@ struct AppContainer {
                 )
             )
             let operationCoordinator = OperationCoordinator()
-            let signingVerificationBroker = VerificationCodeBroker()
             let workflow = ImportWorkflow(
                 parser: IPAParserService(),
                 fileStore: fileStore,
@@ -74,10 +73,7 @@ struct AppContainer {
                 fileStore: fileStore,
                 installChannel: installChannel,
                 portal: ApplePortalSigningService(
-                    anisetteProvider: anisetteProvider,
-                    verificationCodeProvider: { [signingVerificationBroker] in
-                        await signingVerificationBroker.request()
-                    }
+                    anisetteProvider: anisetteProvider
                 )
             )
             let refreshQueueStore = RefreshQueueStore(
@@ -142,8 +138,7 @@ struct AppContainer {
                     notificationScheduler: notificationScheduler,
                     notificationPreferences: notificationPreferences,
                     signingPreferenceStore: signingPreferenceStore,
-                    operationCoordinator: operationCoordinator,
-                    signingVerificationBroker: signingVerificationBroker,
+                    operationCoordinator: operationCoordinator
                 ),
                 settingsViewModel: SettingsViewModel(
                     accountRepository: accountRepository,

@@ -40,18 +40,15 @@ enum AppleServiceFailurePolicy {
     static func verificationFailureReason(
         for failure: ImportFailure
     ) -> AccountVerificationFailureReason? {
-        switch failure.code {
-        case "SEAL-AUTH-102":
-            return .credentialsRejected
-        case "SEAL-AUTH-105":
-            return .localCredentialsMissing
-        case "SEAL-AUTH-106":
-            return .localCredentialsMismatch
-        default:
-            // SEAL-AUTH-107（会话过期）不再标记 ID 失效：
-            // 已保存密码，下次签名会自动重登，不应因为一次会话过期就把 ID 标记为需要重新验证
-            return nil
-        }
+        let code = failure.code
+        // SEAL-AUTH-105f 是 Team 查询失败，不代表本地凭据缺失，不得标记 needsVerification。
+        if code == "SEAL-AUTH-105f" { return nil }
+        if code.hasPrefix("SEAL-AUTH-102") { return .credentialsRejected }
+        if code.hasPrefix("SEAL-AUTH-105") { return .localCredentialsMissing }
+        if code.hasPrefix("SEAL-AUTH-106") { return .localCredentialsMismatch }
+        // SEAL-AUTH-107（会话过期）不标记 ID 失效：签名/续签在 LocalDevVPN 环境无法可靠自动重登，
+        // 统一引导到「我的」页重新验证；网络/限流也不写账号状态。
+        return nil
     }
 
     static func shouldRequireReverification(_ failure: ImportFailure) -> Bool {

@@ -115,4 +115,38 @@ struct AppleServiceFailurePolicyTests {
         #expect(AppleServiceFailurePolicy.shouldRequireReverification(failure))
     }
 
+    @Test(arguments: [
+        ("SEAL-AUTH-102d", AccountVerificationFailureReason.credentialsRejected),
+        ("SEAL-AUTH-105a", AccountVerificationFailureReason.localCredentialsMissing),
+        ("SEAL-AUTH-105e", AccountVerificationFailureReason.localCredentialsMissing)
+    ])
+    func suffixedAuthenticationFailuresKeepTheirReason(
+        code: String,
+        expected: AccountVerificationFailureReason
+    ) {
+        let failure = ImportFailure(
+            title: "账号需要重新验证",
+            reason: "认证状态失效",
+            recovery: "重新验证 Apple ID",
+            code: code
+        )
+        #expect(AppleServiceFailurePolicy.verificationFailureReason(for: failure) == expected)
+    }
+
+    @Test(arguments: [
+        "SEAL-AUTH-105f",
+        "SEAL-AUTH-107",
+        "SEAL-AUTH-107a",
+        "SEAL-AUTH-107t"
+    ])
+    func teamLookupSessionAndTimeoutFailuresDoNotRequireReverification(code: String) {
+        let failure = ImportFailure(
+            title: "请求失败",
+            reason: "会话或团队查询失败",
+            recovery: "稍后重试",
+            code: code
+        )
+        #expect(AppleServiceFailurePolicy.shouldRequireReverification(failure) == false)
+    }
+
 }

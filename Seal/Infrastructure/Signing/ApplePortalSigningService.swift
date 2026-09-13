@@ -238,19 +238,16 @@ actor ApplePortalSigningService {
     private let anisetteProvider: any AnisetteProvider
     private let signingWorkspace: SigningWorkspace
     private let accountClient: AppleAccountClient
-    private let verificationCodeProvider: (@MainActor @Sendable () async -> String?)?
     // 对齐 AltStore：防止并发签名时重复创建 App Group
     // App Group 操作通过 actor 串行化；批量签名为串行循环，无并发创建风险
 
     init(
         anisetteProvider: any AnisetteProvider = AnisetteV3Client(),
-        signingWorkspace: SigningWorkspace = SigningWorkspace(),
-        verificationCodeProvider: (@MainActor @Sendable () async -> String?)? = nil
+        signingWorkspace: SigningWorkspace = SigningWorkspace()
     ) {
         self.anisetteProvider = anisetteProvider
         self.signingWorkspace = signingWorkspace
         self.accountClient = AppleAccountClient(anisetteProvider: anisetteProvider)
-        self.verificationCodeProvider = verificationCodeProvider
     }
 
 

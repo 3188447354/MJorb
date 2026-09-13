@@ -63,6 +63,9 @@ def violations(load=read):
         check("inputs.publish_release == true" in text
               and re.search(r"publish_release:[\s\S]*?default: false", text) is not None,
               workflow + ": publishing must be explicit and default off")
+        check(re.search(r"\n  publish-release:[\s\S]{0,600}?\n    if: github\.event_name == 'workflow_dispatch'",
+                        text) is not None,
+              workflow + ": publish job must stay gated to workflow_dispatch (never run on push)")
         check('${TAG#v}' in text and '!= "$VER"' in text,
               workflow + ": release tag must match built IPA version")
     return checks, failures
@@ -80,6 +83,10 @@ def main():
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "actor ApplePortalSigningService {",
          "actor ApplePortalSigningService {\n// recoverCertificateCapacityAndCreate\n", "R03:"),
+        (".github/workflows/ios.yml",
+         "if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true",
+         "if: inputs.publish_release == true",
+         "ios.yml: publish job"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

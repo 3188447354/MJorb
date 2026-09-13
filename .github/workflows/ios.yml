@@ -2,6 +2,21 @@ name: iOS
 
 on:
   pull_request:
+  # 特性/发布分支推送即自动跑完整门（PR 驱动之外的第二条通路）。
+  # 排除 main：main 由 ios-fast.yml 负责出包。
+  # publish-release 仍只在 workflow_dispatch 触发，push 路径绝不会自动发布 Release。
+  push:
+    branches-ignore: [main]
+    paths:
+      - "Seal/**"
+      - "SealTests/**"
+      - "SealUITests/**"
+      - "SealTunnel/**"
+      - "Vendor/Minimuxer/**"
+      - "project.yml"
+      - "Config/**"
+      - "Scripts/**"
+      - ".github/workflows/ios.yml"
   workflow_dispatch:
     inputs:
       publish_release:

@@ -103,6 +103,11 @@
 
 - `ios.yml` 完整档：RustBridge 一致性 + UI 回归 + 签名测试，大改动走它。
 - `ios-release.yml` 快速档：Release 编译 + 发布，跳过 UI/rork 门，改 Swift 业务逻辑用。
+- **触发方式**：`ios.yml` 除 PR 外，**推到非 `main` 分支、且改动命中相关路径也会自动跑完整门**
+  （`branches-ignore: [main]` + `paths` 过滤，纯文档推送会跳过）。`main` 由 `ios-fast.yml` 负责出包。
+  `publish-release` 始终只在 `workflow_dispatch` + `publish_release=true` 时触发，**push 路径绝不自动发布**；
+  该不变量由 `Scripts/verify-release-safety.py` 静态守护（含变异自检）。
+- 改工作流触发条件前，先跑 `Scripts/verify-release-safety.py`，并确认 `publish-release` 的 `if:` 门未被削弱。
 - CI 缓存「Refresh local SPM binary artifacts」只清 `SourcePackages/checkouts`，**不许 rm 整个 SourcePackages**
   （会删 OpenSSL.xcframework 二进制 → `openssl/err.h not found`）。
 - CI 校验 `IPHONEOS_DEPLOYMENT_TARGET=17.0`；改部署目标时同步查 `ios.yml`/`ios-release.yml` 断言。

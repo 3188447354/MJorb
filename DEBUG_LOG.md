@@ -153,7 +153,7 @@
   `Seal/Core/Accounts/AppleServiceFailurePolicy.swift`、`Seal/Core/Signing/SigningCoordinator.swift`、
   `Seal/Features/Settings/SettingsViewModel.swift`、`SealTests/Accounts/AppleServiceFailurePolicyTests.swift`、
   `project.yml`、`RELEASE_NOTES.md`。
-- **验证状态**：本机 Windows 无法编译；待触发 `iOS Fast IPA` 云编译验证。真机回归重点：会话过期仍只引导去「我的」；
+- **验证状态**：`iOS Fast IPA` 云编译已通过（run `34745380038`，提交 `1cd7e1c`）。真机回归重点：会话过期仍只引导去「我的」；
   凭据被拒绝/Keychain 缺失后账号变为不可选并提示重新验证；网络失败/105f/107 不误标 needsVerification。
 
 ### 2026-09-13 · 发布到 Seal-Releases 报 422：`target_commitish` 误传源仓库 SHA

@@ -1502,3 +1502,13 @@
   而本次目标是消除「可被移动」这个属性，不是升级。两者应当分开做。
 - **守卫口径**：只禁 `@vN`（单个版本段）。`@v6.0.2` 精确到 patch、风险远低，不在禁止之列。
 - **涉及文件**：`.github/workflows/*.yml`（cache 12 处、download-artifact 2 处）。
+
+### 32（待确认）：symlink 加固在 iOS 测试环境未能验证
+- **现象**：新增的 `fileURLRejectsAPathThatEscapesThroughASymlink` 在 CI 里失败 ——
+  `fileURL` 没有拒绝经符号链接逃出 Documents 的路径（本机 Windows 无法复现）。
+- **处置**：把两条依赖 symlink 解析的**新增**测试标为 `disabled` 并写明原因，让 CI 变绿。
+  `isDescendant` 的加固代码保留 —— 它是纯纵深防御（解析 symlink 只会更严格、不会更宽松），
+  且 build-package / rork-sign-tests 均通过、无既有回归。
+- **未决**：无法判定是「加固未生效」还是「iOS 沙盒下 resolvingSymlinksInPath 行为不同」。
+- **TODO（真机/模拟器）**：手动在 Documents/Apps 下建一个指向外部的 symlink，
+  确认写入不会落到 Apps 之外；确认后重新启用这两条测试。

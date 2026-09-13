@@ -124,6 +124,20 @@
 
 ## 二、历史记录
 
+### 2026-09-13 · 云编译报 openssl/err.h not found：`Refresh local SPM binary artifacts` 误删 OpenSSL 二进制包
+- **现象**：`iOS Fast IPA` workflow「Build fast unsigned IPA」步骤偶发失败，`native_bridge_ldid.cpp:46` 报
+  `fatal error: 'openssl/err.h' file not found`（exit code 65）；相同 workflow 此前多次成功（同 revision、同缓存 key）。
+- **根因**：`ios-fast.yml` 的 `Refresh local SPM binary artifacts` 步骤执行 `rm -rf build/DerivedData/SourcePackages`，
+  把 AltSign 依赖的 **OpenSSL.xcframework（SPM binary artifact）** 一起删了。二进制包恢复依赖全局 SPM 缓存
+  `~/Library/Caches/org.swift.swiftpm`，而它对应的 actions/cache key 只 hash `project.yml`（长期不变 → 命中 → 不回写），
+  快照陈旧导致 OpenSSL 二进制包恢复不出来，NativeBridge 编译 `ldid.cpp` 时 `openssl/err.h` 找不到。与本次代码补丁无关，
+  纯 CI 缓存层偶发；`Unicorn.xcframework`（AnisetteKit）同属 binary artifact 却恢复成功，佐证是「个别包缓存缺、非整体删错」。
+- **修复**：改删 `rm -rf build/DerivedData/SourcePackages/checkouts`（只清源码 checkouts，保留 `artifacts/` 二进制包），
+  从根上消除「二进制包依赖不稳定全局缓存恢复」的隐患（commit `dea58f9`）。重触发后编译通过。
+- **涉及文件**：`.github/workflows/ios-fast.yml`。
+- **验证状态**：`run 34738566116` 编译 `success`。注：本次还观察到 `queued` 卡 ~15 分钟属 GitHub 托管 `macos-26` runner
+  队列拥堵（仓库无并发占用），取消重排后秒排到，非代码/workflow 问题。
+
 ### 2026-09-13 · 链路恢复闭环批量修复（#2/#3/#6/#7/#8/#9/#10，一次提交一次编译）
 - **范围**：对齐 `SIGNING_CHAIN_ANALYSIS_20260913.md` 恢复链问题，本次批量落地：
   1. **#2 安装错误恢复分类**：`SigningProgressView.isResignRequired()` 按 `SEAL-INSTALL-71/72/73` 前驱识别「必须重新签名」，

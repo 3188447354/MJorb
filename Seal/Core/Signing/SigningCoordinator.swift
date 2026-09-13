@@ -622,6 +622,14 @@ actor SigningCoordinator {
             try await appStore.save(updated)
             try await updateState(appID: app.id, stage: .pushing)
             await progress(.pushing)
+            // 自更新必须在安装前清旧描述文件：installd 替换 Seal 后本进程即被终止，
+            // 事后的异步清理基本活不到执行，Seal 自身 profile 因此只增不删。
+            // 新 profile 随安装落设备，此刻凡匹配的都是旧文件；安装失败也不影响旧应用启动
+            // （启动校验只看包内 embedded.mobileprovision，与设备 profile 列表无关）。
+            // 匹配范围含：当前运行 ID + 记录目标 ID + 包内真实 ID，覆盖历史改 ID 残留。
+            await DeviceProfileCleaner.removeAllProfiles(
+                for: [Bundle.main.bundleIdentifier, bundleIdentifier, effectiveBundleID].compactMap { $0 }
+            )
             try await installChannel.install(
                 ipaData: signedData,
                 bundleID: effectiveBundleID,

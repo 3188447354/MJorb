@@ -631,12 +631,15 @@ actor ApplePortalSigningService {
            machineID.isEmpty == false {
             local.machineIdentifier = machineID
             if let certificates = try? await fetchCertificates(team: team, session: session) {
+                // 在生效列表且本地证书未过期才可复用：只查列表不查有效期，会把
+                // 「列表未及时剔除的过期证书」签进新包，次日被 iOS 判「尚未验证」闪退。
                 if certificates.contains(where: {
                     $0.serialNumber.caseInsensitiveCompare(serial) == .orderedSame
-                }) {
+                }), let validity = local.data.flatMap(X509CertificateValidityReader.validity(from:)),
+                   validity.isExpired() == false {
                     return SigningIdentity(certificate: local, secret: secret)
                 }
-                // 证书已不在 Apple 生效列表，落到慢速路径重新申请新证书
+                // 证书已不在 Apple 生效列表或已过期，落到慢速路径重新申请新证书
             } else {
                 // 网络失败/限流：退回本地证书，保留提速效果。
                 // 但免费账号证书可能已过期；复用过期证书会让 iOS 次日判定"尚未验证"导致闪退，

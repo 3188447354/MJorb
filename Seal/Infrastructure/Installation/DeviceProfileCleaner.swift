@@ -24,7 +24,22 @@ struct DeviceProfileCleaner: Sendable {
               bundleIdentifier.isEmpty == false else {
             return
         }
+        await removeProfiles(matching: [bundleIdentifier], keeping: keepingProfileUUID)
+    }
 
+    /// 自更新「安装前」调用：新 profile 尚未落到设备，凡匹配 bundle ID 的都是旧文件，全部删除。
+    /// 即使随后安装失败，启动校验只看包内 embedded.mobileprovision、与设备 profile 列表无关，
+    /// 旧应用仍可打开，因此此处删除是安全的。
+    static func removeAllProfiles(for bundleIdentifiers: [String]) async {
+        let ids = bundleIdentifiers.filter { $0.isEmpty == false }
+        guard ids.isEmpty == false else { return }
+        await removeProfiles(matching: ids, keeping: nil)
+    }
+
+    private static func removeProfiles(
+        matching bundleIdentifiers: [String],
+        keeping keepingProfileUUID: String?
+    ) async {
         let reader = ProvisioningProfileReader()
         let fileManager = FileManager.default
         let workingDir = fileManager.temporaryDirectory
@@ -49,10 +64,13 @@ struct DeviceProfileCleaner: Sendable {
                       let profileBundleID = details.bundleIdentifier else {
                     continue
                 }
-                guard profileBundleID.caseInsensitiveCompare(bundleIdentifier) == .orderedSame else {
+                guard bundleIdentifiers.contains(where: {
+                    profileBundleID.caseInsensitiveCompare($0) == .orderedSame
+                }) else {
                     continue
                 }
-                guard profileUUID.caseInsensitiveCompare(keepingProfileUUID) != .orderedSame else {
+                if let keepingProfileUUID,
+                   profileUUID.caseInsensitiveCompare(keepingProfileUUID) == .orderedSame {
                     continue
                 }
                 try? Provision.removeProvisioningProfile(id: profileUUID)

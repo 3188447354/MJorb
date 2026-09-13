@@ -1,0 +1,158 @@
+name: iOS Release Fast
+
+# 快速发布档：Release 编译 + 打包 + 发布到 Seal-Releases。
+# 与完整 ios.yml 的区别：跳过模拟器 UI 回归与 rork-sign 测试门，
+# 用于「只改了 Swift 业务逻辑、没动 Rust 桥/签名器」的小版本快速出包。
+# 大改动（签名器、RustBridge、安装链路）仍须走完整 iOS workflow。
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release 标签（留空则自动 v<版本>，须与 MARKETING_VERSION 对齐）"
+        type: string
+        default: ""
+      prerelease:
+        description: "标记为预发布版本"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ios-release-fast-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-release:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Cache Swift Package Manager dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/Developer/Xcode/DerivedData/Seal-*/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('project.yml') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      - name: Cache Rust toolchain and cargo artifacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.cargo/registry
+            ~/.cargo/git
+            Vendor/Minimuxer/RustBridge/target
+          key: rustbridge-${{ runner.os }}-${{ hashFiles('Vendor/Minimuxer/RustBridge/Cargo.lock', 'Vendor/Minimuxer/RustBridge/Cargo.toml', 'Vendor/Minimuxer/RustBridge/Makefile', 'Vendor/Minimuxer/RustBridge/src/**') }}
+          restore-keys: |
+            rustbridge-${{ runner.os }}-
+
+      - name: Select pinned Xcode 26.5
+        run: |
+          test -d /Applications/Xcode_26.5.app
+          sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
+          xcodebuild -version
+          test "$(xcodebuild -version | head -n 1)" = "Xcode 26.5"
+
+      - name: Audit vendored RustBridge FFI source
+        run: bash Scripts/audit-rustbridge-source.sh
+
+      - name: Ensure RustBridge matches Rust source
+        env:
+          RUST_TOOLCHAIN: 1.97.1
+        run: bash Scripts/ensure-rustbridge.sh
+
+      - name: Verify vendored RustBridge is present
+        run: |
+          test -f Vendor/Minimuxer/RustBridge/lib/RustBridge.xcframework/ios-arm64/librust_bridge.a
+          test -f Vendor/Minimuxer/RustBridge/lib/RustBridge.xcframework/ios-arm64-simulator/librust_bridge.a
+
+      - name: Install pinned XcodeGen
+        run: |
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/xcodegen.zip" \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip
+          echo "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 --check
+          ditto -x -k "$RUNNER_TEMP/xcodegen.zip" "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/xcodegen/bin/xcodegen" --version
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Verify Seal minimum deployment target remains iOS 17
+        run: |
+          TARGET="$(xcodebuild \
+            -project Seal.xcodeproj \
+            -target Seal \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -showBuildSettings | awk -F ' = ' '/^[[:space:]]*IPHONEOS_DEPLOYMENT_TARGET = / { print $2; exit }')"
+          echo "Seal IPHONEOS_DEPLOYMENT_TARGET=$TARGET"
+          test "$TARGET" = "17.0"
+
+      - name: Refresh local SPM binary artifacts (避免缓存旧版 RustBridge 静态库)
+        run: |
+          # 只清源码 checkouts，保留 artifacts/（OpenSSL.xcframework 等二进制包）。
+          rm -rf build/DerivedData/SourcePackages/checkouts
+
+      - name: Build Release unsigned IPA
+        run: SEAL_IPA_CONFIGURATION=Release SEAL_SKIP_XCODEGEN=1 bash Scripts/build-unsigned-ipa.sh
+
+      - name: Verify unsigned IPA
+        run: bash Scripts/verify-ipa.sh build/Seal.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: Seal-${{ github.run_number }}
+          if-no-files-found: error
+          path: |
+            build/Seal.ipa
+            build/Seal.ipa.sha256
+            build/Seal-Info.plist
+            build/SealTunnel-Info.plist
+          retention-days: 30
+
+  publish-release:
+    needs: [build-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Download unsigned IPA artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: Seal-${{ github.run_number }}
+          path: release
+
+      - name: Publish GitHub Release via gh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          INPUT_TAG: ${{ inputs.release_tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          ls -la release
+          VER="$(python3 -c "import plistlib;print(plistlib.load(open('release/Seal-Info.plist','rb'))['CFBundleShortVersionString'])")"
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then TAG="v${VER}"; fi
+          NOTES="$(cat RELEASE_NOTES.md)"
+          ARGS=(--title "Seal $TAG" --notes "$NOTES")
+          if [ "$PRERELEASE" = "true" ]; then ARGS+=(--prerelease); fi
+          # 跨仓库发布不传 --target：源仓库 SHA 在 Seal-Releases 不存在，
+          # 传了会 422（target_commitish invalid），默认指向目标仓库 main。
+          gh release create "$TAG" "${ARGS[@]}" --repo sunuannian1/Seal-Releases \
+            release/Seal.ipa \
+            release/Seal.ipa.sha256 \
+            release/Seal-Info.plist \
+            release/SealTunnel-Info.plist
+          echo "published $TAG"

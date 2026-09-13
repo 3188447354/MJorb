@@ -132,6 +132,34 @@
 
 ## 二、历史记录
 
+### 2026-09-13 · v1.1.0 仍闪退+描述文件不删：自更新清理任务活不到执行，证书列表命中漏查有效期
+- **现象**：用户已升 v1.1.0（含 09-13 早些时候的「清理+证书有效期」修复），Seal 仍打开闪退「无法验证」，
+  且设备端历史描述文件一个都没少。
+- **根因（两个）**：
+  1. **自更新清理时机错误**：`SigningCoordinator` 自更新路径在 `installChannel.install(isSelfReplacement: true)`
+     **返回后**才 `Task { await DeviceProfileCleaner.removeStaleProfiles(...) }`；installd 替换 Seal 的那一刻
+     iOS 杀掉 Seal 进程，这个异步任务几乎必然随进程死亡 → Seal 自身 profile 永远清不掉。
+     （普通应用的清理没问题，因为 Seal 进程还活着。）
+  2. **证书快速路径漏查有效期**：`signingIdentity` 在「证书序列号命中 Apple 生效列表」分支直接复用本地证书，
+     未校验有效期；网络失败分支虽有效期校验，但列表命中分支没有。列表若未及时剔除过期证书，
+     过期证书被签进新包 → 次日 iOS 判「尚未验证」闪退。
+  另：用户当前闪退的 v1.1.0 是被旧版（无有效期校验）签出来的历史包，新代码无法 retroactive 修复，
+  需从电脑端重装一次。
+- **修复**：
+  - `DeviceProfileCleaner` 拆出私有 `removeProfiles(matching:keeping:)`，新增 `removeAllProfiles(for:)`：
+    自更新**安装前**调用，删掉匹配 bundle ID 的全部设备端 profile（此刻新 profile 尚未落设备，凡匹配皆旧文件；
+    启动校验只看包内 embedded.mobileprovision，与设备列表无关，安装失败也不影响旧应用打开）。
+  - 自更新路径在 `installChannel.install` 前 `await DeviceProfileCleaner.removeAllProfiles(for: [当前运行 bundleID, effectiveBundleID])`；
+    安装后的保留式清理保留为双保险。
+  - `signingIdentity` 列表命中分支补 `X509CertificateValidityReader.validity` + `isExpired() == false` 才复用。
+  - 新建 `.github/workflows/ios-release.yml` 快速发布档：Release 编译+打包+发布，跳过 UI 回归/rork 门
+    （仅限没动 Rust 桥/签名器的小版本；大改动仍走完整 ios.yml）。
+- **涉及文件**：`Seal/Infrastructure/Installation/DeviceProfileCleaner.swift`、
+  `Seal/Core/Signing/SigningCoordinator.swift`、`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、
+  `.github/workflows/ios-release.yml`、`project.yml`（1.1.2）、`RELEASE_NOTES.md`。
+- **验证状态**：待 `iOS Release Fast` 云编译+发布验证。真机回归重点：自更新后设置→通用→VPN与设备管理里
+  Seal 的旧 profile 只剩最新一份；续签后次日不再「尚未验证」闪退。
+
 ### 2026-09-13 · #1/#5 闭环：签名页死验证码移除，账号验证状态按错误码家族落库
 - **现象**：签名链路持有 `verificationCodeProvider` / `reauthenticate()` 但生产从不调用，会话过期只能跳设置页；
   同时 `persistVerificationFailure()` 为空实现，策略层只认精确旧码 `102/105/106`，生产后缀码 `102d/105a/105e`

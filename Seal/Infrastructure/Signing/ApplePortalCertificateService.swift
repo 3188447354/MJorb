@@ -215,8 +215,9 @@ actor ApplePortalCertificateService {
         let box: LegacyBox<[ALTTeam]> = try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 continuation in
+                let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.fetchTeams(for: account, session: session) { teams, error in
-                    Self.resume(continuation, value: teams, error: error)
+                    Self.resume(callback, value: teams, error: error)
                 }
             }
         }
@@ -230,8 +231,9 @@ actor ApplePortalCertificateService {
         let box: LegacyBox<[ALTX509Certificate]> = try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 continuation in
+                let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.fetchCertificates(for: team, session: session) { certificates, error in
-                    Self.resume(continuation, value: certificates, error: error)
+                    Self.resume(callback, value: certificates, error: error)
                 }
             }
         }
@@ -246,12 +248,13 @@ actor ApplePortalCertificateService {
         let box: LegacyBox<ALTCertificate> = try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 continuation in
+                let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.addCertificate(
                     machineName: Self.certificateMachineName(team: team, deviceName: deviceName),
                     to: team,
                     session: session
                 ) { certificate, error in
-                    Self.resume(continuation, value: certificate, error: error)
+                    Self.resume(callback, value: certificate, error: error)
                 }
             }
         }
@@ -266,11 +269,12 @@ actor ApplePortalCertificateService {
         try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 (continuation: CheckedContinuation<Void, any Error>) in
+                let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.revoke(certificate, for: team, session: session) { success, error in
                     if success {
-                        continuation.resume()
+                        callback.resume()
                     } else {
-                        continuation.resume(throwing: error ?? URLError(.badServerResponse))
+                        callback.resume(throwing: error ?? URLError(.badServerResponse))
                     }
                 }
             }
@@ -301,15 +305,17 @@ actor ApplePortalCertificateService {
             || normalized.contains("invalidcertificaterequest")
     }
 
+    /// 同 `ApplePortalSigningService.resume`：第一参数必须是 `ContinuationBox`，
+    /// 避免 AltSign 重复/迟到回调造成 `SWIFT TASK CONTINUATION MISUSE` 致命崩溃。
     private static func resume<T>(
-        _ continuation: CheckedContinuation<LegacyBox<T>, any Error>,
+        _ callback: ContinuationBox<LegacyBox<T>>,
         value: T?,
         error: Error?
     ) {
         if let value {
-            continuation.resume(returning: LegacyBox(value))
+            callback.resume(returning: LegacyBox(value))
         } else {
-            continuation.resume(throwing: error ?? URLError(.badServerResponse))
+            callback.resume(throwing: error ?? URLError(.badServerResponse))
         }
     }
 

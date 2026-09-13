@@ -204,11 +204,12 @@ actor ApplePortalInventoryService {
         let box: LegacyBox<[ALTTeam]> = try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 continuation in
+                let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.fetchTeams(for: account, session: session) { teams, error in
                     if let teams {
-                        continuation.resume(returning: LegacyBox(teams))
+                        callback.resume(returning: LegacyBox(teams))
                     } else {
-                        continuation.resume(throwing: error ?? URLError(.badServerResponse))
+                        callback.resume(throwing: error ?? URLError(.badServerResponse))
                     }
                 }
             }
@@ -223,11 +224,12 @@ actor ApplePortalInventoryService {
         let box: LegacyBox<[ALTX509Certificate]> = try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 continuation in
+                let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.fetchCertificates(for: team, session: session) { certificates, error in
                     if let certificates {
-                        continuation.resume(returning: LegacyBox(certificates))
+                        callback.resume(returning: LegacyBox(certificates))
                     } else {
-                        continuation.resume(throwing: error ?? URLError(.badServerResponse))
+                        callback.resume(throwing: error ?? URLError(.badServerResponse))
                     }
                 }
             }
@@ -242,11 +244,12 @@ actor ApplePortalInventoryService {
         let box: LegacyBox<[ALTAppID]> = try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 continuation in
+                let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.fetchAppIDs(for: team, session: session) { appIDs, error in
                     if let appIDs {
-                        continuation.resume(returning: LegacyBox(appIDs))
+                        callback.resume(returning: LegacyBox(appIDs))
                     } else {
-                        continuation.resume(throwing: error ?? URLError(.badServerResponse))
+                        callback.resume(throwing: error ?? URLError(.badServerResponse))
                     }
                 }
             }

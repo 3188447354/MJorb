@@ -170,10 +170,99 @@
   ⑤ CI 失败原因要能在**不登录**的情况下看到：`xcodebuild` 输出 `tee` 到文件，失败时提炼成
   `::error::` 注解（GitHub 原始日志需登录，注解不需要）。
 - **涉及文件**：`.github/workflows/ios.yml`、`Scripts/verify-release-safety.py`。
-- **验证状态**：实测 9m38s；护栏 22 项源码检查 + 7 变异 PASS（含「删掉 ensure-rustbridge 必须报错」）。
-  链接修复待下一次运行验证。
+- **验证状态**：实测 9m38s；护栏含「删掉 ensure-rustbridge 必须报错」的变异自检。链接修复待下一次运行验证。
+
+### 15. 用 `withThrowingTaskGroup` 做超时 = 没有超时（回调不返回时永远不抛）
+- **现象**：Apple 服务器不响应时，签名/证书页会**无限等待**，超时文案从不出现。
+- **根因**：`ApplePortalSigningService.withAppleTimeout` 用 `withThrowingTaskGroup` 实现超时：
+  一个子任务跑操作、一个子任务 sleep 后抛超时。但**任务组退出前必须等所有子任务结束**，
+  `cancelAll()` 只能设置协作取消标记。ALTAppleAPI 的回调一旦不返回，操作子任务永远不结束，
+  超时错误就被无限期拖住 —— 等于没有超时。
+  （该函数自己的注释写着「Apple 服务器不响应时回调永远不触发，UI 会永久卡住」，意图是对的，实现达不到。）
+- **规矩**：**凡「不可协作取消的操作 + 超时」一律用 `HardTimeout.run`**（非结构化任务竞速：
+  超时先到就直接返回，输掉的一方被遗弃在后台、结果安全丢弃）。
+  本仓已有三处正确范例：`AppleAccountClient.withTimeout`、`MinimuxerInstallChannel.withHardTimeout`、
+  以及 `HardTimeout.swift` 自身的文档。**新写超时前先看 `HardTimeout.swift` 的注释。**
+- **涉及文件**：`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`（该函数被 3 个文件、
+  23 个调用点共用，改一处即全部生效）、`Seal/Core/Concurrency/HardTimeout.swift`（范例）。
+- **验证状态**：护栏新增「`withAppleTimeout` 必须含 `HardTimeout.run`、不得含 `withThrowingTaskGroup`」
+  源码检查 + 变异自检；新增 `SealTests/Concurrency/HardTimeoutTests.swift`（3 例，其中一例专门
+  构造「3 秒后才恢复且不响应取消」的操作，断言超时在 0.2 秒预算内触发）。**Swift 编译与测试待 CI。**
+
+### 16. 裸 `CheckedContinuation` 交给第三方回调 = 重复回调即进程崩溃（不是可捕获错误）
+- **现象**：签名/证书流程偶发**直接闪退**，没有可捕获的错误、没有明确堆栈，只有崩溃日志里一句
+  `SWIFT TASK CONTINUATION MISUSE: ... resumed, but it was already resumed`。
+- **根因**：`CheckedContinuation` 第二次 resume **不是抛错，是 `fatalError`**。Portal 三个服务把裸
+  continuation 直接交给了 ALTAppleAPI，而 AltSign 存在两条真实的重复回调路径：
+  ① 先回调一次错误、随后迟到地再回调成功；② `HardTimeout` 超时抛出后，底层回调仍会到达并再 resume
+  （`HardTimeout` 只放弃自己那一层的等待，**不会**阻止底层回调）。
+- **规矩**：**凡是把 `CheckedContinuation` 交给第三方回调，一律先套 `ContinuationBox`**
+  （`Seal/Core/Concurrency/ContinuationBox.swift`，锁保护、首个结果获胜并清空）。
+  同模式范例：`AppleAccountClient.LegacyCallbackBox`、`HardTimeout.RaceState`。
+- **坑位**：守卫必须**按 continuation 实例**生效，所以要在**每个 `withCheckedContinuation` 创建点**
+  各建一个盒（本仓 22 个），**不能**只改共用辅助函数就以为覆盖了 —— 这点和坑位 15 的
+  「改一处全生效」正好相反，别混淆。
+- **涉及文件**：`Seal/Core/Concurrency/ContinuationBox.swift`（新增）、
+  `ApplePortalSigningService.swift`（15 点）、`ApplePortalCertificateService.swift`（4 点）、
+  `ApplePortalInventoryService.swift`（3 点）。
+- **验证状态**：护栏新增「ContinuationBox 必须清空 continuation」「Portal 内不得再出现裸
+  `Self.resume(continuation,` / `continuation.resume(`」「创建点数 == 盒子数」+ 2 条变异自检；
+  新增 `SealTests/Concurrency/ContinuationBoxTests.swift`（5 例，含重复回调、并发回调、
+  超时后迟到回调）。**Swift 编译与测试待 CI。**
+
+### 17. 写 API 超时 ≠ 失败；证书私钥随响应一起丢，重试只是多烧一个名额
+- **现象**：创建证书请求超时后提示「请检查网络后重试」，用户照做 → 证书名额被无声消耗，
+  直到撞上 `SEAL-CERT-204b`（数量已达上限）。
+- **根因**：把写 API 当读 API 处理。读 API 超时=没拿到数据，重试无害；**写 API 超时=结果未知**，
+  服务端可能已经创建成功。更关键的是：**私钥由 AltSign 在本地生成、只随响应返回，响应一丢就永久
+  不可恢复** —— 所以「已经建好」的那张证书也是废的，只能人工撤销。
+- **规矩**：写 API 超时后**既不盲目重试、也不自动撤销**，而是**对账一次**远端列表
+  （`certificateMachineName` 含 team + 秒级时间戳，与本次请求一一对应，不会误认别人的证书），
+  按三种结论分别给文案：确认没建（可重试）/ 确认建了但废了（去撤销）/ 对账也失败（**未知**，
+  先确认再决定）。**「无法确认」绝不能当成「没有创建」。**
+- **涉及文件**：`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`
+  （`addCertificate` + `OrphanReconciliation` + `isTimeoutError` + `certificateCreationUnknownFailure`）。
+  错误码 `SEAL-CERT-209b/209c/209d` 三选一，必须互不相同。
+- **验证状态**：护栏新增「创建证书超时必须对账」「必须区分未知与未创建」+ 变异自检；
+  新增 `SealTests/Signing/PortalWriteTimeoutSemanticsTests.swift`（7 例，锁定错误码与文案口径）。
+  **Swift 编译与测试待 CI。**
 
 ## 二、历史记录
+
+### 2026-09-14 · R04 收尾：22 个回调创建点套盒 + 写 API 超时按「未知」处理
+- **范围**：把 R04（取消/超时）从「修超时写法」推进到「回调层与写 API 语义都收口」。
+- **改动 1（回调只恢复一次）**：新增 `Seal/Core/Concurrency/ContinuationBox.swift`，
+  在 Portal 三个服务的 **22 个 `withCheckedContinuation` 创建点**各建一个盒，全部回调改为经盒转发。
+  同时把两个共用辅助函数 `resume(_:value:error:)` 的第一参数从裸 `CheckedContinuation` 换成盒子，
+  让类型系统兜住「忘了套盒」的写法。改法用脚本批量执行后逐点抽查 diff（22 点机械改动，
+  手改易漏）；`Void` 特化用 `extension ContinuationBox where Value == Void { func resume() }`，
+  覆盖 `revoke` / `deleteProvisioningProfile` / `assign` 三处 `CheckedContinuation<Void, Error>`。
+- **改动 2（写 API 超时=未知）**：`addCertificate` 超时后不再直接上抛，而是按本次请求的
+  `machineName` 对账一次远端证书列表，按 `OrphanReconciliation` 三种结论分别报错
+  （`SEAL-CERT-209b/209c/209d`）。**不做任何自动重试或自动撤销。**
+- **护栏**：`Scripts/verify-release-safety.py` 由 23 项源码检查 + 8 变异 → **30 项 + 11 变异，PASS**。
+  新增守卫：盒子必须清空 continuation、Portal 内不得出现裸 resume、创建点数必须等于盒子数、
+  超时必须对账、必须区分未知与未创建。
+- **新增测试**：`SealTests/Concurrency/ContinuationBoxTests.swift`（5 例）、
+  `SealTests/Signing/PortalWriteTimeoutSemanticsTests.swift`（7 例）。
+- **验证状态**：静态守卫全绿；**Swift 编译、单测运行、真机回归均待 CI/设备**。
+- **顺带确认**：上一轮 CI run `34772578224`（`679eaef`）三 job 全绿 —— `build-package` ✓、
+  `rork-sign-tests` ✓、`swift-regression` 16m9s ✓。链接修复（补回 `ensure-rustbridge.sh`）生效，
+  1.1.9 候选批次的全门首次跑通。
+
+### 2026-09-14 · R04 起手：Apple Portal 的「超时」其实不生效（task group 写法）
+- **现象**：Apple 服务器不响应时，签名/证书流程无限等待，超时文案从不出现。
+- **根因**：`withAppleTimeout` 用 `withThrowingTaskGroup` 实现超时，而任务组退出前必须等所有子任务
+  结束；ALTAppleAPI 回调不返回 → 操作子任务永不结束 → 超时错误永远抛不出来（详见坑位 15）。
+- **修复**：把 `withAppleTimeout` 迁移到本仓已有的 `HardTimeout.run`（非结构化任务竞速），
+  超时文案与错误码口径保持不变。该函数被 3 个文件、23 个调用点共用，**改一处即全部生效**。
+- **涉及文件**：`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`（唯一改动）、
+  `SealTests/Concurrency/HardTimeoutTests.swift`（新，3 例）、`Scripts/verify-release-safety.py`。
+- **验证状态**：护栏 23 项源码检查 + 8 变异 PASS（新增「必须含 HardTimeout.run 且不得含
+  withThrowingTaskGroup」+ 变异自检）。**Swift 编译与 3 个单测待 CI。**
+- **R04 剩余未做**：① 回调统一走「只恢复一次」的状态盒（`AppleAccountClient.LegacyCallbackBox`
+  已是范例，Portal 三个服务仍是裸 `Self.resume`，23 处调用点需逐个改，属机械改动）；
+  ② 写 API 超时后按 unknown 记录并对账，不立即重试创建/撤销。
 
 ### 2026-09-14 · CI 每次等 20 分钟：把测试从 build-package 拆成并行 job（20m33s → 9m38s）
 - **现象**：往 `release-1.1.9-candidate` 推一次提交要等 **20m33s**（iOS #11 实测）。改一行 UI 文案也是这个价。

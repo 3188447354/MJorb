@@ -215,22 +215,25 @@ enum ApplePortalSigningFailure {
 }
 
 /// AltSign 回调式 API 的 async 包装 + 超时保护。
-/// AltSign 内部 URLSession 没有设置超时，Apple 服务器不响应时回调永远不触发，UI 会永久卡住。
+///
+/// 意图：AltSign 内部 URLSession 没有设置超时，Apple 服务器不响应时回调永远不触发，UI 会永久卡住。
+///
+/// **必须用 `HardTimeout`（非结构化任务竞速），不能用 `withThrowingTaskGroup`。**
+/// 任务组退出前必须等所有子任务结束，`cancelAll()` 只能设置协作取消标记；ALTAppleAPI 的回调一旦
+/// 不返回，子任务就永远不结束，超时错误便永远抛不出来 —— 等于没有超时，UI 无限等待。
+/// 本仓 `HardTimeout` 就是为修掉这个写法而写的（同类实现见 `AppleAccountClient.withTimeout`、
+/// `MinimuxerInstallChannel.withHardTimeout`）。此处此前仍是 task group 写法，2026-09-14 修正。
 func withAppleTimeout<T: Sendable>(
     _ seconds: UInt64 = 20,
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { group in
-        group.addTask(operation: operation)
-        group.addTask {
-            try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
-            throw URLError(.timedOut, userInfo: [
-                NSLocalizedDescriptionKey: "Apple 服务器响应超时（\(seconds) 秒），请检查网络或代理后重试"
-            ])
-        }
-        let result = try await group.next()!
-        group.cancelAll()
-        return result
+    do {
+        return try await HardTimeout.run(seconds: TimeInterval(seconds), operation)
+    } catch is HardTimeout.TimeoutError {
+        // 文案保持不变：上层按这条 description 归类，改动会波及错误码口径。
+        throw URLError(.timedOut, userInfo: [
+            NSLocalizedDescriptionKey: "Apple 服务器响应超时（\(seconds) 秒），请检查网络或代理后重试"
+        ])
     }
 }
 
@@ -562,8 +565,9 @@ actor ApplePortalSigningService {
         let box: LegacyBox<[ALTTeam]> = try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 continuation in
+                let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.fetchTeams(for: account, session: session) { teams, error in
-                    Self.resume(continuation, value: teams, error: error)
+                    Self.resume(callback, value: teams, error: error)
                 }
             }
         }
@@ -579,12 +583,13 @@ actor ApplePortalSigningService {
         let devicesBox: LegacyBox<[ALTDevice]> = try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 continuation in
+                let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.fetchDevices(
                     for: team,
                     types: [.iphone, .ipad],
                     session: session
                 ) { devices, error in
-                    Self.resume(continuation, value: devices, error: error)
+                    Self.resume(callback, value: devices, error: error)
                 }
             }
         }
@@ -594,6 +599,7 @@ actor ApplePortalSigningService {
         let deviceBox: LegacyBox<ALTDevice> = try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 continuation in
+                let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.registerDevice(
                     name: name,
                     identifier: identifier,
@@ -601,7 +607,7 @@ actor ApplePortalSigningService {
                     team: team,
                     session: session
                 ) { device, error in
-                    Self.resume(continuation, value: device, error: error)
+                    Self.resume(callback, value: device, error: error)
                 }
             }
         }
@@ -872,34 +878,118 @@ actor ApplePortalSigningService {
         let box: LegacyBox<[ALTX509Certificate]> = try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 continuation in
+                let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.fetchCertificates(for: team, session: session) {
                     certificates, error in
-                    Self.resume(continuation, value: certificates, error: error)
+                    Self.resume(callback, value: certificates, error: error)
                 }
             }
         }
         return box.value
     }
 
+    /// 创建签名证书（写 API）。
+    ///
+    /// 超时的语义和读 API 完全不同，这里必须区别对待：
+    /// - 请求超时**不代表失败** —— Apple 可能已经建好证书，只是响应没回来；
+    /// - 即使建好了也**拿不回来** —— 私钥由 AltSign 在本地生成、只随响应返回，响应一丢就不可恢复。
+    ///
+    /// 所以这里绝不盲目重试（会多占一个证书名额），也绝不自动撤销（可能撤掉正要用的证书），
+    /// 而是超时后**对账一次**远端证书列表，把「到底留下了什么」如实告诉用户（见 `OrphanReconciliation`）。
     private func addCertificate(
         team: ALTTeam,
         session: ALTAppleAPISession,
         deviceName: String
     ) async throws -> ALTCertificate {
         let machineName = certificateMachineName(team: team, deviceName: deviceName)
-        let box: LegacyBox<ALTCertificate> = try await withAppleTimeout(30) {
-            try await withCheckedThrowingContinuation {
-                continuation in
-                ALTAppleAPI.shared.addCertificate(
-                    machineName: machineName,
-                    to: team,
-                    session: session
-                ) { certificate, error in
-                    Self.resume(continuation, value: certificate, error: error)
+        do {
+            let box: LegacyBox<ALTCertificate> = try await withAppleTimeout(30) {
+                try await withCheckedThrowingContinuation {
+                    continuation in
+                    let callback = ContinuationBox(continuation)
+                    ALTAppleAPI.shared.addCertificate(
+                        machineName: machineName,
+                        to: team,
+                        session: session
+                    ) { certificate, error in
+                        Self.resume(callback, value: certificate, error: error)
+                    }
                 }
             }
+            return box.value
+        } catch {
+            guard Self.isTimeoutError(error) else { throw error }
+            let reconciliation = await reconcileCertificateCreation(
+                machineName: machineName,
+                team: team,
+                session: session
+            )
+            throw Self.certificateCreationUnknownFailure(reconciliation)
         }
-        return box.value
+    }
+
+    /// 写 API 超时后的对账结论。三种结果必须分开，不能把「无法确认」当成「没有创建」。
+    /// 非 private：错误码与文案由单测直接断言（超时路径无法用真实 ALTAppleAPI 触发）。
+    enum OrphanReconciliation {
+        /// 远端列表里没有本次 machineName 对应的证书 —— 可判定创建未生效，重试是安全的。
+        case none
+        /// 远端确实多出了这张证书，但私钥已随丢失的响应一起没了，只能人工撤销。
+        case found(serialNumber: String)
+        /// 对账请求本身也失败，无法判定。必须按「未知」处理。
+        case inconclusive
+    }
+
+    /// 写 API 超时（`withAppleTimeout` 统一抛出的 `URLError.timedOut`）。
+    static func isTimeoutError(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            return urlError.code == .timedOut
+        }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut
+    }
+
+    /// 超时对账：按本次请求使用的 machineName 查远端证书列表。
+    /// `certificateMachineName` 含 team 与秒级时间戳，与本次请求一一对应，不会误认别人的证书。
+    private func reconcileCertificateCreation(
+        machineName: String,
+        team: ALTTeam,
+        session: ALTAppleAPISession
+    ) async -> OrphanReconciliation {
+        guard let certificates = try? await fetchCertificates(team: team, session: session) else {
+            return .inconclusive
+        }
+        guard let match = certificates.first(where: { $0.machineName == machineName }) else {
+            return .none
+        }
+        return .found(serialNumber: match.serialNumber)
+    }
+
+    static func certificateCreationUnknownFailure(
+        _ reconciliation: OrphanReconciliation
+    ) -> ImportFailure {
+        switch reconciliation {
+        case let .found(serialNumber):
+            return ImportFailure(
+                title: "证书已创建但私钥已丢失",
+                reason: "创建证书的请求超时，Apple 实际已创建证书（序列号 \(serialNumber)），但响应丢失，私钥无法取回，这张证书不能用于签名。",
+                recovery: "在「我的」→「签名证书」中撤销该证书后重试",
+                code: "SEAL-CERT-209b"
+            )
+        case .none:
+            return ImportFailure(
+                title: "证书创建未生效",
+                reason: "创建证书的请求超时；对账后确认 Apple 并未创建该证书。",
+                recovery: "重试签名",
+                code: "SEAL-CERT-209c"
+            )
+        case .inconclusive:
+            return ImportFailure(
+                title: "证书创建结果未知",
+                reason: "创建证书的请求超时，且对账请求同样失败，无法确认 Apple 是否已创建证书。此时盲目重试会多占一个证书名额。",
+                recovery: "先到「我的」→「签名证书」确认是否多出一张证书，再决定重试或撤销",
+                code: "SEAL-CERT-209d"
+            )
+        }
     }
 
     private func certificateMachineName(team: ALTTeam, deviceName: String) -> String {
@@ -919,12 +1009,13 @@ actor ApplePortalSigningService {
         try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 (continuation: CheckedContinuation<Void, any Error>) in
+                let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.revoke(certificate, for: team, session: session) {
                     success, error in
                     if success {
-                        continuation.resume()
+                        callback.resume()
                     } else {
-                        continuation.resume(
+                        callback.resume(
                             throwing: error ?? URLError(.badServerResponse)
                         )
                     }
@@ -987,6 +1078,7 @@ actor ApplePortalSigningService {
                         let createdBox: LegacyBox<ALTAppID> =
                             try await withAppleTimeout {
                                 try await withCheckedThrowingContinuation { continuation in
+                                let callback = ContinuationBox(continuation)
                                     // App ID 名称必须是 ASCII，Apple 不允许中文等非 ASCII 字符（错误码 3009）
                                     // 官方 AltStore 用 Bundle ID 作为 App ID 名称，保证 ASCII 且唯一
                                     let appIDName = String(mappedBundleID.prefix(50))
@@ -996,7 +1088,7 @@ actor ApplePortalSigningService {
                                         team: team,
                                         session: session
                                     ) { created, error in
-                                        Self.resume(continuation, value: created, error: error)
+                                        Self.resume(callback, value: created, error: error)
                                     }
                                 }
                             }
@@ -1145,8 +1237,9 @@ actor ApplePortalSigningService {
         let box: LegacyBox<[ALTAppID]> = try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 continuation in
+                let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.fetchAppIDs(for: team, session: session) { appIDs, error in
-                    Self.resume(continuation, value: appIDs, error: error)
+                    Self.resume(callback, value: appIDs, error: error)
                 }
             }
         }
@@ -1164,13 +1257,14 @@ actor ApplePortalSigningService {
         let firstBox: LegacyBox<ALTProvisioningProfile> = try await withAppleTimeout(30) {
             try await withCheckedThrowingContinuation {
                 continuation in
+                let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.fetchProvisioningProfile(
                     for: appID,
                     deviceType: .iphone,
                     team: team,
                     session: session
                 ) { profile, error in
-                    Self.resume(continuation, value: profile, error: error)
+                    Self.resume(callback, value: profile, error: error)
                 }
             }
         }
@@ -1182,17 +1276,18 @@ actor ApplePortalSigningService {
             try await withAppleTimeout(15) {
                 try await withCheckedThrowingContinuation {
                     (continuation: CheckedContinuation<Void, Error>) in
+                    let callback = ContinuationBox(continuation)
                     ALTAppleAPI.shared.deleteProvisioningProfile(
                         profile,
                         for: team,
                         session: session
                     ) { success, error in
                         if let error {
-                            continuation.resume(throwing: error)
+                            callback.resume(throwing: error)
                         } else if success {
-                            continuation.resume()
+                            callback.resume()
                         } else {
-                            continuation.resume(throwing: ALTAppleAPIError.unknown())
+                            callback.resume(throwing: ALTAppleAPIError.unknown())
                         }
                     }
                 }
@@ -1211,13 +1306,14 @@ actor ApplePortalSigningService {
         let secondBox: LegacyBox<ALTProvisioningProfile> = try await withAppleTimeout(30) {
             try await withCheckedThrowingContinuation {
                 continuation in
+                let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.fetchProvisioningProfile(
                     for: appID,
                     deviceType: .iphone,
                     team: team,
                     session: session
                 ) { profile, error in
-                    Self.resume(continuation, value: profile, error: error)
+                    Self.resume(callback, value: profile, error: error)
                 }
             }
         }
@@ -1312,12 +1408,13 @@ actor ApplePortalSigningService {
         let box: LegacyBox<ALTAppID> = try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 continuation in
+                let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.update(
                     updated,
                     team: team,
                     session: session
                 ) { appID, error in
-                    Self.resume(continuation, value: appID, error: error)
+                    Self.resume(callback, value: appID, error: error)
                 }
             }
         }
@@ -1350,9 +1447,10 @@ actor ApplePortalSigningService {
         let fetchedBox: LegacyBox<[ALTAppGroup]> =
             try await withAppleTimeout {
                 try await withCheckedThrowingContinuation { continuation in
+                let callback = ContinuationBox(continuation)
                     ALTAppleAPI.shared.fetchAppGroups(for: team, session: session) {
                         groups, error in
-                        Self.resume(continuation, value: groups, error: error)
+                        Self.resume(callback, value: groups, error: error)
                     }
                 }
             }
@@ -1370,13 +1468,14 @@ actor ApplePortalSigningService {
             let createdBox: LegacyBox<ALTAppGroup> =
                 try await withAppleTimeout {
                     try await withCheckedThrowingContinuation { continuation in
+                    let callback = ContinuationBox(continuation)
                         ALTAppleAPI.shared.addAppGroup(
                             withName: "Seal Group \(suffix)",
                             groupIdentifier: identifier,
                             team: team,
                             session: session
                         ) { group, error in
-                            Self.resume(continuation, value: group, error: error)
+                            Self.resume(callback, value: group, error: error)
                         }
                     }
                 }
@@ -1388,6 +1487,7 @@ actor ApplePortalSigningService {
         try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 (continuation: CheckedContinuation<Void, any Error>) in
+                let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.assign(
                     appID,
                     to: groupsToAssign,
@@ -1395,9 +1495,9 @@ actor ApplePortalSigningService {
                     session: session
                 ) { success, error in
                     if success {
-                        continuation.resume()
+                        callback.resume()
                     } else {
-                        continuation.resume(
+                        callback.resume(
                             throwing: error ?? URLError(.badServerResponse)
                         )
                     }
@@ -1587,15 +1687,20 @@ actor ApplePortalSigningService {
         }.value
     }
 
+    /// 统一转发 AltSign 回调结果。
+    ///
+    /// 第一参数是 `ContinuationBox`（而非裸 `CheckedContinuation`）：ALTAppleAPI 可能
+    /// 成功/失败都回调、或在超时之后迟到回调，裸 continuation 第二次 resume 会直接
+    /// 触发 `SWIFT TASK CONTINUATION MISUSE` 致命崩溃。盒子保证只有第一个结果生效。
     private static func resume<Value>(
-        _ continuation: CheckedContinuation<LegacyBox<Value>, any Error>,
+        _ callback: ContinuationBox<LegacyBox<Value>>,
         value: Value?,
         error: Error?
     ) {
         if let value {
-            continuation.resume(returning: LegacyBox(value))
+            callback.resume(returning: LegacyBox(value))
         } else {
-            continuation.resume(throwing: error ?? URLError(.badServerResponse))
+            callback.resume(throwing: error ?? URLError(.badServerResponse))
         }
     }
 

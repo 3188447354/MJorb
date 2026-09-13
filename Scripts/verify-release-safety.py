@@ -10,7 +10,14 @@ def read(path):
     return (ROOT / path).read_text(encoding="utf-8-sig")
 
 def section(text, start, end):
-    return text.split(start, 1)[1].split(end, 1)[0]
+    # 标记找不到时必须报错，不能静默退化成「返回整段」—— 那会让守卫悄悄失去约束力，
+    # 而且表现是「检查全绿」，比直接失败危险得多（2026-09-14 真实踩到一次）。
+    if start not in text:
+        raise AssertionError("section start marker not found: " + start)
+    tail = text.split(start, 1)[1]
+    if end not in tail:
+        raise AssertionError("section end marker not found after " + start + ": " + end)
+    return tail.split(end, 1)[0]
 
 def violations(load=read):
     failures = []
@@ -39,6 +46,48 @@ def violations(load=read):
     create = section(portal, "private func createSigningIdentity(", "private func waitForCreatedCertificate(")
     check("revokeCertificate(" not in create and "cleanUpNewCertificate(" in create,
           "R03: only cleanup of this operation's new certificate is allowed")
+
+    # R04: Apple Portal 的超时必须走 HardTimeout（非结构化任务竞速）。用 withThrowingTaskGroup 时，
+    # 任务组退出前必须等所有子任务结束，ALTAppleAPI 回调不返回会让超时错误被无限期拖住
+    # —— 等于没有超时，UI 无限等待。此处 2026-09-14 修正过，别再退回去。
+    timeout_fn = section(portal, "func withAppleTimeout", "\n}")
+    check("HardTimeout.run" in timeout_fn and "withThrowingTaskGroup" not in timeout_fn,
+          "R04: withAppleTimeout must use HardTimeout, not withThrowingTaskGroup")
+
+    # R04: Portal 三个服务的回调一律经 ContinuationBox 转发。裸 continuation 第二次 resume
+    # 不是可捕获错误，而是 SWIFT TASK CONTINUATION MISUSE 致命崩溃（进程直接终止）。
+    # AltSign 存在两条重复回调路径：「先报错、随后迟到地报成功」与「超时先到、回调才到」。
+    # 2026-09-14 统一加固，22 个回调创建点全部套盒。
+    box_source = load("Seal/Core/Concurrency/ContinuationBox.swift")
+    check("final class ContinuationBox" in box_source and "continuation = nil" in box_source,
+          "R04: ContinuationBox must clear the stored continuation on first resume")
+    portal_services = ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+                       "Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",
+                       "Seal/Infrastructure/Signing/ApplePortalInventoryService.swift")
+    raw_resume = []
+    for path in portal_services:
+        for line in load(path).splitlines():
+            stripped = line.strip()
+            if stripped.startswith("//"):
+                continue
+            if "Self.resume(continuation," in stripped or "continuation.resume(" in stripped:
+                raw_resume.append(path + " -> " + stripped)
+    check(not raw_resume,
+          "R04: Portal callbacks must go through ContinuationBox (" + " | ".join(raw_resume) + ")")
+    for path in portal_services:
+        created = load(path).count("withCheckedThrowingContinuation")
+        boxed = load(path).count("let callback = ContinuationBox(continuation)")
+        check(created == boxed and created > 0,
+              "R04: every continuation in " + path + " needs a ContinuationBox")
+
+    # R04: 写 API（创建证书）超时 ≠ 失败。服务端可能已创建但响应丢失，而私钥由 AltSign 本地
+    # 生成、只随响应返回 —— 响应一丢就不可恢复。必须对账后如实报告：绝不盲目重试（多占名额）、
+    # 绝不自动撤销（可能撤掉正要用的证书），且「无法确认」不能当成「没有创建」。
+    add_cert = section(portal, "private func addCertificate(", "enum OrphanReconciliation")
+    check("isTimeoutError" in add_cert and "reconcileCertificateCreation" in add_cert,
+          "R04: certificate creation timeout must reconcile instead of blindly retrying")
+    check("case inconclusive" in portal and "case found(serialNumber:" in portal,
+          "R04: reconciliation must distinguish unknown from not-created")
 
     parser = load("Seal/Core/Import/IPAParserService.swift")
     check("nestedData" not in parser and 'code: "SEAL-IPA-101b"' in parser,
@@ -130,6 +179,22 @@ def main():
          "run: bash Scripts/ensure-rustbridge.sh",
          "run: echo skipped",
          "ios.yml: build-package must run ensure-rustbridge"),
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "return try await HardTimeout.run(seconds: TimeInterval(seconds), operation)",
+         "return try await withThrowingTaskGroup(of: T.self) { group in try await group.next()! }",
+         "R04: withAppleTimeout must use HardTimeout"),
+        ("Seal/Infrastructure/Signing/ApplePortalInventoryService.swift",
+         "callback.resume(returning: LegacyBox(teams))",
+         "continuation.resume(returning: LegacyBox(teams))",
+         "R04: Portal callbacks must go through ContinuationBox"),
+        ("Seal/Infrastructure/Signing/ApplePortalInventoryService.swift",
+         "let callback = ContinuationBox(continuation)",
+         "let callback = (continuation)",
+         "R04: every continuation in"),
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "guard Self.isTimeoutError(error) else { throw error }",
+         "guard false else { throw error }",
+         "R04: certificate creation timeout"),
         ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",
          'recovery: "在「我的」→「签名证书」中撤销一个旧签名证书后重试"',
          'recovery: "在「我的」页面撤销一个旧签名证书后重试"',

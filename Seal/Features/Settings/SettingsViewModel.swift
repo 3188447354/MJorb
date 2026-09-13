@@ -2049,11 +2049,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     private func refreshLogExportText() {
-        let formatter = ISO8601DateFormatter()
-        logExportText = logs.map { entry in
-            let code = entry.code.map { " [\($0)]" } ?? ""
-            return "\(formatter.string(from: entry.timestamp)) \(entry.level.rawValue.uppercased()) \(entry.category.rawValue)\(code) \(entry.message)"
-        }.joined(separator: "\n")
+        logExportText = SealLogTextFormatter.exportText(logs)
     }
 
     static func preview() -> SettingsViewModel {

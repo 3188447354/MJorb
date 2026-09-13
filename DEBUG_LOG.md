@@ -132,6 +132,26 @@
 
 ## 二、历史记录
 
+### 2026-09-13 · 「今天装明天闪退」系统性排查：证书复用只查当下未过期，临期证书签新包次日必闪退
+- **排查结论（逐路径）**：
+  1. 描述文件新鲜度：免费账号每次 fetch 由 Apple 重新生成（真机截图证实每次续签都出新文件、到期日+7天）——无问题。
+  2. 证书已过期被复用：v1.1.1/v1.1.2 已修（网络失败分支+列表命中分支都查有效期）——已覆盖。
+  3. **证书「明天才过期」被复用（本次新发现）**：四处复用分支只查 `isExpired() == false`，
+     剩余寿命 1 天的证书会通过检查、配 7 天新 profile 签进包里，**次日证书到期 iOS 判「尚未验证」闪退**。
+     慢速路径两个复用分支此前甚至完全没查有效期。
+  4. 外部吊销（同一 Apple ID 在 SideStore/其他 Seal 签名挤占免费证书名额）：签名前有效性校验能拦住不再复用，
+     但签名后被外部吊销属不可防的外部因素。
+  5. 设备系统时间被改：用户侧因素，不可代码防。
+- **修复**：新增 `certificateReusable(_:)`——证书剩余有效期必须 > 7 天（覆盖 profile 寿命）才允许复用，
+  四个复用分支（快速路径列表命中/网络失败、慢速路径选中证书/账户证书）全部接入。
+- **附带改动**：日志导出统一北京时间（Asia/Shanghai `yyyy-MM-dd HH:mm:ss`）+ 中文固定宽度栏目
+  （信息/警告/错误 · 账号/配对/签名/安装/续签/系统），`SealLogStore.exportText` 与设置页导出共用
+  `SealLogTextFormatter`。
+- **涉及文件**：`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、
+  `Seal/Core/Diagnostics/SealLogEntry.swift`、`Seal/Infrastructure/Diagnostics/SealLogStore.swift`、
+  `Seal/Features/Settings/SettingsViewModel.swift`、`project.yml`（1.1.6）。
+- **验证状态**：待 v1.1.6 发布后真机验证；导出日志应为北京时间整齐排版。
+
 ### 2026-09-13 · 清理零效果真根因：dump 文件名是 `unknown_N.plist`，清理器只认 `.mobileprovision`
 - **现象**：v1.1.4（含「返回真实写入目录」修复）真机日志仍「扫描 0」，StikDebug 仍见 104 条旧 profile。
 - **根因**：描述文件存在**手机系统 profile 存储**（profiled 守护进程），经 misagent `copy_all` 取出的是

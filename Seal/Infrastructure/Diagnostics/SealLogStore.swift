@@ -66,11 +66,7 @@ actor SealLogStore {
 
     func exportText() throws -> String {
         loadBufferIfNeeded()
-        let formatter = ISO8601DateFormatter()
-        return buffer.reversed().map { entry in
-            let code = entry.code.map { " [\($0)]" } ?? ""
-            return "\(formatter.string(from: entry.timestamp)) \(entry.level.rawValue.uppercased()) \(entry.category.rawValue)\(code) \(entry.message)"
-        }.joined(separator: "\n")
+        return SealLogTextFormatter.exportText(buffer.reversed())
     }
 
     private static func redacted(_ entry: SealLogEntry) -> SealLogEntry {

@@ -608,6 +608,17 @@ actor ApplePortalSigningService {
         return deviceBox.value
     }
 
+    /// 复用证书的最低剩余有效期：必须覆盖免费账号描述文件的 7 天寿命。
+    /// 只查「当前未过期」会把明天就到期的证书签进新包，次日 iOS 判「尚未验证」闪退。
+    private static let certificateReuseMinimumRemainingLifetime: TimeInterval = 7 * 24 * 3600
+
+    private static func certificateReusable(_ certificate: ALTCertificate, now: Date = Date()) -> Bool {
+        guard let validity = certificate.data.flatMap(X509CertificateValidityReader.validity(from:)) else {
+            return false
+        }
+        return validity.notAfter.timeIntervalSince(now) > certificateReuseMinimumRemainingLifetime
+    }
+
     private func signingIdentity(
         account: AppleAccountRecord,
         secret: AccountSecret,
@@ -631,21 +642,19 @@ actor ApplePortalSigningService {
            machineID.isEmpty == false {
             local.machineIdentifier = machineID
             if let certificates = try? await fetchCertificates(team: team, session: session) {
-                // 在生效列表且本地证书未过期才可复用：只查列表不查有效期，会把
-                // 「列表未及时剔除的过期证书」签进新包，次日被 iOS 判「尚未验证」闪退。
+                // 在生效列表且剩余有效期覆盖 7 天 profile 寿命才可复用：只查列表/只看当下未过期，
+                // 会把「明天就到期的证书」签进新包，次日被 iOS 判「尚未验证」闪退。
                 if certificates.contains(where: {
                     $0.serialNumber.caseInsensitiveCompare(serial) == .orderedSame
-                }), let validity = local.data.flatMap(X509CertificateValidityReader.validity(from:)),
-                   validity.isExpired() == false {
+                }), Self.certificateReusable(local) {
                     return SigningIdentity(certificate: local, secret: secret)
                 }
-                // 证书已不在 Apple 生效列表或已过期，落到慢速路径重新申请新证书
+                // 证书已不在 Apple 生效列表、已过期或剩余寿命不足 7 天，落到慢速路径重新申请新证书
             } else {
                 // 网络失败/限流：退回本地证书，保留提速效果。
-                // 但免费账号证书可能已过期；复用过期证书会让 iOS 次日判定"尚未验证"导致闪退，
-                // 因此本地证书已过期时必须落入慢速路径重新申请，不得复用。
-                if let validity = local.data.flatMap(X509CertificateValidityReader.validity(from:)),
-                   validity.isExpired() == false {
+                // 但免费账号证书可能已过期或临近到期；复用会让 iOS 判定"尚未验证"导致闪退，
+                // 因此剩余寿命不足 7 天时必须落入慢速路径重新申请，不得复用。
+                if Self.certificateReusable(local) {
                     return SigningIdentity(certificate: local, secret: secret)
                 }
             }
@@ -661,7 +670,8 @@ actor ApplePortalSigningService {
                $0.serialNumber.caseInsensitiveCompare(selectedCertificateSerialNumber) == .orderedSame
            }),
            let local = try? ALTCertificate(p12Data: data, password: nil),
-           local.serialNumber.caseInsensitiveCompare(selectedCertificateSerialNumber) == .orderedSame {
+           local.serialNumber.caseInsensitiveCompare(selectedCertificateSerialNumber) == .orderedSame,
+           Self.certificateReusable(local) {
             local.machineIdentifier = remote.machineIdentifier
             return SigningIdentity(certificate: local, secret: secret)
         }
@@ -672,7 +682,8 @@ actor ApplePortalSigningService {
                $0.serialNumber.caseInsensitiveCompare(serial) == .orderedSame
            }),
            let local = try? ALTCertificate(p12Data: data, password: nil),
-           local.serialNumber.caseInsensitiveCompare(serial) == .orderedSame {
+           local.serialNumber.caseInsensitiveCompare(serial) == .orderedSame,
+           Self.certificateReusable(local) {
             local.machineIdentifier = remote.machineIdentifier
             return SigningIdentity(certificate: local, secret: secret)
         }

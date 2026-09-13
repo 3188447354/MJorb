@@ -124,7 +124,10 @@ jobs:
 
       - name: Refresh local SPM binary artifacts (避免缓存旧版 RustBridge 静态库)
         run: |
-          rm -rf build/DerivedData/SourcePackages
+          # 只清源码 checkouts，保留 artifacts/（OpenSSL.xcframework 等二进制包）。
+          # 二进制包恢复依赖全局 SPM 缓存（key 仅 hash project.yml，长期命中不回写），
+          # 若整目录删除会在缓存快照陈旧时丢失二进制包，导致 ldid.cpp 报 openssl/err.h not found。
+          rm -rf build/DerivedData/SourcePackages/checkouts
           # 清空产物与中间目录：DerivedData 缓存跨源码版本恢复时，
           # 增量构建会把不再生成的产物（如 Assets.car）标记 stale 直接删除，
           # 且资源编译可能被整体跳过 —— 产物必须每次从当前源码重新生成

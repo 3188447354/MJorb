@@ -209,8 +209,15 @@ actor MinimuxerInstallChannel: InstallChannel {
         } catch let failure as ImportFailure {
             return fail(currentKind, failure)
         } catch {
+            #if !targetEnvironment(simulator)
             lastDiscoveryDetail = Self.diagnostic(error)
             return fail(currentKind, Self.connectionFailure(error))
+            #else
+            // 模拟器下 diagnose 走 simulator 分支（直接 return），不会真的抛真机错误；
+            // 此处兜底仅保证编译合法，复用块外始终可用的通用失败，避免引用被
+            // #if !targetEnvironment(simulator) 排除的 diagnostic/connectionFailure。
+            return fail(currentKind, Self.channelNotReadyFailure)
+            #endif
         }
     }
 

@@ -1463,3 +1463,18 @@
 - **涉及文件**：`Seal/Infrastructure/UpdateChecker.swift`、
   `SealTests/Update/UpdateCheckerAssetTests.swift`（新增 6 例）。
 - **验证状态**：护栏 65 检查 + 32 变异 PASS。**Swift 编译与单测待 CI。**
+
+### 29. 「看起来可写、实际是 no-op」的偏好项：NotificationPreferences.leadHours
+- **现象**：`leadHours` 的 getter 恒返回 `fixedLeadHours`、从不读 UserDefaults；
+  setter 忽略 `newValue`，只把固定值写进去。此外 `init` 每次启动都无条件 `set`，
+  等于把已存值抹掉。三个问题叠在一起：这个偏好项**写了也不生效，而且看不出来**。
+- **风险等级**：当前值固定为 24h，所以**现在没有用户可见后果**；
+  但调用链 `reschedule(leadHours:)` 与 `ExpiryNotificationPlanner(leadHours:)` 都已支持传值，
+  一旦以后开放配置，这里会悄悄吞掉写入且极难排查 —— 属于典型的潜伏陷阱。
+- **修法**：真实读写 UserDefaults；`init` 改用 `register(defaults:)`（只设默认值，不覆盖已存值）；
+  读取时 `stored > 0 ? stored : fixedLeadHours`；写入时 `max(1, newValue)` ——
+  0/负值会让「提前提醒」退化成过期后才提醒。
+- **行为不变**：默认值仍是 `fixedLeadHours = 24`，UI 与提醒时机不受影响。
+- **涉及文件**：`Seal/Core/Notifications/NotificationPreferences.swift`、
+  `SealTests/Notifications/NotificationPreferencesTests.swift`（新增 5 例）。
+- **验证状态**：护栏 65+32 → 66+33 PASS。**Swift 编译与单测待 CI。**

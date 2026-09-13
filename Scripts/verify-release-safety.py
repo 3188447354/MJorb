@@ -262,6 +262,14 @@ def violations(load=read):
     check("guard candidates.count == 1 else { return nil }" in update_checker,
           "Update: an ambiguous set of IPA assets must not yield a direct link")
 
+    # ── 外围专项：通知偏好 ─────────────────────────────────────────────────
+    # leadHours 曾是个静默 no-op：getter 恒返回固定值、setter 忽略 newValue，
+    # 而 init 还会无条件覆盖已存值 —— 一旦开放配置就会悄悄吞掉写入，且极难排查。
+    notif_prefs = load("Seal/Core/Notifications/NotificationPreferences.swift")
+    check("defaults.register(defaults:" in notif_prefs
+          and "return stored > 0 ? stored : Self.fixedLeadHours" in notif_prefs,
+          "Notify: lead time must read what was written and not clobber on init")
+
     parser = load("Seal/Core/Import/IPAParserService.swift")
     check("nestedData" not in parser and 'code: "SEAL-IPA-101b"' in parser,
           "Import: nested wrappers must not be buffered or committed as inner IPAs")
@@ -456,6 +464,10 @@ def main():
          "guard candidates.count == 1 else { return nil }",
          "guard candidates.isEmpty == false else { return nil }",
          "Update: an ambiguous set of IPA assets"),
+        ("Seal/Core/Notifications/NotificationPreferences.swift",
+         "return stored > 0 ? stored : Self.fixedLeadHours",
+         "return Self.fixedLeadHours",
+         "Notify: lead time must read what was written"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

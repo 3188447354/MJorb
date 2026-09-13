@@ -141,7 +141,9 @@
 - **修复**：`.github/workflows/ios.yml` 的发布命令移除 `--target "$SHA"`，让 `gh release create --repo ...`
   默认指向 Seal-Releases 默认分支 `main` 的 HEAD；版本来源仍由 IPA 内 `Seal-Info.plist` 与输入 tag 表达。
 - **涉及文件**：`.github/workflows/ios.yml`、`DEBUG_LOG.md`。
-- **验证状态**：本地可确认 `Seal-Releases` 默认分支为 `main`；待用手动补发/下次发布验证端到端。
+- **验证状态**：已根治并手动用 run `34742582860` 产物补发成功：`sunuannian1/Seal-Releases` 的 `v1.1.0`
+  已创建并标记 Latest，资产含 `Seal.ipa` / `Seal.ipa.sha256` / `Seal-Info.plist` / `SealTunnel-Info.plist`，
+  `targetCommitish=main`。下次走 workflow 发布时不再传 `--target`。
 
 ### 2026-09-13 · 完整 iOS 发布 UI 测试 `testTwoStageNavigationCanBeTappedWithoutChangingHeaderAlignment` 失败（启动时序竞态）
 - **现象**：`iOS` 完整发布 workflow「Run Swift unit and UI regression tests」失败，`ImportFlowUITests.swift:42`

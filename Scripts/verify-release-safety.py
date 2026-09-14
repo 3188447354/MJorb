@@ -285,6 +285,17 @@ def violations(load=read):
           and "candidate.resolvingSymlinksInPath()" in file_store,
           "Storage: descendant checks must resolve symlinks on both sides")
 
+    # 证书页必须能回答「这张证书关联了哪些 App」：不能只展示截断 machineName，
+    # 也不能只看顶层 serial（扩展 target 可能才有真实序列号）。
+    cert_impact = load("Seal/Core/Signing/CertificateRevocationImpact.swift")
+    cert_view = load("Seal/Features/Settings/SigningCertificateSettingsView.swift")
+    check("static func associatedApps(" in cert_impact
+          and "app.signingTargets.contains" in cert_impact,
+          "Certificates: association lookup must include extension targets")
+    check("associatedAppsView(for: certificate)" in cert_view
+          and "Text(\"证书标识：\\(certificate.machineName)\")" in cert_view,
+          "Certificates: UI must show full identity and associated apps")
+
     # ── 外围专项：供应链（GitHub Action 必须钉到 commit SHA）──────────────
     # actions/cache@v5 这类浮动 major tag 可以被上游移动指向任意代码 ——
     # 只要上游账号或仓库被入侵，CI 就会执行攻击者的代码，并拿到发布用的凭据。
@@ -509,6 +520,14 @@ def main():
          "candidate.resolvingSymlinksInPath().standardizedFileURL.path",
          "candidate.standardizedFileURL.path",
          "Storage: descendant checks must resolve symlinks"),
+        ("Seal/Core/Signing/CertificateRevocationImpact.swift",
+         "return app.signingTargets.contains { signingTarget in",
+         "return false // extension association removed",
+         "Certificates: association lookup must include extension targets"),
+        ("Seal/Features/Settings/SigningCertificateSettingsView.swift",
+         "associatedAppsView(for: certificate)",
+         "Text(\"无关联\")",
+         "Certificates: UI must show full identity and associated apps"),
         (".github/workflows/ios.yml",
          "uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5",
          "uses: actions/cache@v5",

@@ -327,10 +327,17 @@ struct SigningCertificateSettingsView: View {
         )
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(certificate.displayName)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                    VStack(alignment: .leading, spacing: 3) {
+                    Text(certificate.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("证书标识：\(certificate.machineName)")
+                        .font(.caption2)
+                        .foregroundStyle(Color.sealTextSecondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
                 if isLocal {
                     Text("本机在用")
                         .font(.caption.weight(.semibold))
@@ -353,8 +360,53 @@ struct SigningCertificateSettingsView: View {
             Text(expirationLine(certificate))
                 .font(.caption)
                 .foregroundStyle(Color.sealTextSecondary)
+            associatedAppsView(for: certificate)
         }
         .padding(.vertical, 12)
+    }
+
+    @ViewBuilder
+    private func associatedAppsView(
+        for certificate: ApplePortalCertificateSnapshot
+    ) -> some View {
+        let apps = CertificateRevocationImpact.associatedApps(
+            serialNumber: certificate.serialNumber,
+            apps: relatedApps
+        )
+        VStack(alignment: .leading, spacing: 5) {
+            if apps.isEmpty {
+                Label("本机记录中未找到关联 App", systemImage: "link.badge.plus")
+                    .font(.caption)
+                    .foregroundStyle(Color.sealTextSecondary)
+            } else {
+                Text("关联 App（\(apps.count) 个）")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.sealTextSecondary)
+                ForEach(apps.prefix(5)) { app in
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: app.state == .installed ? "checkmark.circle.fill" : "circle")
+                            .font(.caption2)
+                            .foregroundStyle(app.state == .installed ? Color.sealSuccess : Color.sealTextSecondary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(app.name)
+                                .font(.caption.weight(.medium))
+                                .lineLimit(1)
+                            Text("\(app.mappedBundleIdentifier ?? app.originalBundleIdentifier) · \(app.state.title)")
+                                .font(.caption2)
+                                .foregroundStyle(Color.sealTextSecondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                }
+                if apps.count > 5 {
+                    Text("还有 \(apps.count - 5) 个关联 App")
+                        .font(.caption2)
+                        .foregroundStyle(Color.sealTextSecondary)
+                }
+            }
+        }
+        .padding(.top, 3)
     }
 
     private func serialText(_ serialNumber: String) -> String {

@@ -6,6 +6,26 @@ import Foundation
 /// AltSign 会剥掉最高半字节的前导 `0`，而 DER 来源（证书列表 / 描述文件）会保留，
 /// 直接 `caseInsensitiveCompare` 会把同一证书误判成两个（见 DEBUG_LOG 坑位 1）。
 enum CertificateRevocationImpact {
+    /// 所有能从本地记录确认使用该证书的 App（保持传入顺序）。
+    ///
+    /// 既检查旧记录里的顶层序列号，也检查每个签名 target 的序列号：
+    /// 扩展 target 可能已经记录了证书，但旧数据的顶层字段为空或已被轮换。
+    /// 这份完整列表用于证书页展示「到底关联了哪些 App」。
+    static func associatedApps(serialNumber: String, apps: [AppRecord]) -> [AppRecord] {
+        let target = SigningCertificateSelectionPolicy.normalizedSerialNumber(serialNumber)
+        return apps.filter { app in
+            if let serial = app.certificateSerialNumber,
+               SigningCertificateSelectionPolicy.normalizedSerialNumber(serial) == target {
+                return true
+            }
+            return app.signingTargets.contains { signingTarget in
+                signingTarget.certificateSerialNumbers.contains {
+                    SigningCertificateSelectionPolicy.normalizedSerialNumber($0) == target
+                }
+            }
+        }
+    }
+
     /// 本机**已安装**、且用该证书签名的应用（保持传入顺序）。
     ///
     /// 只统计已安装的：未安装的包重新签一次即可，撤销证书不会造成实际损失；

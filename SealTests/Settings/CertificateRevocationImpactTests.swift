@@ -49,6 +49,39 @@ struct CertificateRevocationImpactTests {
         #expect(CertificateRevocationImpact.affectedApps(serialNumber: "AA11", apps: apps).isEmpty)
     }
 
+    /// 扩展 target 也属于证书关联：顶层 serial 为空时不能把 Widget/通知扩展漏掉。
+    @Test
+    func associatedAppsIncludesCertificatesRecordedOnlyOnAnExtensionTarget() {
+        let target = SigningTargetRecord(
+            bundleIdentifier: "com.example.Alpha.widget",
+            profileUUID: "PROFILE-1",
+            profileName: "Widget",
+            profileCreationDate: nil,
+            profileExpirationDate: Date(timeIntervalSince1970: 2_000_000_000),
+            teamIdentifier: "TEAM123456",
+            certificateSerialNumbers: ["0AA11"],
+            deviceIdentifiers: [],
+            entitlementKeys: []
+        )
+        let app = AppRecord(
+            originalBundleIdentifier: "com.example.Alpha",
+            name: "Alpha",
+            version: "1.0",
+            buildNumber: "1",
+            size: 1024,
+            state: .signed,
+            signingTargets: [target],
+            ipaRelativePath: "Alpha.ipa",
+            importedAt: Date(timeIntervalSince1970: 0)
+        )
+
+        let associated = CertificateRevocationImpact.associatedApps(
+            serialNumber: "AA11",
+            apps: [app]
+        )
+        #expect(associated.map(\.name) == ["Alpha"])
+    }
+
     /// 只导入 / 已签名但未安装的包，重新签一次即可，不算受影响。
     @Test
     func ignoresAppsThatAreNotInstalled() {

@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SigningCertificateSettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
@@ -6,6 +7,7 @@ struct SigningCertificateSettingsView: View {
     let certificateExportHandler: CertificateExportHandler
     @State private var selectedAccountID: UUID?
     @State private var certificatePendingRevocation: ApplePortalCertificateSnapshot?
+    @State private var isCertificateImporterPresented = false
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -62,6 +64,26 @@ struct SigningCertificateSettingsView: View {
             await viewModel.load(force: true)
             if let account = activeAccount {
                 await viewModel.refreshCertificateInventory(for: account, force: true)
+            }
+        }
+        .fileImporter(
+            isPresented: $isCertificateImporterPresented,
+            allowedContentTypes: [UTType(filenameExtension: "p12") ?? .data]
+        ) { result in
+            guard let account = activeAccount else { return }
+            switch result {
+            case let .success(url):
+                Task {
+                    await viewModel.importSigningCertificate(from: url, for: account)
+                }
+            case let .failure(error):
+                guard (error as NSError).code != NSUserCancelledError else { return }
+                viewModel.alertFailure = ImportFailure(
+                    title: "无法读取证书备份",
+                    reason: "P12 文件无法读取。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                    recovery: "重新选择 P12",
+                    code: "SEAL-CERT-206a"
+                )
             }
         }
         .sealScreenBackground()
@@ -192,6 +214,23 @@ struct SigningCertificateSettingsView: View {
                     value: usableAppIDCountText(health),
                     state: nil
                 )
+                Divider()
+                Button {
+                    isCertificateImporterPresented = true
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "arrow.down.doc")
+                            .font(.subheadline.weight(.semibold))
+                        Text("从 P12 备份恢复本机私钥")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(Color.sealTextSecondary)
+                    }
+                    .foregroundStyle(Color.sealAccent)
+                    .padding(.vertical, 12)
+                }
                 Divider()
                 Button {
                     certificateExportHandler.exportToLiveContainer()

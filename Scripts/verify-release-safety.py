@@ -303,6 +303,13 @@ def violations(load=read):
     settings = load("Seal/Features/Settings/SettingsViewModel.swift")
     check("let expirationDate = portalPresence == .invalid" in settings,
           "Certificates: revoked remote certificates must not show stale local expiry")
+    check("func importSigningCertificate(from sourceURL: URL, for account: AppleAccountRecord)" in settings
+          and "P12 与当前账号不匹配" in settings
+          and "secret.certificateP12 = data" in settings,
+          "Certificates: a matching P12 backup must be importable to restore the root private key")
+    check("isCertificateImporterPresented" in cert_view
+          and "从 P12 备份恢复本机私钥" in cert_view,
+          "Certificates: UI must expose P12 recovery instead of forcing revocation")
 
     # ── 外围专项：供应链（GitHub Action 必须钉到 commit SHA）──────────────
     # actions/cache@v5 这类浮动 major tag 可以被上游移动指向任意代码 ——
@@ -544,6 +551,14 @@ def main():
          "let expirationDate = portalPresence == .invalid",
          "let expirationDate = false",
          "Certificates: revoked remote certificates must not show stale local expiry"),
+        ("Seal/Features/Settings/SettingsViewModel.swift",
+         "secret.certificateP12 = data",
+         "secret.certificateP12 = nil",
+         "Certificates: a matching P12 backup must be importable"),
+        ("Seal/Features/Settings/SigningCertificateSettingsView.swift",
+         "从 P12 备份恢复本机私钥",
+         "恢复私钥不可用",
+         "Certificates: UI must expose P12 recovery"),
         (".github/workflows/ios.yml",
          "uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5",
          "uses: actions/cache@v5",

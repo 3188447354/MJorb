@@ -354,10 +354,14 @@ actor SigningCoordinator {
     }
 
 
-    /// 「本机无私钥/绑定失效/证书名额满」三类阻断才可能由孤儿证书清理盘活。
+    /// 只有「本机无私钥/绑定失效/证书名额满」这几类阻断才可能由孤儿证书清理盘活。
+    /// 名额满有两条平行归类路径，必须全部覆盖：204a（按 Apple 错误文案归类）
+    /// 与 204b（`createSigningIdentity` 按 isCertificateLimitError 归类）——
+    /// 2026-09-14 真机踩到：只挂 204a 时 204b 直接抛给用户，无感清理完全不触发。
     /// 非 static 以便测试直接构造 actor 调用之外的纯判定 → 保持 static 供单测断言。
     static func isOrphanCertificateBlocking(_ failure: ImportFailure) -> Bool {
         failure.code == "SEAL-CERT-204a"
+            || failure.code == "SEAL-CERT-204b"
             || failure.code == "SEAL-CERT-204c"
             || failure.code == "SEAL-CERT-204d"
     }

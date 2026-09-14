@@ -384,6 +384,11 @@ def violations(load=read):
     coord = load("Seal/Core/Signing/SigningCoordinator.swift")
     check("SEAL-CERT-204a" in coord and "SEAL-CERT-204c" in coord and "SEAL-CERT-204d" in coord,
           "Auto-cleanup: trigger must cover quota, missing-key and stale-binding errors only")
+    # 名额满有两条平行归类路径（204a 文案归类 / 204b isCertificateLimitError 归类），
+    # 漏挂 204b 会让真机撞上限时无感清理完全不触发（2026-09-14 真机踩到）。
+    trigger_fn = section(coord, "static func isOrphanCertificateBlocking", "\n    }")
+    check('failure.code == "SEAL-CERT-204b"' in trigger_fn,
+          "Auto-cleanup: trigger must also cover SEAL-CERT-204b (isCertificateLimitError path)")
     check("guard let deviceReferenced = await DeviceProfileInspector.referencedCertificateSerials() else {" in coord,
           "Auto-cleanup: failed device verification must abort, never blind-revoke")
     auto_cleanup = section(coord, "private func autoCleanOrphanCertificatesIfPossible(",

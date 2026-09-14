@@ -7,10 +7,13 @@ struct OrphanCertificateAutoCleanupTests {
         ImportFailure(title: "t", reason: "r", recovery: "r", code: code)
     }
 
-    /// 三类阻断才允许触发自动清理：证书名额满 / 本机无私钥 / 绑定已失效。
+    /// 只有这几类阻断才允许触发自动清理：证书名额满（204a 文案归类 + 204b
+    /// isCertificateLimitError 归类，两条平行路径缺一不可——2026-09-14 真机
+    /// 漏挂 204b 导致无感清理完全不触发）/ 本机无私钥 / 绑定已失效。
     @Test
     func orphanBlockingCodesTriggerAutoCleanup() {
         #expect(SigningCoordinator.isOrphanCertificateBlocking(failure("SEAL-CERT-204a")))
+        #expect(SigningCoordinator.isOrphanCertificateBlocking(failure("SEAL-CERT-204b")))
         #expect(SigningCoordinator.isOrphanCertificateBlocking(failure("SEAL-CERT-204c")))
         #expect(SigningCoordinator.isOrphanCertificateBlocking(failure("SEAL-CERT-204d")))
     }

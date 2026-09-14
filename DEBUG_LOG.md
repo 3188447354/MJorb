@@ -427,6 +427,49 @@
 ## 二、历史记录
 
 
+### 2026-09-14 · 真机：续签撞 204b 上限时无感清理完全不触发（498d0aa 真机反馈）
+- **现象**：真机续签 Seal 自身报「签名证书数量已达上限」（SEAL-CERT-204b），
+  引导用户去手动撤销——但账号下仅 1 张证书（本机无私钥、无关联 App 的孤儿），
+  正是自动清理设计要无感处理的场景，却直接抛错。日志里无任何「证书自动清理」记录。
+- **根因**：「证书名额满」在 `ApplePortalSigningService` 有**两条平行归类路径**——
+  204a（`classifyAccountFailure` 按错误文案 "too many"/"invalidcertificaterequest"）与
+  204b（`createSigningIdentity` 按 `isCertificateLimitError`）。自动清理的
+  `isOrphanCertificateBlocking` 只挂了 204a/204c/204d，**漏挂 204b**，
+  真机恰好走 204b 路径 → 绕过自动清理。同类「两张表不同步」教训见安装链路
+  `isTerminalInstallError`/`installationFailure`。
+- **修复**：`isOrphanCertificateBlocking` 补 204b（单测同步加断言）；护栏新增
+  「触发列表必须含 204b」硬检查，防止再被摘。修复后该场景：撤掉孤儿 I4PC →
+  释放名额 → 自动重试创建证书 → 续签成功，全程无感。
+- **涉及文件**：`Seal/Core/Signing/SigningCoordinator.swift`（isOrphanCertificateBlocking）、
+  `SealTests/Signing/OrphanCertificateAutoCleanupTests.swift`、`Scripts/verify-release-safety.py`。
+- **验证状态**：本地护栏 97+52 全过；Swift 单测与真机待 CI + 回归。
+- **教训**：新增「同一语义、多条归类路径」的错误码时，必须 grep 所有消费方
+  （触发表/重试表/归类表）确认同步——错误码的「挂接点」和「定义点」同等重要。
+
+### 2026-09-14 · CI 测试双失败：序列号归一化「约定在调用方」不可靠（426a827 → 498d0aa）
+- **现象**：426a827 的 swift-regression 挂两条——
+  ① `CertificateCleanupPolicyTests.leadingZeroDifferencesDoNotLeakIntoRevocable`
+  （传未归一化的 `deviceReferencedSerials: ["0BB22"]`，证书 `BB22` 误入 revocable）；
+  ② `PortalWriteTimeoutSemanticsTests.staleCertificateBindingExplainsTheMismatch`
+  （输入 `0OLD1234` 期望 reason 含 `OLD1234`，实际归一化过滤非 hex 字符后只剩 `D1234`）。
+- **根因**：
+  ① `CertificateCleanupPolicy.makePlan` 只对证书侧序列号归一化，**假定传入的两个
+  引用集合已被调用方归一化**。生产调用点（SigningCoordinator/DeviceProfileInspector）
+  确实都做了，但「归一化靠调用方自觉」正是坑位 1 的复发温床——测试只是把这个隐患
+  提前暴露。
+  ② 测试输入本身不合法：真实证书序列号是纯十六进制，`O`/`L` 会被
+  `normalizedSerialNumber` 的 `isHexDigit` 过滤掉，属于测试笔误而非实现 bug。
+- **修复**：
+  ① 归一化收敛到比对点：`makePlan`/`sacrificeCandidates` 内部对传入集合统一
+  `map(normalizedSerialNumber)`（幂等，生产路径行为不变，新调用点忘归一化也安全）；
+  `deviceVerified` 仍按原参数 `!= nil` 判定，不受归一化影响。
+  ② 测试输入改合法 hex `00AB1234`、期望 `AB1234`，顺带锁定「展示前去前导 0」语义。
+- **涉及文件**：`Seal/Core/Signing/CertificateCleanupPolicy.swift`、
+  `SealTests/Signing/PortalWriteTimeoutSemanticsTests.swift`。
+- **验证状态**：本地 `verify-release-safety.py` 96+52 全过；云 CI（498d0aa）回归中。
+- **教训（并入坑位 1）**：跨来源序列号比对的归一化要做在**比对点**而不是依赖调用方；
+  测试构造序列号一律用纯 hex，别用 `OLD` 这类助记字符。
+
 ### 2026-09-14 · 证书一键清理：覆盖安装后的孤儿证书（无私钥/无关联 App）盘活路径
 - **现象**：下载新 Seal 覆盖安装后，Apple 账号下累积多张旧证书——本机没有对应私钥
   （keychain 访问组随签名身份变化，旧 P12 全部不可读）、也不绑定任何已安装 App，

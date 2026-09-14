@@ -295,6 +295,14 @@ def violations(load=read):
     check("associatedAppsView(for: certificate)" in cert_view
           and "Text(\"证书标识：\\(certificate.machineName)\")" in cert_view,
           "Certificates: UI must show full identity and associated apps")
+    signing_service = load("Seal/Infrastructure/Signing/ApplePortalSigningService.swift")
+    check("static func staleCertificateBindingFailure(" in signing_service
+          and "remoteContainsExpected == false" in signing_service
+          and "static func missingLocalPrivateKeyFailure(" in signing_service,
+          "Certificates: stale binding must not blindly request another certificate")
+    settings = load("Seal/Features/Settings/SettingsViewModel.swift")
+    check("let expirationDate = portalPresence == .invalid" in settings,
+          "Certificates: revoked remote certificates must not show stale local expiry")
 
     # ── 外围专项：供应链（GitHub Action 必须钉到 commit SHA）──────────────
     # actions/cache@v5 这类浮动 major tag 可以被上游移动指向任意代码 ——
@@ -528,6 +536,14 @@ def main():
          "associatedAppsView(for: certificate)",
          "Text(\"无关联\")",
          "Certificates: UI must show full identity and associated apps"),
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "if remoteContainsExpected == false {",
+         "if false {",
+         "Certificates: stale binding must not blindly request another certificate"),
+        ("Seal/Features/Settings/SettingsViewModel.swift",
+         "let expirationDate = portalPresence == .invalid",
+         "let expirationDate = false",
+         "Certificates: revoked remote certificates must not show stale local expiry"),
         (".github/workflows/ios.yml",
          "uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5",
          "uses: actions/cache@v5",

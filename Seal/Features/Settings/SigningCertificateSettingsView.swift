@@ -269,15 +269,17 @@ struct SigningCertificateSettingsView: View {
         }
     }
 
-    private func expirationText(_ health: CertificateHealthStatus?) -> String {
-        guard let health, let expirationDate = health.expirationDate else {
-            return "无法确认"
-        }
-        return SealSettingsDateFormatter.string(from: expirationDate)
+    private func expirationTitle(_ health: CertificateHealthStatus?) -> String {
+        guard let health else { return "证书有效期" }
+        if health.portalPresence == .invalid { return "Apple 侧证书状态" }
+        return health.expirationState == .invalid ? "证书已过期" : "证书有效期至"
     }
 
-    private func expirationTitle(_ health: CertificateHealthStatus?) -> String {
-        health?.expirationState == .invalid ? "证书已过期" : "证书有效期至"
+    private func expirationText(_ health: CertificateHealthStatus?) -> String {
+        guard let health else { return "检查中" }
+        if health.portalPresence == .invalid { return "已撤销或不存在" }
+        guard let expirationDate = health.expirationDate else { return "无法确认" }
+        return SealSettingsDateFormatter.string(from: expirationDate)
     }
 
     private func relatedAppCountText(_ health: CertificateHealthStatus?) -> String {

@@ -965,7 +965,11 @@ final class SettingsViewModel: ObservableObject {
             ?? (portalCertificate == nil ? .invalid : .valid)
         let localValidity = localCertificate?.data
             .flatMap(X509CertificateValidityReader.validity(from:))
-        let expirationDate = portalCertificate?.expirationDate ?? localValidity?.notAfter
+        // Apple 已明确找不到这张证书时，不能再拿本机旧 P12 的 notAfter 当作有效期。
+        // 否则会出现「卡片显示无效，下面却显示一个已撤销的未来日期」的误导。
+        let expirationDate = portalPresence == .invalid
+            ? nil
+            : (portalCertificate?.expirationDate ?? localValidity?.notAfter)
 
         var relatedApps: [AppRecord] = []
         if let appStore {

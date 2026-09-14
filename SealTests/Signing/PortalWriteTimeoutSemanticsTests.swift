@@ -76,6 +76,21 @@ struct PortalWriteTimeoutSemanticsTests {
         #expect(failure.recovery.contains("关联 App"))
     }
 
+    /// 本机记录绑定的序列号已经被撤销/删除、但账号下还有别的证书时，
+    /// 不能继续申请新证书并把问题伪装成「数量上限」。
+    @Test
+    func staleCertificateBindingExplainsTheMismatch() {
+        let failure = ApplePortalSigningService.staleCertificateBindingFailure(
+            serialNumber: "0OLD1234",
+            availableCertificateCount: 1
+        )
+        #expect(failure.code == "SEAL-CERT-204d")
+        #expect(failure.title.contains("不存在"))
+        #expect(failure.reason.contains("OLD1234"))
+        #expect(failure.reason.contains("不是本机当前绑定的那张"))
+        #expect(failure.recovery.contains("关联 App"))
+    }
+
     /// 三个出口的错误码必须互不相同，否则用户与日志都无法区分发生了什么。
     @Test
     func theThreeOutcomesHaveDistinctCodes() {

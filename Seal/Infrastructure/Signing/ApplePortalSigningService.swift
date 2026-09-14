@@ -699,12 +699,23 @@ actor ApplePortalSigningService {
         // 再申请一张：这样一定会撞证书数量上限，而且即使申请成功也无法恢复原证书。
         let expectedSerial = selectedCertificateSerialNumber ?? secret.certificateSerialNumber
         if let expectedSerial,
-           expectedSerial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
-           certificates.contains(where: {
-               $0.serialNumber.caseInsensitiveCompare(expectedSerial) == .orderedSame
-           }),
-           secret.certificateP12.flatMap({ try? ALTCertificate(p12Data: $0, password: nil) }) == nil {
-            throw Self.missingLocalPrivateKeyFailure(serialNumber: expectedSerial)
+           expectedSerial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            let remoteContainsExpected = certificates.contains {
+                $0.serialNumber.caseInsensitiveCompare(expectedSerial) == .orderedSame
+            }
+            if remoteContainsExpected,
+               secret.certificateP12.flatMap({ try? ALTCertificate(p12Data: $0, password: nil) }) == nil {
+                throw Self.missingLocalPrivateKeyFailure(serialNumber: expectedSerial)
+            }
+            if remoteContainsExpected == false {
+                // 账号记录仍指向一张已经被撤销/删除的证书。不能把「绑定过的旧证书
+                // 不存在」伪装成「请再申请一张」：当前账号可能正好只剩另一张仍被
+                // 已安装 App 使用的证书，盲目申请只会再次撞数量上限。
+                throw Self.staleCertificateBindingFailure(
+                    serialNumber: expectedSerial,
+                    availableCertificateCount: certificates.count
+                )
+            }
         }
 
         return try await createSigningIdentity(
@@ -723,6 +734,22 @@ actor ApplePortalSigningService {
             reason: "Apple 账号下仍有证书（序列号末尾 …\(normalizedSerial.suffix(12))），但本机没有可用的 P12 私钥。已安装的 App 仍可能继续运行，因为它们使用的是包内已签入的证书；新签名不能只靠 Apple 服务器上的公钥证书完成。",
             recovery: "从原设备或备份恢复这张证书的 P12；没有备份时，先到「我的」→「签名证书」确认关联 App 后撤销这张证书，再重试签名",
             code: "SEAL-CERT-204c"
+        )
+    }
+
+    static func staleCertificateBindingFailure(
+        serialNumber: String,
+        availableCertificateCount: Int
+    ) -> ImportFailure {
+        let normalizedSerial = SigningCertificateSelectionPolicy.normalizedSerialNumber(serialNumber)
+        let remainingText = availableCertificateCount == 0
+            ? "Apple 账号当前没有可用的开发证书记录"
+            : "Apple 账号还有 \(availableCertificateCount) 张证书，但它们不是本机当前绑定的那张"
+        return Self.failure(
+            title: "本机绑定的证书已不存在",
+            reason: "本机记录绑定的证书序列号末尾为 …\(normalizedSerial.suffix(12))，Apple 侧已找不到它。\(remainingText)。已安装 App 仍可能继续运行，但不能用另一张证书的公钥冒充本机私钥签名。",
+            recovery: "先到「我的」→「签名证书」确认剩余证书的关联 App；如能从原设备或备份恢复正确 P12，优先恢复；确认旧证书已不再需要后再撤销/重新申请",
+            code: "SEAL-CERT-204d"
         )
     }
 

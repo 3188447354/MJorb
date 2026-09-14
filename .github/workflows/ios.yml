@@ -70,6 +70,21 @@ jobs:
           restore-keys: |
             rustbridge-${{ runner.os }}-
 
+      # Xcode 编译产物缓存（Release）。build-unsigned-ipa.sh 以 build/DerivedData 为
+      # derivedDataPath，这里连同 SPM 依赖缓存一起存：命中后第三方依赖不再重编、
+      # 业务源码走 Xcode 增量编译，全量编译（约 8-9 分钟）可望降到几分钟。
+      # key 只押配置类文件（project.yml / xcconfig / Info.plist），改业务代码不换 key，
+      # 由 Xcode 自行按源文件差异增量；restore-keys 兜底最近一次缓存。
+      - name: Cache Xcode DerivedData and SwiftPM (Release)
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            build/DerivedData
+          key: xcode-release-${{ runner.os }}-${{ hashFiles('project.yml', 'Config/*.xcconfig', 'Seal/Resources/Info.plist', 'SealTunnel/Info.plist') }}
+          restore-keys: |
+            xcode-release-${{ runner.os }}-
+
       - name: Select pinned Xcode 26.5
         run: |
           test -d /Applications/Xcode_26.5.app
@@ -110,36 +125,28 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Verify Seal minimum deployment target remains iOS 17
+      # 部署目标/设备族断言：每个 target 只跑一次 showBuildSettings，把结果落盘后
+      # 再提取多个字段，避免为每个字段各起一次 xcodebuild（固定开销，约各 20-40 秒）。
+      - name: Verify deployment targets and Packet Tunnel configuration
         run: |
-          TARGET="$(xcodebuild \
-            -project Seal.xcodeproj \
-            -target Seal \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -showBuildSettings | awk -F ' = ' '/^[[:space:]]*IPHONEOS_DEPLOYMENT_TARGET = / { print $2; exit }')"
-          echo "Seal IPHONEOS_DEPLOYMENT_TARGET=$TARGET"
-          test "$TARGET" = "17.0"
-          # UIDeviceFamily 改由 TARGETED_DEVICE_FAMILY 构建设置注入（消除 Info.plist 覆盖警告），断言仍为 iPhone+iPad
-          FAMILY="$(xcodebuild \
-            -project Seal.xcodeproj \
-            -target Seal \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -showBuildSettings | awk -F ' = ' '/^[[:space:]]*TARGETED_DEVICE_FAMILY = / { print $2; exit }')"
-          echo "Seal TARGETED_DEVICE_FAMILY=$FAMILY"
-          test "$FAMILY" = "1,2"
+          xcodebuild -project Seal.xcodeproj -target Seal \
+            -configuration Debug -sdk iphonesimulator -showBuildSettings \
+            > "$RUNNER_TEMP/seal-settings.txt"
+          xcodebuild -project Seal.xcodeproj -target SealTunnel \
+            -configuration Debug -sdk iphonesimulator -showBuildSettings \
+            > "$RUNNER_TEMP/tunnel-settings.txt"
 
-      - name: Verify SealTunnel target and Packet Tunnel configuration
-        run: |
-          TARGET="$(xcodebuild \
-            -project Seal.xcodeproj \
-            -target SealTunnel \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -showBuildSettings | awk -F ' = ' '/^[[:space:]]*IPHONEOS_DEPLOYMENT_TARGET = / { print $2; exit }')"
-          echo "SealTunnel IPHONEOS_DEPLOYMENT_TARGET=$TARGET"
-          test "$TARGET" = "17.0"
+          SEAL_TARGET="$(awk -F ' = ' '/^[[:space:]]*IPHONEOS_DEPLOYMENT_TARGET = / { print $2; exit }' "$RUNNER_TEMP/seal-settings.txt")"
+          echo "Seal IPHONEOS_DEPLOYMENT_TARGET=$SEAL_TARGET"
+          test "$SEAL_TARGET" = "17.0"
+          # UIDeviceFamily 改由 TARGETED_DEVICE_FAMILY 构建设置注入（消除 Info.plist 覆盖警告），断言仍为 iPhone+iPad
+          SEAL_FAMILY="$(awk -F ' = ' '/^[[:space:]]*TARGETED_DEVICE_FAMILY = / { print $2; exit }' "$RUNNER_TEMP/seal-settings.txt")"
+          echo "Seal TARGETED_DEVICE_FAMILY=$SEAL_FAMILY"
+          test "$SEAL_FAMILY" = "1,2"
+
+          TUNNEL_TARGET="$(awk -F ' = ' '/^[[:space:]]*IPHONEOS_DEPLOYMENT_TARGET = / { print $2; exit }' "$RUNNER_TEMP/tunnel-settings.txt")"
+          echo "SealTunnel IPHONEOS_DEPLOYMENT_TARGET=$TUNNEL_TARGET"
+          test "$TUNNEL_TARGET" = "17.0"
           POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' SealTunnel/Info.plist)"
           test "$POINT" = "com.apple.networkextension.packet-tunnel"
           grep -q "packet-tunnel-provider" SealTunnel/SealTunnel.entitlements
@@ -192,10 +199,10 @@ jobs:
         with:
           path: |
             ~/Library/Caches/org.swift.swiftpm
-            ~/Library/Developer/Xcode/DerivedData/Seal-*/SourcePackages
-          key: spm-${{ runner.os }}-${{ hashFiles('project.yml') }}
+            ~/Library/Developer/Xcode/DerivedData/Seal-*
+          key: xcode-debug-${{ runner.os }}-${{ hashFiles('project.yml') }}
           restore-keys: |
-            spm-${{ runner.os }}-
+            xcode-debug-${{ runner.os }}-
 
       - name: Cache Rust toolchain and cargo artifacts
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5

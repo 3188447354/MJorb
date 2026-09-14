@@ -427,6 +427,40 @@
 ## 二、历史记录
 
 
+### 2026-09-14 · 签名证书页 UI 重构：只读浏览、证书区去重、关联本机已装 App
+
+- **现象**：证书页原先有「Apple 开发证书」和「账号下的全部证书」两张卡重复展示同一证书，
+  且带撤销/清理按钮 + 「可用于本机 AppID 数」等字段（源自更早的手动撤销设计），用户感到冗余、
+  且手动撤销有误删本机在用证书的风险（见同日「续签 Seal 自身撤销后打不开」条目）。
+- **根因**：证书页定位从「可操作的管理台」收窄为「只读状态浏览」，证书回收已交给无感自动
+  清理（204b/204e 相关护栏）接管，保留手动撤销入口只剩冗余与误删风险。
+- **修复**：
+  1. 账号卡只留「Apple ID 下拉选择器 + Team ID」，去掉 Team 名称行。
+  2. 本机证书卡补「本机在用」徽标 + 完整序列号（等宽），证书名复用 portal `displayName`
+     （经 `SigningCertificateSelectionPolicy.normalizedSerialNumber` 匹配，不要读裸 machineName）。
+  3. 「账号下的全部证书」过滤掉本机在用证书、按归一化序列号去重，仅保留只读行（无撤销按钮）。
+  4. 「Apple 侧可用于本机」替换为「本机已安装 App（由该证书签名）」，
+     走 `CertificateRevocationImpact.affectedApps` 按归一化序列号匹配，显示 App 名 + 等宽 Bundle ID（中截断）。
+  5. 保留「导出证书给 LiveContainer」按钮，移除底部说明。
+- **涉及文件**：`Seal/Features/Settings/SigningCertificateSettingsView.swift`。
+- **验证状态**：本机无法编译 Swift，待 Xcode 编译 + 真机回归验证证书页渲染与关联 App 匹配。
+
+### 2026-09-14 · 证书 machineName 从「Apple Development-<Team>-<设备>-<时间戳>」改为固定友好名
+- **现象**：签名证书页的证书名显示成「Apple Development-XXXXXXXX-iPhone-1749xxxxxx」这类
+  带 TeamID + Unix 时间戳的杂串；账号下有旧证书时还会看到「iPhone Developer: MacBook Pro 16」
+  这种别处（Mac/后台手动 CSR）创建时留下的名字，用户想自定义。
+- **根因**：`certificateMachineName(team:deviceName:)` 把 TeamID 前 8 位 + 秒级时间戳拼进
+  `machineName`，而证书页 `displayName` 直接读 Apple 返回的 `machineName`，于是把内部用于
+  「超时对账唯一性」的时间戳也暴露给了用户。
+- **修复**：
+  1. 两处 `certificateMachineName`（`ApplePortalCertificateService` / `ApplePortalSigningService`）
+     改为 `"Seal-<净化后的设备名>"`，去掉 TeamID 与时间戳。
+  2. 超时对账 `reconcileCertificateCreation` 原来按「唯一 machineName」`first(where:)` 精确匹配；
+     固定名后同名证书可能不止一张，改为 `filter` 同名后按 `creationDate` 取最新一张，避免误认旧证书。
+- **涉及文件**：`ApplePortalCertificateService.swift`、`ApplePortalSigningService.swift`。
+- **验证状态**：待 Xcode 编译 + 真机建一张新证书确认显示名为「Seal-<设备名>」；
+  旧证书名不受影响（需靠证书自动清理回收后才消失）。
+
 ### 2026-09-14 · 真机：续签 Seal 自身弹「撤销」，确认撤销重签后 Seal 打不开
 - **现象**：续签 Seal 自身时签名失败页弹出「撤销并继续签名」（SEAL-CERT-204e），
   用户点击确认 → 撤销 → 重新签名安装成功 → **Seal 立刻打不开**。

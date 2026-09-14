@@ -995,7 +995,7 @@ actor ApplePortalSigningService {
         session: ALTAppleAPISession,
         deviceName: String
     ) async throws -> ALTCertificate {
-        let machineName = certificateMachineName(team: team, deviceName: deviceName)
+        let machineName = certificateMachineName(deviceName: deviceName)
         do {
             let box: LegacyBox<ALTCertificate> = try await withAppleTimeout(30) {
                 try await withCheckedThrowingContinuation {
@@ -1043,7 +1043,8 @@ actor ApplePortalSigningService {
     }
 
     /// 超时对账：按本次请求使用的 machineName 查远端证书列表。
-    /// `certificateMachineName` 含 team 与秒级时间戳，与本次请求一一对应，不会误认别人的证书。
+    /// machineName 现在是固定友好名（如 `Seal-iPhone`），同一账号下可能有多张同名证书，
+    /// 因此取「创建时间最新」的一张作为本次请求的产物，避免误认旧证书。
     private func reconcileCertificateCreation(
         machineName: String,
         team: ALTTeam,
@@ -1052,7 +1053,8 @@ actor ApplePortalSigningService {
         guard let certificates = try? await fetchCertificates(team: team, session: session) else {
             return .inconclusive
         }
-        guard let match = certificates.first(where: { $0.machineName == machineName }) else {
+        let matches = certificates.filter { $0.machineName == machineName }
+        guard let match = matches.max(by: { $0.creationDate < $1.creationDate }) else {
             return .none
         }
         return .found(serialNumber: match.serialNumber)
@@ -1086,13 +1088,11 @@ actor ApplePortalSigningService {
         }
     }
 
-    private func certificateMachineName(team: ALTTeam, deviceName: String) -> String {
+    private func certificateMachineName(deviceName: String) -> String {
         let sanitizedDevice = deviceName
             .filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
         let devicePart = sanitizedDevice.isEmpty ? "Device" : String(sanitizedDevice.prefix(18))
-        let teamPart = String(team.identifier.prefix(8))
-        let timestamp = Int(Date().timeIntervalSince1970)
-        return "Apple Development-\(teamPart)-\(devicePart)-\(timestamp)"
+        return "Seal-\(devicePart)"
     }
 
     private func revokeCertificate(

@@ -252,7 +252,7 @@ actor ApplePortalCertificateService {
                 continuation in
                 let callback = ContinuationBox(continuation)
                 ALTAppleAPI.shared.addCertificate(
-                    machineName: Self.certificateMachineName(team: team, deviceName: deviceName),
+                    machineName: Self.certificateMachineName(deviceName: deviceName),
                     to: team,
                     session: session
                 ) { certificate, error in
@@ -283,13 +283,11 @@ actor ApplePortalCertificateService {
         }
     }
 
-    private static func certificateMachineName(team: ALTTeam, deviceName: String) -> String {
+    private static func certificateMachineName(deviceName: String) -> String {
         let sanitizedDevice = deviceName
             .filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
         let devicePart = sanitizedDevice.isEmpty ? "Device" : String(sanitizedDevice.prefix(18))
-        let teamPart = String(team.identifier.prefix(8))
-        let timestamp = Int(Date().timeIntervalSince1970)
-        return "Apple Development-\(teamPart)-\(devicePart)-\(timestamp)"
+        return "Seal-\(devicePart)"
     }
 
     private static func isCertificateLimitError(_ error: Error) -> Bool {

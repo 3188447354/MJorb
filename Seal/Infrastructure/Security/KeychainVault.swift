@@ -49,9 +49,7 @@ actor KeychainVault {
 
     func clearSigningMaterial(accountID: UUID) throws {
         guard var secret = try load(accountID: accountID) else { return }
-        secret.certificateP12 = nil
-        secret.certificateSerialNumber = nil
-        secret.certificateMachineIdentifier = nil
+        secret.clearAllCertificateMaterials()
         try save(secret, for: accountID)
     }
 

@@ -4,6 +4,31 @@ import Testing
 
 struct AuthenticatedAppleAccountTests {
     @Test
+    func certificateMaterialsSurviveCreatingANewCertificate() {
+        var secret = AccountSecret(
+            email: "demo@icloud.com",
+            accountIdentifier: "ACCOUNT",
+            dsid: "DSID",
+            authToken: "TOKEN",
+            password: nil,
+            certificateP12: Data("old-p12".utf8),
+            certificateSerialNumber: "OLD",
+            certificateMachineIdentifier: "OldDevice"
+        )
+
+        secret.storeCertificateMaterial(
+            p12: Data("new-p12".utf8),
+            serialNumber: "NEW",
+            machineIdentifier: "NewDevice"
+        )
+
+        #expect(secret.p12(for: "OLD") == Data("old-p12".utf8))
+        #expect(secret.p12(for: "NEW") == Data("new-p12".utf8))
+        #expect(secret.activated(for: "OLD", machineIdentifier: "OldDevice")?.certificateSerialNumber == "OLD")
+        #expect(secret.activated(for: "OLD", machineIdentifier: "OldDevice")?.certificateP12 == Data("old-p12".utf8))
+    }
+
+    @Test
     func selectedTeamIsPersistedWithoutChangingAccountIdentity() throws {
         let secret = AccountSecret(
             email: "demo@icloud.com",

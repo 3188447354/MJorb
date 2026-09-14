@@ -99,9 +99,11 @@ actor ApplePortalCertificateService {
             }
 
             var updatedSecret = secret
-            updatedSecret.certificateP12 = p12
-            updatedSecret.certificateSerialNumber = certificate.serialNumber
-            updatedSecret.certificateMachineIdentifier = certificate.machineIdentifier
+            updatedSecret.storeCertificateMaterial(
+                p12: p12,
+                serialNumber: certificate.serialNumber,
+                machineIdentifier: certificate.machineIdentifier
+            )
 
             return CreatedCertificateMaterial(
                 updatedSecret: updatedSecret,

@@ -641,7 +641,7 @@ actor ApplePortalSigningService {
         let effectiveSerial = selectedCertificateSerialNumber ?? secret.certificateSerialNumber
         if let serial = effectiveSerial,
            serial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
-           let data = secret.certificateP12,
+           let data = secret.p12(for: serial),
            let local = try? ALTCertificate(p12Data: data, password: nil),
            local.serialNumber.caseInsensitiveCompare(serial) == .orderedSame,
            let machineID = secret.certificateMachineIdentifier,
@@ -653,7 +653,13 @@ actor ApplePortalSigningService {
                 if certificates.contains(where: {
                     $0.serialNumber.caseInsensitiveCompare(serial) == .orderedSame
                 }), Self.certificateReusable(local) {
-                    return SigningIdentity(certificate: local, secret: secret)
+                    return SigningIdentity(
+                        certificate: local,
+                        secret: secret.activated(
+                            for: serial,
+                            machineIdentifier: local.machineIdentifier
+                        ) ?? secret
+                    )
                 }
                 // 证书已不在 Apple 生效列表、已过期或剩余寿命不足 7 天，落到慢速路径重新申请新证书
             } else {
@@ -661,7 +667,13 @@ actor ApplePortalSigningService {
                 // 但免费账号证书可能已过期或临近到期；复用会让 iOS 判定"尚未验证"导致闪退，
                 // 因此剩余寿命不足 7 天时必须落入慢速路径重新申请，不得复用。
                 if Self.certificateReusable(local) {
-                    return SigningIdentity(certificate: local, secret: secret)
+                    return SigningIdentity(
+                        certificate: local,
+                        secret: secret.activated(
+                            for: serial,
+                            machineIdentifier: local.machineIdentifier
+                        ) ?? secret
+                    )
                 }
             }
         }
@@ -671,7 +683,7 @@ actor ApplePortalSigningService {
         try Task.checkCancellation()
 
         if let selectedCertificateSerialNumber,
-           let data = secret.certificateP12,
+           let data = secret.p12(for: selectedCertificateSerialNumber),
            let remote = certificates.first(where: {
                $0.serialNumber.caseInsensitiveCompare(selectedCertificateSerialNumber) == .orderedSame
            }),
@@ -679,11 +691,17 @@ actor ApplePortalSigningService {
            local.serialNumber.caseInsensitiveCompare(selectedCertificateSerialNumber) == .orderedSame,
            Self.certificateReusable(local) {
             local.machineIdentifier = remote.machineIdentifier
-            return SigningIdentity(certificate: local, secret: secret)
+            return SigningIdentity(
+                certificate: local,
+                secret: secret.activated(
+                    for: selectedCertificateSerialNumber,
+                    machineIdentifier: remote.machineIdentifier
+                ) ?? secret
+            )
         }
 
         if let serial = secret.certificateSerialNumber,
-           let data = secret.certificateP12,
+           let data = secret.p12(for: serial),
            let remote = certificates.first(where: {
                $0.serialNumber.caseInsensitiveCompare(serial) == .orderedSame
            }),
@@ -691,7 +709,31 @@ actor ApplePortalSigningService {
            local.serialNumber.caseInsensitiveCompare(serial) == .orderedSame,
            Self.certificateReusable(local) {
             local.machineIdentifier = remote.machineIdentifier
-            return SigningIdentity(certificate: local, secret: secret)
+            return SigningIdentity(
+                certificate: local,
+                secret: secret.activated(
+                    for: serial,
+                    machineIdentifier: remote.machineIdentifier
+                ) ?? secret
+            )
+        }
+
+        // 根治「创建新证书覆盖旧 P12」的问题：新版本会按 serial 保留每一张
+        // 自动创建过的 P12。当前绑定已被撤销时，先在这些历史材料里寻找仍在 Apple
+        // 生效列表的证书；找到就自动修复绑定并无感复用，不申请新证书、不撤销旧 App。
+        for remote in certificates {
+            guard let data = secret.p12(for: remote.serialNumber),
+                  let local = try? ALTCertificate(p12Data: data, password: nil),
+                  local.serialNumber.caseInsensitiveCompare(remote.serialNumber) == .orderedSame,
+                  Self.certificateReusable(local) else { continue }
+            local.machineIdentifier = remote.machineIdentifier
+            return SigningIdentity(
+                certificate: local,
+                secret: secret.activated(
+                    for: remote.serialNumber,
+                    machineIdentifier: remote.machineIdentifier
+                ) ?? secret
+            )
         }
 
         // Apple 服务器只保存公证证书，不保存创建证书时在本机生成的私钥。
@@ -704,7 +746,7 @@ actor ApplePortalSigningService {
                 $0.serialNumber.caseInsensitiveCompare(expectedSerial) == .orderedSame
             }
             if remoteContainsExpected,
-               secret.certificateP12.flatMap({ try? ALTCertificate(p12Data: $0, password: nil) }) == nil {
+               secret.p12(for: expectedSerial).flatMap({ try? ALTCertificate(p12Data: $0, password: nil) }) == nil {
                 throw Self.missingLocalPrivateKeyFailure(serialNumber: expectedSerial)
             }
             if remoteContainsExpected == false {
@@ -804,9 +846,11 @@ actor ApplePortalSigningService {
             }
 
             var updatedSecret = secret
-            updatedSecret.certificateP12 = p12
-            updatedSecret.certificateSerialNumber = certificate.serialNumber
-            updatedSecret.certificateMachineIdentifier = certificate.machineIdentifier
+            updatedSecret.storeCertificateMaterial(
+                p12: p12,
+                serialNumber: certificate.serialNumber,
+                machineIdentifier: certificate.machineIdentifier
+            )
 
             try await persistSigningMaterial(updatedSecret, certificate.serialNumber)
             return SigningIdentity(certificate: fullCert, secret: updatedSecret)

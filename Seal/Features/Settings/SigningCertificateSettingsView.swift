@@ -8,6 +8,8 @@ struct SigningCertificateSettingsView: View {
     @State private var selectedAccountID: UUID?
     @State private var certificatePendingRevocation: ApplePortalCertificateSnapshot?
     @State private var isCertificateImporterPresented = false
+    @State private var cleanupPlan: CertificateCleanupPlan?
+    @State private var isCleanupEmptyNoticePresented = false
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -50,6 +52,29 @@ struct SigningCertificateSettingsView: View {
             Button("取消", role: .cancel) { certificatePendingRevocation = nil }
         } message: { certificate in
             Text(revocationWarning(for: certificate))
+        }
+        .confirmationDialog(
+            "清理不可用证书？",
+            isPresented: Binding(
+                get: { cleanupPlan != nil },
+                set: { if !$0 { cleanupPlan = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: cleanupPlan
+        ) { plan in
+            Button("撤销 \(plan.revocable.count) 张并新建证书", role: .destructive) {
+                guard let account = activeAccount else { return }
+                cleanupPlan = nil
+                Task { await viewModel.executeCertificateCleanup(plan, for: account, apps: relatedApps) }
+            }
+            Button("取消", role: .cancel) { cleanupPlan = nil }
+        } message: { plan in
+            Text(cleanupConfirmationMessage(for: plan))
+        }
+        .alert("无需清理", isPresented: $isCleanupEmptyNoticePresented) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text("账号下的证书都仍可用：本机持有私钥，或仍有已安装应用在用。")
         }
         .task {
             if selectedAccountID == nil {
@@ -366,11 +391,64 @@ struct SigningCertificateSettingsView: View {
                     if index > 0 { Divider() }
                     certificateRow(certificate, account: account)
                 }
+
+                Divider()
+
+                Button {
+                    Task {
+                        guard let plan = await viewModel.prepareCertificateCleanup(
+                            for: account,
+                            apps: relatedApps
+                        ) else { return }
+                        if plan.revocable.isEmpty {
+                            isCleanupEmptyNoticePresented = true
+                        } else {
+                            cleanupPlan = plan
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "wand.and.broom")
+                            .font(.subheadline.weight(.semibold))
+                        Text("清理不可用证书并新建")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        if viewModel.isCertificateOperationRunning {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(Color.sealTextSecondary)
+                        }
+                    }
+                    .foregroundStyle(Color.sealAccent)
+                    .padding(.vertical, 12)
+                }
+                .disabled(viewModel.isCertificateOperationRunning)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
         .glassSurface(cornerRadius: 24)
+    }
+
+    private func cleanupConfirmationMessage(for plan: CertificateCleanupPlan) -> String {
+        var lines: [String] = []
+        let names = plan.revocable.prefix(5).map { certificate in
+            let serial = SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber)
+            return "\(certificate.displayName)（…\(serial.suffix(6))）"
+        }
+        lines.append("将撤销 \(plan.revocable.count) 张不可用证书：\(names.joined(separator: "、"))。")
+        if plan.revocable.count > 5 {
+            lines.append("以及另外 \(plan.revocable.count - 5) 张。")
+        }
+        if plan.deviceVerified {
+            lines.append("已核验：这些证书本机没有私钥、没有已安装应用在用、设备端描述文件也未引用。")
+        } else {
+            lines.append("未连接设备，未能核验设备端描述文件：如果其他签名工具用这个 Apple ID 安装过应用，撤销其证书会让那些应用失效。")
+        }
+        lines.append("撤销后将自动创建一张新证书并绑定本机。证书一旦撤销无法恢复。")
+        return lines.joined(separator: "\n")
     }
 
     private func certificateRow(

@@ -426,6 +426,74 @@
 
 ## 二、历史记录
 
+
+### 2026-09-14 · 证书一键清理：覆盖安装后的孤儿证书（无私钥/无关联 App）盘活路径
+- **现象**：下载新 Seal 覆盖安装后，Apple 账号下累积多张旧证书——本机没有对应私钥
+  （keychain 访问组随签名身份变化，旧 P12 全部不可读）、也不绑定任何已安装 App，
+  纯占位直至撞证书上限，新证书申请不了。
+- **根因**：① 覆盖安装后 keychain 隔离丢私钥（已知设计约束）；② 旧版本无私钥防护时
+  每次签名直接 addCertificate，证书只增不减；③ `hasLocalPrivateKey` 只看 secret 的
+  current 字段，历史 map（`certificateP12BySerial`）里仍有 P12 的证书被误标「无私钥」；
+  ④ `selectCertificate` 同理只认 current，选不了历史证书，且 `refreshedAccountDisplayNames`
+  每次 load 把用户选择强制刷回 current。
+- **修复**：
+  1. `ApplePortalInventoryService`：`hasLocalPrivateKey` 改为覆盖 current + 历史 map 的
+     全部本地 P12（归一化比对）。
+  2. 新增 `CertificateCleanupPolicy`（纯函数）：可撤销候选 = 远端存在 ∧ 本机无私钥 ∧
+     无关联**已安装** App（`affectedApps`）∧ 设备端描述文件未引用；设备核验不可用时
+     `deviceVerified=false` 降级，UI 明示风险。
+  3. 新增 `DeviceProfileInspector.referencedCertificateSerials()`：只读枚举设备端全部
+     profile 内嵌证书序列号（复用 misagent dump，**零删除**）；dump/解析失败返回 nil
+     （= 无法核验），一份都解析不出时绝不返回空集冒充「无引用」。
+  4. `SettingsViewModel.prepareCertificateCleanup`（只读分析）+
+     `executeCertificateCleanup`（先重拉远端清单求交集复核→批量撤销→清失效绑定→
+     新建并绑定）；单张撤销失败不中断，结果分明细。
+  5. `selectCertificate` 放宽为 `secret.p12(for:) != nil`（历史 map 有私钥即可选）；
+     `refreshedAccountDisplayNames` 不再把有私钥的用户选择刷回 current。
+  6. UI：证书页「账号下的全部证书」底部新增「清理不可用证书并新建」入口 + 确认弹窗
+     （列清单、设备核验状态、不可恢复提示）。
+- **顺带修复（护栏）**：变异锚 `secret.certificateP12 = data` 随多 P12 改造早已失效
+  （该赋值已不存在）；`certificateP12BySerial` 检查弱到抓不到自己的变异（子串仍命中）。
+  两个检查收紧到真实代码锚，变异自检恢复有效。
+- **错误码**：新增 SEAL-CERT-217（清单拉取失败）/218（撤后新建失败）/218a（部分撤销失败）/
+  218b（清理过程失败）/219（复核后状态已变化）、SEAL-AUTH-105g/105h（清理路径无凭据）。
+  **注意 105f 已被 AppleAccountClient 占用且语义相反**（Team 查询失败 ≠ 凭据缺失，
+  `AppleServiceFailurePolicy` 对 105f 特判），分配新码前必须 grep 全系列。
+- **同日追加 · 签名/续签内自动清理（用户决策：需要无感）**：`SigningCoordinator.signAndInstall`
+  捕获 `SEAL-CERT-204a/204c/204d` 后调 `autoCleanOrphanCertificatesIfPossible` —— 与手动入口
+  共用 `CertificateCleanupPolicy` 四重条件，**设备端核验失败/清单拉取失败/无候选/全部撤销失败
+  一律回退原错误**（绝不盲撤）；清理成功则清失效绑定、以
+  `selectedCertificateSerialNumber: nil` 重试一次签名（重试不再触发清理，无循环）。
+  判定逻辑改动为零（`ApplePortalSigningService` 不动，204c/204d 照抛），全部编排在
+  Coordinator 层。**残留风险（用户已知情）**：同一 Apple ID 在其他设备装的 App 不在本机
+  描述文件里，其证书可能被一并撤销。
+- **同日再追加 · 「在用但无钥匙」证书的一键盘活（用户决策：一键确认后自动走完）**：
+  孤儿清理无可撤候选、但存在「无钥匙且仍在用」证书占位时，自动清理返回
+  `.blockedByInUseKeylessCerts` → 抛 `SEAL-CERT-204e`（reason 列出受影响应用名 +
+  设备端其他来源数量）→ 签名失败页出现「撤销并继续签名」按钮 →
+  `AppsViewModel.confirmCertificateSacrificeAndRetry` 调
+  `SigningCoordinator.revokeKeylessCertificatesAfterConfirmation`
+  （撤全部无钥匙证书、清死绑定、返回受影响已装 App）→ `restartSigning` 自动重试 →
+  **成功关闭进度页后** `startBatchRefresh(appIDs:)` 自动重签受影响 App
+  （复用续签队列 = 覆盖安装不新增设备槽位；在 dismiss 后才发起是避免两个 sheet
+  同挂 AppsRootView 互相盖住）。候选算法 `CertificateCleanupPolicy.sacrificeCandidates`
+  与静默清理的唯一区别就是是否忽略「在用」状态 —— 它只允许出现在用户确认之后。
+  撤销全失败抛 `SEAL-CERT-204f`。**批量续签撞到 204e 时按普通失败项呈现**，
+  用户到任一单签入口点一次「撤销并继续签名」后即可恢复（已知取舍）。
+- **涉及文件**：`ApplePortalInventoryService.swift`、`CertificateCleanupPolicy.swift`、
+  `DeviceProfileInspector.swift`（新）、`SettingsViewModel.swift`、`SigningCoordinator.swift`、
+  `AppsViewModel.swift`、`SigningProgressView.swift`、
+  `SigningCertificateSettingsView.swift`、`SealTests/Signing/CertificateCleanupPolicyTests.swift`（9 例）、
+  `SealTests/Signing/OrphanCertificateAutoCleanupTests.swift`（新，2 例）、
+  `Scripts/verify-release-safety.py`（96 检查 + 52 变异 PASS）。
+- **验证状态**：静态守卫全绿；**Swift 编译与单测待 CI（本机无 Xcode）**。
+  **真机回归要点**：① 覆盖安装后（多孤儿证书场景）直接签名/续签 —— 应无感自动撤销孤儿证书、
+  新建并完成签名，日志含「证书自动清理完成」；② 设备上仍有 App 用旧证书时，该证书不得在
+  被静默撤之列（应抛 204e，失败页出现「撤销并继续签名」，点一次后自动撤、自动续签、
+  关闭进度页后自动批量重签受影响 App）；③ 未连设备/核验失败时回落 204c 手动引导；
+  ④「我的」→「签名证书」→「清理不可用证书并新建」手动入口同样可用，未连 VPN 时
+  确认弹窗明示降级。
+
 ### 2026-09-14 · E 包（R08）：区分签名产物与已安装快照
 - **现象/风险**：已安装应用重签后，安装失败时界面仍显示新的到期日（详见坑位 25）。
 - **修复**：

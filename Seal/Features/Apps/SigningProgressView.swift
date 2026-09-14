@@ -385,6 +385,7 @@ struct SigningProgressView: View {
 
     private func primaryRecoveryTitle(_ failure: ImportFailure) -> String {
         if isNonRetryableFailure(failure) { return "知道了" }
+        if failure.code == "SEAL-CERT-204e" { return "撤销并继续签名" }
         if failure.code.hasPrefix("SEAL-NET-") { return "重试" }
         if isResignRequired(failure) { return "重新签名" }
         if isInstallChannelFailure(failure) { return "重新安装" }
@@ -403,6 +404,9 @@ struct SigningProgressView: View {
         if isNonRetryableFailure(failure) {
             viewModel.dismissSigningResult()
             dismiss()
+        } else if failure.code == "SEAL-CERT-204e" {
+            // 一键盘活：撤销无钥匙证书 → 自动重试本次签名 → 自动重签受影响已装 App。
+            viewModel.confirmCertificateSacrificeAndRetry()
         } else if failure.code.hasPrefix("SEAL-NET-") {
             viewModel.retrySigning()
         } else if isResignRequired(failure) {

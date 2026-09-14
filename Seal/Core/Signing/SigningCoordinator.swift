@@ -3,6 +3,14 @@ import UIKit
 import ZIPFoundation
 @preconcurrency import AltSign
 
+/// 「撤销并继续签名」（SEAL-CERT-204e 确认）的执行结果。
+struct KeylessCertificateSacrificeResult: Sendable {
+    /// 实际撤销成功的证书序列号（原始格式，仅用于日志/比对）。
+    let revokedSerials: [String]
+    /// 因撤销而失效、需要重新签名安装的已装 App。
+    let affectedInstalledApps: [AppRecord]
+}
+
 actor SigningCoordinator {
     private let appStore: any AppStore
     private let accountRepository: any AccountRepository
@@ -178,30 +186,82 @@ actor SigningCoordinator {
             } else {
                 preferredIconData = nil
             }
-            let portalResult = try await portal.sign(
-                app: app,
-                account: account,
-                secret: secret,
-                deviceIdentifier: deviceIdentifier,
-                originalIPAURL: originalURL,
-                workspaceRoot: workspaceRoot,
-                targetBundleIdentifier: targetBundleIdentifier,
-                preferredIconData: preferredIconData,
-                selectedCertificateSerialNumber: effectiveCertificateSerialNumber,
-                allowDroppingExtensions: allowDroppingExtensions,
-                persistSigningMaterial: { updatedSecret, serialNumber in
-                    try await self.persistNewSigningMaterial(
-                        updatedSecret,
-                        serialNumber: serialNumber,
-                        accountID: accountID,
-                        originalSecret: originalSecret,
-                        originalAccount: originalAccount
-                    )
-                },
-                progress: { stage in
-                    await progress(stage)
+            let portalResult: PortalSigningResult
+            do {
+                portalResult = try await portal.sign(
+                    app: app,
+                    account: account,
+                    secret: secret,
+                    deviceIdentifier: deviceIdentifier,
+                    originalIPAURL: originalURL,
+                    workspaceRoot: workspaceRoot,
+                    targetBundleIdentifier: targetBundleIdentifier,
+                    preferredIconData: preferredIconData,
+                    selectedCertificateSerialNumber: effectiveCertificateSerialNumber,
+                    allowDroppingExtensions: allowDroppingExtensions,
+                    persistSigningMaterial: { updatedSecret, serialNumber in
+                        try await self.persistNewSigningMaterial(
+                            updatedSecret,
+                            serialNumber: serialNumber,
+                            accountID: accountID,
+                            originalSecret: originalSecret,
+                            originalAccount: originalAccount
+                        )
+                    },
+                    progress: { stage in
+                        await progress(stage)
+                    }
+                )
+            } catch let failure as ImportFailure where Self.isOrphanCertificateBlocking(failure) {
+                // 覆盖安装后 keychain 清空：远端仍存在的证书对本机永远不可用
+                // （Apple 只存公钥、私钥已随旧 keychain 不可读）。唯一的无感出路是
+                // 撤掉「无人使用的孤儿证书」腾出名额后新建。撤销不可逆，仅在四重核验
+                // 全部通过时自动执行（无私钥 ∧ 无已装 App ∧ 设备端 profile 未引用 ∧
+                // 核验成功）；仍在被已装 App 使用的无钥匙证书不静默撤，抛 204e 交给
+                // 失败页「撤销并继续签名」一键确认流程。
+                let cleanupOutcome = try await autoCleanOrphanCertificatesIfPossible(
+                    account: account,
+                    secret: secret
+                )
+                guard cleanupOutcome == .cleaned,
+                      let refreshedSecret = try await keychain.load(accountID: accountID) else {
+                    if case .blockedByInUseKeylessCerts(let appNames, let deviceOnlyCount) = cleanupOutcome {
+                        throw Self.inUseKeylessCertificatesFailure(
+                            appNames: appNames,
+                            deviceOnlyCount: deviceOnlyCount
+                        )
+                    }
+                    throw failure
                 }
-            )
+                // 原绑定已随清理撤销，重试必须不带选中序列号，走「复用剩余证书或新建」。
+                let cleanupRetryWorkspaceRoot = workspaceRoot.appending(
+                    path: "OrphanCleanupRetry-\(UUID().uuidString)"
+                )
+                portalResult = try await portal.sign(
+                    app: app,
+                    account: account,
+                    secret: refreshedSecret,
+                    deviceIdentifier: deviceIdentifier,
+                    originalIPAURL: originalURL,
+                    workspaceRoot: cleanupRetryWorkspaceRoot,
+                    targetBundleIdentifier: targetBundleIdentifier,
+                    preferredIconData: preferredIconData,
+                    selectedCertificateSerialNumber: nil,
+                    allowDroppingExtensions: allowDroppingExtensions,
+                    persistSigningMaterial: { updatedSecret, serialNumber in
+                        try await self.persistNewSigningMaterial(
+                            updatedSecret,
+                            serialNumber: serialNumber,
+                            accountID: accountID,
+                            originalSecret: originalSecret,
+                            originalAccount: originalAccount
+                        )
+                    },
+                    progress: { stage in
+                        await progress(stage)
+                    }
+                )
+            }
 
             account.certificateSerialNumber = portalResult.certificateSerialNumber
             account.selectedCertificateSerialNumber = portalResult.certificateSerialNumber
@@ -293,6 +353,283 @@ actor SigningCoordinator {
         }
     }
 
+
+    /// 「本机无私钥/绑定失效/证书名额满」三类阻断才可能由孤儿证书清理盘活。
+    /// 非 static 以便测试直接构造 actor 调用之外的纯判定 → 保持 static 供单测断言。
+    static func isOrphanCertificateBlocking(_ failure: ImportFailure) -> Bool {
+        failure.code == "SEAL-CERT-204a"
+            || failure.code == "SEAL-CERT-204c"
+            || failure.code == "SEAL-CERT-204d"
+    }
+
+    private enum OrphanCleanupOutcome: Equatable {
+        /// 撤掉 ≥1 张孤儿证书，名额已释放，可重试签名。
+        case cleaned
+        /// 设备端核验或远端清单不可用：无法精准判定，回退原始错误手动处理。
+        case unavailable
+        /// 没有可安全撤销的孤儿证书，但存在「本机无私钥且仍在被已装 App 使用」的
+        /// 证书占位 —— 静默撤会让这些 App 立即失效，必须升级为用户确认（SEAL-CERT-204e）。
+        case blockedByInUseKeylessCerts(appNames: [String], deviceOnlyCount: Int)
+        /// 连无钥匙证书都没有（与触发条件矛盾，防御分支）。
+        case noCandidates
+        /// 有候选但全部撤销失败，名额未释放。
+        case revokeFailed
+    }
+
+    /// 仍可被一键确认盘活（SEAL-CERT-204e）：账号下存在「本机无私钥」的证书，
+    /// 但它们仍被本机已安装应用使用，静默撤销会让这些应用立即打不开。
+    private static func inUseKeylessCertificatesFailure(
+        appNames: [String],
+        deviceOnlyCount: Int
+    ) -> ImportFailure {
+        let affected: String
+        if appNames.isEmpty {
+            affected = "这些证书仍被本机 \(deviceOnlyCount) 个其他来源的应用使用"
+        } else {
+            let extra = deviceOnlyCount > 0 ? "，另有 \(deviceOnlyCount) 个其他来源的应用" : ""
+            affected = "仍在使用旧证书的应用：\(appNames.joined(separator: "、"))\(extra)"
+        }
+        return ImportFailure(
+            title: "证书名额被占用",
+            reason: "Apple 账号下的旧证书因覆盖安装已丢失本机私钥，无法继续用于签名；但仍有应用靠它们运行。\(affected)。",
+            recovery: "点「撤销并继续签名」将自动撤销旧证书（对应应用立即失效、需重新签名安装）、申请新证书并完成本次签名；受影响的已装应用会自动重签。证书状态可随时在「我的」→「签名证书」查看",
+            code: "SEAL-CERT-204e"
+        )
+    }
+
+    /// 绑定还在但本机已没有对应私钥 → 该绑定永远不可用（signingIdentity 会校验 P12），
+    /// 清掉让后续签名走「无绑定 → 复用剩余证书或新建」，避免反复撞 204c/204d。
+    private func clearUnusableCertificateBinding(
+        account: AppleAccountRecord,
+        secret: AccountSecret
+    ) async {
+        guard let bound = secret.certificateSerialNumber,
+              bound.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+              secret.p12(for: bound) == nil else { return }
+        var clearedSecret = secret
+        clearedSecret.certificateP12 = nil
+        clearedSecret.certificateSerialNumber = nil
+        clearedSecret.certificateMachineIdentifier = nil
+        try? await keychain.save(clearedSecret, for: account.id)
+        var clearedAccount = account
+        clearedAccount.certificateSerialNumber = nil
+        clearedAccount.selectedCertificateSerialNumber = nil
+        try? await accountRepository.save(clearedAccount)
+    }
+
+    /// 签名失败页「撤销并继续签名」（SEAL-CERT-204e）确认后调用：撤销账号下**所有**
+    /// 本机无私钥的远端证书（含仍被已装 App 使用的），返回因撤销而失效、需要重新
+    /// 签名的已装 App。
+    /// 调用前必须已取得用户明确确认 —— 撤销会让仍在用这些证书的 App 立即打不开。
+    func revokeKeylessCertificatesAfterConfirmation(
+        accountID: UUID
+    ) async throws -> KeylessCertificateSacrificeResult {
+        guard let account = try await accountRepository.fetchAll().first(where: {
+            $0.id == accountID
+        }) else {
+            throw Self.failure(
+                reason: "签名账号记录不存在",
+                recovery: "添加 Apple ID",
+                code: "SEAL-AUTH-105"
+            )
+        }
+        guard let secret = try await keychain.load(accountID: accountID) else {
+            throw Self.failure(
+                reason: "本机 Keychain 中缺少当前 Apple ID 的登录凭据。",
+                recovery: "重新验证 Apple ID",
+                code: "SEAL-AUTH-105a"
+            )
+        }
+        let inventoryService = ApplePortalInventoryService()
+        let inventory = try await inventoryService.fetchInventory(
+            account: account,
+            secret: secret,
+            scope: .certificates
+        )
+        // 与签名链路 secret.p12(for:) 同口径：current + 历史 map 里全部可用 P12。
+        var localUsableSerials = Set<String>()
+        for certificate in inventory.certificates {
+            guard let data = secret.p12(for: certificate.serialNumber),
+                  let local = try? ALTCertificate(p12Data: data, password: nil),
+                  SigningCertificateSelectionPolicy.normalizedSerialNumber(local.serialNumber)
+                      == SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber)
+            else { continue }
+            localUsableSerials.insert(
+                SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber)
+            )
+        }
+        let candidates = CertificateCleanupPolicy.sacrificeCandidates(
+            certificates: inventory.certificates,
+            localUsableSerials: localUsableSerials
+        )
+        guard candidates.isEmpty == false else {
+            return KeylessCertificateSacrificeResult(revokedSerials: [], affectedInstalledApps: [])
+        }
+        let certificateService = ApplePortalCertificateService()
+        var revokedSerials: [String] = []
+        for certificate in candidates {
+            if (try? await certificateService.revokeCertificate(
+                serialNumber: certificate.serialNumber,
+                account: account,
+                secret: secret
+            )) != nil {
+                revokedSerials.append(certificate.serialNumber)
+            }
+        }
+        guard revokedSerials.isEmpty == false else {
+            throw Self.failure(
+                reason: "撤销 \(candidates.count) 张无钥匙证书全部失败，证书名额未释放。",
+                recovery: "稍后重试；仍失败请到「我的」→「签名证书」检查账号状态",
+                code: "SEAL-CERT-204f"
+            )
+        }
+        await clearUnusableCertificateBinding(account: account, secret: secret)
+
+        let revokedNormalized = Set(revokedSerials.map {
+            SigningCertificateSelectionPolicy.normalizedSerialNumber($0)
+        })
+        let apps = (try? await appStore.fetchAll()) ?? []
+        let affectedInstalledApps = apps.filter { app in
+            guard app.belongsInInstalledList,
+                  let serial = app.certificateSerialNumber else { return false }
+            return revokedNormalized.contains(
+                SigningCertificateSelectionPolicy.normalizedSerialNumber(serial)
+            )
+        }
+        try? await logStore?.append(
+            category: .signing,
+            message: "用户确认后撤销 \(revokedSerials.count) 张无钥匙证书；受影响待重签应用 \(affectedInstalledApps.count) 个"
+        )
+        return KeylessCertificateSacrificeResult(
+            revokedSerials: revokedSerials,
+            affectedInstalledApps: affectedInstalledApps
+        )
+    }
+
+    /// 自动盘活：精准撤销「四重条件全过」的孤儿证书，释放名额后由调用方清绑定重试。
+    ///
+    /// 无感的前提（任一不满足即返回 false，原错误照常提示用户手动处理）：
+    /// - 设备端核验必须成功：签名场景设备已连接，misagent dump 可用；dump 失败 =
+    ///   无法确认「没有其他工具装的 App 在用这张证书」，绝不盲撤；
+    /// - 远端清单必须拉到：判定基于当下 Apple 侧状态，不用缓存；
+    /// - 至少成功撤销一张（名额没有释放时重试无意义）。
+    ///
+    /// 残留风险（用户已知情决策，2026-09-14）：同一 Apple ID 在**其他设备**上安装的
+    /// App 不在本机描述文件里，其证书可能被一并撤销。
+    private func autoCleanOrphanCertificatesIfPossible(
+        account: AppleAccountRecord,
+        secret: AccountSecret
+    ) async throws -> OrphanCleanupOutcome {
+        guard let deviceReferenced = await DeviceProfileInspector.referencedCertificateSerials() else {
+            try? await logStore?.append(
+                category: .signing,
+                message: "证书自动清理跳过：设备端描述文件核验不可用，回退手动处理"
+            )
+            return .unavailable
+        }
+        let inventoryService = ApplePortalInventoryService()
+        guard let inventory = try? await inventoryService.fetchInventory(
+            account: account,
+            secret: secret,
+            scope: .certificates
+        ) else {
+            try? await logStore?.append(
+                category: .signing,
+                message: "证书自动清理跳过：无法获取 Apple 最新证书清单"
+            )
+            return .unavailable
+        }
+
+        // 与签名链路 secret.p12(for:) 同口径：current + 历史 map 里全部可用 P12。
+        var localUsableSerials = Set<String>()
+        for certificate in inventory.certificates {
+            guard let data = secret.p12(for: certificate.serialNumber),
+                  let local = try? ALTCertificate(p12Data: data, password: nil),
+                  SigningCertificateSelectionPolicy.normalizedSerialNumber(local.serialNumber)
+                      == SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber)
+            else { continue }
+            localUsableSerials.insert(
+                SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber)
+            )
+        }
+
+        let apps = (try? await appStore.fetchAll()) ?? []
+        let plan = CertificateCleanupPolicy.makePlan(
+            certificates: inventory.certificates,
+            apps: apps,
+            localUsableSerials: localUsableSerials,
+            deviceReferencedSerials: deviceReferenced
+        )
+        guard plan.revocable.isEmpty == false else {
+            // 无孤儿可撤：区分「全部无钥匙证书都在用」（可一键确认盘活）与其他情况。
+            let keyless = CertificateCleanupPolicy.sacrificeCandidates(
+                certificates: inventory.certificates,
+                localUsableSerials: localUsableSerials
+            )
+            guard keyless.isEmpty == false else {
+                try? await logStore?.append(
+                    category: .signing,
+                    message: "证书自动清理跳过：\(inventory.certificates.count) 张远端证书本机均有私钥或不存在占位问题"
+                )
+                return .noCandidates
+            }
+            var affectedNames: [String] = []
+            var seenAppIDs = Set<UUID>()
+            for certificate in keyless {
+                for affected in CertificateRevocationImpact.affectedApps(
+                    serialNumber: certificate.serialNumber,
+                    apps: apps
+                ) where seenAppIDs.insert(affected.id).inserted {
+                    affectedNames.append(affected.name)
+                }
+            }
+            let sealAssociatedSerials = Set(apps.compactMap(\.certificateSerialNumber).map {
+                SigningCertificateSelectionPolicy.normalizedSerialNumber($0)
+            })
+            let deviceOnlyCount = keyless.filter {
+                let serial = SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber)
+                return deviceReferenced.contains(serial) && sealAssociatedSerials.contains(serial) == false
+            }.count
+            try? await logStore?.append(
+                category: .signing,
+                level: .warning,
+                message: "证书自动清理需要用户确认：\(keyless.count) 张无钥匙证书仍被应用使用（Seal 记录 \(affectedNames.count) 个，设备端其他来源 \(deviceOnlyCount) 个）"
+            )
+            return .blockedByInUseKeylessCerts(
+                appNames: affectedNames,
+                deviceOnlyCount: deviceOnlyCount
+            )
+        }
+
+        let certificateService = ApplePortalCertificateService()
+        var revokedSerials: [String] = []
+        for certificate in plan.revocable {
+            if (try? await certificateService.revokeCertificate(
+                serialNumber: certificate.serialNumber,
+                account: account,
+                secret: secret
+            )) != nil {
+                revokedSerials.append(certificate.serialNumber)
+            }
+        }
+        guard revokedSerials.isEmpty == false else {
+            try? await logStore?.append(
+                category: .signing,
+                level: .error,
+                message: "证书自动清理失败：\(plan.revocable.count) 张候选全部撤销失败"
+            )
+            return .revokeFailed
+        }
+
+        // 绑定还在但本机已无私钥 → 永远不可用，清掉让重试走「无绑定 → 复用剩余或新建」。
+        await clearUnusableCertificateBinding(account: account, secret: secret)
+
+        try? await logStore?.append(
+            category: .signing,
+            message: "证书自动清理完成：撤销 \(revokedSerials.count)/\(plan.revocable.count) 张无人使用的孤儿证书（末尾 \(revokedSerials.map { "…" + SigningCertificateSelectionPolicy.normalizedSerialNumber($0).suffix(6) }.joined(separator: "、"))），正在重试签名"
+        )
+        return .cleaned
+    }
 
     func installSignedArtifact(
         appID: UUID,

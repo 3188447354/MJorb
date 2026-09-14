@@ -332,8 +332,9 @@ final class SettingsViewModel: ObservableObject {
                   $0.serialNumber == serialNumber && $0.hasLocalPrivateKey
               }),
               let secret,
-              secret.certificateSerialNumber == serialNumber,
-              secret.certificateP12 != nil else {
+              // 私钥判定与签名链路一致：按 serial 查 keychain 里保存的全部 P12（含历史 map），
+              // 不要求它正是当前绑定的那张——选中即完成切换。
+              secret.p12(for: serialNumber) != nil else {
             alertFailure = Self.failure(
                 title: "证书不可用",
                 reason: "Seal 本地没有此证书对应的私钥，未更改当前签名证书。",
@@ -467,9 +468,11 @@ final class SettingsViewModel: ObservableObject {
                     code: "SEAL-CERT-206d"
                 )
             }
-            secret.certificateP12 = data
-            secret.certificateSerialNumber = serial
-            secret.certificateMachineIdentifier = remote.machineIdentifier
+            secret.storeCertificateMaterial(
+                p12: data,
+                serialNumber: serial,
+                machineIdentifier: remote.machineIdentifier
+            )
             try await keychain.save(secret, for: account.id)
 
             var updatedAccount = account
@@ -649,6 +652,244 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    /// 清理不可用证书 · 第一步：分析并给出计划（只读，不撤销任何证书）。
+    /// 返回 nil 表示分析失败（已弹错误）。plan.revocable 为空时由 UI 提示「无需清理」。
+    func prepareCertificateCleanup(
+        for account: AppleAccountRecord,
+        apps: [AppRecord]
+    ) async -> CertificateCleanupPlan? {
+        guard isCertificateOperationRunning == false,
+              let keychain,
+              let applePortalInventoryService else { return nil }
+        guard let operationLease = await acquireOperation(.managingCertificate) else { return nil }
+        defer { releaseOperation(operationLease) }
+
+        isCertificateOperationRunning = true
+        defer { isCertificateOperationRunning = false }
+
+        do {
+            guard let secret = try await keychain.load(accountID: account.id) else {
+                throw Self.failure(
+                    title: "无法分析证书",
+                    reason: "本机没有当前 Apple ID 的登录凭据。",
+                    recovery: "重新验证 Apple ID",
+                    code: "SEAL-AUTH-105g"
+                )
+            }
+            // 撤销决策必须基于当下远端清单，不能用缓存。
+            let inventory = try await applePortalInventoryService.fetchInventory(
+                account: account,
+                secret: secret,
+                scope: .certificates
+            )
+
+            // 「本机有可用私钥」必须查 keychain 里按 serial 保存的全部 P12（含历史 map），
+            // 与签名链路 secret.p12(for:) 的无感复用口径一致；只看当前绑定会把仍可复用的
+            // 历史证书误判成可撤销。
+            var localUsableSerials = Set<String>()
+            for certificate in inventory.certificates {
+                guard let data = secret.p12(for: certificate.serialNumber),
+                      let local = try? ALTCertificate(p12Data: data, password: nil) else { continue }
+                let localSerial = SigningCertificateSelectionPolicy.normalizedSerialNumber(local.serialNumber)
+                let remoteSerial = SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber)
+                if localSerial == remoteSerial {
+                    localUsableSerials.insert(remoteSerial)
+                }
+            }
+
+            let deviceReferenced = await DeviceProfileInspector.referencedCertificateSerials()
+            let plan = CertificateCleanupPolicy.makePlan(
+                certificates: inventory.certificates,
+                apps: apps,
+                localUsableSerials: localUsableSerials,
+                deviceReferencedSerials: deviceReferenced
+            )
+            try? await logStore?.append(
+                category: .account,
+                message: "证书清理分析：远端 \(inventory.certificates.count) 张，可撤销 \(plan.revocable.count) 张，保留 \(plan.kept.count) 张，设备核验\(plan.deviceVerified ? "已完成" : "不可用")"
+            )
+            return plan
+        } catch let failure as ImportFailure {
+            alertFailure = failure
+            return nil
+        } catch {
+            alertFailure = Self.failure(
+                title: "无法分析证书",
+                reason: "从 Apple 获取证书清单失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                recovery: "检查网络后重试；如持续失败请在「我的」中重新验证 Apple ID",
+                code: "SEAL-CERT-217"
+            )
+            return nil
+        }
+    }
+
+    /// 清理不可用证书 · 第二步：执行已确认的计划 —— 先批量撤销，全部撤完再新建一张并绑定。
+    /// 执行前会重拉远端清单求交集：确认后的这段时间内状态可能变化，撤销不可逆，
+    /// 不复用更早的快照（与 C 包「删除前复核」同一条纪律）。
+    func executeCertificateCleanup(
+        _ plan: CertificateCleanupPlan,
+        for account: AppleAccountRecord,
+        apps: [AppRecord]
+    ) async {
+        guard plan.revocable.isEmpty == false,
+              isCertificateOperationRunning == false,
+              let keychain,
+              let accountRepository,
+              let applePortalCertificateService,
+              let applePortalInventoryService else { return }
+        guard let operationLease = await acquireOperation(.managingCertificate) else { return }
+        defer { releaseOperation(operationLease) }
+
+        isCertificateOperationRunning = true
+        defer { isCertificateOperationRunning = false }
+
+        do {
+            guard let secret = try await keychain.load(accountID: account.id) else {
+                throw Self.failure(
+                    title: "无法清理证书",
+                    reason: "本机没有当前 Apple ID 的登录凭据。",
+                    recovery: "重新验证 Apple ID",
+                    code: "SEAL-AUTH-105h"
+                )
+            }
+
+            // 复核：只对「仍在最新计划的可撤销集合里」的证书执行撤销。
+            let freshInventory = try await applePortalInventoryService.fetchInventory(
+                account: account,
+                secret: secret,
+                scope: .certificates
+            )
+            var localUsableSerials = Set<String>()
+            for certificate in freshInventory.certificates {
+                guard let data = secret.p12(for: certificate.serialNumber),
+                      let local = try? ALTCertificate(p12Data: data, password: nil) else { continue }
+                let localSerial = SigningCertificateSelectionPolicy.normalizedSerialNumber(local.serialNumber)
+                let remoteSerial = SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber)
+                if localSerial == remoteSerial {
+                    localUsableSerials.insert(remoteSerial)
+                }
+            }
+            // 设备端引用不重复核验：prepare 与 execute 间隔极短，且设备端 profile 只会随
+            // 安装新增，操作租约保证其间 Seal 内没有任何签名/安装在跑。
+            let freshPlan = CertificateCleanupPolicy.makePlan(
+                certificates: freshInventory.certificates,
+                apps: apps,
+                localUsableSerials: localUsableSerials,
+                deviceReferencedSerials: plan.deviceVerified ? [] : nil
+            )
+            let confirmedSerials = Set(plan.revocable.map {
+                SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber)
+            })
+            let targets = freshPlan.revocable.filter {
+                confirmedSerials.contains(
+                    SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber)
+                )
+            }
+            guard targets.isEmpty == false else {
+                throw Self.failure(
+                    title: "证书状态已变化",
+                    reason: "重新核验后，先前选中的证书已不再满足可撤销条件（可能刚被 App 使用或已在本机恢复私钥）。未撤销任何证书。",
+                    recovery: "重新分析后再试",
+                    code: "SEAL-CERT-219"
+                )
+            }
+
+            var revokedSerials: [String] = []
+            var failedSerials: [String] = []
+            for certificate in targets {
+                do {
+                    try await applePortalCertificateService.revokeCertificate(
+                        serialNumber: certificate.serialNumber,
+                        account: account,
+                        secret: secret
+                    )
+                    revokedSerials.append(certificate.serialNumber)
+                } catch {
+                    // 单张失败不中断：其余候选继续撤，名额尽量释放；失败明细进最终结果。
+                    failedSerials.append(certificate.serialNumber)
+                    try? await logStore?.append(
+                        category: .account,
+                        level: .error,
+                        message: "清理撤销失败：序列号 …\(SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber).suffix(12))：\(error.localizedDescription)"
+                    )
+                }
+            }
+
+            // 被撤销的可能正是账号当前绑定的证书（无钥匙的旧绑定）：清掉失效绑定，
+            // 让新建后的 persistCreatedCertificate 落到干净状态。
+            var workingSecret = secret
+            var workingAccount = account
+            if let current = secret.certificateSerialNumber,
+               revokedSerials.contains(where: {
+                   SigningCertificateSelectionPolicy.normalizedSerialNumber($0)
+                       == SigningCertificateSelectionPolicy.normalizedSerialNumber(current)
+               }) {
+                workingSecret.certificateP12 = nil
+                workingSecret.certificateSerialNumber = nil
+                workingSecret.certificateMachineIdentifier = nil
+                workingAccount.certificateSerialNumber = nil
+                workingAccount.selectedCertificateSerialNumber = nil
+                try await keychain.save(workingSecret, for: account.id)
+                try await accountRepository.save(workingAccount)
+            }
+
+            do {
+                let material = try await applePortalCertificateService.createLocalCertificate(
+                    account: workingAccount,
+                    secret: workingSecret
+                )
+                try await persistCreatedCertificate(
+                    material,
+                    originalSecret: workingSecret,
+                    originalAccount: workingAccount,
+                    keychain: keychain,
+                    accountRepository: accountRepository,
+                    certificateService: applePortalCertificateService
+                )
+            } catch {
+                throw Self.failure(
+                    title: "已撤销旧证书，但新证书创建失败",
+                    reason: "已撤销 \(revokedSerials.count) 张不可用证书，但新建证书失败：\(error.localizedDescription)",
+                    recovery: "检查网络后重试签名，或在证书页手动创建",
+                    code: "SEAL-CERT-218"
+                )
+            }
+
+            try? await logStore?.append(
+                category: .account,
+                message: "证书清理完成：撤销 \(revokedSerials.count) 张（失败 \(failedSerials.count)），已新建并绑定新证书"
+            )
+            await load(force: true)
+            if let refreshedAccount = accounts.first(where: { $0.id == account.id }) {
+                await refreshCertificateInventory(for: refreshedAccount, force: true)
+            }
+            logs = (try? await logStore?.entries()) ?? logs
+            refreshLogExportText()
+
+            if failedSerials.isEmpty == false {
+                alertFailure = Self.failure(
+                    title: "清理部分完成",
+                    reason: "新证书已创建并绑定；但有 \(failedSerials.count) 张旧证书撤销失败（序列号末尾 \(failedSerials.map { "…" + SigningCertificateSelectionPolicy.normalizedSerialNumber($0).suffix(6) }.joined(separator: "、"))），仍占用 Apple 侧名额。",
+                    recovery: "稍后在证书列表中逐张重试撤销",
+                    code: "SEAL-CERT-218a"
+                )
+            }
+        } catch let failure as ImportFailure {
+            await load(force: true)
+            await refreshCertificateInventory(for: account, force: true)
+            alertFailure = failure
+        } catch {
+            await load(force: true)
+            await refreshCertificateInventory(for: account, force: true)
+            alertFailure = Self.failure(
+                title: "证书清理失败",
+                reason: "清理过程未能完成。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                recovery: "检查网络后重试；如持续失败请重新验证 Apple ID",
+                code: "SEAL-CERT-218b"
+            )
+        }
+    }
+
     private func persistCreatedCertificate(
         _ material: CreatedCertificateMaterial,
         originalSecret: AccountSecret,
@@ -741,9 +982,12 @@ final class SettingsViewModel: ObservableObject {
                             account.certificateSerialNumber = serial
                             changed = true
                         }
-                        // 当前账号架构只保存一份本地 P12，因此可选证书必须
-                        // 与这份私钥严格一致，避免界面显示旧 Serial。
-                        if account.selectedCertificateSerialNumber != serial {
+                        // 账号可能按 serial 存有多张证书的 P12（certificateP12BySerial）：
+                        // 用户选中的证书只要本机确有私钥就保留其选择；
+                        // 选中证书已无私钥（如 P12 被清理）时才回退到当前绑定。
+                        let selectedSerial = account.selectedCertificateSerialNumber
+                        let selectionHasKey = selectedSerial.map { secret.p12(for: $0) != nil } ?? false
+                        if selectionHasKey == false, account.selectedCertificateSerialNumber != serial {
                             account.selectedCertificateSerialNumber = serial
                             changed = true
                         }

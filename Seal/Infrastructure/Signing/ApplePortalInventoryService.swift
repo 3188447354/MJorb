@@ -116,21 +116,23 @@ actor ApplePortalInventoryService {
             : []
         let fetchedAt = Date()
 
-        let localP12SerialNumber: String? = {
-            guard let p12 = secret.certificateP12,
-                  let localCertificate = try? ALTCertificate(p12Data: p12, password: nil) else {
-                return nil
+        // 本机私钥判定必须覆盖「当前绑定 + 历史 map」里的每一份 P12：
+        // 只看 current 字段会把历史证书误标为「无私钥」，而签名链路其实能经
+        // secret.p12(for:) 无感复用它（keychain 按 serial 存着每张自动创建过的证书）。
+        let localP12SerialNumbers: Set<String> = {
+            var serials = Set<String>()
+            let candidates = [secret.certificateP12].compactMap { $0 }
+                + secret.certificateP12BySerial.values
+            for p12 in candidates {
+                guard let parsed = try? ALTCertificate(p12Data: p12, password: nil) else { continue }
+                serials.insert(
+                    SigningCertificateSelectionPolicy.normalizedSerialNumber(parsed.serialNumber)
+                )
             }
-            return localCertificate.serialNumber
+            return serials
         }()
 
         let certificateSnapshots = certificates.map { certificate in
-            let matchesStoredSerial = secret.certificateSerialNumber?.caseInsensitiveCompare(
-                certificate.serialNumber
-            ) == .orderedSame
-            let matchesP12Serial = localP12SerialNumber?.caseInsensitiveCompare(
-                certificate.serialNumber
-            ) == .orderedSame
             let expirationDate = certificate.data
                 .flatMap(X509CertificateValidityReader.validity(from:))?
                 .notAfter
@@ -138,7 +140,9 @@ actor ApplePortalInventoryService {
                 serialNumber: certificate.serialNumber,
                 machineName: certificate.machineName ?? "Apple Development",
                 machineIdentifier: certificate.machineIdentifier,
-                hasLocalPrivateKey: matchesStoredSerial && matchesP12Serial,
+                hasLocalPrivateKey: localP12SerialNumbers.contains(
+                    SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber)
+                ),
                 expirationDate: expirationDate
             )
         }

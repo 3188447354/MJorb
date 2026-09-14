@@ -305,8 +305,14 @@ def violations(load=read):
           "Certificates: revoked remote certificates must not show stale local expiry")
     check("func importSigningCertificate(from sourceURL: URL, for account: AppleAccountRecord)" in settings
           and "P12 与当前账号不匹配" in settings
-          and "secret.certificateP12 = data" in settings,
+          and "\n            secret.storeCertificateMaterial(" in settings,
           "Certificates: a matching P12 backup must be importable to restore the root private key")
+    account_secret = load("Seal/Core/Accounts/AccountSecret.swift")
+    check("certificateP12BySerial[oldKey] = oldP12" in account_secret,
+          "Certificates: creating a new certificate must not discard older local P12 material")
+    check("for remote in certificates" in signing_service
+          and "secret.p12(for: remote.serialNumber)" in signing_service,
+          "Certificates: signing must reuse any stored P12 whose remote certificate is still active")
     check("isCertificateImporterPresented" in cert_view
           and "从 P12 备份恢复本机私钥" in cert_view,
           "Certificates: UI must expose P12 recovery instead of forcing revocation")
@@ -349,6 +355,69 @@ def violations(load=read):
     ui = load("Seal/Features/Settings/SigningCertificateSettingsView.swift")
     check("revokeCertificate(" in ui,
           "Copy: in-app certificate revocation must have a real UI entry")
+
+    # 证书一键清理（覆盖安装后 keychain 清空、Apple 侧孤儿证书占位的情形）：
+    # 撤销不可逆，候选判定与执行各有硬约束。
+    cleanup_policy = load("Seal/Core/Signing/CertificateCleanupPolicy.swift")
+    check("CertificateRevocationImpact.affectedApps" in cleanup_policy
+          and "normalizedSerialNumber" in cleanup_policy,
+          "Cleanup: candidates must exclude apps in use and normalize serials")
+    inspector = load("Seal/Infrastructure/Installation/DeviceProfileInspector.swift")
+    check("removeProvisioningProfile" not in inspector,
+          "Cleanup: device profile inspection must be read-only")
+    check("return parsed > 0 ? serials : nil" in inspector,
+          "Cleanup: unparseable dump must mean unverified, not empty")
+    settings_vm = load("Seal/Features/Settings/SettingsViewModel.swift")
+    cleanup_exec = section(settings_vm, "func executeCertificateCleanup(",
+                           "private func persistCreatedCertificate(")
+    check("fetchInventory" in cleanup_exec and "freshPlan.revocable.filter" in cleanup_exec,
+          "Cleanup: revoke must re-verify against a fresh remote listing")
+    check(cleanup_exec.index("createLocalCertificate") > cleanup_exec.index("for certificate in targets"),
+          "Cleanup: revoke all before creating the replacement")
+    check("prepareCertificateCleanup" in ui,
+          "Cleanup: the cleanup action must have a real UI entry")
+    inv = load("Seal/Infrastructure/Signing/ApplePortalInventoryService.swift")
+    check("hasLocalPrivateKey: localP12SerialNumbers.contains(" in inv,
+          "Cleanup: hasLocalPrivateKey must consider every stored P12, not only the current one")
+
+    # 签名/续签中的孤儿证书自动清理：撤销不可逆，约束必须硬守护。
+    coord = load("Seal/Core/Signing/SigningCoordinator.swift")
+    check("SEAL-CERT-204a" in coord and "SEAL-CERT-204c" in coord and "SEAL-CERT-204d" in coord,
+          "Auto-cleanup: trigger must cover quota, missing-key and stale-binding errors only")
+    check("guard let deviceReferenced = await DeviceProfileInspector.referencedCertificateSerials() else {" in coord,
+          "Auto-cleanup: failed device verification must abort, never blind-revoke")
+    auto_cleanup = section(coord, "private func autoCleanOrphanCertificatesIfPossible(",
+                           "func installSignedArtifact(")
+    check("guard let inventory = try? await inventoryService.fetchInventory(" in auto_cleanup,
+          "Auto-cleanup: decisions must use a fresh remote listing, never cache")
+    check("guard plan.revocable.isEmpty == false else {" in auto_cleanup
+          and "guard revokedSerials.isEmpty == false else {" in auto_cleanup,
+          "Auto-cleanup: bail out when nothing was or could be revoked")
+    cleanup_retry = section(coord,
+                            "catch let failure as ImportFailure where Self.isOrphanCertificateBlocking",
+                            "account.certificateSerialNumber = portalResult.certificateSerialNumber")
+    check("selectedCertificateSerialNumber: nil" in cleanup_retry,
+          "Auto-cleanup: retry must drop the revoked binding")
+
+    # 一键确认盘活（SEAL-CERT-204e）：在用的无钥匙证书绝不静默撤，必须经失败页确认。
+    check("if case .blockedByInUseKeylessCerts" in cleanup_retry,
+          "204e must surface when keyless certificates are still in use")
+    check("func revokeKeylessCertificatesAfterConfirmation(" in coord,
+          "Sacrifice: coordinator must expose the confirmation-gated revoke entry")
+    check("SEAL-CERT-204e" in coord and "SEAL-CERT-204f" in coord,
+          "Sacrifice: error codes 204e/204f must stay unique and present")
+    check("CertificateCleanupPolicy.sacrificeCandidates(" in coord,
+          "Sacrifice: candidates must come from the shared policy")
+    apps_vm = load("Seal/Features/Apps/AppsViewModel.swift")
+    check("func confirmCertificateSacrificeAndRetry()" in apps_vm
+          and 'failure.code == "SEAL-CERT-204e"' in apps_vm,
+          "Sacrifice: ViewModel one-tap entry must be gated on the 204e failure")
+    check("resignAppsAffectedByCertificateSacrificeIfNeeded(signingSucceeded: signingSucceeded)" in apps_vm,
+          "Sacrifice: affected installed apps must be re-signed after the retry succeeds")
+    progress_view = load("Seal/Features/Apps/SigningProgressView.swift")
+    check('"撤销并继续签名"' in progress_view
+          and "viewModel.confirmCertificateSacrificeAndRetry()" in progress_view,
+          "Sacrifice: failure page must wire the one-tap button to the ViewModel")
 
     # 指引「撤销证书」的 recovery 文案必须点名真实入口（「我的」→「签名证书」）。
     # 只写「我的」会把用户丢在 Apple ID 列表上，还要自己猜下一步点哪里。
@@ -552,17 +621,57 @@ def main():
          "let expirationDate = false",
          "Certificates: revoked remote certificates must not show stale local expiry"),
         ("Seal/Features/Settings/SettingsViewModel.swift",
-         "secret.certificateP12 = data",
-         "secret.certificateP12 = nil",
+         "secret.storeCertificateMaterial(",
+         "// secret.storeCertificateMaterial(",
          "Certificates: a matching P12 backup must be importable"),
         ("Seal/Features/Settings/SigningCertificateSettingsView.swift",
          "从 P12 备份恢复本机私钥",
          "恢复私钥不可用",
          "Certificates: UI must expose P12 recovery"),
+        ("Seal/Core/Accounts/AccountSecret.swift",
+         "certificateP12BySerial[oldKey] = oldP12",
+         "certificateP12BySerial.removeValue(forKey: oldKey)",
+         "Certificates: creating a new certificate must not discard older local P12 material"),
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "for remote in certificates {",
+         "if false {",
+         "Certificates: signing must reuse any stored P12 whose remote certificate is still active"),
         (".github/workflows/ios.yml",
          "uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5",
          "uses: actions/cache@v5",
          "Supply chain: GitHub Actions must be pinned"),
+        ("Seal/Core/Signing/CertificateCleanupPolicy.swift",
+         "CertificateRevocationImpact.affectedApps(",
+         "CertificateRevocationImpact.associatedApps(",
+         "Cleanup: candidates must exclude apps in use"),
+        ("Seal/Infrastructure/Installation/DeviceProfileInspector.swift",
+         "return parsed > 0 ? serials : nil",
+         "return serials",
+         "Cleanup: unparseable dump"),
+        ("Seal/Features/Settings/SettingsViewModel.swift",
+         "let targets = freshPlan.revocable.filter {",
+         "let targets = plan.revocable.filter {",
+         "Cleanup: revoke must re-verify"),
+        ("Seal/Infrastructure/Signing/ApplePortalInventoryService.swift",
+         "hasLocalPrivateKey: localP12SerialNumbers.contains(",
+         "hasLocalPrivateKey: false // ",
+         "Cleanup: hasLocalPrivateKey"),
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "guard let deviceReferenced = await DeviceProfileInspector.referencedCertificateSerials() else {",
+         "guard let deviceReferenced: Set<String> = [] else { // ",
+         "Auto-cleanup: failed device verification must abort"),
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "                    selectedCertificateSerialNumber: nil,\n                    allowDroppingExtensions: allowDroppingExtensions,",
+         "                    selectedCertificateSerialNumber: effectiveCertificateSerialNumber,\n                    allowDroppingExtensions: allowDroppingExtensions,",
+         "Auto-cleanup: retry must drop the revoked binding"),
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "if case .blockedByInUseKeylessCerts(let appNames, let deviceOnlyCount) = cleanupOutcome {",
+         "if false { // blocked in-use keyless certs no longer surface 204e ",
+         "204e must surface when keyless certificates are still in use"),
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "resignAppsAffectedByCertificateSacrificeIfNeeded(signingSucceeded: signingSucceeded)",
+         "// affected apps left dead after certificate sacrifice",
+         "Sacrifice: affected installed apps must be re-signed after the retry succeeds"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

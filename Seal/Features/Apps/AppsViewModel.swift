@@ -65,6 +65,9 @@ final class AppsViewModel: ObservableObject {
     private var signingTask: Task<Void, Never>?
     private var batchRefreshTask: Task<Void, Never>?
     private var channelTask: Task<Bool, Never>?
+    /// 「撤销并继续签名」（SEAL-CERT-204e）确认后，因证书被撤而失效、待自动重签的已装 App。
+    /// 仅本次签名重试成功后才会消费；重试失败时清空并提示手动续签。
+    private var certificateSacrificeResignQueue: [UUID] = []
     private var pendingVPNAction: PendingVPNAction?
     private var hasLoaded = false
     private var loadGeneration = 0
@@ -975,6 +978,67 @@ final class AppsViewModel: ObservableObject {
         )
     }
 
+    /// 签名失败页「撤销并继续签名」（SEAL-CERT-204e）一键流程：
+    /// 撤销账号下所有本机无私钥的证书 → 自动重试本次签名 → 成功后自动重签因此失效的
+    /// 其余已装 App。撤销会让仍用旧证书的 App 立即打不开，确认弹窗已在失败页给出。
+    func confirmCertificateSacrificeAndRetry() {
+        guard let session = signingSession,
+              case .failed(let failure) = session.status,
+              failure.code == "SEAL-CERT-204e",
+              signingTask == nil,
+              batchRefreshTask == nil,
+              let signingCoordinator else { return }
+        signingSession?.status = .running(.preparingCertificate)
+        signingTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await signingCoordinator
+                    .revokeKeylessCertificatesAfterConfirmation(accountID: session.account.id)
+                try? await logStore?.append(
+                    category: .signing,
+                    message: "用户确认撤销 \(result.revokedSerials.count) 张无钥匙证书，继续本次签名"
+                )
+                certificateSacrificeResignQueue = result.affectedInstalledApps
+                    .map(\.id)
+                    .filter { $0 != session.app.id }
+                signingTask = nil
+                restartSigning(session, allowDroppingExtensions: session.allowsDroppingExtensions)
+            } catch let sacrificeFailure as ImportFailure {
+                signingSession?.status = .failed(sacrificeFailure)
+                signingTask = nil
+            } catch {
+                signingSession?.status = .failed(Self.unexpectedSigningFailure(error))
+                signingTask = nil
+            }
+        }
+    }
+
+    /// 证书撤销流程收尾：本次签名**成功**关闭进度页后，自动批量重签因撤销而失效的
+    /// 其余已装 App（复用续签队列，覆盖安装不新增设备槽位）；重试未成功则清空队列，
+    /// 留日志引导手动续签。
+    private func resignAppsAffectedByCertificateSacrificeIfNeeded(signingSucceeded: Bool) {
+        let queue = certificateSacrificeResignQueue
+        certificateSacrificeResignQueue = []
+        guard queue.isEmpty == false else { return }
+        guard signingSucceeded else {
+            Task { [weak self] in
+                try? await self?.logStore?.append(
+                    category: .signing,
+                    level: .warning,
+                    message: "签名重试未成功，\(queue.count) 个因证书撤销而失效的应用请稍后手动续签"
+                )
+            }
+            return
+        }
+        Task { [weak self] in
+            try? await self?.logStore?.append(
+                category: .signing,
+                message: "本次签名已完成，开始自动重签 \(queue.count) 个因证书撤销而失效的应用"
+            )
+        }
+        startBatchRefresh(appIDs: queue)
+    }
+
 
     func cancelSigning() {
         signingTask?.cancel()
@@ -985,8 +1049,13 @@ final class AppsViewModel: ObservableObject {
     func dismissSigningResult() {
         guard let signingSession else { return }
         if case .running = signingSession.status { return }
+        var signingSucceeded = false
+        if case .succeeded = signingSession.status { signingSucceeded = true }
         self.signingSession = nil
         selectedOperationApp = nil
+        // 进度页关闭后再发起批量重签：两个 sheet 同挂 AppsRootView，
+        // 同时弹出会导致批量续签页被盖住。
+        resignAppsAffectedByCertificateSacrificeIfNeeded(signingSucceeded: signingSucceeded)
     }
 
     @discardableResult

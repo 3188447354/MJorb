@@ -427,6 +427,28 @@
 ## 二、历史记录
 
 
+### 2026-09-14 · 真机：续签 Seal 自身弹「撤销」，确认撤销重签后 Seal 打不开
+- **现象**：续签 Seal 自身时签名失败页弹出「撤销并继续签名」（SEAL-CERT-204e），
+  用户点击确认 → 撤销 → 重新签名安装成功 → **Seal 立刻打不开**。
+- **根因**：一键全撤路径 `revokeKeylessCertificatesAfterConfirmation` 撤销的是账号下
+  **所有本机无私钥的远端证书**，没有任何 `isSeal` 保护；Seal 自身续签时，占名额的那张
+  无钥匙证书正是 Seal 正在使用的证书（覆盖安装后私钥丢失、却仍被 Seal 自身引用），
+  全撤把它一并撤掉 → Seal 的签名证书失效 → 重签后无法启动。换句话说，204e 本意是
+  保护「第三方已装 App 别被误撤」，却把 Seal 自己的命根子证书也当成了可撤对象。
+- **修复**（两道护栏，缺陷在「撤销路径没有 isSeal 边界」）：
+  1. `SigningCoordinator.signAndInstall` 的 catch 块：`app.isSeal` 命中
+     `.blockedByInUseKeylessCerts` 时**不抛 204e**，直接回退原错误——Seal 自续签永不弹
+     「撤销并继续签名」。无感 `.cleaned` 分支（只撤「无人使用」孤儿）对 Seal 仍安全可用。
+  2. `revokeKeylessCertificatesAfterConfirmation`：撤销前先算 `sealProtectedSerials`
+     （所有 `isSeal` 记录的 `certificateSerialNumber` 归一化集合），撤销循环无条件跳过；
+     若候选全被 Seal 保护跳过则返回空结果，不误报 204f。
+- **涉及文件**：`Seal/Core/Signing/SigningCoordinator.swift`、
+  `Scripts/verify-release-safety.py`（新增两道静态护栏）。
+- **验证状态**：本地护栏 99 检查 + 52 变异 PASS；Swift 编译与真机续签 Seal 待 CI + 回归。
+- **教训（并入坑位）**：任何「自动撤销证书」的路径都必须先过 `app.isSeal` / 或判断该证书
+  是否被 Seal 自身记录引用——Seal 的签名证书是它自己的命根子，撤销即打不开，不可逆。
+
+
 ### 2026-09-14 · 真机：续签撞 204b 上限时无感清理完全不触发（498d0aa 真机反馈）
 - **现象**：真机续签 Seal 自身报「签名证书数量已达上限」（SEAL-CERT-204b），
   引导用户去手动撤销——但账号下仅 1 张证书（本机无私钥、无关联 App 的孤儿），

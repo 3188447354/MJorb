@@ -407,6 +407,12 @@ def violations(load=read):
     # 一键确认盘活（SEAL-CERT-204e）：在用的无钥匙证书绝不静默撤，必须经失败页确认。
     check("if case .blockedByInUseKeylessCerts" in cleanup_retry,
           "204e must surface when keyless certificates are still in use")
+    # Seal 自身续签绝不撤自己的证书（会立刻打不开，2026-09-14 真机踩到）。两道护栏：
+    # ① 命中「在用的无钥匙证书」时不抛 204e，回退原错误；② 一键全撤跳过 Seal 在用的证书。
+    check("if app.isSeal {" in cleanup_retry,
+          "Seal self-renewal must never surface 204e (revoke makes Seal unlaunchable)")
+    check("sealProtectedSerials" in coord and "sealProtectedSerials.contains" in coord,
+          "Sacrifice: one-tap full revoke must skip Seal's own in-use certificate")
     check("func revokeKeylessCertificatesAfterConfirmation(" in coord,
           "Sacrifice: coordinator must expose the confirmation-gated revoke entry")
     check("SEAL-CERT-204e" in coord and "SEAL-CERT-204f" in coord,

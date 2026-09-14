@@ -226,6 +226,13 @@ actor SigningCoordinator {
                 guard cleanupOutcome == .cleaned,
                       let refreshedSecret = try await keychain.load(accountID: accountID) else {
                     if case .blockedByInUseKeylessCerts(let appNames, let deviceOnlyCount) = cleanupOutcome {
+                        if app.isSeal {
+                            // Seal 自身续签绝不弹「撤销并继续签名」：撤销会让 Seal 正在
+                            // 使用的证书失效，重签安装后 Seal 立刻打不开（2026-09-14 真机）。
+                            // 无感自动清理（.cleaned 分支）只撤「无人使用」的孤儿，对 Seal
+                            // 安全可继续；但「在用的无钥匙证书」对 Seal 是命根子，只能回退原错误。
+                            throw failure
+                        }
                         throw Self.inUseKeylessCertificatesFailure(
                             appNames: appNames,
                             deviceOnlyCount: deviceOnlyCount
@@ -469,9 +476,25 @@ actor SigningCoordinator {
         guard candidates.isEmpty == false else {
             return KeylessCertificateSacrificeResult(revokedSerials: [], affectedInstalledApps: [])
         }
+        // Seal 自身正在使用的证书绝不可撤销：撤销会让 Seal 立刻打不开（自更新场景，
+        // 2026-09-14 真机踩到）。一键全撤只针对历史及第三方证书，Seal 命根子证书无条件跳过。
+        let apps = (try? await appStore.fetchAll()) ?? []
+        let sealProtectedSerials = Set(apps.compactMap { app -> String? in
+            guard app.isSeal, let serial = app.certificateSerialNumber else { return nil }
+            return SigningCertificateSelectionPolicy.normalizedSerialNumber(serial)
+        })
         let certificateService = ApplePortalCertificateService()
         var revokedSerials: [String] = []
         for certificate in candidates {
+            let serial = SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber)
+            if sealProtectedSerials.contains(serial) {
+                try? await logStore?.append(
+                    category: .signing,
+                    level: .warning,
+                    message: "一键全撤跳过 Seal 自身在用的证书 …\(serial.suffix(6))"
+                )
+                continue
+            }
             if (try? await certificateService.revokeCertificate(
                 serialNumber: certificate.serialNumber,
                 account: account,
@@ -480,9 +503,19 @@ actor SigningCoordinator {
                 revokedSerials.append(certificate.serialNumber)
             }
         }
+        // 若所有候选都被 Seal 保护跳过，说明账号下只剩 Seal 自身在用的证书可撤，
+        // 不视为失败，返回空结果让上层按「无可撤」收尾（避免误报 204f 再误导用户）。
+        let nonSealCandidates = candidates.filter {
+            sealProtectedSerials.contains(
+                SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber)
+            ) == false
+        }
+        if nonSealCandidates.isEmpty {
+            return KeylessCertificateSacrificeResult(revokedSerials: [], affectedInstalledApps: [])
+        }
         guard revokedSerials.isEmpty == false else {
             throw Self.failure(
-                reason: "撤销 \(candidates.count) 张无钥匙证书全部失败，证书名额未释放。",
+                reason: "撤销 \(nonSealCandidates.count) 张无钥匙证书全部失败，证书名额未释放。",
                 recovery: "稍后重试；仍失败请到「我的」→「签名证书」检查账号状态",
                 code: "SEAL-CERT-204f"
             )
@@ -492,7 +525,6 @@ actor SigningCoordinator {
         let revokedNormalized = Set(revokedSerials.map {
             SigningCertificateSelectionPolicy.normalizedSerialNumber($0)
         })
-        let apps = (try? await appStore.fetchAll()) ?? []
         let affectedInstalledApps = apps.filter { app in
             guard app.belongsInInstalledList,
                   let serial = app.certificateSerialNumber else { return false }

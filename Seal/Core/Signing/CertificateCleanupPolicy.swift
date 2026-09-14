@@ -19,18 +19,26 @@ struct CertificateCleanupPlan: Equatable, Sendable {
 
 enum CertificateCleanupPolicy {
     /// 判定一张证书是否可安全撤销。所有序列号比较一律先归一化（坑位 1）。
+    /// 归一化在比对点做、幂等：不依赖各调用方记得先处理，防止新来源忘归一化时
+    /// 「有私钥/被引用」的证书因前导 0 差异误入可撤候选。
     static func makePlan(
         certificates: [ApplePortalCertificateSnapshot],
         apps: [AppRecord],
         localUsableSerials: Set<String>,
         deviceReferencedSerials: Set<String>?
     ) -> CertificateCleanupPlan {
+        let normalizedLocalUsable = Set(localUsableSerials.map {
+            SigningCertificateSelectionPolicy.normalizedSerialNumber($0)
+        })
+        let normalizedDeviceReferenced = deviceReferencedSerials.map { serials in
+            Set(serials.map { SigningCertificateSelectionPolicy.normalizedSerialNumber($0) })
+        }
         var revocable: [ApplePortalCertificateSnapshot] = []
         var kept: [ApplePortalCertificateSnapshot] = []
 
         for certificate in certificates {
             let serial = SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber)
-            if localUsableSerials.contains(serial) {
+            if normalizedLocalUsable.contains(serial) {
                 kept.append(certificate)
                 continue
             }
@@ -43,7 +51,7 @@ enum CertificateCleanupPolicy {
                 kept.append(certificate)
                 continue
             }
-            if let deviceReferencedSerials, deviceReferencedSerials.contains(serial) {
+            if let normalizedDeviceReferenced, normalizedDeviceReferenced.contains(serial) {
                 kept.append(certificate)
                 continue
             }
@@ -65,8 +73,11 @@ enum CertificateCleanupPolicy {
         certificates: [ApplePortalCertificateSnapshot],
         localUsableSerials: Set<String>
     ) -> [ApplePortalCertificateSnapshot] {
-        certificates.filter {
-            localUsableSerials.contains(
+        let normalizedLocalUsable = Set(localUsableSerials.map {
+            SigningCertificateSelectionPolicy.normalizedSerialNumber($0)
+        })
+        return certificates.filter {
+            normalizedLocalUsable.contains(
                 SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber)
             ) == false
         }

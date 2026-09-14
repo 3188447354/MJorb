@@ -78,15 +78,17 @@ struct PortalWriteTimeoutSemanticsTests {
 
     /// 本机记录绑定的序列号已经被撤销/删除、但账号下还有别的证书时，
     /// 不能继续申请新证书并把问题伪装成「数量上限」。
+    /// 序列号必须是合法十六进制（真实证书序列号没有 O/L 这类字符）；
+    /// 前导 0 在展示前会被归一化去掉（坑位 1）。
     @Test
     func staleCertificateBindingExplainsTheMismatch() {
         let failure = ApplePortalSigningService.staleCertificateBindingFailure(
-            serialNumber: "0OLD1234",
+            serialNumber: "00AB1234",
             availableCertificateCount: 1
         )
         #expect(failure.code == "SEAL-CERT-204d")
         #expect(failure.title.contains("不存在"))
-        #expect(failure.reason.contains("OLD1234"))
+        #expect(failure.reason.contains("AB1234"))
         #expect(failure.reason.contains("不是本机当前绑定的那张"))
         #expect(failure.recovery.contains("关联 App"))
     }

@@ -72,8 +72,8 @@ struct PortalWriteTimeoutSemanticsTests {
         #expect(failure.code == "SEAL-CERT-204c")
         #expect(failure.title.contains("私钥"))
         #expect(failure.reason.contains("BF75BE27D4E4"))
-        #expect(failure.recovery.contains("原设备或备份"))
-        #expect(failure.recovery.contains("关联 App"))
+        // 回收已收敛为无感自动清理，recovery 不再引导手动撤销
+        #expect(failure.recovery.contains("撤销") == false)
     }
 
     /// 本机记录绑定的序列号已经被撤销/删除、但账号下还有别的证书时，
@@ -90,7 +90,8 @@ struct PortalWriteTimeoutSemanticsTests {
         #expect(failure.title.contains("不存在"))
         #expect(failure.reason.contains("AB1234"))
         #expect(failure.reason.contains("不是本机当前绑定的那张"))
-        #expect(failure.recovery.contains("关联 App"))
+        // 回收已收敛为无感自动清理，recovery 不再引导手动撤销
+        #expect(failure.recovery.contains("撤销") == false)
     }
 
     /// 三个出口的错误码必须互不相同，否则用户与日志都无法区分发生了什么。

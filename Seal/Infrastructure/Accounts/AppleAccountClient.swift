@@ -8,10 +8,13 @@ enum AppleAuthenticationStage: Sendable {
 
 enum AppleAuthenticationFailure {
     static func make(stage: AppleAuthenticationStage, error: Error) -> ImportFailure {
+        if AppleServiceFailurePolicy.isRateLimited(error) {
+            return AppleServiceFailurePolicy.rateLimitedFailure(underlying: error)
+        }
         if AppleServiceFailurePolicy.isNetworkError(error) {
             return AppleServiceFailurePolicy.networkFailure(
-                title: "无法连接 Apple",
-                reason: "当前网络或 Apple 服务不可用。账号状态不会被修改。"
+                title: "连不上 Apple",
+                reason: "连不上 Apple 服务器，请检查网络或梯子。账号状态不会改变。"
             )
         }
         switch stage {
@@ -93,30 +96,12 @@ final class AppleAccountClient {
         return false
     }
 
-    /// Apple 对认证/团队请求返回 503（国内直连 gsa.apple.com 的线路时通时断）时
-    /// 自动间隔重试：隔几秒重发往往就能通过，避免用户必须挂梯子。
-    private static func retryOnApple503<T>(
+    /// Apple 认证/团队请求直接发出，不做 503 自动重试：503 是线路出口不对，重试也通不了，
+    /// 交给上游 `AppleAuthenticationFailure.make` 归成「切换到非国内梯子」。
+    private static func directAppleRequest<T>(
         _ operation: @escaping () async throws -> T
     ) async throws -> T {
-        // 3 次尝试：立即 / +3s / +8s
-        let backoffs: [UInt64] = [0, 3_000_000_000, 8_000_000_000]
-        var lastError: Error?
-        for delay in backoffs {
-            if delay > 0 {
-                try? await Task.sleep(nanoseconds: delay)
-            }
-            do {
-                return try await operation()
-            } catch {
-                lastError = error
-                let message = (error as NSError).localizedDescription
-                if message.contains("503") || message.contains("Service Temporarily Unavailable") {
-                    continue
-                }
-                throw error
-            }
-        }
-        throw lastError ?? URLError(.badServerResponse)
+        try await operation()
     }
 
     /// 给异步操作加超时，超时后抛出超时错误。
@@ -169,7 +154,7 @@ final class AppleAccountClient {
         do {
             try Task.checkCancellation()
             let anisetteData = try await anisetteProvider.fetchForAuthentication()
-            let auth = try await Self.retryOnApple503 {
+            let auth = try await Self.directAppleRequest {
                 try await self.authenticate(
                     email: email,
                     password: password,
@@ -179,7 +164,7 @@ final class AppleAccountClient {
             }
             try Task.checkCancellation()
             stage = .teamLookup
-            let teams = try await Self.retryOnApple503 {
+            let teams = try await Self.directAppleRequest {
                 try await self.fetchTeams(
                     account: auth.account,
                     session: auth.session
@@ -312,10 +297,13 @@ final class AppleAccountClient {
         } catch let failure as ImportFailure {
             throw failure
         } catch {
+            if AppleServiceFailurePolicy.isRateLimited(error) {
+                throw AppleServiceFailurePolicy.rateLimitedFailure(underlying: error)
+            }
             if AppleServiceFailurePolicy.isNetworkError(error) {
                 throw AppleServiceFailurePolicy.networkFailure(
-                    title: "无法连接 Apple",
-                    reason: "当前网络或 Apple 服务不可用。已保存的 Apple ID 仍可继续选择。"
+                    title: "连不上 Apple",
+                    reason: "连不上 Apple 服务器，请检查网络或梯子。已保存的 Apple ID 仍可继续选择。"
                 )
             }
             let nsError = error as NSError
@@ -547,10 +535,13 @@ final class AppleAccountClient {
                 code: code
             )
         }
+        if AppleServiceFailurePolicy.isRateLimited(error) {
+            return AppleServiceFailurePolicy.rateLimitedFailure(underlying: error)
+        }
         if AppleServiceFailurePolicy.isNetworkError(error) {
             return AppleServiceFailurePolicy.networkFailure(
-                title: "无法连接 Apple",
-                reason: "当前网络或 Apple 服务不可用。账号状态不会被修改。"
+                title: "连不上 Apple",
+                reason: "连不上 Apple 服务器，请检查网络或梯子。账号状态不会改变。"
             )
         }
         let nsError = error as NSError

@@ -292,8 +292,10 @@ def violations(load=read):
     check("static func associatedApps(" in cert_impact
           and "app.signingTargets.contains" in cert_impact,
           "Certificates: association lookup must include extension targets")
-    check("associatedAppsView(for: certificate)" in cert_view
-          and "Text(\"证书标识：\\(certificate.machineName)\")" in cert_view,
+    check("installedAppsSection(account: account)" in cert_view
+          and "CertificateRevocationImpact.affectedApps(" in cert_view
+          and "本机已安装 App" in cert_view
+          and "fullSerialText(certificate.serialNumber)" in cert_view,
           "Certificates: UI must show full identity and associated apps")
     signing_service = load("Seal/Infrastructure/Signing/ApplePortalSigningService.swift")
     check("static func staleCertificateBindingFailure(" in signing_service
@@ -350,11 +352,11 @@ def violations(load=read):
     check("startBatchRefresh()" not in retry,
           "R10: failed-only retry must never silently rerun every app")
 
-    # Copy tells users to revoke a certificate in-app, so the UI must actually offer an entry.
-    # Regression: 7 strings promised "在「我的」页面撤销" while no view ever called revokeCertificate.
+    # 证书回收已收敛为「签名/续签内无感自动清理 + 在用无钥匙证书一键确认（204e）」；
+    # 证书页是只读浏览，不再提供撤销/清理入口 —— 保留会误删本机在用证书（2026-09-14 真机踩到）。
     ui = load("Seal/Features/Settings/SigningCertificateSettingsView.swift")
-    check("revokeCertificate(" in ui,
-          "Copy: in-app certificate revocation must have a real UI entry")
+    check("revokeCertificate(" not in ui and "prepareCertificateCleanup" not in ui,
+          "Copy: certificate page must be read-only (no manual revoke/cleanup entry)")
 
     # 证书一键清理（覆盖安装后 keychain 清空、Apple 侧孤儿证书占位的情形）：
     # 撤销不可逆，候选判定与执行各有硬约束。
@@ -374,8 +376,6 @@ def violations(load=read):
           "Cleanup: revoke must re-verify against a fresh remote listing")
     check(cleanup_exec.index("createLocalCertificate") > cleanup_exec.index("for certificate in targets"),
           "Cleanup: revoke all before creating the replacement")
-    check("prepareCertificateCleanup" in ui,
-          "Cleanup: the cleanup action must have a real UI entry")
     inv = load("Seal/Infrastructure/Signing/ApplePortalInventoryService.swift")
     check("hasLocalPrivateKey: localP12SerialNumbers.contains(" in inv,
           "Cleanup: hasLocalPrivateKey must consider every stored P12, not only the current one")
@@ -430,17 +430,19 @@ def violations(load=read):
           and "viewModel.confirmCertificateSacrificeAndRetry()" in progress_view,
           "Sacrifice: failure page must wire the one-tap button to the ViewModel")
 
-    # 指引「撤销证书」的 recovery 文案必须点名真实入口（「我的」→「签名证书」）。
-    # 只写「我的」会把用户丢在 Apple ID 列表上，还要自己猜下一步点哪里。
-    stale_copy = []
+    # 证书回收已收敛为无感自动清理 + 204e 一键确认；证书页只读，不再提供手动撤销入口。
+    # 任何 recovery 文案都不许再引导用户「去撤销证书」（那是死链接），唯一允许保留的
+    # 「撤销」措辞是 204e 失败页的「撤销并继续签名」（有真实按钮，见 SigningProgressView）。
+    manual_revoke_copy = []
     for path in ("Seal/Core/Signing/SigningCoordinator.swift",
                  "Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",
                  "Seal/Infrastructure/Signing/ApplePortalSigningService.swift"):
         for line in load(path).splitlines():
-            if "撤销" in line and "recovery:" in line and "「签名证书」" not in line:
-                stale_copy.append(path + " -> " + line.strip())
-    check(not stale_copy,
-          "Copy: revoke guidance must name 我的 -> 签名证书 (" + " | ".join(stale_copy) + ")")
+            if "recovery:" in line and "撤销" in line and "撤销并继续签名" not in line:
+                manual_revoke_copy.append(path + " -> " + line.strip())
+    check(not manual_revoke_copy,
+          "Copy: recovery must not instruct manual certificate revocation ("
+          + " | ".join(manual_revoke_copy) + ")")
 
     versions = re.findall(r"MARKETING_VERSION:\s*(\S+)", load("project.yml"))
     check(len(versions) == 2 and len(set(versions)) == 1,
@@ -540,9 +542,9 @@ def main():
          "if false {",
          "F: both install entries"),
         ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",
-         'recovery: "在「我的」→「签名证书」中撤销一个旧签名证书后重试"',
+         'recovery: "请在「我的」中重新同步证书状态后重试"',
          'recovery: "在「我的」页面撤销一个旧签名证书后重试"',
-         "Copy: revoke guidance"),
+         "Copy: recovery must not instruct manual certificate revocation"),
         ("Seal/Core/Maintenance/AppMaintenanceJob.swift",
          "guard gate.shouldAbort(token) == false else",
          "guard true else",
@@ -620,8 +622,8 @@ def main():
          "return false // extension association removed",
          "Certificates: association lookup must include extension targets"),
         ("Seal/Features/Settings/SigningCertificateSettingsView.swift",
-         "associatedAppsView(for: certificate)",
-         "Text(\"无关联\")",
+         "CertificateRevocationImpact.affectedApps(",
+         "CertificateRevocationImpact.affectedAppsUnused(",
          "Certificates: UI must show full identity and associated apps"),
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "if remoteContainsExpected == false {",

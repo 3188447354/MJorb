@@ -30,17 +30,17 @@ struct PortalWriteTimeoutSemanticsTests {
         #expect(ApplePortalSigningService.isTimeoutError(NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost)) == false)
     }
 
-    /// 对账发现孤儿证书：必须明确告诉用户私钥已丢失、这张证书不能用于签名，
-    /// 并指向真实入口「我的」→「签名证书」。
+    /// 对账发现孤儿证书：错误码与 reason 必须如实讲清「私钥已丢失、这张证书不能用于签名」；
+    /// 回收交给后续限额触发时的无感清理，recovery 不再引导用户手动撤销。
     @Test
-    func foundOrphanTellsUserToRevokeInApp() {
+    func foundOrphanReportsLostKeyWithoutManualRevoke() {
         let failure = ApplePortalSigningService.certificateCreationUnknownFailure(
             .found(serialNumber: "ABCD1234")
         )
         #expect(failure.code == "SEAL-CERT-209b")
         #expect(failure.reason.contains("ABCD1234"))
         #expect(failure.reason.contains("私钥"))
-        #expect(failure.recovery.contains("「签名证书」"))
+        #expect(failure.recovery.contains("撤销") == false)
     }
 
     /// 对账确认没创建：重试是安全的，文案应允许直接重试。

@@ -24,8 +24,8 @@ enum AppleServiceFailurePolicy {
 
     static func networkFailure(
         underlying _: Error? = nil,
-        title: String = "网络不可用",
-        reason: String = "无法连接 Apple 服务（网络不可达、超时或 DNS 解析失败）。已保存的 Apple ID 不会受到影响。",
+        title: String = "连不上 Apple",
+        reason: String = "连不上 Apple 服务器，请检查网络或梯子。已保存的 Apple ID 不受影响。",
         recovery: String = "网络恢复后重试",
         code: String = "SEAL-NET-101"
     ) -> ImportFailure {
@@ -35,6 +35,31 @@ enum AppleServiceFailurePolicy {
             recovery: recovery,
             code: code
         )
+    }
+
+    /// Apple 服务端返回 503（线路被限流/出口不对）。这是「线路」问题，重试也通不了，
+    /// 单独识别出来直接提示切换非国内梯子，不进入网络错误的重试循环。
+    static func isRateLimited(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if messageIndicates503(ns.localizedDescription) { return true }
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? Error,
+           isRateLimited(underlying) { return true }
+        return false
+    }
+
+    /// 503 专属失败：直接给可执行动作（切非国内梯子），不假装「检查网络后重试」。
+    static func rateLimitedFailure(underlying _: Error? = nil) -> ImportFailure {
+        ImportFailure(
+            title: "连不上 Apple",
+            reason: "连不上 Apple 服务器，多半是当前网络线路被限流了。",
+            recovery: "切换到非国内梯子（海外节点）后重试",
+            code: "SEAL-NET-503"
+        )
+    }
+
+    private static func messageIndicates503(_ message: String) -> Bool {
+        let m = message.lowercased()
+        return m.contains("503") || m.contains("service temporarily unavailable")
     }
 
     static func verificationFailureReason(

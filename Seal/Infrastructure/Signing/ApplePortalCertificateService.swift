@@ -68,7 +68,7 @@ actor ApplePortalCertificateService {
             throw Self.failure(
                 title: "无法创建签名证书",
                 reason: "该账号证书数量已达上限，或本次证书请求无效。",
-                recovery: "在「我的」→「签名证书」中撤销一个旧签名证书后重试",
+                recovery: "请稍后重试",
                 code: "SEAL-CERT-204"
             )
         }
@@ -124,7 +124,7 @@ actor ApplePortalCertificateService {
                 throw Self.failure(
                     title: "证书清理未完成",
                     reason: "签名证书已创建，但后续处理失败；自动撤销该证书也失败，可能残留一个占用名额的证书。",
-                    recovery: "在「我的」→「签名证书」中手动撤销多余证书后重试",
+                    recovery: "请稍后重试",
                     code: "SEAL-CERT-215b"
                 )
             }

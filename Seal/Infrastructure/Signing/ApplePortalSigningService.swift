@@ -23,11 +23,13 @@ enum ApplePortalAppIDResolver {
 
 enum ApplePortalSigningFailure {
     static func make(stage: ApplePortalSigningStage, error: Error) -> ImportFailure {
+        if AppleServiceFailurePolicy.isRateLimited(error) {
+            return AppleServiceFailurePolicy.rateLimitedFailure(underlying: error)
+        }
         if AppleServiceFailurePolicy.isNetworkError(error) {
             return AppleServiceFailurePolicy.networkFailure(
-                title: "无法连接 Apple 开发者服务器",
-                reason: "签名需要连接 Apple 开发者服务器（developerservices2.apple.com）验证证书，当前连接超时，已自动重试仍失败。这是网络问题，Apple ID 和已签应用都不会受影响。",
-                recovery: "如果开了代理/VPN，请确认它覆盖了 Apple 开发者服务器（规则/分流模式可能漏掉该域名，可临时切全局模式验证）；未开代理请切换网络（如手机热点）后重试。已有证书缓存的账号通常不需要额外网络，首次使用的新账号需要连接开发者服务器创建证书。",
+                title: "连不上 Apple",
+                reason: "连不上 Apple 开发者服务器，请检查网络或梯子。已保存的 Apple ID 和已签应用不受影响。",
                 code: "SEAL-NET-102"
             )
         }
@@ -38,9 +40,9 @@ enum ApplePortalSigningFailure {
         case .account:
             if nsError.code == 1100 || diagnostic.contains("session has expired") || diagnostic.contains("1100") {
                 details = (
-                    "Apple 会话已过期",
-                    "当前 Apple ID 的登录状态已过期，需要重新登录后才能签名或续签。\nApple 返回：\(diagnostic)",
-                    "重新登录",
+                    "登录过期了",
+                    "这个 Apple ID 的登录过期了，需要重新验证一次才能继续签名或续签。",
+                    "去「我的」重新验证",
                     "SEAL-AUTH-107"
                 )
             } else {
@@ -102,9 +104,9 @@ enum ApplePortalSigningFailure {
         // 分支被误报成网络/标注问题。
         if nsError.code == 1100 || normalized.contains("session has expired") || diagnostic.contains("1100") {
             return ImportFailure(
-                title: "Apple 会话已过期",
-                reason: "当前 Apple ID 的登录状态已过期，需要重新登录后才能签名或续签。\nApple 返回：\(diagnostic)",
-                recovery: "重新登录",
+                title: "登录过期了",
+                reason: "这个 Apple ID 的登录过期了，需要重新验证一次才能继续签名或续签。",
+                recovery: "去「我的」重新验证",
                 code: "SEAL-AUTH-107"
             )
         }
@@ -175,7 +177,7 @@ enum ApplePortalSigningFailure {
             return ImportFailure(
                 title: "无法创建签名证书",
                 reason: "Apple 拒绝创建签名证书：该账号证书数量已达上限，或本次证书请求无效（Apple 错误 \(diagnostic)）。",
-                recovery: "在「我的」→「签名证书」中撤销一个旧签名证书后重试",
+                recovery: "请稍后重试",
                 code: "SEAL-CERT-204a"
             )
         }
@@ -207,7 +209,7 @@ enum ApplePortalSigningFailure {
         return ImportFailure(
             title: "证书准备失败",
             reason: "Apple 服务器未能准备好签名证书。\nApple 返回：\(diagnostic)",
-            recovery: "检查网络后重试；如持续失败请在「我的」→「签名证书」中撤销旧证书后再试",
+            recovery: "检查网络后重试",
             code: "SEAL-CERT-203"
         )
     }
@@ -774,7 +776,7 @@ actor ApplePortalSigningService {
         return Self.failure(
             title: "本机缺少证书私钥",
             reason: "Apple 账号下仍有证书（序列号末尾 …\(normalizedSerial.suffix(12))），但本机没有可用的 P12 私钥。已安装的 App 仍可能继续运行，因为它们使用的是包内已签入的证书；新签名不能只靠 Apple 服务器上的公钥证书完成。",
-            recovery: "从原设备或备份恢复这张证书的 P12；没有备份时，先到「我的」→「签名证书」确认关联 App 后撤销这张证书，再重试签名",
+            recovery: "请稍后重试",
             code: "SEAL-CERT-204c"
         )
     }
@@ -790,7 +792,7 @@ actor ApplePortalSigningService {
         return Self.failure(
             title: "本机绑定的证书已不存在",
             reason: "本机记录绑定的证书序列号末尾为 …\(normalizedSerial.suffix(12))，Apple 侧已找不到它。\(remainingText)。已安装 App 仍可能继续运行，但不能用另一张证书的公钥冒充本机私钥签名。",
-            recovery: "先到「我的」→「签名证书」确认剩余证书的关联 App；如能从原设备或备份恢复正确 P12，优先恢复；确认旧证书已不再需要后再撤销/重新申请",
+            recovery: "请稍后重试",
             code: "SEAL-CERT-204d"
         )
     }
@@ -814,8 +816,8 @@ actor ApplePortalSigningService {
             guard Self.isCertificateLimitError(error) else { throw error }
             throw Self.failure(
                 title: "签名证书数量已达上限",
-                reason: "Seal 不会自动撤销其他证书，以免影响已安装应用或其他设备。",
-                recovery: "在「我的」→「签名证书」中撤销不再使用的证书，再重试",
+                reason: "该 Apple ID 的签名证书数量已达上限，且没有可自动释放的无用证书。",
+                recovery: "请稍后重试",
                 code: "SEAL-CERT-204b"
             )
         }
@@ -866,7 +868,7 @@ actor ApplePortalSigningService {
                 throw Self.failure(
                     title: "证书清理未完成",
                     reason: "签名证书已创建，但后续处理失败；自动撤销该证书也失败，可能残留一个占用名额的证书。",
-                    recovery: "在「我的」→「签名证书」中手动撤销多余证书后重试",
+                    recovery: "请稍后重试",
                     code: "SEAL-CERT-215c"
                 )
             }
@@ -1027,7 +1029,8 @@ actor ApplePortalSigningService {
     enum OrphanReconciliation {
         /// 远端列表里没有本次 machineName 对应的证书 —— 可判定创建未生效，重试是安全的。
         case none
-        /// 远端确实多出了这张证书，但私钥已随丢失的响应一起没了，只能人工撤销。
+        /// 远端确实多出了这张证书，但私钥已随丢失的响应一起没了；只能如实告知，
+        /// 回收交给后续限额触发时的无感清理（证书页已只读，不再提供手动撤销入口）。
         case found(serialNumber: String)
         /// 对账请求本身也失败，无法判定。必须按「未知」处理。
         case inconclusive
@@ -1068,7 +1071,7 @@ actor ApplePortalSigningService {
             return ImportFailure(
                 title: "证书已创建但私钥已丢失",
                 reason: "创建证书的请求超时，Apple 实际已创建证书（序列号 \(serialNumber)），但响应丢失，私钥无法取回，这张证书不能用于签名。",
-                recovery: "在「我的」→「签名证书」中撤销该证书后重试",
+                recovery: "请稍后重试",
                 code: "SEAL-CERT-209b"
             )
         case .none:
@@ -1082,7 +1085,7 @@ actor ApplePortalSigningService {
             return ImportFailure(
                 title: "证书创建结果未知",
                 reason: "创建证书的请求超时，且对账请求同样失败，无法确认 Apple 是否已创建证书。此时盲目重试会多占一个证书名额。",
-                recovery: "先到「我的」→「签名证书」确认是否多出一张证书，再决定重试或撤销",
+                recovery: "先到「我的」→「签名证书」确认是否多出一张证书，再决定是否重试",
                 code: "SEAL-CERT-209d"
             )
         }

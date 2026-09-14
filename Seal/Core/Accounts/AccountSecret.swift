@@ -166,6 +166,18 @@ struct AccountSecret: Codable, Equatable, Sendable {
         certificateMachineIdentifierBySerial.removeAll()
     }
 
+    /// 撤销证书后删除本机保存的对应 P12 材料（只删指定序列号，不清全量）。
+    mutating func removeStoredCertificateMaterial(serialNumber: String) {
+        let key = Self.normalizedSerial(serialNumber)
+        certificateP12BySerial.removeValue(forKey: key)
+        certificateMachineIdentifierBySerial.removeValue(forKey: key)
+        if let current = certificateSerialNumber, Self.normalizedSerial(current) == key {
+            certificateP12 = nil
+            certificateSerialNumber = nil
+            certificateMachineIdentifier = nil
+        }
+    }
+
     private static func normalizedSerial(_ serial: String) -> String {
         var result = serial.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         while result.hasPrefix("0") { result.removeFirst() }

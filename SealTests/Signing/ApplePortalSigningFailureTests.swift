@@ -41,10 +41,11 @@ struct ApplePortalSigningFailureTests {
             )
         )
 
-        // 证书上限被细分为 SEAL-CERT-204a，并给出更具指导性的中文原因与恢复建议
+        // 证书上限被细分为 SEAL-CERT-204a；回收已收敛为签名/续签内的无感自动清理，
+        // 失败文案不再引导用户手动撤销（证书页已只读）。
         #expect(failure.code == "SEAL-CERT-204a")
         #expect(failure.reason.contains("证书数量已达上限"))
-        #expect(failure.recovery.contains("撤销一个旧签名证书"))
+        #expect(failure.recovery.contains("撤销") == false)
     }
 
     @Test

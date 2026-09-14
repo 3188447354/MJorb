@@ -115,6 +115,8 @@ actor SigningCoordinator {
         let originalSecret = secret
         let originalAccount = account
         var didPersistNewSignedArtifact = false
+        // Seal 自更新换证时，安装成功后才撤销被替换的旧本机证书（P1）。
+        let sealSerialBeforeSigning = app.isSeal ? app.certificateSerialNumber : nil
 
         do {
             try Task.checkCancellation()
@@ -186,6 +188,22 @@ actor SigningCoordinator {
             } else {
                 preferredIconData = nil
             }
+            // 无感一证书策略（前置）：签名前主动撤销「无人使用的孤儿证书」，把「名额满」
+            // 失败消灭在签名前，而不是等首次 sign 撞 204 再清。设备核验失败 / 拉不到远清单 /
+            // 撤销失败都返回非 .cleaned，这里静默跳过（下方 reactive 撞 204 兜底仍在），
+            // 绝不因本次前置清理新增失败面。
+            var signSelectedSerial = effectiveCertificateSerialNumber
+            if case .cleaned = (try? await autoCleanOrphanCertificatesIfPossible(
+                account: account,
+                secret: secret
+            )) ?? .unavailable {
+                // 清理可能连带清掉「绑定还在但本机无私钥」的旧身份，重读 secret 对齐；
+                // 首次 sign 不再传可能已失效的选中序列号，走「复用剩余本机证书或新建」。
+                if let refreshedSecret = try? await keychain.load(accountID: accountID) {
+                    secret = refreshedSecret
+                }
+                signSelectedSerial = nil
+            }
             let portalResult: PortalSigningResult
             do {
                 portalResult = try await portal.sign(
@@ -197,7 +215,7 @@ actor SigningCoordinator {
                     workspaceRoot: workspaceRoot,
                     targetBundleIdentifier: targetBundleIdentifier,
                     preferredIconData: preferredIconData,
-                    selectedCertificateSerialNumber: effectiveCertificateSerialNumber,
+                    selectedCertificateSerialNumber: signSelectedSerial,
                     allowDroppingExtensions: allowDroppingExtensions,
                     persistSigningMaterial: { updatedSecret, serialNumber in
                         try await self.persistNewSigningMaterial(
@@ -320,6 +338,17 @@ actor SigningCoordinator {
                 progress: progress,
                 onInstallProgress: onInstallProgress
             )
+            // P1：Seal 自更新且证书发生轮换 → 装成功后撤销被替换的旧本机证书，
+            // 回到「一个 Apple ID 本机只留一张证书」。装失败时旧 Seal 仍靠旧证运行，
+            // 绝不提前撤（撤了会让旧 Seal 立刻打不开）。
+            if let oldSealSerial = sealSerialBeforeSigning {
+                await revokeReplacedSealCertificate(
+                    oldSerialNumber: oldSealSerial,
+                    newSerialNumber: portalResult.certificateSerialNumber,
+                    account: account,
+                    secret: secret
+                )
+            }
             return installed
         } catch is CancellationError {
             if app.signedIPARelativePath != nil, originalState != .installed {
@@ -426,6 +455,43 @@ actor SigningCoordinator {
         clearedAccount.certificateSerialNumber = nil
         clearedAccount.selectedCertificateSerialNumber = nil
         try? await accountRepository.save(clearedAccount)
+    }
+
+    /// Seal 自更新发生证书轮换后，撤销被替换的旧本机证书并清掉其本机 P12 材料。
+    /// 严格在安装成功后调用：此刻新 Seal 已用新证落地，旧证不再签着运行中的 Seal；
+    /// 装失败旧 Seal 仍靠旧证运行，绝不能提前撤。撤销失败只记日志，不影响已成功的续签，
+    /// 留待下次签名/续签前置清理兜底（旧证无私钥即被当孤儿撤掉）。
+    private func revokeReplacedSealCertificate(
+        oldSerialNumber: String,
+        newSerialNumber: String,
+        account: AppleAccountRecord,
+        secret: AccountSecret
+    ) async {
+        guard SigningCertificateSelectionPolicy.normalizedSerialNumber(oldSerialNumber)
+                != SigningCertificateSelectionPolicy.normalizedSerialNumber(newSerialNumber) else {
+            return
+        }
+        let certificateService = ApplePortalCertificateService()
+        if (try? await certificateService.revokeCertificate(
+            serialNumber: oldSerialNumber,
+            account: account,
+            secret: secret
+        )) != nil {
+            try? await logStore?.append(
+                category: .signing,
+                message: "Seal 自更新换证后已撤销旧本机证书 …\(oldSerialNumber.suffix(6))"
+            )
+        } else {
+            try? await logStore?.append(
+                category: .signing,
+                level: .warning,
+                message: "Seal 自更新换证后撤销旧本机证书失败（留待下次清理）…\(oldSerialNumber.suffix(6))"
+            )
+        }
+        if var refreshed = try? await keychain.load(accountID: account.id) {
+            refreshed.removeStoredCertificateMaterial(serialNumber: oldSerialNumber)
+            try? await keychain.save(refreshed, for: account.id)
+        }
     }
 
     /// 签名失败页「撤销并继续签名」（SEAL-CERT-204e）确认后调用：撤销账号下**所有**
@@ -777,7 +843,7 @@ actor SigningCoordinator {
                   certificate.serialNumber.caseInsensitiveCompare(serialNumber) == .orderedSame else {
                 throw Self.failure(
                     reason: "签名证书已从 Apple 获取，但写入本机 Keychain 后未能通过校验（重载的证书序列号与预期不一致）。",
-                    recovery: "重试；如持续失败请到「我的」→「签名证书」中撤销旧证书后重试",
+                    recovery: "请稍后重试",
                     code: "SEAL-CERT-210"
                 )
             }

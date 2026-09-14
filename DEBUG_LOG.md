@@ -427,6 +427,71 @@
 ## 二、历史记录
 
 
+### 2026-09-14 · 证书「先清再签」前置化 + 续签 Seal 换证后回收旧证 + 503/文案白化
+
+- **现象/诉求**：用户要求签名/续签**前**就精准撤销该 Apple ID 下所有「非本机」证书（一个 Apple ID
+  本机只留一张证书）；续签 Seal 自更新发生证书轮换后，回收被替换的旧本机证书；错误文案一律大白话，
+  503 直接提示切换非国内梯子，不要「失败→提示→兜底」式的体验。
+- **根因**：
+  - 证书回收原先只在首个 `portal.sign` 抛 204a/b/c/d 后被动触发（`signAndInstall` 的 catch），
+    首次签名必然先失败一次再重试，不符合「签名前先清」；
+  - 续签 Seal 换证后，旧本机证书因「本机有私钥」被 `sacrificeCandidates`、`sealProtectedSerials`（装成功后
+    序列号已更新为新证）等所有清理路径放过 → 永不回收、长期累积撞名额；
+  - 503 原先被 `retryOnApple503` 的「隔几秒重发」自动重试掩盖，但线路出口不对时重试也通不了，白空转；
+  - 网络/会话过期文案技术黑话多（超时/DNS/无法到达等）。
+- **过程教训（务必先读）**：本条目第一版实现把 `autoCleanOrphanCertificatesIfPossible` 整体改写成
+  「激进全撤」——删掉设备端核验中止（`DeviceProfileInspector.referencedCertificateSerials`）、四重核验
+  `makePlan`、`blockedByInUseKeylessCerts`→204e 一键确认、`revokeKeylessCertificatesAfterConfirmation`
+  等既有硬约束 → `verify-release-safety.py` 8 项 FAIL + 编译失败（AppsViewModel 仍在调用被删的
+  `revokeKeylessCertificatesAfterConfirmation` / `KeylessCertificateSacrificeResult`）。
+  这是「改动前自查清单」第 3/5 项反例：绕开已通过护栏的既有精确清理、另写一套全撤，必然破坏
+  「在用证书需确认」防线。已回退到 HEAD 精确清理结构，再按最小增量重新实现 P0/P1（如下）。
+- **修复**：
+  1. **P0 前置清理**：`signAndInstall` 首个 `portal.sign` 前**复用**既有的
+     `autoCleanOrphanCertificatesIfPossible`（内部仍是「设备端核验中止 + 远清单 + 四重核验 makePlan」），
+     提前无感撤销「无人使用的孤儿证书」；仅当返回 `.cleaned` 才重读 keychain secret、首次 sign 传 `nil`
+     序列号走「复用剩余或新建」；`.unavailable / .noCandidates / .revokeFailed` 一律静默跳过，reactive
+     撞 204 兜底仍在，不新增失败面。「在用无钥匙」证书仍走 204e 一键确认，绝不静默撤。
+  2. **P1 换证回收**：新增 `revokeReplacedSealCertificate`，Seal 自更新**安装成功后**（此刻新 Seal 已用
+     新证落地）撤销被替换的旧本机证书并删旧 P12；`AccountSecret` 新增
+     `removeStoredCertificateMaterial(serialNumber:)`（只删指定 key，不清全量）。装失败不撤旧证，
+     撤销失败只记日志、留待下次前置清理兜底。
+  3. **503 识别**：`AppleServiceFailurePolicy.isRateLimited` + `rateLimitedFailure`（「切换到非国内梯子」），
+     认证/签名两处失败归类入口（共 4 个 `isNetworkError` 分支）优先判 503；`retryOnApple503` → `directAppleRequest`。
+  4. **文案白化**：网络「连不上 Apple，检查网络或梯子」；1100「登录过期了，去「我的」重新验证」。
+- **涉及文件**：`SigningCoordinator.swift`、`AccountSecret.swift`、`AppleServiceFailurePolicy.swift`、
+  `AppleAccountClient.swift`、`ApplePortalSigningService.swift`、`project.yml`（MARKETING_VERSION 1.1.9→1.1.10）。
+- **验证状态**：本地护栏 **98 检查 + 52 变异 PASS**；Swift 编译与真机回归待 CI（本机无 Xcode）——
+  回归样本：微信 / 黄豆短剧 / LCSign / lanmanga。
+
+
+### 2026-09-14 · 证书回收文案收敛为「无感自动清理」，不再引导手动撤销
+
+- **现象**：证书页改为只读（移除撤销/清理入口）后，`Scripts/verify-release-safety.py` 连续拦截：
+  ~10 处 recovery 文案仍写着「在「我的」→「签名证书」撤销旧证书后重试」之类指引，指向一个
+  已不存在的入口（死链接）；护栏里「撤销入口必须存在 / 文案必须点名签名证书」的旧断言也与
+  只读定位相反。
+- **根因**：撤销/清理 UI 入口先删了，但错误文案与护栏没同步 —— 同「两张表不同步」教训
+  （安装链路 `isTerminalInstallError`/`installationFailure`、证书触发 `isOrphanCertificateBlocking`
+  都为此类）。证书回收的归属已变：孤儿证书由「签名/续签内无感自动清理 + 在用无钥匙证书
+  204e 一键确认」接管，证书页只用于**只读浏览**，保留撤销入口只剩误删本机在用证书的风险。
+- **修复**（用户决策：方案 A = 完整只读，不要任何手动撤销引导）：
+  1. 三处源文件约 10 处引导手动撤销的 recovery 收敛为「请稍后重试」
+     （`SEAL-CERT-204 / 204a / 204b / 204c / 204d / 209b / 210 / 215b / 215c` 等），
+     不再点名证书页撤销入口；204b 的 `isCertificateLimitError` 自动清理触发逻辑保持不变。
+  2. `OrphanReconciliation.found` 注释同步说明「回收交给后续限额触发时的无感清理」。
+  3. 护栏 `verify-release-safety.py`：由「撤销入口必须存在」翻转为「证书页必须只读
+     （无 `revokeCertificate(` / `prepareCertificateCleanup`）」；recovery 文案检查由
+     「必须点名签名证书」改为「不得包含手动撤销指引」（唯一放行的「撤销」措辞是 204e
+     失败页的「撤销并继续签名」，有真实按钮）；同步更新变异自检锚点。
+  4. 单测断言改为「recovery 不含『撤销』」：`ApplePortalSigningFailureTests`、
+     `PortalWriteTimeoutSemanticsTests`（方法改名 `foundOrphanReportsLostKeyWithoutManualRevoke`）。
+- **涉及文件**：`ApplePortalSigningService.swift`、`ApplePortalCertificateService.swift`、
+  `SigningCoordinator.swift`、`Scripts/verify-release-safety.py`、
+  `SealTests/Signing/ApplePortalSigningFailureTests.swift`、
+  `SealTests/Signing/PortalWriteTimeoutSemanticsTests.swift`。
+- **验证状态**：本地护栏 **98 检查 + 52 变异 PASS**；Swift 编译与真机回归待 CI（本机无 Xcode）。
+
 ### 2026-09-14 · 签名证书页 UI 重构：只读浏览、证书区去重、关联本机已装 App
 
 - **现象**：证书页原先有「Apple 开发证书」和「账号下的全部证书」两张卡重复展示同一证书，

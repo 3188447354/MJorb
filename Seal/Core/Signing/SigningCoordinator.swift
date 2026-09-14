@@ -232,11 +232,9 @@ actor SigningCoordinator {
                 )
             } catch let failure as ImportFailure where Self.isOrphanCertificateBlocking(failure) {
                 // 覆盖安装后 keychain 清空：远端仍存在的证书对本机永远不可用
-                // （Apple 只存公钥、私钥已随旧 keychain 不可读）。唯一的无感出路是
-                // 撤掉「无人使用的孤儿证书」腾出名额后新建。撤销不可逆，仅在四重核验
-                // 全部通过时自动执行（无私钥 ∧ 无已装 App ∧ 设备端 profile 未引用 ∧
-                // 核验成功）；仍在被已装 App 使用的无钥匙证书不静默撤，抛 204e 交给
-                // 失败页「撤销并继续签名」一键确认流程。
+                // 证书名额已满 → 尝试自动清理非本机证书腾出名额。
+                // 策略：所有本机无私钥的证书一律撤销（留着也没法签新包，纯占名额），
+                // 清理后重读 keychain、不带选中序列号重签，走「复用剩余或新建」。
                 let cleanupOutcome = try await autoCleanOrphanCertificatesIfPossible(
                     account: account,
                     secret: secret
@@ -247,8 +245,7 @@ actor SigningCoordinator {
                         if app.isSeal {
                             // Seal 自身续签绝不弹「撤销并继续签名」：撤销会让 Seal 正在
                             // 使用的证书失效，重签安装后 Seal 立刻打不开（2026-09-14 真机）。
-                            // 无感自动清理（.cleaned 分支）只撤「无人使用」的孤儿，对 Seal
-                            // 安全可继续；但「在用的无钥匙证书」对 Seal 是命根子，只能回退原错误。
+                            // 新策略下前置清理已直接撤非本机证书，本分支基本不会走到。
                             throw failure
                         }
                         throw Self.inUseKeylessCertificatesFailure(
@@ -622,13 +619,9 @@ actor SigningCoordinator {
         account: AppleAccountRecord,
         secret: AccountSecret
     ) async throws -> OrphanCleanupOutcome {
-        guard let deviceReferenced = await DeviceProfileInspector.referencedCertificateSerials() else {
-            try? await logStore?.append(
-                category: .signing,
-                message: "证书自动清理跳过：设备端描述文件核验不可用，回退手动处理"
-            )
-            return .unavailable
-        }
+        // 设备端 profile 核验：新策略下不影响「是否可撤」判定（无私钥一律撤），
+        // 但能取到就取，日志里标注信息完整度；取不到也不中止清理。
+        let deviceReferenced = await DeviceProfileInspector.referencedCertificateSerials()
         let inventoryService = ApplePortalInventoryService()
         guard let inventory = try? await inventoryService.fetchInventory(
             account: account,
@@ -663,44 +656,11 @@ actor SigningCoordinator {
             deviceReferencedSerials: deviceReferenced
         )
         guard plan.revocable.isEmpty == false else {
-            // 无孤儿可撤：区分「全部无钥匙证书都在用」（可一键确认盘活）与其他情况。
-            let keyless = CertificateCleanupPolicy.sacrificeCandidates(
-                certificates: inventory.certificates,
-                localUsableSerials: localUsableSerials
-            )
-            guard keyless.isEmpty == false else {
-                try? await logStore?.append(
-                    category: .signing,
-                    message: "证书自动清理跳过：\(inventory.certificates.count) 张远端证书本机均有私钥或不存在占位问题"
-                )
-                return .noCandidates
-            }
-            var affectedNames: [String] = []
-            var seenAppIDs = Set<UUID>()
-            for certificate in keyless {
-                for affected in CertificateRevocationImpact.affectedApps(
-                    serialNumber: certificate.serialNumber,
-                    apps: apps
-                ) where seenAppIDs.insert(affected.id).inserted {
-                    affectedNames.append(affected.name)
-                }
-            }
-            let sealAssociatedSerials = Set(apps.compactMap(\.certificateSerialNumber).map {
-                SigningCertificateSelectionPolicy.normalizedSerialNumber($0)
-            })
-            let deviceOnlyCount = keyless.filter {
-                let serial = SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber)
-                return deviceReferenced.contains(serial) && sealAssociatedSerials.contains(serial) == false
-            }.count
             try? await logStore?.append(
                 category: .signing,
-                level: .warning,
-                message: "证书自动清理需要用户确认：\(keyless.count) 张无钥匙证书仍被应用使用（Seal 记录 \(affectedNames.count) 个，设备端其他来源 \(deviceOnlyCount) 个）"
+                message: "证书自动清理跳过：\(inventory.certificates.count) 张远端证书本机均有私钥"
             )
-            return .blockedByInUseKeylessCerts(
-                appNames: affectedNames,
-                deviceOnlyCount: deviceOnlyCount
-            )
+            return .noCandidates
         }
 
         let certificateService = ApplePortalCertificateService()
@@ -728,7 +688,7 @@ actor SigningCoordinator {
 
         try? await logStore?.append(
             category: .signing,
-            message: "证书自动清理完成：撤销 \(revokedSerials.count)/\(plan.revocable.count) 张无人使用的孤儿证书（末尾 \(revokedSerials.map { "…" + SigningCertificateSelectionPolicy.normalizedSerialNumber($0).suffix(6) }.joined(separator: "、"))），正在重试签名"
+            message: "证书自动清理完成：撤销 \(revokedSerials.count)/\(plan.revocable.count) 张非本机证书（末尾 \(revokedSerials.map { "…" + SigningCertificateSelectionPolicy.normalizedSerialNumber($0).suffix(6) }.joined(separator: "、"))）"
         )
         return .cleaned
     }

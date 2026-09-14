@@ -427,6 +427,37 @@
 ## 二、历史记录
 
 
+### 2026-09-15 · 证书清理策略升级为「无私钥一律撤」（不再区分设备端在用 / Seal 关联）
+
+- **现象（真机回归发现）**：续签 Seal 时报 `SEAL-CERT-204b` 证书数量已达上限。日志显示
+  「1 张无钥匙证书仍被应用使用（Seal 记录 0 个，设备端其他来源 1 个）」—— 设备端 profile
+  引用了一张本机无私钥的证书（来自其他签名工具），旧策略 `makePlan` 因「设备端在用」
+  而保留不撤，导致名额满却清不出空位。
+- **根因**：旧 `makePlan` 四重条件（无私钥 ∧ 无 Seal 关联 App ∧ 设备端 profile 未引用 ∧ 核验成功）
+  过于保守——设备端有其他工具签的 App 在用一张无私钥证书时，清理直接跳过、报 204b 失败。
+  但用户明确要求「一个 Apple ID 本机只留一张可用证书」，留着无私钥的证书也没法用它签新包，
+  纯占名额。
+- **修复**（用户决策：闭环优先，无私钥一律撤）：
+  1. `CertificateCleanupPolicy.makePlan` 简化为**只看「本机有没有私钥」**：有私钥 → kept；
+     无私钥 → revocable。不再区分「Seal 关联 App 在用」「设备端 profile 引用」。
+  2. `autoCleanOrphanCertificatesIfPossible` 去掉设备端核验不可用时的 `guard let` 中止：
+     取不到设备端 profile 也照常清理（不影响「有无私钥」判定），`deviceReferenced` 仅用于
+     日志标注信息完整度。
+  3. 去掉 `blockedByInUseKeylessCerts` 的主动产出路径——前置清理现在总能撤干净无私钥
+     证书，不会再走到「需要用户确认」的分支。204e 一键确认入口保留（reactive 兜底用）。
+  4. 风险兜底：续签 Seal 时若 Seal 自身正用那张无钥匙证书跑着，撤完立即建新证重签重装，
+     全程闭环；iOS 不会因证书被 Apple 撤销就立即杀进程（下次启动才校验），中间不闪退。
+  5. 测试 `CertificateCleanupPolicyTests` 同步更新：旧的「关联 App 保留」「设备端引用保留」
+     两条用例翻转为「仍可撤」；归一化 / 有私钥保留 / deviceVerified 标记等用例保留。
+  6. 护栏 `verify-release-safety.py` 同步更新：
+     - 「设备核验失败必须中止」→「必须调用 DeviceProfileInspector 传参」
+     - 「candidates 排除在用 App」→「keyful check 用归一化 serial set」
+     - 两处变异锚点同步替换。
+- **涉及文件**：`CertificateCleanupPolicy.swift`、`SigningCoordinator.swift`、
+  `CertificateCleanupPolicyTests.swift`、`verify-release-safety.py`。
+- **验证状态**：本地护栏 **98 检查 + 52 变异 PASS**；云 CI 编译与真机回归待验证。
+
+
 ### 2026-09-14 · 证书「先清再签」前置化 + 续签 Seal 换证后回收旧证 + 503/文案白化
 
 - **现象/诉求**：用户要求签名/续签**前**就精准撤销该 Apple ID 下所有「非本机」证书（一个 Apple ID

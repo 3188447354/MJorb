@@ -4,23 +4,29 @@ import Foundation
 ///
 /// 背景：自更新覆盖安装后 keychain 访问组随签名身份变化，历史 P12 私钥全部不可读；
 /// Apple 侧只存公钥证书、不存私钥，于是账号下会累积多张「本机永远用不了」的证书，
-/// 挤占证书名额直到撞上限。撤销是唯一出路，但撤销仍被已安装 App 使用的证书会让
-/// 该 App 立即闪退 —— 因此候选必须同时满足四重条件，缺一不可。
+/// 挤占证书名额直到撞上限。
+///
+/// 策略：一个 Apple ID 在本机只留一张可用证书。**所有本机无私钥的证书一律撤销**，
+/// 不论设备端 profile 是否还在引用——留着也没法用它签新包，纯占名额。
+/// 风险兜底：续签 Seal 时若 Seal 自身正用那张无钥匙证书跑着，撤完立即建新证重签重装，
+/// 全程闭环；iOS 不会因证书被 Apple 撤销就立即杀进程（下次启动才校验），中间不闪退。
 struct CertificateCleanupPlan: Equatable, Sendable {
-    /// 可安全撤销的证书：本机无私钥 ∧ 无关联已安装 App ∧ 设备端描述文件未引用。
+    /// 可撤销的证书：本机无私钥的全部远端证书（不论是否仍被设备端 profile 引用）。
     let revocable: [ApplePortalCertificateSnapshot]
-    /// 仍被使用而必须保留的证书（本机有私钥、已安装 App 在用、或设备端 profile 引用）。
+    /// 本机有私钥、可继续使用的证书。
     let kept: [ApplePortalCertificateSnapshot]
-    /// 是否完成了设备端描述文件核验。
-    /// false（未连接设备/隧道不可用）时结论仅基于本机记录，UI 必须明示降级：
-    /// 其他签名工具用同一 Apple ID 安装的 App 不在本机记录内，撤销其证书会让它们失效。
+    /// 是否完成了设备端描述文件核验（保留字段，日志里用于区分信息完整度）。
     let deviceVerified: Bool
 }
 
 enum CertificateCleanupPolicy {
-    /// 判定一张证书是否可安全撤销。所有序列号比较一律先归一化（坑位 1）。
+    /// 判定一张证书是否可撤销。所有序列号比较一律先归一化（坑位 1）。
     /// 归一化在比对点做、幂等：不依赖各调用方记得先处理，防止新来源忘归一化时
-    /// 「有私钥/被引用」的证书因前导 0 差异误入可撤候选。
+    /// 「有私钥」的证书因前导 0 差异误入可撤候选。
+    ///
+    /// 策略：一个 Apple ID 本机只留一张可用证书。**只要本机无私钥就可撤**，
+    /// 不再区分「Seal 关联 App 在用」「设备端 profile 引用」——留着也没法用它
+    /// 签新包，纯占名额。续签/签名流程闭环（撤 → 建 → 签 → 装），中间不闪退。
     static func makePlan(
         certificates: [ApplePortalCertificateSnapshot],
         apps: [AppRecord],
@@ -30,9 +36,6 @@ enum CertificateCleanupPolicy {
         let normalizedLocalUsable = Set(localUsableSerials.map {
             SigningCertificateSelectionPolicy.normalizedSerialNumber($0)
         })
-        let normalizedDeviceReferenced = deviceReferencedSerials.map { serials in
-            Set(serials.map { SigningCertificateSelectionPolicy.normalizedSerialNumber($0) })
-        }
         var revocable: [ApplePortalCertificateSnapshot] = []
         var kept: [ApplePortalCertificateSnapshot] = []
 
@@ -40,22 +43,9 @@ enum CertificateCleanupPolicy {
             let serial = SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber)
             if normalizedLocalUsable.contains(serial) {
                 kept.append(certificate)
-                continue
+            } else {
+                revocable.append(certificate)
             }
-            // 只拦「已安装」的：未安装的包重签一次即可，撤销证书不会造成实际损失
-            // （与 CertificateRevocationImpact.warningMessage 的口径一致）。
-            if CertificateRevocationImpact.affectedApps(
-                serialNumber: certificate.serialNumber,
-                apps: apps
-            ).isEmpty == false {
-                kept.append(certificate)
-                continue
-            }
-            if let normalizedDeviceReferenced, normalizedDeviceReferenced.contains(serial) {
-                kept.append(certificate)
-                continue
-            }
-            revocable.append(certificate)
         }
 
         return CertificateCleanupPlan(

@@ -358,12 +358,11 @@ def violations(load=read):
     check("revokeCertificate(" not in ui and "prepareCertificateCleanup" not in ui,
           "Copy: certificate page must be read-only (no manual revoke/cleanup entry)")
 
-    # 证书一键清理（覆盖安装后 keychain 清空、Apple 侧孤儿证书占位的情形）：
+    # 证书清理（一个 Apple ID 本机只留一张可用证书）：
     # 撤销不可逆，候选判定与执行各有硬约束。
     cleanup_policy = load("Seal/Core/Signing/CertificateCleanupPolicy.swift")
-    check("CertificateRevocationImpact.affectedApps" in cleanup_policy
-          and "normalizedSerialNumber" in cleanup_policy,
-          "Cleanup: candidates must exclude apps in use and normalize serials")
+    check("if normalizedLocalUsable.contains(serial)" in cleanup_policy,
+          "Cleanup: keyful check must use normalized serial set")
     inspector = load("Seal/Infrastructure/Installation/DeviceProfileInspector.swift")
     check("removeProvisioningProfile" not in inspector,
           "Cleanup: device profile inspection must be read-only")
@@ -389,8 +388,8 @@ def violations(load=read):
     trigger_fn = section(coord, "static func isOrphanCertificateBlocking", "\n    }")
     check('failure.code == "SEAL-CERT-204b"' in trigger_fn,
           "Auto-cleanup: trigger must also cover SEAL-CERT-204b (isCertificateLimitError path)")
-    check("guard let deviceReferenced = await DeviceProfileInspector.referencedCertificateSerials() else {" in coord,
-          "Auto-cleanup: failed device verification must abort, never blind-revoke")
+    check("let deviceReferenced = await DeviceProfileInspector.referencedCertificateSerials()" in coord,
+          "Auto-cleanup: must consult device profile inspector")
     auto_cleanup = section(coord, "private func autoCleanOrphanCertificatesIfPossible(",
                            "func installSignedArtifact(")
     check("guard let inventory = try? await inventoryService.fetchInventory(" in auto_cleanup,
@@ -654,9 +653,9 @@ def main():
          "uses: actions/cache@v5",
          "Supply chain: GitHub Actions must be pinned"),
         ("Seal/Core/Signing/CertificateCleanupPolicy.swift",
-         "CertificateRevocationImpact.affectedApps(",
-         "CertificateRevocationImpact.associatedApps(",
-         "Cleanup: candidates must exclude apps in use"),
+         "if normalizedLocalUsable.contains(serial)",
+         "if localUsableSerials.contains(serial) // ",
+         "Cleanup: keyful check must use normalized serial set"),
         ("Seal/Infrastructure/Installation/DeviceProfileInspector.swift",
          "return parsed > 0 ? serials : nil",
          "return serials",
@@ -670,9 +669,9 @@ def main():
          "hasLocalPrivateKey: false // ",
          "Cleanup: hasLocalPrivateKey"),
         ("Seal/Core/Signing/SigningCoordinator.swift",
-         "guard let deviceReferenced = await DeviceProfileInspector.referencedCertificateSerials() else {",
-         "guard let deviceReferenced: Set<String> = [] else { // ",
-         "Auto-cleanup: failed device verification must abort"),
+         "let deviceReferenced = await DeviceProfileInspector.referencedCertificateSerials()",
+         "let deviceReferenced: Set<String>? = nil // ",
+         "Auto-cleanup: must consult device profile inspector"),
         ("Seal/Core/Signing/SigningCoordinator.swift",
          "                    selectedCertificateSerialNumber: nil,\n                    allowDroppingExtensions: allowDroppingExtensions,",
          "                    selectedCertificateSerialNumber: effectiveCertificateSerialNumber,\n                    allowDroppingExtensions: allowDroppingExtensions,",

@@ -242,7 +242,7 @@ struct AppSigningSheet: View {
             }
             Divider().padding(.leading, 14)
 
-            summaryRow(title: "Apple ID 证书", value: certificateSummary)
+            summaryRow(title: "Apple ID 证书", value: certificateSummary, scaleToFit: true)
             Divider().padding(.leading, 14)
             summaryRow(title: "扩展", value: extensionSummary)
         }
@@ -282,7 +282,8 @@ struct AppSigningSheet: View {
         title: String,
         value: String,
         monospaced: Bool = false,
-        showsDisclosure: Bool = false
+        showsDisclosure: Bool = false,
+        scaleToFit: Bool = false
     ) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(title)
@@ -290,10 +291,11 @@ struct AppSigningSheet: View {
                 .foregroundStyle(.primary)
                 .frame(width: 96, alignment: .leading)
             Text(value)
-                .font(.system(size: 13, weight: .regular, design: monospaced ? .monospaced : .default))
+                .font(.system(size: 13, weight: .regular, design: (monospaced || scaleToFit) ? .monospaced : .default))
                 .foregroundColor(Color.sealTextSecondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .minimumScaleFactor(scaleToFit ? 0.4 : 1.0)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .trailing)
             if showsDisclosure {

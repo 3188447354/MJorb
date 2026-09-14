@@ -80,7 +80,7 @@ struct AppDetailView: View {
             Divider()
             detailRow("签名账户", accountName(app))
             Divider()
-            detailRow("签名证书", certificateName(app))
+            serialDetailRow("签名证书", certificateName(app))
             Divider()
             detailRow("Team ID", app.signingTeamID ?? "未记录")
             Divider()
@@ -152,6 +152,24 @@ struct AppDetailView: View {
                 .multilineTextAlignment(.trailing)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .layoutPriority(1)
+        }
+        .padding(.vertical, 15)
+    }
+
+    private func serialDetailRow(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text(title)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Spacer(minLength: 12)
+            Text(value)
+                .font(.system(.subheadline, design: .monospaced))
+                .foregroundStyle(Color.sealTextSecondary)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(1)
+                .minimumScaleFactor(0.4)
+                .textSelection(.enabled)
                 .layoutPriority(1)
         }
         .padding(.vertical, 15)

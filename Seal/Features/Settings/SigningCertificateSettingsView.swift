@@ -1,12 +1,11 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct SigningCertificateSettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
     let relatedApps: [AppRecord]
     let certificateExportHandler: CertificateExportHandler
     @State private var selectedAccountID: UUID?
-    @State private var isCertificateImporterPresented = false
+    @State private var certificatePendingRevocation: ApplePortalCertificateSnapshot?
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -31,40 +30,32 @@ struct SigningCertificateSettingsView: View {
                 dismissButton: .default(Text(failure.recovery))
             )
         }
+        .alert(item: $certificatePendingRevocation) { certificate in
+            Alert(
+                title: Text("撤销这张证书？"),
+                message: Text(revocationWarning(for: certificate)),
+                primaryButton: .destructive(Text("撤销")) {
+                    if let account = activeAccount {
+                        Task { await viewModel.revokeCertificate(serialNumber: certificate.serialNumber, for: account) }
+                    }
+                },
+                secondaryButton: .cancel(Text("取消"))
+            )
+        }
         .task {
             if selectedAccountID == nil {
                 selectedAccountID = viewModel.activeAccount?.id
             }
             await viewModel.load(force: true)
-            if let account = activeAccount {
-                await viewModel.refreshCertificateInventory(for: account, force: true)
-            }
+            guard let account = activeAccount else { return }
+            await viewModel.refreshCertificateHealthLocally(for: account)
+            await viewModel.refreshCertificateInventory(for: account, force: true)
         }
         .refreshable {
             await viewModel.load(force: true)
-            if let account = activeAccount {
-                await viewModel.refreshCertificateInventory(for: account, force: true)
-            }
-        }
-        .fileImporter(
-            isPresented: $isCertificateImporterPresented,
-            allowedContentTypes: [UTType(filenameExtension: "p12") ?? .data]
-        ) { result in
             guard let account = activeAccount else { return }
-            switch result {
-            case let .success(url):
-                Task {
-                    await viewModel.importSigningCertificate(from: url, for: account)
-                }
-            case let .failure(error):
-                guard (error as NSError).code != NSUserCancelledError else { return }
-                viewModel.alertFailure = ImportFailure(
-                    title: "无法读取证书备份",
-                    reason: "P12 文件无法读取。\n[\((error as NSError).domain) \((error as NSError).code)]",
-                    recovery: "重新选择 P12",
-                    code: "SEAL-CERT-206a"
-                )
-            }
+            await viewModel.refreshCertificateHealthLocally(for: account)
+            await viewModel.refreshCertificateInventory(for: account, force: true)
         }
         .sealScreenBackground()
     }
@@ -140,18 +131,28 @@ struct SigningCertificateSettingsView: View {
     @ViewBuilder
     private var certificateContent: some View {
         if let account = activeAccount {
-            if account.certificateSerialNumber?.isEmpty == false {
-                localCertificateCard(account: account)
-            } else {
-                missingCertificateCard
-            }
-            teamCertificatesCard(account: account)
+            unifiedCertificateCard(account: account)
         } else {
             noAccountCard
         }
     }
 
-    private func localCertificateCard(account: AppleAccountRecord) -> some View {
+    /// 单个证书卡片：本机在用证书（如有）在上，账号下其余证书（可撤销）合并展示。
+    private func unifiedCertificateCard(account: AppleAccountRecord) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if account.certificateSerialNumber?.isEmpty == false {
+                localCertificateSection(account: account)
+            } else {
+                missingCertificateHeader
+            }
+            otherCertificatesSection(account: account)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .glassSurface(cornerRadius: 24)
+    }
+
+    private func localCertificateSection(account: AppleAccountRecord) -> some View {
         let health = viewModel.certificateHealthStatus(for: account.id)
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 10) {
@@ -201,23 +202,6 @@ struct SigningCertificateSettingsView: View {
                 installedAppsSection(account: account)
                 Divider()
                 Button {
-                    isCertificateImporterPresented = true
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "arrow.down.doc")
-                            .font(.subheadline.weight(.semibold))
-                        Text("从 P12 备份恢复本机私钥")
-                            .font(.subheadline.weight(.semibold))
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundStyle(Color.sealTextSecondary)
-                    }
-                    .foregroundStyle(Color.sealAccent)
-                    .padding(.vertical, 12)
-                }
-                Divider()
-                Button {
                     certificateExportHandler.exportToLiveContainer()
                 } label: {
                     HStack(spacing: 10) {
@@ -235,9 +219,87 @@ struct SigningCertificateSettingsView: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .glassSurface(cornerRadius: 24)
+    }
+
+    private var missingCertificateHeader: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("当前没有本机可用证书")
+                .font(.headline)
+            Text("首次签名时将自动创建。")
+                .font(.subheadline)
+                .foregroundStyle(Color.sealTextSecondary)
+        }
+        .padding(.bottom, 6)
+    }
+
+    @ViewBuilder
+    private func otherCertificatesSection(account: AppleAccountRecord) -> some View {
+        let certificates = nonLocalCertificates(account: account)
+        if certificates.isEmpty {
+            EmptyView()
+        } else {
+            Divider()
+                .padding(.vertical, 14)
+            Text("账号下的其他证书")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Color.sealTextSecondary)
+                .padding(.bottom, 6)
+            ForEach(Array(certificates.enumerated()), id: \.element.id) { index, certificate in
+                if index > 0 { Divider() }
+                remoteCertificateRow(certificate)
+            }
+        }
+    }
+
+    private func nonLocalCertificates(account: AppleAccountRecord) -> [ApplePortalCertificateSnapshot] {
+        let inventory = viewModel.certificateInventory(for: account.id)
+        let allCertificates = inventory?.certificates ?? []
+        return deduplicatedCertificates(allCertificates).filter {
+            !CertificateRevocationImpact.isLocalCertificate(
+                serialNumber: $0.serialNumber,
+                account: account
+            )
+        }
+    }
+
+    private func remoteCertificateRow(
+        _ certificate: ApplePortalCertificateSnapshot
+    ) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(certificate.displayName)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(fullSerialText(certificate.serialNumber))
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(Color.sealTextSecondary)
+                Text(expirationLine(certificate))
+                    .font(.caption)
+                    .foregroundStyle(Color.sealTextSecondary)
+            }
+            Spacer(minLength: 8)
+            Button {
+                certificatePendingRevocation = certificate
+            } label: {
+                Text("撤销")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.sealDanger)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Color.sealDanger.opacity(0.12), in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.vertical, 10)
+    }
+
+    private func revocationWarning(for certificate: ApplePortalCertificateSnapshot) -> String {
+        CertificateRevocationImpact.warningMessage(
+            serialNumber: certificate.serialNumber,
+            apps: relatedApps,
+            isLocalCertificate: false
+        )
     }
 
     private func certificateHealthRow(
@@ -315,69 +377,6 @@ struct SigningCertificateSettingsView: View {
         }
     }
 
-    @ViewBuilder
-    private func teamCertificatesCard(account: AppleAccountRecord) -> some View {
-        let inventory = viewModel.certificateInventory(for: account.id)
-        let allCertificates = inventory?.certificates ?? []
-        let certificates = deduplicatedCertificates(allCertificates).filter {
-            !CertificateRevocationImpact.isLocalCertificate(
-                serialNumber: $0.serialNumber,
-                account: account
-            )
-        }
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text("账号下的全部证书")
-                    .font(.title3.weight(.semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.88)
-                Spacer(minLength: 12)
-                Text(certificates.isEmpty ? "—" : "\(certificates.count) 个")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.sealTextSecondary)
-            }
-            .padding(.bottom, 14)
-
-            if allCertificates.isEmpty {
-                Text("下拉刷新以从 Apple 服务器获取证书清单。")
-                    .font(.subheadline)
-                    .foregroundStyle(Color.sealTextSecondary)
-                    .padding(.vertical, 12)
-            } else if certificates.isEmpty {
-                Text("除本机在用的证书外，账号下没有其他证书。")
-                    .font(.subheadline)
-                    .foregroundStyle(Color.sealTextSecondary)
-                    .padding(.vertical, 12)
-            } else {
-                ForEach(Array(certificates.enumerated()), id: \.element.id) { index, certificate in
-                    if index > 0 { Divider() }
-                    certificateRow(certificate)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .glassSurface(cornerRadius: 24)
-    }
-
-    private func certificateRow(
-        _ certificate: ApplePortalCertificateSnapshot
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(certificate.displayName)
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-            Text(fullSerialText(certificate.serialNumber))
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(Color.sealTextSecondary)
-            Text(expirationLine(certificate))
-                .font(.caption)
-                .foregroundStyle(Color.sealTextSecondary)
-        }
-        .padding(.vertical, 12)
-    }
-
     private func fullSerialText(_ serialNumber: String) -> String {
         "序列号 \(serialNumber)"
     }
@@ -449,19 +448,6 @@ struct SigningCertificateSettingsView: View {
             }
         }
         .padding(.vertical, 12)
-    }
-
-    private var missingCertificateCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("当前没有本机可用证书")
-                .font(.headline)
-            Text("首次签名时将自动创建。")
-                .font(.subheadline)
-                .foregroundStyle(Color.sealTextSecondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .glassSurface(cornerRadius: 20)
     }
 
     private var noAccountCard: some View {

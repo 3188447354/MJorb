@@ -419,89 +419,6 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
-    /// 从原设备/备份导入与 Apple 远端证书匹配的 P12，恢复当前设备的本地私钥。
-    ///
-    /// 这是「远端证书还在、本机 P12 丢失」时唯一不需要撤销已安装 App 证书的根治路径：
-    /// Apple 不会下发私钥，Seal 只能接收用户持有的 P12 备份。
-    func importSigningCertificate(from sourceURL: URL, for account: AppleAccountRecord) async {
-        guard let keychain, let accountRepository else { return }
-        guard let operationLease = await acquireOperation(.managingCertificate) else { return }
-        defer { releaseOperation(operationLease) }
-        isCertificateOperationRunning = true
-        defer { isCertificateOperationRunning = false }
-
-        let didStartAccessing = sourceURL.startAccessingSecurityScopedResource()
-        defer {
-            if didStartAccessing { sourceURL.stopAccessingSecurityScopedResource() }
-        }
-
-        do {
-            let data = try Data(contentsOf: sourceURL)
-            let certificate = try ALTCertificate(p12Data: data, password: nil)
-            let serial = certificate.serialNumber
-            let normalizedSerial = SigningCertificateSelectionPolicy.normalizedSerialNumber(serial)
-            let inventory = certificateInventories[account.id]
-            guard let remote = inventory?.certificates.first(where: {
-                SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber) == normalizedSerial
-            }) else {
-                throw Self.failure(
-                    title: "P12 与当前账号不匹配",
-                    reason: "这个 P12 的证书序列号末尾为 …\(normalizedSerial.suffix(12))，在当前 Apple ID 的远端证书清单中找不到。不能把其他账号或其他 Team 的私钥写入当前账号。",
-                    recovery: "先同步当前 Apple ID 的证书清单，再选择属于这个 Team 的 P12",
-                    code: "SEAL-CERT-206b"
-                )
-            }
-            guard certificate.privateKey != nil else {
-                throw Self.failure(
-                    title: "P12 中没有私钥",
-                    reason: "这个文件只包含证书，没有可用于签名的私钥。",
-                    recovery: "选择创建该证书时导出的完整 P12 文件",
-                    code: "SEAL-CERT-206c"
-                )
-            }
-
-            guard var secret = try await keychain.load(accountID: account.id) else {
-                throw Self.failure(
-                    title: "无法读取账号凭据",
-                    reason: "当前 Apple ID 的本地凭据无法读取，不能安全绑定证书私钥。",
-                    recovery: "重新验证该 Apple ID 后再恢复 P12",
-                    code: "SEAL-CERT-206d"
-                )
-            }
-            secret.storeCertificateMaterial(
-                p12: data,
-                serialNumber: serial,
-                machineIdentifier: remote.machineIdentifier
-            )
-            try await keychain.save(secret, for: account.id)
-
-            var updatedAccount = account
-            updatedAccount.certificateSerialNumber = serial
-            updatedAccount.selectedCertificateSerialNumber = serial
-            updatedAccount.verificationFailureReason = nil
-            try await accountRepository.save(updatedAccount)
-            certificateHealthStatuses[account.id] = await makeCertificateHealthStatus(
-                account: updatedAccount,
-                secret: secret,
-                inventory: inventory
-            )
-            try? await logStore?.append(
-                category: .account,
-                message: "已从 P12 备份恢复证书私钥：序列号 …\(normalizedSerial.suffix(12))"
-            )
-            await load(force: true)
-        } catch let failure as ImportFailure {
-            alertFailure = failure
-        } catch {
-            alertFailure = Self.failure(
-                title: "无法恢复证书私钥",
-                reason: "P12 文件无法解析或保存失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
-                recovery: "选择正确的 P12 备份后重试",
-                code: "SEAL-CERT-206e"
-            )
-        }
-    }
-
     func revokeCertificate(
         serialNumber: String,
         for account: AppleAccountRecord
@@ -533,17 +450,25 @@ final class SettingsViewModel: ObservableObject {
                 secret: originalSecret
             )
 
-            if originalSecret.certificateSerialNumber?.caseInsensitiveCompare(serialNumber) == .orderedSame {
-                var clearedSecret = originalSecret
-                clearedSecret.certificateP12 = nil
-                clearedSecret.certificateSerialNumber = nil
-                clearedSecret.certificateMachineIdentifier = nil
-                var clearedAccount = account
+            // 真实永久删除：撤销成功后，本机 keychain 中该序列号的 P12 材料一并移除
+            // （含非本机在用的孤儿证书）；账号记录若正绑定该证书，则清空其序列号。
+            var clearedSecret = originalSecret
+            clearedSecret.removeStoredCertificateMaterial(serialNumber: serialNumber)
+            try await keychain.save(clearedSecret, for: account.id)
+
+            var clearedAccount = account
+            if CertificateRevocationImpact.isLocalCertificate(serialNumber: serialNumber, account: account) {
                 clearedAccount.certificateSerialNumber = nil
                 clearedAccount.selectedCertificateSerialNumber = nil
-                try await keychain.save(clearedSecret, for: account.id)
-                try await accountRepository.save(clearedAccount)
             }
+            try await accountRepository.save(clearedAccount)
+
+            // 立即从内存清单移除已撤销证书，UI 同步无需等网络回读。
+            removeRevokedCertificateFromInventory(serialNumber: serialNumber, accountID: account.id)
+            certificateHealthStatuses[account.id] = await localCertificateHealthStatus(
+                account: clearedAccount,
+                portalState: .unknown
+            )
 
             try? await logStore?.append(
                 category: .account,
@@ -1227,6 +1152,26 @@ final class SettingsViewModel: ObservableObject {
         refreshLogExportText()
     }
 
+    /// 立即用本机凭据 + 缓存清单刷新证书健康状态（不触发网络请求），
+    /// 避免「签名完回来证书卡片长时间停留在『检查中』」。
+    func refreshCertificateHealthLocally(for account: AppleAccountRecord) async {
+        guard let keychain else { return }
+        do {
+            guard let secret = try await keychain.load(accountID: account.id) else { return }
+            let status = await makeCertificateHealthStatus(
+                account: account,
+                secret: secret,
+                inventory: certificateInventories[account.id],
+                portalStateOverride: .unknown
+            )
+            if let status {
+                certificateHealthStatuses[account.id] = status
+            }
+        } catch {
+            // 本地读取失败不置空，保留现有（若有）健康状态。
+        }
+    }
+
     private func localCertificateHealthStatus(
         account: AppleAccountRecord,
         portalState: CertificateHealthStatus.CheckState
@@ -1364,6 +1309,26 @@ final class SettingsViewModel: ObservableObject {
     private func saveCertificateInventoryCache(_ inventory: ApplePortalInventory) {
         guard let data = try? JSONEncoder().encode(inventory) else { return }
         UserDefaults.standard.set(data, forKey: certificateInventoryCacheKey(inventory.accountID))
+    }
+
+    /// 撤销成功后立即从内存与缓存清单中移除该证书，UI 无需等网络回读即可同步。
+    private func removeRevokedCertificateFromInventory(serialNumber: String, accountID: UUID) {
+        guard let inventory = certificateInventories[accountID] else { return }
+        let normalized = SigningCertificateSelectionPolicy.normalizedSerialNumber(serialNumber)
+        let remaining = inventory.certificates.filter {
+            SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber) != normalized
+        }
+        guard remaining.count != inventory.certificates.count else { return }
+        let updated = ApplePortalInventory(
+            accountID: inventory.accountID,
+            teamID: inventory.teamID,
+            teamName: inventory.teamName,
+            appIDs: inventory.appIDs,
+            certificates: remaining,
+            fetchedAt: inventory.fetchedAt
+        )
+        certificateInventories[accountID] = updated
+        saveCertificateInventoryCache(updated)
     }
 
     private func certificateInventoryCacheKey(_ accountID: UUID) -> String {

@@ -305,19 +305,21 @@ def violations(load=read):
     settings = load("Seal/Features/Settings/SettingsViewModel.swift")
     check("let expirationDate = portalPresence == .invalid" in settings,
           "Certificates: revoked remote certificates must not show stale local expiry")
-    check("func importSigningCertificate(from sourceURL: URL, for account: AppleAccountRecord)" in settings
-          and "P12 与当前账号不匹配" in settings
-          and "\n            secret.storeCertificateMaterial(" in settings,
-          "Certificates: a matching P12 backup must be importable to restore the root private key")
+    check("func importSigningCertificate(from sourceURL: URL" not in settings,
+          "Certificates: P12 backup import entry must be removed (one cert per Apple ID)")
     account_secret = load("Seal/Core/Accounts/AccountSecret.swift")
     check("certificateP12BySerial[oldKey] = oldP12" in account_secret,
           "Certificates: creating a new certificate must not discard older local P12 material")
     check("for remote in certificates" in signing_service
           and "secret.p12(for: remote.serialNumber)" in signing_service,
           "Certificates: signing must reuse any stored P12 whose remote certificate is still active")
-    check("isCertificateImporterPresented" in cert_view
-          and "从 P12 备份恢复本机私钥" in cert_view,
-          "Certificates: UI must expose P12 recovery instead of forcing revocation")
+    check("isCertificateImporterPresented" not in cert_view
+          and "从 P12 备份恢复本机私钥" not in cert_view,
+          "Certificates: UI must not expose P12 recovery (removed, one cert per Apple ID)")
+    check("revokeCertificate(serialNumber:" in cert_view
+          and "nonLocalCertificates" in cert_view
+          and "CertificateRevocationImpact.isLocalCertificate(" in cert_view,
+          "Certificates: manual revoke must be gated to non-local certificates")
 
     # ── 外围专项：供应链（GitHub Action 必须钉到 commit SHA）──────────────
     # actions/cache@v5 这类浮动 major tag 可以被上游移动指向任意代码 ——
@@ -352,11 +354,15 @@ def violations(load=read):
     check("startBatchRefresh()" not in retry,
           "R10: failed-only retry must never silently rerun every app")
 
-    # 证书回收已收敛为「签名/续签内无感自动清理 + 在用无钥匙证书一键确认（204e）」；
-    # 证书页是只读浏览，不再提供撤销/清理入口 —— 保留会误删本机在用证书（2026-09-14 真机踩到）。
+    # 证书页允许手动撤销「非本机在用」证书（真实永久删除），但不提供批量清理入口。
+    # 撤销必须被 `nonLocalCertificates` 用 `CertificateRevocationImpact.isLocalCertificate`
+    # 挡在本机在用证书之外（误删本机在用证书会让签名身份失效，2026-09-14 真机踩到）。
     ui = load("Seal/Features/Settings/SigningCertificateSettingsView.swift")
-    check("revokeCertificate(" not in ui and "prepareCertificateCleanup" not in ui,
-          "Copy: certificate page must be read-only (no manual revoke/cleanup entry)")
+    check("prepareCertificateCleanup" not in ui,
+          "Copy: certificate page must not expose batch cleanup entry")
+    check("nonLocalCertificates(account: account)" in ui
+          and "CertificateRevocationImpact.isLocalCertificate(" in ui,
+          "Copy: manual revoke must exclude the local in-use certificate")
 
     # 证书清理（一个 Apple ID 本机只留一张可用证书）：
     # 撤销不可逆，候选判定与执行各有硬约束。
@@ -632,14 +638,10 @@ def main():
          "let expirationDate = portalPresence == .invalid",
          "let expirationDate = false",
          "Certificates: revoked remote certificates must not show stale local expiry"),
-        ("Seal/Features/Settings/SettingsViewModel.swift",
-         "secret.storeCertificateMaterial(",
-         "// secret.storeCertificateMaterial(",
-         "Certificates: a matching P12 backup must be importable"),
         ("Seal/Features/Settings/SigningCertificateSettingsView.swift",
-         "从 P12 备份恢复本机私钥",
-         "恢复私钥不可用",
-         "Certificates: UI must expose P12 recovery"),
+         "CertificateRevocationImpact.isLocalCertificate(",
+         "true // ",
+         "Copy: manual revoke must exclude the local in-use certificate"),
         ("Seal/Core/Accounts/AccountSecret.swift",
          "certificateP12BySerial[oldKey] = oldP12",
          "certificateP12BySerial.removeValue(forKey: oldKey)",

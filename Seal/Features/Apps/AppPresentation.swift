@@ -130,14 +130,12 @@ enum AppSigningPresentationHelpers {
 
     static func certificateName(serial: String?) -> String {
         guard let serial, serial.isEmpty == false else { return "签名时创建" }
-        return "Apple 开发证书 · \(compactSerial(serial))"
+        return "序列号 · \(fullSerial(serial))"
     }
 
-    static func compactSerial(_ value: String) -> String {
+    static func fullSerial(_ value: String) -> String {
         let normalized = value.filter(\.isHexDigit).uppercased()
-        let source = normalized.isEmpty ? value : normalized
-        guard source.count > 8 else { return source }
-        return "\(source.prefix(4))…\(source.suffix(4))"
+        return normalized.isEmpty ? value : normalized
     }
 
     static func profileStatus(for app: AppRecord, now: Date = Date()) -> ProfileDisplayStatus {

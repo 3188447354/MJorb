@@ -991,6 +991,18 @@ final class AppsViewModel: ObservableObject {
         signingSession?.status = .running(.preparingCertificate)
         signingTask = Task { [weak self] in
             guard let self else { return }
+            var retrySession: SigningSession?
+            // defer 保证取消路径也释放 signingTask（restartSigning 有 signingTask == nil 门禁，
+            // 漏清会把后续所有重试卡死）；成功时在 defer 里接力重启签名。
+            defer {
+                signingTask = nil
+                if let retrySession {
+                    restartSigning(
+                        retrySession,
+                        allowDroppingExtensions: retrySession.allowsDroppingExtensions
+                    )
+                }
+            }
             do {
                 let result = try await signingCoordinator
                     .revokeKeylessCertificatesAfterConfirmation(accountID: session.account.id)
@@ -1001,14 +1013,13 @@ final class AppsViewModel: ObservableObject {
                 certificateSacrificeResignQueue = result.affectedInstalledApps
                     .map(\.id)
                     .filter { $0 != session.app.id }
-                signingTask = nil
-                restartSigning(session, allowDroppingExtensions: session.allowsDroppingExtensions)
+                retrySession = session
+            } catch is CancellationError {
+                signingSession = nil
             } catch let sacrificeFailure as ImportFailure {
                 signingSession?.status = .failed(sacrificeFailure)
-                signingTask = nil
             } catch {
                 signingSession?.status = .failed(Self.unexpectedSigningFailure(error))
-                signingTask = nil
             }
         }
     }

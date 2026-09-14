@@ -694,12 +694,35 @@ actor ApplePortalSigningService {
             return SigningIdentity(certificate: local, secret: secret)
         }
 
+        // Apple 服务器只保存公证证书，不保存创建证书时在本机生成的私钥。
+        // 如果远端仍有这张证书，但本机 P12 丢失/损坏，不能把它当成「没有证书」
+        // 再申请一张：这样一定会撞证书数量上限，而且即使申请成功也无法恢复原证书。
+        let expectedSerial = selectedCertificateSerialNumber ?? secret.certificateSerialNumber
+        if let expectedSerial,
+           expectedSerial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+           certificates.contains(where: {
+               $0.serialNumber.caseInsensitiveCompare(expectedSerial) == .orderedSame
+           }),
+           secret.certificateP12.flatMap({ try? ALTCertificate(p12Data: $0, password: nil) }) == nil {
+            throw Self.missingLocalPrivateKeyFailure(serialNumber: expectedSerial)
+        }
+
         return try await createSigningIdentity(
             secret: secret,
             team: team,
             session: session,
             deviceName: deviceName,
             persistSigningMaterial: persistSigningMaterial
+        )
+    }
+
+    static func missingLocalPrivateKeyFailure(serialNumber: String) -> ImportFailure {
+        let normalizedSerial = SigningCertificateSelectionPolicy.normalizedSerialNumber(serialNumber)
+        return Self.failure(
+            title: "本机缺少证书私钥",
+            reason: "Apple 账号下仍有证书（序列号末尾 …\(normalizedSerial.suffix(12))），但本机没有可用的 P12 私钥。已安装的 App 仍可能继续运行，因为它们使用的是包内已签入的证书；新签名不能只靠 Apple 服务器上的公钥证书完成。",
+            recovery: "从原设备或备份恢复这张证书的 P12；没有备份时，先到「我的」→「签名证书」确认关联 App 后撤销这张证书，再重试签名",
+            code: "SEAL-CERT-204c"
         )
     }
 

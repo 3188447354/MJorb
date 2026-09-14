@@ -64,6 +64,18 @@ struct PortalWriteTimeoutSemanticsTests {
         #expect(failure.recovery.contains("确认"), "结果未知时必须先引导确认远端状态")
     }
 
+    /// 远端证书还在、本机 P12 私钥却没了：不能继续申请新证书伪装成「证书数量上限」，
+    /// 必须明确告诉用户真正缺的是私钥。
+    @Test
+    func missingLocalPrivateKeyDoesNotPretendToBeACertificateLimit() {
+        let failure = ApplePortalSigningService.missingLocalPrivateKeyFailure(serialNumber: "0BF75BE27D4E4")
+        #expect(failure.code == "SEAL-CERT-204c")
+        #expect(failure.title.contains("私钥"))
+        #expect(failure.reason.contains("BF75BE27D4E4"))
+        #expect(failure.recovery.contains("原设备或备份"))
+        #expect(failure.recovery.contains("关联 App"))
+    }
+
     /// 三个出口的错误码必须互不相同，否则用户与日志都无法区分发生了什么。
     @Test
     func theThreeOutcomesHaveDistinctCodes() {

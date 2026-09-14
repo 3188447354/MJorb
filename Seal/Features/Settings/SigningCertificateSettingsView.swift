@@ -182,6 +182,12 @@ struct SigningCertificateSettingsView: View {
                 )
                 Divider()
                 certificateHealthRow(
+                    "本机签名私钥",
+                    value: localPrivateKeyText(health),
+                    state: health?.localPrivateKey
+                )
+                Divider()
+                certificateHealthRow(
                     "Apple 侧可用于本机",
                     value: usableAppIDCountText(health),
                     state: nil
@@ -277,6 +283,15 @@ struct SigningCertificateSettingsView: View {
     private func relatedAppCountText(_ health: CertificateHealthStatus?) -> String {
         guard let count = health?.relatedAppCount else { return "无法确认" }
         return count == 0 ? "尚未使用" : "\(count) 个 App"
+    }
+
+    private func localPrivateKeyText(_ health: CertificateHealthStatus?) -> String {
+        guard let health else { return "检查中" }
+        switch health.localPrivateKey {
+        case .valid: return "可用"
+        case .invalid: return "缺失或损坏（不能用于新签名）"
+        case .unknown: return "无法确认"
+        }
     }
 
     private func usableAppIDCountText(_ health: CertificateHealthStatus?) -> String {

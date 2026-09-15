@@ -433,8 +433,8 @@
 - **修复**：共用私钥/序列号与 >7 天复用判据；准确区分 AltSign 请求无效和真实名额限制，保留脱敏 domain/code。运行包同 Team 的外部 Seal 身份允许尝试建立本机新身份，但不撤旧证；真实上限返回 221 恢复指引。自动清理保护所有运行包授权证书、已装应用/扩展及设备 profile 引用，设备或应用身份未知时保留。清理日志分列私钥、可复用、寿命不足、自保护和核验状态。
 - **自更新**：安装前重载私钥并从成品 profile 读取目标身份，原子保存待确认记录；下一进程启动核对运行包/私钥后确认。删除安装返回后撤旧证与删除旧 P12 的路径。旧包启动时纠正乐观有效期但保留待更新源；批量上传阶段不再提前标记完成。
 - **涉及文件**：CertificateRequestFailurePolicy、SigningCertificateMaterialPolicy、ApplePortalSigningService、ApplePortalCertificateService、SigningCoordinator、CertificateCleanupPolicy、AccountSecret、SettingsViewModel、SelfSigningHandoffStore、SelfAppRegistrar、RenewalCoordinator、SignedArtifactProfileReader、SigningProgressView 及对应测试/静态守卫。
-- **验证状态**：新增结构守卫先在旧实现检出 6 个问题，集成后通过；既有守卫与变异检查通过。Swift 单测/编译待本次 GitHub Actions；真机爱思安装→首次续签→重启确认→再次复用待回归，不声称真机已修复。
-- **限制**：Apple 确实无名额且外部私钥不可取得时，软件不能凭同一账号恢复私钥；保留原工具续期及电脑辅助恢复路径。重启后的中断批量项维持 unknown，由用户恢复；没有可靠操作关联 ID 时不自动完成另一轮任务。旧证书不自动回收。
+- **验证状态**：新增结构守卫先在旧实现检出 6 个问题，集成后通过；既有守卫与变异检查通过。Actions `34929845356`（代码 `6fd6416`）Release 编译/打包、rork-sign 测试、Swift 单元测试及 UI 回归步骤均成功；实际 IPA 主 App 与扩展版本均核对为 1.1.11 / 50。真机爱思安装→首次续签→重启确认→再次复用待回归，不声称真机已修复。
+- **限制**：Apple 确实无名额且外部私钥不可取得时，软件不能凭同一账号恢复私钥；保留原工具续期及电脑辅助恢复路径。重启后的中断批量项维持 unknown，由用户恢复；没有可靠操作关联 ID 时不自动完成另一轮任务。不在安装回调后直接回收旧证书。
 - **常犯坑位补记**：私钥存在、证书可复用、证书受保护是三个不同条件；同进程安装返回不等于新包已经运行；恢复旧运行包快照时不能删除尚未安装的新源文件。
 
 ### 2026-09-15 · 续签 Seal 报证书上限：清理两次跳过，静态定位两处诊断失真

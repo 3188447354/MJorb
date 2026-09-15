@@ -112,7 +112,7 @@ jobs:
         run: SEAL_IPA_CONFIGURATION=Release SEAL_SKIP_XCODEGEN=1 bash Scripts/build-unsigned-ipa.sh
 
       - name: Verify unsigned IPA
-        run: bash Scripts/verify-ipa.sh build/Seal+*.ipa
+        run: bash Scripts/verify-ipa.sh build/Seal_*.ipa
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v7.0.1
@@ -120,8 +120,8 @@ jobs:
           name: Seal-${{ github.run_number }}
           if-no-files-found: error
           path: |
-            build/Seal+*.ipa
-            build/Seal+*.ipa.sha256
+            build/Seal_*.ipa
+            build/Seal_*.ipa.sha256
             build/Seal-Info.plist
             build/SealTunnel-Info.plist
           retention-days: 30
@@ -163,8 +163,8 @@ jobs:
           # 跨仓库发布不传 --target：源仓库 SHA 在 Seal-Releases 不存在，
           # 传了会 422（target_commitish invalid），默认指向目标仓库 main。
           gh release create "$TAG" "${ARGS[@]}" --repo sunuannian1/Seal-Releases \
-            release/Seal+*.ipa \
-            release/Seal+*.ipa.sha256 \
+            release/Seal_*.ipa \
+            release/Seal_*.ipa.sha256 \
             release/Seal-Info.plist \
             release/SealTunnel-Info.plist
           echo "published $TAG"

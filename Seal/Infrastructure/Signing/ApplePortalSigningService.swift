@@ -1396,7 +1396,24 @@ actor ApplePortalSigningService {
         }
 
         guard deleteSucceeded else {
-            return profile
+            // 免费账号无法删除描述文件（2023-03-20 起 Apple 限制），
+            // 但删除操作本身会触发 Apple 重新生成描述文件，因此必须再 fetch 一次，
+            // 确保返回的是删除操作后的新生成结果，而不是第一次 fetch 到的旧文件。
+            let regeneratedBox: LegacyBox<ALTProvisioningProfile> = try await withAppleTimeout(30) {
+                try await withCheckedThrowingContinuation {
+                    continuation in
+                    let callback = ContinuationBox(continuation)
+                    ALTAppleAPI.shared.fetchProvisioningProfile(
+                        for: appID,
+                        deviceType: .iphone,
+                        team: team,
+                        session: session
+                    ) { profile, error in
+                        Self.resume(callback, value: profile, error: error)
+                    }
+                }
+            }
+            return regeneratedBox.value
         }
 
         // 删除成功（付费账号），重新获取生成新的描述文件

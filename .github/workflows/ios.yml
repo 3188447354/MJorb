@@ -157,7 +157,7 @@ jobs:
         run: SEAL_IPA_CONFIGURATION=Release SEAL_SKIP_XCODEGEN=1 bash Scripts/build-unsigned-ipa.sh
 
       - name: Verify unsigned IPA
-        run: bash Scripts/verify-ipa.sh build/Seal.ipa
+        run: bash Scripts/verify-ipa.sh build/Seal+*.ipa
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v7.0.1
@@ -165,8 +165,8 @@ jobs:
           name: Seal-${{ github.run_number }}
           if-no-files-found: error
           path: |
-            build/Seal.ipa
-            build/Seal.ipa.sha256
+            build/Seal+*.ipa
+            build/Seal+*.ipa.sha256
             build/Seal-Info.plist
             build/SealTunnel-Info.plist
           retention-days: 30
@@ -178,7 +178,7 @@ jobs:
           name: Seal-Build-Metadata-${{ github.run_number }}
           if-no-files-found: warn
           path: |
-            build/Seal.ipa.sha256
+            build/Seal+*.ipa.sha256
             build/Seal-Info.plist
             build/SealTunnel-Info.plist
           retention-days: 14
@@ -360,8 +360,8 @@ jobs:
           ARGS=(--title "Seal $TAG" --notes "$NOTES")
           if [ "$PRERELEASE" = "true" ]; then ARGS+=(--prerelease); fi
           gh release create "$TAG" "${ARGS[@]}" --repo sunuannian1/Seal-Releases \
-            release/Seal.ipa \
-            release/Seal.ipa.sha256 \
+            release/Seal+*.ipa \
+            release/Seal+*.ipa.sha256 \
             release/Seal-Info.plist \
             release/SealTunnel-Info.plist
           echo "published $TAG"

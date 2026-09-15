@@ -5,7 +5,10 @@ configuration="${SEAL_IPA_CONFIGURATION:-Release}"
 derived_data="$PWD/build/DerivedData"
 product="$derived_data/Build/Products/${configuration}-iphoneos/Seal.app"
 package_root="$PWD/build/package"
-archive="$PWD/build/Seal.ipa"
+
+# 从 project.yml 读版本号，产物命名为 Seal+<版本号>.ipa
+version=$(grep -m 1 'MARKETING_VERSION:' project.yml | awk '{print $2}')
+archive="$PWD/build/Seal+${version}.ipa"
 
 if [[ "${SEAL_SKIP_XCODEGEN:-0}" != "1" ]]; then
   if ! command -v xcodegen >/dev/null 2>&1; then

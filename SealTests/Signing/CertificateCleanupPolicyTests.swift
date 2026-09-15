@@ -36,7 +36,8 @@ struct CertificateCleanupPolicyTests {
             certificates: [makeCertificate("AA11"), makeCertificate("0BB22")],
             apps: [],
             localUsableSerials: [],
-            deviceReferencedSerials: []
+            deviceReferencedSerials: [],
+            sealActiveSerialNumber: nil
         )
         #expect(plan.revocable.map(\.serialNumber) == ["AA11", "0BB22"])
         #expect(plan.kept.isEmpty)
@@ -50,7 +51,8 @@ struct CertificateCleanupPolicyTests {
             certificates: [makeCertificate("AA11"), makeCertificate("BB22")],
             apps: [],
             localUsableSerials: ["BB22"],
-            deviceReferencedSerials: []
+            deviceReferencedSerials: [],
+            sealActiveSerialNumber: nil
         )
         #expect(plan.revocable.map(\.serialNumber) == ["AA11"])
         #expect(plan.kept.map(\.serialNumber) == ["BB22"])
@@ -65,7 +67,8 @@ struct CertificateCleanupPolicyTests {
             certificates: [makeCertificate("AA11"), makeCertificate("BB22")],
             apps: apps,
             localUsableSerials: [],
-            deviceReferencedSerials: []
+            deviceReferencedSerials: [],
+            sealActiveSerialNumber: nil
         )
         // 两张都无私钥 → 两张都可撤（不再因关联 App 而保留）
         #expect(plan.revocable.count == 2)
@@ -80,7 +83,8 @@ struct CertificateCleanupPolicyTests {
             certificates: [makeCertificate("AA11"), makeCertificate("BB22")],
             apps: [],
             localUsableSerials: [],
-            deviceReferencedSerials: ["AA11"]
+            deviceReferencedSerials: ["AA11"],
+            sealActiveSerialNumber: nil
         )
         // 两张都无私钥 → 两张都可撤（不再因设备端引用而保留）
         #expect(plan.revocable.count == 2)
@@ -94,7 +98,8 @@ struct CertificateCleanupPolicyTests {
             certificates: [makeCertificate("AA11")],
             apps: [],
             localUsableSerials: [],
-            deviceReferencedSerials: nil
+            deviceReferencedSerials: nil,
+            sealActiveSerialNumber: nil
         )
         #expect(plan.revocable.count == 1)
         #expect(plan.deviceVerified == false)
@@ -107,9 +112,41 @@ struct CertificateCleanupPolicyTests {
             certificates: [makeCertificate("0AA11"), makeCertificate("BB22")],
             apps: [],
             localUsableSerials: ["AA11"],
-            deviceReferencedSerials: ["0BB22"]
+            deviceReferencedSerials: ["0BB22"],
+            sealActiveSerialNumber: nil
         )
         // 只有 BB22 无私钥 → 只有 BB22 可撤（AA11 有私钥所以保留）
+        #expect(plan.revocable.map(\.serialNumber) == ["BB22"])
+        #expect(plan.kept.map(\.serialNumber) == ["0AA11"])
+    }
+
+    /// Seal 自保护：Seal 自身正在使用的证书，即使本机无私钥也必须保留。
+    /// 撤了 Seal 下次启动就「不再可用」，直接变砖。
+    @Test
+    func sealActiveCertificateIsKeptEvenWithoutLocalKey() {
+        let plan = CertificateCleanupPolicy.makePlan(
+            certificates: [makeCertificate("AA11"), makeCertificate("BB22")],
+            apps: [],
+            localUsableSerials: [],
+            deviceReferencedSerials: [],
+            sealActiveSerialNumber: "AA11"
+        )
+        // AA11 是 Seal 在用证书 → 即使无私钥也 kept；BB22 无私钥且非 Seal → revocable
+        #expect(plan.revocable.map(\.serialNumber) == ["BB22"])
+        #expect(plan.kept.map(\.serialNumber) == ["AA11"])
+    }
+
+    /// Seal 自保护：序列号归一化（前导 0 差异）不能让 Seal 在用证书误入可撤。
+    @Test
+    func sealActiveSerialLeadingZeroIsNormalized() {
+        let plan = CertificateCleanupPolicy.makePlan(
+            certificates: [makeCertificate("0AA11"), makeCertificate("BB22")],
+            apps: [],
+            localUsableSerials: [],
+            deviceReferencedSerials: [],
+            sealActiveSerialNumber: "AA11"
+        )
+        // 0AA11 归一化后等于 Seal 在用的 AA11 → 保留；BB22 可撤
         #expect(plan.revocable.map(\.serialNumber) == ["BB22"])
         #expect(plan.kept.map(\.serialNumber) == ["0AA11"])
     }

@@ -409,6 +409,17 @@ def violations(load=read):
     check("selectedCertificateSerialNumber: nil" in cleanup_retry,
           "Auto-cleanup: retry must drop the revoked binding")
 
+    # Seal 自保护（前置清理绝不碰 Seal 在用证书）：
+    # 签其他 App 时前置清理如果撤了 Seal 的证书（比如覆盖安装 keychain 丢私钥后，
+    # Seal 正用一张无私钥证书跑着），Seal 下次启动就「不再可用」直接变砖。
+    # makePlan 必须接受 sealActiveSerialNumber 参数并纳入 kept，
+    # autoCleanOrphanCertificatesIfPossible 必须从 apps.isSeal 取出序列号传入。
+    check("sealActiveSerialNumber" in cleanup_policy
+          and "sealActive = normalizedSealActive, sealActive == serial" in cleanup_policy,
+          "Seal self-protection: makePlan must keep Seal's active serial even without local key")
+    check("$0.isSeal" in auto_cleanup and "sealActiveSerialNumber: sealActiveSerial" in auto_cleanup,
+          "Seal self-protection: auto cleanup must pass Seal's active serial from apps.isSeal")
+
     # 一键确认盘活（SEAL-CERT-204e）：在用的无钥匙证书绝不静默撤，必须经失败页确认。
     check("if case .blockedByInUseKeylessCerts" in cleanup_retry,
           "204e must surface when keyless certificates are still in use")

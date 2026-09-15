@@ -427,6 +427,36 @@
 ## 二、历史记录
 
 
+### 2026-09-15 · 前置清理误撤 Seal 在用证书 → Seal 续签/签其他 App 后变砖（"不再可用"）
+
+- **现象（用户真机反馈）**：续签 Seal 成功后打开 Seal，系统弹「"Seal" 不再可用」。
+  另一个场景：签其他 App（如微信）后，再打开 Seal 同样报「不再可用」。
+- **根因**：`autoCleanOrphanCertificatesIfPossible` 前置清理策略是「本机无私钥的证书一律撤销」，
+  但**没有排除 Seal 自身正在使用的证书**。当 Seal 正用一张无私钥的证书跑着时（覆盖安装后
+  keychain 访问组变化 → 旧 P12 私钥读不出来是常见场景）：
+  - 签其他 App 时：前置清理把 Seal 的证书也当孤儿撤了 → Seal 下次启动就「不再可用」。
+  - 续签 Seal 时：前置清理先撤旧证 → 如果后续安装失败（任何原因），旧 Seal 证书已被撤 →
+    旧 Seal 变砖。即使安装成功，新 Seal 虽能用新证书，但这建立在"安装一定成功"的假设上，
+    而安装失败是常态（网络、空间、校验等都可能失败）。
+  原注释"撤完立即建新证重签重装、全程闭环"只在**续签 Seal 且安装一定成功**时成立，但
+  前置清理是对**所有 App 签名**都跑的，且安装可能失败。
+- **修复**（Seal 自保护原则：绝不主动让自己变砖）：
+  1. `CertificateCleanupPolicy.makePlan` 增加 `sealActiveSerialNumber` 参数，
+     Seal 正在使用的证书即使本机无私钥也纳入 `kept`，绝不碰。
+  2. `autoCleanOrphanCertificatesIfPossible` 从 apps 中找出 `isSeal == true` 的
+     App，取其 `certificateSerialNumber` 传入 `makePlan`。
+  3. Seal 旧证回收走续签流程的 `revokeReplacedSealCertificate`：**安装成功后**才撤旧证，
+     装失败旧 Seal 仍靠旧证运行，形成闭环。
+  4. 护栏 `verify-release-safety.py` 新增两条断言：
+     - `makePlan` 必须接受 `sealActiveSerialNumber` 并纳入 kept
+     - 前置清理必须从 `apps.isSeal` 取出序列号传入
+- **涉及文件**：`CertificateCleanupPolicy.swift`、`SigningCoordinator.swift`、
+  `verify-release-safety.py`。
+- **验证状态**：本地护栏 **102 检查 + 51 变异 PASS**；云 CI 编译与真机回归待验证。
+- **常犯坑位补记**：证书清理是不可逆操作，Seal 自身是操作入口——入口不能自毁。所有
+  自动清理/撤销逻辑必须先问"撤了 Seal 还能开吗"，再决定是否执行。
+
+
 ### 2026-09-15 · 证书清理策略升级为「无私钥一律撤」（不再区分设备端在用 / Seal 关联）
 
 - **现象（真机回归发现）**：续签 Seal 时报 `SEAL-CERT-204b` 证书数量已达上限。日志显示

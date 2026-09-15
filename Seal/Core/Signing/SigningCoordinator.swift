@@ -649,11 +649,16 @@ actor SigningCoordinator {
         }
 
         let apps = (try? await appStore.fetchAll()) ?? []
+        // Seal 自保护：找出 Seal 自身正在使用的证书序列号，前置清理绝不碰它，
+        // 哪怕本机已无私钥。撤了 Seal 下次启动直接「不再可用」，变砖。
+        // Seal 旧证回收走续签流程的 revokeReplacedSealCertificate（装成功后才撤）。
+        let sealActiveSerial = apps.first(where: { $0.isSeal })?.certificateSerialNumber
         let plan = CertificateCleanupPolicy.makePlan(
             certificates: inventory.certificates,
             apps: apps,
             localUsableSerials: localUsableSerials,
-            deviceReferencedSerials: deviceReferenced
+            deviceReferencedSerials: deviceReferenced,
+            sealActiveSerialNumber: sealActiveSerial
         )
         guard plan.revocable.isEmpty == false else {
             try? await logStore?.append(

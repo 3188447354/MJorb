@@ -8,8 +8,12 @@ import Foundation
 ///
 /// 策略：一个 Apple ID 在本机只留一张可用证书。**所有本机无私钥的证书一律撤销**，
 /// 不论设备端 profile 是否还在引用——留着也没法用它签新包，纯占名额。
-/// 风险兜底：续签 Seal 时若 Seal 自身正用那张无钥匙证书跑着，撤完立即建新证重签重装，
-/// 全程闭环；iOS 不会因证书被 Apple 撤销就立即杀进程（下次启动才校验），中间不闪退。
+///
+/// 关键例外（Seal 自保护）：**Seal 自身正在使用的证书永远不碰**，哪怕本机已无私钥。
+/// 因为前置清理在签「任何 App」时都会跑，如果 Seal 正用一张无私钥的证书（覆盖安装
+/// keychain 丢私钥是常见场景），签微信时把它撤掉 → Seal 下次启动就「不再可用」。
+/// Seal 旧证书的回收交给 Seal 续签流程：安装成功后由 `revokeReplacedSealCertificate`
+/// 撤旧证，装失败旧 Seal 仍靠旧证运行，形成闭环。
 struct CertificateCleanupPlan: Equatable, Sendable {
     /// 可撤销的证书：本机无私钥的全部远端证书（不论是否仍被设备端 profile 引用）。
     let revocable: [ApplePortalCertificateSnapshot]
@@ -26,22 +30,34 @@ enum CertificateCleanupPolicy {
     ///
     /// 策略：一个 Apple ID 本机只留一张可用证书。**只要本机无私钥就可撤**，
     /// 不再区分「Seal 关联 App 在用」「设备端 profile 引用」——留着也没法用它
-    /// 签新包，纯占名额。续签/签名流程闭环（撤 → 建 → 签 → 装），中间不闪退。
+    /// 签新包，纯占名额。
+    ///
+    /// **Seal 自保护例外**：`sealActiveSerialNumber` 指定的证书（Seal 自身正在用的）
+    /// 即使无私钥也保留。Seal 旧证回收走续签流程的 `revokeReplacedSealCertificate`，
+    /// 必须等新 Seal 安装成功后才撤，装失败旧 Seal 仍能开。
     static func makePlan(
         certificates: [ApplePortalCertificateSnapshot],
         apps: [AppRecord],
         localUsableSerials: Set<String>,
-        deviceReferencedSerials: Set<String>?
+        deviceReferencedSerials: Set<String>?,
+        sealActiveSerialNumber: String?
     ) -> CertificateCleanupPlan {
         let normalizedLocalUsable = Set(localUsableSerials.map {
             SigningCertificateSelectionPolicy.normalizedSerialNumber($0)
         })
+        let normalizedSealActive = sealActiveSerialNumber.map {
+            SigningCertificateSelectionPolicy.normalizedSerialNumber($0)
+        }
         var revocable: [ApplePortalCertificateSnapshot] = []
         var kept: [ApplePortalCertificateSnapshot] = []
 
         for certificate in certificates {
             let serial = SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber)
             if normalizedLocalUsable.contains(serial) {
+                kept.append(certificate)
+            } else if let sealActive = normalizedSealActive, sealActive == serial {
+                // Seal 自身正在用的证书，即使本机无私钥也保留——
+                // 前置清理撤了会让 Seal 直接变砖，下次启动报「不再可用」。
                 kept.append(certificate)
             } else {
                 revocable.append(certificate)

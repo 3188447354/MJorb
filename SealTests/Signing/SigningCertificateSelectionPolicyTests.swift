@@ -189,8 +189,8 @@ struct SigningCertificateSelectionPolicyTests {
             size: 1,
             state: state,
             ipaRelativePath: "Apps/example.ipa",
-            importedAt: Date(),
-            isSeal: isSeal
+            isSeal: isSeal,
+            importedAt: Date()
         )
     }
 }

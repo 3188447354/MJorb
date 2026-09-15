@@ -1,5 +1,6 @@
 import Foundation
 import ZIPFoundation
+@testable import Seal
 
 enum IPAArchiveFixture {
     struct AppSpec {

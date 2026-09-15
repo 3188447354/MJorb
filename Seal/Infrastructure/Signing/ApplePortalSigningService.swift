@@ -781,11 +781,16 @@ actor ApplePortalSigningService {
             isSeal ? SelfAppMetadata.current()?.installedIdentity : nil
         }
         let sealActualSignerSerials: Set<String>
+        let sealSignerConfirmed: Bool
         if let runningIdentity, runningIdentity.isComplete,
            let signer = runningIdentity.mainTarget?.signerSerialNumber {
             sealActualSignerSerials = [signer]
+            sealSignerConfirmed = true
         } else {
             sealActualSignerSerials = []
+            // 只有签名/续签 Seal 本身才要求先确认运行中签名者；普通 App 不涉及 Seal 身份，
+            // 不能因为读不到 Seal 的真实证书就禁止普通 App 的证书轮换。
+            sealSignerConfirmed = isSeal == false
         }
 
         // AltStore/SideStore 的免费团队真实链路：门户已有证书但没有任何可签满 7 天的
@@ -800,6 +805,7 @@ actor ApplePortalSigningService {
             if candidates.isEmpty == false {
                 return try await rotateCertificatesAndCreateIdentity(
                     candidates: candidates,
+                    sealSignerConfirmed: sealSignerConfirmed,
                     certificates: certificates,
                     secret: secret,
                     team: team,
@@ -829,6 +835,7 @@ actor ApplePortalSigningService {
             guard candidates.isEmpty == false else { throw failure }
             return try await rotateCertificatesAndCreateIdentity(
                 candidates: candidates,
+                sealSignerConfirmed: sealSignerConfirmed,
                 certificates: certificates,
                 secret: secret,
                 team: team,
@@ -842,6 +849,7 @@ actor ApplePortalSigningService {
 
     private func rotateCertificatesAndCreateIdentity(
         candidates: [SigningCertificateRotationCandidate],
+        sealSignerConfirmed: Bool,
         certificates: [ALTX509Certificate],
         secret: AccountSecret,
         team: ALTTeam,
@@ -850,6 +858,12 @@ actor ApplePortalSigningService {
         persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void,
         persistRevokedSigningMaterial: @escaping @Sendable (AccountSecret, [String]) async throws -> Void
     ) async throws -> SigningIdentity {
+        // 规格硬规则：无法确认当前 Seal 真实签名证书 A 时，禁止自动撤销任何证书。
+        // 「无本机私钥」的候选很可能就是运行中 Seal 的命根子证书（第三方工具签发的
+        // 非标准结构读不出真实 signer），盲撤会让 Seal 重启后打不开。
+        guard sealSignerConfirmed else {
+            throw Self.certificateRotationBlockedForUnknownSealSigner()
+        }
         await diagnostic("证书轮换：最多检查 \(candidates.count) 张不可用于完整 7 天签名的证书；逐张释放并立即尝试创建，当前 Seal 在用证书排在最后")
         var updatedSecret = secret
         var revokedSerials: [String] = []
@@ -898,6 +912,15 @@ actor ApplePortalSigningService {
         case .insufficientLifetime: return "剩余不足7天"
         case .invalidValidity: return "证书日期无效"
         }
+    }
+
+    static func certificateRotationBlockedForUnknownSealSigner() -> ImportFailure {
+        Self.failure(
+            title: "无法确认当前 Seal 的签名证书",
+            reason: "读不出当前 Seal 由哪张证书签名，为避免撤销后 Seal 打不开，已停止本次证书轮换。",
+            recovery: "先用电脑的原签名工具覆盖安装一次 Seal，再回来续签",
+            code: "SEAL-CERT-232"
+        )
     }
 
     static func externalSealIdentityFailure(underlying: ImportFailure) -> ImportFailure {

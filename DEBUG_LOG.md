@@ -427,6 +427,24 @@
 ## 二、历史记录
 
 
+### 2026-09-15 · Seal Team 校验测试用例漏设 isSeal → swift-regression 失败
+
+- **现象**：`swift-regression` job 失败，`SigningCertificateSelectionPolicyTests`
+  的 3 个 Seal 用例（`sealRenewalRejectsMissingTeam` / `sealRenewalRejectsTeamMismatch` /
+  `sealRenewalAllowsMatchingTeam`）全部失败，报 `Caught error: ImportFailure(... SEAL-AUTH-110)`。
+- **根因**：这 3 个测试用例虽然取名「Seal 续签」，但构造 `AppRecord` 用的 `makeApp`
+  没有传 `isSeal`（`AppRecord.isSeal` 是 `let` 常量，默认 false），导致 `validateAccountAndTeam`
+  根本没走进 `if app.isSeal` 分支，而是落到普通续签分支——`accountID` 未设置 → 抛
+  `SEAL-AUTH-110`（缺少签名账号记录），与用例期望的 `SEAL-SELF-104/103/放行` 全部不符。
+- **修复**：`makeApp` 增加 `isSeal: Bool = false` 参数，3 个 Seal 用例改为
+  `makeApp(state: .installed, isSeal: true)`。
+- **涉及文件**：`SealTests/Signing/SigningCertificateSelectionPolicyTests.swift`。
+- **验证状态**：本地护栏 PASS；云 CI swift-regression 待复跑验证。
+- **常犯坑位补记**：给「isSeal 相关」逻辑写测试时，若不显式传 `isSeal`，`AppRecord` 默认
+  `isSeal=false`，测试会静默走到普通（非 Seal）分支，断言跑的是完全错误的路径。
+  任何 Seal 专项测试必须先确认被测对象的 `isSeal == true`。
+
+
 ### 2026-09-15 · Seal 注册时证书序列号继承旧记录 → 前置清理误撤 Seal 在用证书（根治）
 
 - **现象（用户真机反馈）**：爱思助手用 Apple ID 签 Seal 到手机，Seal 能打开，证书是爱思的。

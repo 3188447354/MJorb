@@ -114,7 +114,7 @@ struct SigningCertificateSelectionPolicyTests {
     @Test
     func sealRenewalRejectsMissingTeam() {
         let account = makeAccount(localSerial: "LOCAL", selectedSerial: "LOCAL")
-        var app = makeApp(state: .installed)
+        var app = makeApp(state: .installed, isSeal: true)
         app.signingTeamID = nil
 
         do {
@@ -134,7 +134,7 @@ struct SigningCertificateSelectionPolicyTests {
     @Test
     func sealRenewalRejectsTeamMismatch() {
         let account = makeAccount(localSerial: "LOCAL", selectedSerial: "LOCAL")
-        var app = makeApp(state: .installed)
+        var app = makeApp(state: .installed, isSeal: true)
         app.signingTeamID = "AISITEAM"
 
         do {
@@ -154,7 +154,7 @@ struct SigningCertificateSelectionPolicyTests {
     @Test
     func sealRenewalAllowsMatchingTeam() throws {
         let account = makeAccount(localSerial: "LOCAL", selectedSerial: "LOCAL")
-        var app = makeApp(state: .installed)
+        var app = makeApp(state: .installed, isSeal: true)
         app.signingTeamID = account.teamID
 
         try SigningCertificateSelectionPolicy.validateAccountAndTeam(
@@ -180,7 +180,7 @@ struct SigningCertificateSelectionPolicyTests {
         )
     }
 
-    private func makeApp(state: AppState) -> AppRecord {
+    private func makeApp(state: AppState, isSeal: Bool = false) -> AppRecord {
         AppRecord(
             originalBundleIdentifier: "com.example.app",
             name: "Example",
@@ -189,7 +189,8 @@ struct SigningCertificateSelectionPolicyTests {
             size: 1,
             state: state,
             ipaRelativePath: "Apps/example.ipa",
-            importedAt: Date()
+            importedAt: Date(),
+            isSeal: isSeal
         )
     }
 }

@@ -71,7 +71,7 @@ struct CandidateIdentity: Codable, Equatable, Sendable {
             return lhs.bundleIdentifier < rhs.bundleIdentifier
         }
         if lhs.kind != rhs.kind {
-            return lhs.kind < rhs.kind
+            return lhs.kind.rawValue < rhs.kind.rawValue
         }
         if lhs.teamIdentifier != rhs.teamIdentifier {
             return lhs.teamIdentifier < rhs.teamIdentifier
@@ -91,7 +91,7 @@ struct CandidateIdentity: Codable, Equatable, Sendable {
         if lhs.signerCertificateSHA256 != rhs.signerCertificateSHA256 {
             return lhs.signerCertificateSHA256 < rhs.signerCertificateSHA256
         }
-        return lhs.status < rhs.status
+        return lhs.status.rawValue < rhs.status.rawValue
     }
 
     static func legacy(

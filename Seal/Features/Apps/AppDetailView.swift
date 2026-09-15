@@ -80,7 +80,7 @@ struct AppDetailView: View {
             Divider()
             detailRow("签名账户", accountName(app))
             Divider()
-            serialDetailRow("签名证书", certificateName(app))
+            serialDetailRow("Apple ID 证书", certificateName(app))
             Divider()
             detailRow("Team ID", app.signingTeamID ?? "未记录")
             Divider()

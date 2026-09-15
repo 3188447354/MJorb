@@ -420,6 +420,18 @@ def violations(load=read):
     check("$0.isSeal" in auto_cleanup and "sealActiveSerialNumber: sealActiveSerial" in auto_cleanup,
           "Seal self-protection: auto cleanup must pass Seal's active serial from apps.isSeal")
 
+    # Seal 自保护（注册时必须从运行包描述文件读真实证书序列号）：
+    # 爱思/其他工具签的 Seal，证书不是 Seal 创建的，旧记录里可能是 nil 或过期值。
+    # 如果注册时 certificateSerialNumber 继承旧记录而非从描述文件读，
+    # 前置清理会误撤 Seal 在用的证书 → 变砖（2026-09-15 真机确认）。
+    registrar = load("Seal/Core/Renewal/SelfAppRegistrar.swift")
+    check("metadata.certificateSerialNumbers.first" in registrar
+          and "?? existing?.certificateSerialNumber" in registrar,
+          "Seal self-protection: registrar must read real cert serial from provisioning profile, not inherit from old record")
+    metadata = load("Seal/Core/Renewal/SelfAppMetadata.swift")
+    check("certificateSerialNumbers: profileDetails?.certificateSerialNumbers" in metadata,
+          "Seal self-protection: SelfAppMetadata must read certificateSerialNumbers from profile")
+
     # 一键确认盘活（SEAL-CERT-204e）：在用的无钥匙证书绝不静默撤，必须经失败页确认。
     check("if case .blockedByInUseKeylessCerts" in cleanup_retry,
           "204e must surface when keyless certificates are still in use")

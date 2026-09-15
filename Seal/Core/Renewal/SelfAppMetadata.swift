@@ -17,6 +17,10 @@ struct SelfAppMetadata: Sendable {
     var provisioningProfileUUID: String? = nil
     var provisioningProfileName: String? = nil
     var provisioningProfileCreationDate: Date? = nil
+    /// 运行包描述文件里授权的证书序列号列表。Seal 注册时必须从这里取真实的证书序列号，
+    /// 而不是继承旧记录——爱思/其他工具签的 Seal，证书不是 Seal 创建的，
+    /// 如果记录里存的是旧值或 nil，前置清理会误撤 Seal 在用的证书导致变砖。
+    var certificateSerialNumbers: [String] = []
 
     @MainActor
     static func current(bundle: Bundle = .main) -> SelfAppMetadata? {
@@ -52,7 +56,8 @@ struct SelfAppMetadata: Sendable {
             signingApplicationIdentifier: profileDetails?.applicationIdentifier,
             provisioningProfileUUID: profileDetails?.uuid,
             provisioningProfileName: profileDetails?.name,
-            provisioningProfileCreationDate: profileDetails?.creationDate
+            provisioningProfileCreationDate: profileDetails?.creationDate,
+            certificateSerialNumbers: profileDetails?.certificateSerialNumbers ?? []
         )
     }
 

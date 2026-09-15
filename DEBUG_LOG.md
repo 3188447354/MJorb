@@ -427,6 +427,38 @@
 ## 二、历史记录
 
 
+### 2026-09-15 · Seal 注册时证书序列号继承旧记录 → 前置清理误撤 Seal 在用证书（根治）
+
+- **现象（用户真机反馈）**：爱思助手用 Apple ID 签 Seal 到手机，Seal 能打开，证书是爱思的。
+  用户在 Seal 里用**同一个 Apple ID** 续签 Seal → 自动清理把爱思的证书撤了 → Seal「不再可用」。
+  重新用爱思覆盖安装 → 证书已被撤 → 「无法验证」。
+- **根因**：`SelfAppRegistrar.atomicallyUpdateSealRecord` 第 168 行：
+  `certificateSerialNumber: existing?.certificateSerialNumber`。
+  Seal 记录的证书序列号是从**旧记录继承**的，不是从运行包的描述文件里实时读取的！
+  爱思签的 Seal 首次安装时，记录里 `certificateSerialNumber = nil`；
+  后续续签时继承旧记录，还是 nil 或过期值。
+  前置清理取 `sealActiveSerialNumber = app.certificateSerialNumber = nil`，
+  `CertificateCleanupPolicy.makePlan` 认为没有 Seal 在用证书需要保护，
+  把"非本机创建"的证书（爱思那张）当孤儿撤了 → Seal 变砖。
+- **为什么之前修的 `sealActiveSerialNumber` 保护没生效**：保护逻辑本身是对的，
+  但传入的序列号来源（`app.certificateSerialNumber`）就是错的——它继承自旧记录，
+  不是 Seal 实际在用的证书。
+- **根治**：
+  1. `SelfAppMetadata` 增加 `certificateSerialNumbers` 字段，
+     从运行包的 `embedded.mobileprovision` 里读真实的证书序列号列表。
+  2. `SelfAppRegistrar.atomicallyUpdateSealRecord` 第 168 行改为：
+     `certificateSerialNumber: metadata.certificateSerialNumbers.first ?? existing?.certificateSerialNumber`，
+     优先用描述文件里的真实值，兜底才继承旧记录。
+  3. 护栏 `verify-release-safety.py` 新增两条断言：
+     - `SelfAppRegistrar` 必须从 `metadata.certificateSerialNumbers` 读证书序列号
+     - `SelfAppMetadata` 必须从 `profileDetails?.certificateSerialNumbers` 读
+- **涉及文件**：`SelfAppMetadata.swift`、`SelfAppRegistrar.swift`、`verify-release-safety.py`。
+- **验证状态**：本地护栏 **104 检查 + 51 变异 PASS**；云 CI 编译与真机回归待验证。
+- **常犯坑位补记**：Seal 自身记录的任何字段（证书、Team、Bundle ID）都必须从**运行包的
+  描述文件/Info.plist 实时读取**，绝不继承旧记录。旧记录可能是上次安装时的值，早已过期。
+  「读取当前运行状态」和「读取历史记录」是两个完全不同的语义，混用必出问题。
+
+
 ### 2026-09-15 · 前置清理误撤 Seal 在用证书 → Seal 续签/签其他 App 后变砖（"不再可用"）
 
 - **现象（用户真机反馈）**：续签 Seal 成功后打开 Seal，系统弹「"Seal" 不再可用」。

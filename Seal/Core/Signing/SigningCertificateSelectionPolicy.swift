@@ -7,17 +7,28 @@ enum SigningCertificateSelectionPolicy {
         for app: AppRecord,
         account: AppleAccountRecord
     ) throws {
-        // Seal：能读到 Team 时校验匹配（确定错误才拦）；读不到则放行，交给续签页手选。
         if app.isSeal {
-            if let teamID = normalized(app.signingTeamID) {
-                guard teamID.caseInsensitiveCompare(account.teamID) == .orderedSame else {
-                    throw ImportFailure(
-                        title: teamMismatchTitle,
-                        reason: "当前 Seal 属于其他开发者团队，所选 Apple ID 无权续签。",
-                        recovery: "使用签名 Seal 时的原 Apple ID 续签，或在续签页选择正确账号",
-                        code: "SEAL-SELF-103"
-                    )
-                }
+            // Seal 续签的硬性前提：新 Seal 的签名身份（Team + Bundle ID）必须与当前运行包一致，
+            // 否则装上的是「另一个身份的应用」——iOS 判为新 App，容器/钥匙串访问组全部失效，
+            // 且爱思/其他工具签的 Seal 用自己 Apple ID 续签必然变砖（2026-09-15 真机确认）。
+            //
+            // 读不到 Team（爱思企业签/通配描述文件常常取不到 teamIdentifier）绝不能放行：
+            // 读不到 = 无法确认身份一致 = 续签注定变砖，必须拦下并引导用户用原方式重装。
+            guard let teamID = normalized(app.signingTeamID) else {
+                throw ImportFailure(
+                    title: "无法用当前账号续签 Seal",
+                    reason: "这份 Seal 不是用当前 Apple ID 签的（读不到它的开发者团队信息，可能是爱思助手或其他工具签的）。用别的账号续签会改变签名身份，装上后打不开。",
+                    recovery: "想用当前 Apple ID 长期使用 Seal：请先在 Seal 里用当前账号完整签名并安装一次 Seal（而不是续签），之后就能正常续签了",
+                    code: "SEAL-SELF-104"
+                )
+            }
+            guard teamID.caseInsensitiveCompare(account.teamID) == .orderedSame else {
+                throw ImportFailure(
+                    title: teamMismatchTitle,
+                    reason: "当前 Seal 属于其他开发者团队，所选 Apple ID 无权续签。强行续签会改变签名身份，装上后打不开。",
+                    recovery: "使用签名 Seal 时的原 Apple ID 续签；或先用当前账号完整签名并安装一次 Seal",
+                    code: "SEAL-SELF-103"
+                )
             }
             return
         }

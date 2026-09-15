@@ -165,7 +165,11 @@ actor SelfAppRegistrar {
                 expiryDate: metadata.expirationDate,
                 accountID: resolvedAccountID,
                 signingTeamID: metadata.signingTeamIdentifier ?? existing?.signingTeamID,
-                certificateSerialNumber: existing?.certificateSerialNumber,
+                // 关键：Seal 的证书序列号必须从运行包描述文件里实时读取，不能继承旧记录。
+                // 爱思/其他工具签的 Seal，证书不是 Seal 创建的，旧记录里可能是 nil 或过期值，
+                // 导致前置清理误撤 Seal 在用的证书 → 变砖（2026-09-15 真机确认）。
+                certificateSerialNumber: metadata.certificateSerialNumbers.first
+                    ?? existing?.certificateSerialNumber,
                 provisioningProfileExpirationDate: metadata.expirationDate,
                 ipaRelativePath: files.ipaRelativePath,
                 signedIPARelativePath: nil,

@@ -1,11 +1,17 @@
 import Foundation
 import Security
+import CryptoKit
 
 struct ProvisioningProfileReader: Sendable {
     struct Summary: Sendable, Equatable {
         let expirationDate: Date?
         let teamIdentifier: String?
         let applicationIdentifier: String?
+    }
+
+    struct DeveloperCertificateIdentity: Sendable, Equatable {
+        let serialNumber: String
+        let sha256Fingerprint: String
     }
 
     struct Details: Sendable, Equatable {
@@ -17,8 +23,12 @@ struct ProvisioningProfileReader: Sendable {
         let applicationIdentifier: String?
         let bundleIdentifier: String?
         let deviceIdentifiers: [String]
-        let certificateSerialNumbers: [String]
+        let developerCertificates: [DeveloperCertificateIdentity]
         let entitlements: [String: ProvisioningEntitlementValue]
+
+        var certificateSerialNumbers: [String] {
+            developerCertificates.map(\.serialNumber)
+        }
 
         var entitlementKeys: [String] {
             entitlements.keys.sorted()
@@ -55,7 +65,7 @@ struct ProvisioningProfileReader: Sendable {
             applicationIdentifier: applicationIdentifier,
             bundleIdentifier: bundleIdentifier,
             deviceIdentifiers: (dictionary["ProvisionedDevices"] as? [String]) ?? [],
-            certificateSerialNumbers: certificateData.compactMap(Self.certificateSerialNumber),
+            developerCertificates: certificateData.compactMap(Self.certificateIdentity),
             entitlements: entitlements.reduce(into: [:]) { result, item in
                 if let value = ProvisioningEntitlementValue.make(from: item.value) {
                     result[item.key] = value
@@ -163,6 +173,24 @@ struct ProvisioningProfileReader: Sendable {
         }
         let serial = serialData as Data
         return serial.map { String(format: "%02X", $0) }.joined()
+    }
+
+    private static func certificateIdentity(_ data: Data) -> DeveloperCertificateIdentity? {
+        guard let serialNumber = certificateSerialNumber(data) else { return nil }
+        return developerCertificateIdentity(der: data, serialNumber: serialNumber)
+    }
+
+    static func developerCertificateIdentity(
+        der data: Data,
+        serialNumber: String
+    ) -> DeveloperCertificateIdentity {
+        let fingerprint = SHA256.hash(data: data)
+            .map { String(format: "%02X", $0) }
+            .joined()
+        return DeveloperCertificateIdentity(
+            serialNumber: serialNumber,
+            sha256Fingerprint: fingerprint
+        )
     }
 
     private static let invalidProfile = ImportFailure(

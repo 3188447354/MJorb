@@ -51,4 +51,17 @@ struct ProvisioningProfileReaderTests {
             _ = try ProvisioningProfileReader().expirationDate(from: Data([0x01, 0x02]))
         }
     }
+
+    @Test
+    func developerCertificateIdentityUsesDERFingerprint() {
+        let certificate = ProvisioningProfileReader.developerCertificateIdentity(
+            der: Data([0x01, 0x02, 0x03]),
+            serialNumber: "0001"
+        )
+        #expect(certificate.serialNumber == "0001")
+        #expect(
+            certificate.sha256Fingerprint
+                == "039058C6F2C0CB492C533B0A4D14EF77CC0F78ABCCCED5287D84A1A2011CFB81"
+        )
+    }
 }

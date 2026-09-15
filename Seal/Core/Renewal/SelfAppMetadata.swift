@@ -21,9 +21,15 @@ struct SelfAppMetadata: Sendable {
     /// 而不是继承旧记录——爱思/其他工具签的 Seal，证书不是 Seal 创建的，
     /// 如果记录里存的是旧值或 nil，前置清理会误撤 Seal 在用的证书导致变砖。
     var certificateSerialNumbers: [String] = []
+    /// 主程序和全部扩展的真实 CMS 签名身份。读取失败时本字段为 nil，
+    /// 撤销/接管等高风险操作因此关闭，但 Seal 自身记录仍应正常注册。
+    var installedIdentity: InstalledIdentity? = nil
 
     @MainActor
-    static func current(bundle: Bundle = .main) -> SelfAppMetadata? {
+    static func current(
+        bundle: Bundle = .main,
+        identityReader: AppBundleSigningIdentityReader = .init()
+    ) -> SelfAppMetadata? {
         guard let bundleIdentifier = bundle.bundleIdentifier else { return nil }
         let name = (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
             ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String)
@@ -43,6 +49,10 @@ struct SelfAppMetadata: Sendable {
         let profileDetails = (try? Data(contentsOf: profileURL, options: .mappedIfSafe))
             .flatMap { try? ProvisioningProfileReader().details(from: $0) }
 
+        // 读取真实 CMS 签名身份；失败时仍创建 SelfAppMetadata，但 installedIdentity 为 nil，
+        // 所有撤销和接管操作因此关闭。
+        let identity = try? identityReader.read(bundleURL: bundle.bundleURL)
+
         return SelfAppMetadata(
             bundleURL: bundle.bundleURL,
             bundleIdentifier: bundleIdentifier,
@@ -59,7 +69,8 @@ struct SelfAppMetadata: Sendable {
             provisioningProfileUUID: profileDetails?.uuid,
             provisioningProfileName: profileDetails?.name,
             provisioningProfileCreationDate: profileDetails?.creationDate,
-            certificateSerialNumbers: profileDetails?.certificateSerialNumbers ?? []
+            certificateSerialNumbers: profileDetails?.certificateSerialNumbers ?? [],
+            installedIdentity: identity
         )
     }
 

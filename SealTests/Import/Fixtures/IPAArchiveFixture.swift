@@ -33,6 +33,7 @@ enum IPAArchiveFixture {
         includeIcon: Bool = true,
         includeShareExtension: Bool = false,
         includeEntitlements: Bool = false,
+        includeMobileProvision: Bool = false,
         extraEntries: [(path: String, data: Data)] = []
     ) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
@@ -82,6 +83,7 @@ enum IPAArchiveFixture {
                 let extensionInfo = try propertyListData([
                     "CFBundleDisplayName": "Share",
                     "CFBundleIdentifier": "\(app.bundleIdentifier).share",
+                    "CFBundleExecutable": "Share",
                     "NSExtension": [
                         "NSExtensionPointIdentifier": "com.apple.share-services"
                     ]
@@ -89,6 +91,31 @@ enum IPAArchiveFixture {
                 try add(
                     extensionInfo,
                     path: "\(appRoot)/PlugIns/Share.appex/Info.plist",
+                    to: archive
+                )
+                if includeMobileProvision {
+                    try add(
+                        Self.makeMinimalMobileProvisionData(),
+                        path: "\(appRoot)/PlugIns/Share.appex/embedded.mobileprovision",
+                        to: archive
+                    )
+                    try add(
+                        Data("share-extension-executable".utf8),
+                        path: "\(appRoot)/PlugIns/Share.appex/Share",
+                        to: archive
+                    )
+                }
+            }
+
+            if includeMobileProvision {
+                try add(
+                    Self.makeMinimalMobileProvisionData(),
+                    path: "\(appRoot)/embedded.mobileprovision",
+                    to: archive
+                )
+                try add(
+                    Data("main-executable".utf8),
+                    path: "\(appRoot)/\(app.name)",
                     to: archive
                 )
             }
@@ -119,5 +146,64 @@ enum IPAArchiveFixture {
             let start = Int(position)
             return data.subdata(in: start..<(start + size))
         }
+    }
+
+    /// 供 SignedIPAIdentityReader 测试使用的最小描述文件数据。
+    /// 实际内容不追求 Apple 格式完整，只要 ProvisioningProfileReader 能解析出关键字段即可。
+    static func makeMinimalMobileProvisionData() -> Data {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>UUID</key>
+            <string>FIXTURE-PROFILE-UUID</string>
+            <key>Name</key>
+            <string>Fixture Profile</string>
+            <key>CreationDate</key>
+            <date>2026-01-01T00:00:00Z</date>
+            <key>ExpirationDate</key>
+            <date>2027-01-01T00:00:00Z</date>
+            <key>TeamIdentifier</key>
+            <array><string>T3432ZHJUF9</string></array>
+            <key>Entitlements</key>
+            <dict>
+                <key>application-identifier</key>
+                <string>T3432ZHJUF9.com.example.seal</string>
+            </dict>
+            <key>DeveloperCertificates</key>
+            <array>
+                <data>QUFBQQ==</data>
+                <data>QkJCQg==</data>
+            </array>
+        </dict>
+        </plist>
+        """
+        return Data(xml.utf8)
+    }
+
+    /// 生成一个带描述文件和可执行文件的 Signed Seal IPA fixture，并返回 AppBundleSigningIdentityReader。
+    /// 测试可通过 inspector 闭包控制每个可执行文件的 CMS 读取结果。
+    static func signedSeal(
+        mainSigner: String,
+        extensionSigner: String
+    ) throws -> (data: Data, reader: AppBundleSigningIdentityReader) {
+        let archiveURL = try make(
+            apps: [AppSpec(
+                directoryName: "Seal.app",
+                bundleIdentifier: "com.example.seal",
+                name: "Seal",
+                version: "1.0.0",
+                buildNumber: "1"
+            )],
+            includeShareExtension: true,
+            includeMobileProvision: true
+        )
+        let data = try Data(contentsOf: archiveURL)
+        let reader = AppBundleSigningIdentityReader { url in
+            let serial = url.path.contains("PlugIns") ? extensionSigner : mainSigner
+            return ExecutableSignerEvidence(serialNumber: serial, cmsValid: true, codeDirectoryValid: true)
+        }
+        return (data, reader)
     }
 }

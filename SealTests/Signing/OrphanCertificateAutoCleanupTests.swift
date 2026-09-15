@@ -25,7 +25,8 @@ struct OrphanCertificateAutoCleanupTests {
         for code in [
             "SEAL-NET-102", "SEAL-AUTH-107", "SEAL-AUTH-105g", "SEAL-APPID-301",
             "SEAL-APPID-304", "SEAL-CERT-203", "SEAL-CERT-205", "SEAL-CERT-217",
-            "SEAL-PROFILE-313", "SEAL-INSTALL-702l", "SEAL-SIGN-405", "SEAL-SIGN-503"
+            "SEAL-PROFILE-313", "SEAL-INSTALL-702l", "SEAL-SIGN-405", "SEAL-SIGN-503",
+            "SEAL-CERT-220", "SEAL-CERT-221"
         ] {
             #expect(SigningCoordinator.isOrphanCertificateBlocking(failure(code)) == false)
         }

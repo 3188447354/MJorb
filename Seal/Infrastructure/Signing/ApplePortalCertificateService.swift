@@ -1,4 +1,4 @@
-﻿import Foundation
+import Foundation
 import UIKit
 @preconcurrency import AltSign
 
@@ -64,13 +64,8 @@ actor ApplePortalCertificateService {
                 deviceName: deviceName
             )
         } catch {
-            guard Self.isCertificateLimitError(error) else { throw error }
-            throw Self.failure(
-                title: "无法创建签名证书",
-                reason: "该账号证书数量已达上限，或本次证书请求无效。",
-                recovery: "请稍后重试",
-                code: "SEAL-CERT-204"
-            )
+            if let failure = CertificateRequestFailurePolicy.requestFailure(error: error, limitCode: "SEAL-CERT-204") { throw failure }
+            throw error
         }
         do {
             let refreshed = try await fetchCertificates(
@@ -289,24 +284,7 @@ actor ApplePortalCertificateService {
         let devicePart = sanitizedDevice.isEmpty ? "Device" : String(sanitizedDevice.prefix(18))
         return "Seal-\(devicePart)"
     }
-
-    private static func isCertificateLimitError(_ error: Error) -> Bool {
-        if let apiError = error as? ALTAppleAPIError,
-           case .invalidCertificateRequest = apiError {
-            return true
-        }
-        let nsError = error as NSError
-        let normalized = "\(nsError.domain) \(nsError.code) \(nsError.localizedDescription) \(String(describing: error))".lowercased()
-        return nsError.code == 3022
-            || normalized.contains("3022")
-            || normalized.contains("maximum number of certificates")
-            || normalized.contains("maximum") && normalized.contains("certificate")
-            || normalized.contains("too many") && normalized.contains("certificate")
-            || normalized.contains("invalidcertificaterequest")
-    }
-
-    /// 同 `ApplePortalSigningService.resume`：第一参数必须是 `ContinuationBox`，
-    /// 避免 AltSign 重复/迟到回调造成 `SWIFT TASK CONTINUATION MISUSE` 致命崩溃。
+    /// 与签名服务共用 ContinuationBox，防止 AltSign 重复或迟到回调导致二次 resume。
     private static func resume<T>(
         _ callback: ContinuationBox<LegacyBox<T>>,
         value: T?,

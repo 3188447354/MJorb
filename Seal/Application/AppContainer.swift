@@ -69,6 +69,9 @@ struct AppContainer {
             let logStore = SealLogStore(
                 fileURL: sealDirectory.appending(path: AppConfiguration.Paths.sealLogFile)
             )
+            let selfSigningHandoffStore = SelfSigningHandoffStore(
+                fileURL: sealDirectory.appending(path: "SelfSigningHandoff.json")
+            )
             let signingCoordinator = SigningCoordinator(
                 appStore: appStore,
                 accountRepository: accountRepository,
@@ -78,7 +81,8 @@ struct AppContainer {
                 portal: ApplePortalSigningService(
                     anisetteProvider: anisetteProvider
                 ),
-                logStore: logStore
+                logStore: logStore,
+                selfSigningHandoffStore: selfSigningHandoffStore
             )
             let refreshQueueStore = RefreshQueueStore(
                 fileURL: sealDirectory.appending(path: AppConfiguration.Paths.refreshQueueFile)
@@ -118,7 +122,10 @@ struct AppContainer {
                     metadata: $0,
                     appStore: appStore,
                     accountRepository: accountRepository,
-                    fileStore: fileStore
+                    fileStore: fileStore,
+                    selfSigningHandoffStore: selfSigningHandoffStore,
+                    keychain: keychain,
+                    logStore: logStore
                 )
             }
             // 维护作业：记录恢复 / Seal 自注册 / 孤儿文件清理。

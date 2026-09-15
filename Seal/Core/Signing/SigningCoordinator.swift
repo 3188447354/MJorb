@@ -19,6 +19,7 @@ actor SigningCoordinator {
     private let installChannel: any InstallChannel
     private let portal: ApplePortalSigningService
     private let logStore: SealLogStore?
+    private let selfSigningHandoffStore: SelfSigningHandoffStore?
 
     init(
         appStore: any AppStore,
@@ -27,7 +28,8 @@ actor SigningCoordinator {
         fileStore: AppFileStore,
         installChannel: any InstallChannel,
         portal: ApplePortalSigningService = ApplePortalSigningService(),
-        logStore: SealLogStore? = nil
+        logStore: SealLogStore? = nil,
+        selfSigningHandoffStore: SelfSigningHandoffStore? = nil
     ) {
         self.appStore = appStore
         self.accountRepository = accountRepository
@@ -36,6 +38,7 @@ actor SigningCoordinator {
         self.installChannel = installChannel
         self.portal = portal
         self.logStore = logStore
+        self.selfSigningHandoffStore = selfSigningHandoffStore
     }
 
     func signAndInstall(
@@ -115,8 +118,6 @@ actor SigningCoordinator {
         let originalSecret = secret
         let originalAccount = account
         var didPersistNewSignedArtifact = false
-        // Seal 自更新换证时，安装成功后才撤销被替换的旧本机证书（P1）。
-        let sealSerialBeforeSigning = app.isSeal ? app.certificateSerialNumber : nil
 
         do {
             try Task.checkCancellation()
@@ -233,8 +234,8 @@ actor SigningCoordinator {
             } catch let failure as ImportFailure where Self.isOrphanCertificateBlocking(failure) {
                 // 覆盖安装后 keychain 清空：远端仍存在的证书对本机永远不可用
                 // 证书名额已满 → 尝试自动清理非本机证书腾出名额。
-                // 策略：所有本机无私钥的证书一律撤销（留着也没法签新包，纯占名额），
-                // 清理后重读 keychain、不带选中序列号重签，走「复用剩余或新建」。
+                // 只清理已核验无引用的孤儿；受保护的签名身份保持不变。
+                // 清理后重读 keychain、不带失效选中序列号重签。
                 let cleanupOutcome = try await autoCleanOrphanCertificatesIfPossible(
                     account: account,
                     secret: secret
@@ -285,6 +286,17 @@ actor SigningCoordinator {
                 )
             }
 
+            // 历史 P12 被复用时也要持久化当前绑定；只保存新建路径会留下旧绑定。
+            let persistedSecret = try await keychain.load(accountID: accountID)
+            if persistedSecret != portalResult.updatedSecret {
+                try await persistNewSigningMaterial(
+                    portalResult.updatedSecret,
+                    serialNumber: portalResult.certificateSerialNumber,
+                    accountID: accountID,
+                    originalSecret: persistedSecret ?? originalSecret,
+                    originalAccount: account
+                )
+            }
             account.certificateSerialNumber = portalResult.certificateSerialNumber
             account.selectedCertificateSerialNumber = portalResult.certificateSerialNumber
             account.status = .verified
@@ -335,17 +347,7 @@ actor SigningCoordinator {
                 progress: progress,
                 onInstallProgress: onInstallProgress
             )
-            // P1：Seal 自更新且证书发生轮换 → 装成功后撤销被替换的旧本机证书，
-            // 回到「一个 Apple ID 本机只留一张证书」。装失败时旧 Seal 仍靠旧证运行，
-            // 绝不提前撤（撤了会让旧 Seal 立刻打不开）。
-            if let oldSealSerial = sealSerialBeforeSigning {
-                await revokeReplacedSealCertificate(
-                    oldSerialNumber: oldSealSerial,
-                    newSerialNumber: portalResult.certificateSerialNumber,
-                    account: account,
-                    secret: secret
-                )
-            }
+            // 自更新的接管确认由下次启动核对运行包完成；不在这里撤销旧证书。
             return installed
         } catch is CancellationError {
             if app.signedIPARelativePath != nil, originalState != .installed {
@@ -442,7 +444,7 @@ actor SigningCoordinator {
     ) async {
         guard let bound = secret.certificateSerialNumber,
               bound.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
-              secret.p12(for: bound) == nil else { return }
+              SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: bound) == nil else { return }
         var clearedSecret = secret
         clearedSecret.certificateP12 = nil
         clearedSecret.certificateSerialNumber = nil
@@ -452,43 +454,6 @@ actor SigningCoordinator {
         clearedAccount.certificateSerialNumber = nil
         clearedAccount.selectedCertificateSerialNumber = nil
         try? await accountRepository.save(clearedAccount)
-    }
-
-    /// Seal 自更新发生证书轮换后，撤销被替换的旧本机证书并清掉其本机 P12 材料。
-    /// 严格在安装成功后调用：此刻新 Seal 已用新证落地，旧证不再签着运行中的 Seal；
-    /// 装失败旧 Seal 仍靠旧证运行，绝不能提前撤。撤销失败只记日志，不影响已成功的续签，
-    /// 留待下次签名/续签前置清理兜底（旧证无私钥即被当孤儿撤掉）。
-    private func revokeReplacedSealCertificate(
-        oldSerialNumber: String,
-        newSerialNumber: String,
-        account: AppleAccountRecord,
-        secret: AccountSecret
-    ) async {
-        guard SigningCertificateSelectionPolicy.normalizedSerialNumber(oldSerialNumber)
-                != SigningCertificateSelectionPolicy.normalizedSerialNumber(newSerialNumber) else {
-            return
-        }
-        let certificateService = ApplePortalCertificateService()
-        if (try? await certificateService.revokeCertificate(
-            serialNumber: oldSerialNumber,
-            account: account,
-            secret: secret
-        )) != nil {
-            try? await logStore?.append(
-                category: .signing,
-                message: "Seal 自更新换证后已撤销旧本机证书 …\(oldSerialNumber.suffix(6))"
-            )
-        } else {
-            try? await logStore?.append(
-                category: .signing,
-                level: .warning,
-                message: "Seal 自更新换证后撤销旧本机证书失败（留待下次清理）…\(oldSerialNumber.suffix(6))"
-            )
-        }
-        if var refreshed = try? await keychain.load(accountID: account.id) {
-            refreshed.removeStoredCertificateMaterial(serialNumber: oldSerialNumber)
-            try? await keychain.save(refreshed, for: account.id)
-        }
     }
 
     /// 签名失败页「撤销并继续签名」（SEAL-CERT-204e）确认后调用：撤销账号下**所有**
@@ -523,10 +488,7 @@ actor SigningCoordinator {
         // 与签名链路 secret.p12(for:) 同口径：current + 历史 map 里全部可用 P12。
         var localUsableSerials = Set<String>()
         for certificate in inventory.certificates {
-            guard let data = secret.p12(for: certificate.serialNumber),
-                  let local = try? ALTCertificate(p12Data: data, password: nil),
-                  SigningCertificateSelectionPolicy.normalizedSerialNumber(local.serialNumber)
-                      == SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber)
+            guard SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: certificate.serialNumber) != nil
             else { continue }
             localUsableSerials.insert(
                 SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber)
@@ -628,8 +590,7 @@ actor SigningCoordinator {
         account: AppleAccountRecord,
         secret: AccountSecret
     ) async throws -> OrphanCleanupOutcome {
-        // 设备端 profile 核验：新策略下不影响「是否可撤」判定（无私钥一律撤），
-        // 但能取到就取，日志里标注信息完整度；取不到也不中止清理。
+        // 设备核验失败时保留证书；未知状态不能当成无人使用。
         let deviceReferenced = await DeviceProfileInspector.referencedCertificateSerials()
         let inventoryService = ApplePortalInventoryService()
         guard let inventory = try? await inventoryService.fetchInventory(
@@ -647,20 +608,17 @@ actor SigningCoordinator {
         // 与签名链路 secret.p12(for:) 同口径：current + 历史 map 里全部可用 P12。
         var localUsableSerials = Set<String>()
         for certificate in inventory.certificates {
-            guard let data = secret.p12(for: certificate.serialNumber),
-                  let local = try? ALTCertificate(p12Data: data, password: nil),
-                  SigningCertificateSelectionPolicy.normalizedSerialNumber(local.serialNumber)
-                      == SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber)
+            guard SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: certificate.serialNumber) != nil
             else { continue }
             localUsableSerials.insert(
                 SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber)
             )
         }
 
-        let apps = (try? await appStore.fetchAll()) ?? []
+        guard let apps = try? await appStore.fetchAll() else { return .unavailable }
         // Seal 自保护：找出 Seal 自身正在使用的证书序列号，前置清理绝不碰它，
         // 哪怕本机已无私钥。撤了 Seal 下次启动直接「不再可用」，变砖。
-        // Seal 旧证回收走续签流程的 revokeReplacedSealCertificate（装成功后才撤）。
+        // 自更新后的旧证仍可能供其他应用使用，不自动撤销。
         //
         // 关键：优先从运行包描述文件读真实证书序列号，而不是 DB 记录。
         // DB 记录可能是旧值（比如爱思签的 Seal 首次注册时为 nil，或同版本续签换证后未回补），
@@ -668,17 +626,36 @@ actor SigningCoordinator {
         let sealActiveSerial = await MainActor.run {
             SelfAppMetadata.current()?.certificateSerialNumbers.first
         } ?? apps.first(where: { $0.isSeal })?.certificateSerialNumber
+        let runningSealSerials = await MainActor.run {
+            Set(SelfAppMetadata.current()?.certificateSerialNumbers ?? [])
+        }
+        guard !runningSealSerials.isEmpty else {
+            try? await logStore?.append(category: .signing, message: "证书自动清理跳过：无法确认当前 Seal 的全部授权证书，保留现有证书")
+            return .unavailable
+        }
         let plan = CertificateCleanupPolicy.makePlan(
             certificates: inventory.certificates,
             apps: apps,
             localUsableSerials: localUsableSerials,
             deviceReferencedSerials: deviceReferenced,
-            sealActiveSerialNumber: sealActiveSerial
+            sealActiveSerialNumber: sealActiveSerial,
+            sealActiveSerialNumbers: runningSealSerials
+        )
+        let reuseStatuses = inventory.certificates.compactMap { certificate -> SigningCertificateReuseStatus? in
+            guard let local = SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: certificate.serialNumber) else { return nil }
+            return SigningCertificateMaterialPolicy.reuseStatus(local)
+        }
+        let reusableCount = reuseStatuses.filter { $0 == .reusable }.count
+        let shortLifetimeCount = reuseStatuses.filter { $0 == .insufficientLifetime }.count
+        let invalidValidityCount = reuseStatuses.filter { $0 == .invalidValidity }.count
+        try? await logStore?.append(
+            category: .signing,
+            message: "证书检查：远端 \(inventory.certificates.count) 张，本机有私钥 \(plan.localPrivateKeyCount) 张，可复用 \(reusableCount) 张，有效期不足 \(shortLifetimeCount) 张，日期无法核验 \(invalidValidityCount) 张；Seal 在用但无私钥 \(plan.protectedSealWithoutKeyCount) 张；设备核验\(plan.deviceVerified ? "已完成" : "不可用")"
         )
         guard plan.revocable.isEmpty == false else {
             try? await logStore?.append(
                 category: .signing,
-                message: "证书自动清理跳过：\(inventory.certificates.count) 张远端证书本机均有私钥"
+                message: "证书自动清理跳过：没有已核验无引用且无本机私钥的证书；保留当前签名身份"
             )
             return .noCandidates
         }
@@ -686,6 +663,7 @@ actor SigningCoordinator {
         let certificateService = ApplePortalCertificateService()
         var revokedSerials: [String] = []
         for certificate in plan.revocable {
+            try Task.checkCancellation()
             if (try? await certificateService.revokeCertificate(
                 serialNumber: certificate.serialNumber,
                 account: account,
@@ -1034,6 +1012,28 @@ actor SigningCoordinator {
         // 安装统一走本地通道（LocalDevVPN + Minimuxer + installation_proxy）。
         // OTA（itms-services）路线已按决策下线：安装一律经设备安装服务完成。
         if app.isSeal {
+            if let selfSigningHandoffStore {
+                guard let accountID = app.accountID,
+                      let signedProfile = SignedArtifactProfileReader.embeddedProfileDetails(in: signedData),
+                      let teamID = signedProfile.teamIdentifier,
+                      let profileUUID = signedProfile.uuid,
+                      let savedSecret = try await keychain.load(accountID: accountID),
+                      let serial = signedProfile.certificateSerialNumbers.first(where: {
+                          guard let candidate = SigningCertificateMaterialPolicy.availableCertificate(secret: savedSecret, serialNumber: $0) else { return false }
+                          return SigningCertificateMaterialPolicy.reuseStatus(candidate) == .reusable
+                      }),
+                      let local = SigningCertificateMaterialPolicy.availableCertificate(secret: savedSecret, serialNumber: serial),
+                      SigningCertificateMaterialPolicy.reuseStatus(local) == .reusable else {
+                    throw ImportFailure(title: "本机签名材料尚未就绪", reason: "自更新前未能确认已保存的证书私钥或签名包身份，已停止安装并保留当前 Seal。", recovery: "请重新签名；若仍失败，请导出日志检查本机签名材料。", code: "SEAL-CERT-226")
+                }
+                try await selfSigningHandoffStore.prepare(
+                    accountID: accountID,
+                    bundleIdentifier: effectiveBundleID,
+                    teamIdentifier: teamID,
+                    profileUUID: profileUUID,
+                    certificateSerialNumber: serial
+                )
+            }
             // Persist the real signed-profile expiry before iOS replaces this running app.
             updated.state = .installed
             updated.signedArtifactStatus = .installed
@@ -1214,27 +1214,18 @@ actor SigningCoordinator {
         var updatedSecret = secret
         var accountChanged = false
 
-        let localCertificateSerial: String? = {
-            guard let p12 = secret.certificateP12,
-                  let certificate = try? ALTCertificate(p12Data: p12, password: nil) else {
-                return nil
-            }
-            return certificate.serialNumber
-        }()
-        let storedSerial = secret.certificateSerialNumber?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let hasUsableLocalPrivateKey = {
-            guard let storedSerial, storedSerial.isEmpty == false,
-                  let localCertificateSerial else { return false }
-            return storedSerial.caseInsensitiveCompare(localCertificateSerial) == .orderedSame
-        }()
+        let storedSerial = secret.certificateSerialNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasUsableLocalPrivateKey = storedSerial.flatMap {
+            SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: $0)
+        } != nil
 
         if hasUsableLocalPrivateKey == false,
            secret.certificateSerialNumber != nil || secret.certificateP12 != nil {
-            try await keychain.clearSigningMaterial(accountID: account.id)
+            // 当前绑定损坏不能抹掉历史 P12；慢速签名仍能复用其他有效身份。
             updatedSecret.certificateP12 = nil
             updatedSecret.certificateSerialNumber = nil
             updatedSecret.certificateMachineIdentifier = nil
+            try await keychain.save(updatedSecret, for: account.id)
             updatedAccount.certificateSerialNumber = nil
             updatedAccount.selectedCertificateSerialNumber = nil
             accountChanged = true

@@ -3,6 +3,9 @@
 from pathlib import Path
 import re
 import sys
+import runpy
+
+HANDOFF_GUARD = runpy.run_path(str(Path(__file__).with_name("verify-certificate-handoff.py")))
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -194,7 +197,7 @@ def violations(load=read):
         "private func reconcileSealRecordFromRunningBundleIfNeeded(",
         "try await appStore.save(updated)"
     )
-    check("metadata.provisioningProfileUUID" in reconcile
+    check("if let uuid = metadata.provisioningProfileUUID," in reconcile
           and "metadata.expirationDate" in reconcile,
           "D: settlement must compare profile identity and expiry")
 
@@ -311,7 +314,7 @@ def violations(load=read):
     check("certificateP12BySerial[oldKey] = oldP12" in account_secret,
           "Certificates: creating a new certificate must not discard older local P12 material")
     check("for remote in certificates" in signing_service
-          and "secret.p12(for: remote.serialNumber)" in signing_service,
+          and "SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: remote.serialNumber)" in signing_service,
           "Certificates: signing must reuse any stored P12 whose remote certificate is still active")
     check("isCertificateImporterPresented" not in cert_view
           and "从 P12 备份恢复本机私钥" not in cert_view,
@@ -517,6 +520,9 @@ def violations(load=read):
           "ios.yml: build-package must run ensure-rustbridge.sh")
     check("ensure-rustbridge.sh" in section(ios, "\n  swift-regression:", "\n  rork-sign-tests:"),
           "ios.yml: swift-regression must run ensure-rustbridge.sh")
+    handoff_failures = HANDOFF_GUARD["violations"](load)
+    checks += 6
+    failures.extend(handoff_failures)
     return checks, failures
 
 def main():
@@ -613,8 +619,8 @@ def main():
          "ProvisioningProfileReader().summary(from:",
          "D: the running bundle must expose its provisioning profile identity"),
         ("Seal/Core/Renewal/SelfAppRegistrar.swift",
-         "try await reconcileSealRecordFromRunningBundleIfNeeded(",
-         "try await cleanupDuplicateSealRecords(records: records, keepID: existing.id) // ",
+         "// 后者是 R07：同版本续签会换掉 profile 但版本号不变，只比版本就会漏掉结算。\n            try await reconcileSealRecordFromRunningBundleIfNeeded(",
+         "// 后者是 R07\n            try await cleanupDuplicateSealRecords(",
          "D: the same-version branch must reconcile"),
         ("Seal/Core/Renewal/SelfAppRegistrar.swift",
          "if let uuid = metadata.provisioningProfileUUID,",
@@ -669,7 +675,7 @@ def main():
          "CertificateRevocationImpact.affectedAppsUnused(",
          "Certificates: UI must show full identity and associated apps"),
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "if remoteContainsExpected == false {",
+         "if remoteContainsExpected == false, externalSealSerial == nil {",
          "if false {",
          "Certificates: stale binding must not blindly request another certificate"),
         ("Seal/Features/Settings/SettingsViewModel.swift",
@@ -724,6 +730,17 @@ def main():
          "resignAppsAffectedByCertificateSacrificeIfNeeded(signingSucceeded: signingSucceeded)",
          "// affected apps left dead after certificate sacrifice",
          "Sacrifice: affected installed apps must be re-signed after the retry succeeds"),
+    ]
+    mutations += [
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "CertificateRequestFailurePolicy.requestFailure", "LegacyCertificateFailure.requestFailure",
+         "both certificate creation paths must use the shared error policy"),
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "selfSigningHandoffStore.prepare(", "selfSigningHandoffStore.skippedPrepare(",
+         "handoff must persist before installation"),
+        ("Seal/Features/Settings/SettingsViewModel.swift",
+         "preservingSigningMaterial(from:", "discardingSigningMaterial(from:",
+         "reauthentication must retain historical P12 material"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

@@ -629,12 +629,14 @@ final class SettingsViewModel: ObservableObject {
             let sealActiveSerial = await MainActor.run {
                 SelfAppMetadata.current()?.certificateSerialNumbers.first
             } ?? apps.first(where: { $0.isSeal })?.certificateSerialNumber
+            let runningSealSerials = Set(SelfAppMetadata.current()?.certificateSerialNumbers ?? [])
             let plan = CertificateCleanupPolicy.makePlan(
                 certificates: inventory.certificates,
                 apps: apps,
                 localUsableSerials: localUsableSerials,
-                deviceReferencedSerials: deviceReferenced,
-                sealActiveSerialNumber: sealActiveSerial
+                deviceReferencedSerials: runningSealSerials.isEmpty ? nil : deviceReferenced,
+                sealActiveSerialNumber: sealActiveSerial,
+                sealActiveSerialNumbers: runningSealSerials
             )
             try? await logStore?.append(
                 category: .account,
@@ -701,18 +703,20 @@ final class SettingsViewModel: ObservableObject {
                     localUsableSerials.insert(remoteSerial)
                 }
             }
-            // 设备端引用不重复核验：prepare 与 execute 间隔极短，且设备端 profile 只会随
-            // 安装新增，操作租约保证其间 Seal 内没有任何签名/安装在跑。
+            // 执行时重新核验设备引用，不能用空集合冒充之前核验过的真实清单。
             // Seal 自保护：优先从运行包描述文件读真实证书序列号，而不是 DB 记录。
             let sealActiveSerial = await MainActor.run {
                 SelfAppMetadata.current()?.certificateSerialNumbers.first
             } ?? apps.first(where: { $0.isSeal })?.certificateSerialNumber
+            let runningSealSerials = Set(SelfAppMetadata.current()?.certificateSerialNumbers ?? [])
+            let freshDeviceReferenced = await DeviceProfileInspector.referencedCertificateSerials()
             let freshPlan = CertificateCleanupPolicy.makePlan(
                 certificates: freshInventory.certificates,
                 apps: apps,
                 localUsableSerials: localUsableSerials,
-                deviceReferencedSerials: plan.deviceVerified ? [] : nil,
-                sealActiveSerialNumber: sealActiveSerial
+                deviceReferencedSerials: runningSealSerials.isEmpty ? nil : freshDeviceReferenced,
+                sealActiveSerialNumber: sealActiveSerial,
+                sealActiveSerialNumbers: runningSealSerials
             )
             let confirmedSerials = Set(plan.revocable.map {
                 SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber)
@@ -1575,13 +1579,7 @@ final class SettingsViewModel: ObservableObject {
         } ?? baseRecord
 
         let previousSecret = try await keychain.load(accountID: record.id)
-        var mergedSecret = authenticated.secret
-        if let previousSecret,
-           previousSecret.accountIdentifier == authenticated.secret.accountIdentifier {
-            mergedSecret.certificateP12 = previousSecret.certificateP12
-            mergedSecret.certificateSerialNumber = previousSecret.certificateSerialNumber
-            mergedSecret.certificateMachineIdentifier = previousSecret.certificateMachineIdentifier
-        }
+        let mergedSecret = authenticated.secret.preservingSigningMaterial(from: previousSecret)
         try await keychain.save(mergedSecret, for: record.id)
         do {
             try await accountRepository.save(record)

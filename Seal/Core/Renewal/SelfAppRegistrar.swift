@@ -6,6 +6,9 @@ actor SelfAppRegistrar {
     private let appStore: any AppStore
     private let accountRepository: any AccountRepository
     private let fileStore: AppFileStore
+    private let selfSigningHandoffStore: SelfSigningHandoffStore?
+    private let keychain: KeychainVault?
+    private let logStore: SealLogStore?
 
     // 固定 ID，确保 Seal 记录和文件夹路径始终一致，不会出现多个文件夹
     private let fixedSealID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
@@ -17,18 +20,27 @@ actor SelfAppRegistrar {
         metadata: SelfAppMetadata,
         appStore: any AppStore,
         accountRepository: any AccountRepository,
-        fileStore: AppFileStore
+        fileStore: AppFileStore,
+        selfSigningHandoffStore: SelfSigningHandoffStore? = nil,
+        keychain: KeychainVault? = nil,
+        logStore: SealLogStore? = nil
     ) {
         self.metadata = metadata
         self.appStore = appStore
         self.accountRepository = accountRepository
         self.fileStore = fileStore
+        self.selfSigningHandoffStore = selfSigningHandoffStore
+        self.keychain = keychain
+        self.logStore = logStore
     }
 
     func ensureRegistered() async throws {
         guard isRegistering == false else { return }
         isRegistering = true
         defer { isRegistering = false }
+
+        // 所有早退分支之前核验，包含待安装自更新源；只读运行包和钥匙串，不发网络请求。
+        await confirmSelfSigningHandoff()
 
         let records = try await appStore.fetchAll()
         let accounts = try await accountRepository.fetchAll()
@@ -48,6 +60,13 @@ actor SelfAppRegistrar {
            existing.ipaRelativePath.isEmpty == false,
            try await fileStore.exists(relativePath: existing.ipaRelativePath),
            Version.compare(existing.version, metadata.version) != .orderedAscending {
+            // 保留待安装源及 signingTargets，但已安装快照必须来自当前运行包。
+            // 安装失败后仍运行旧包时，不能让安装前乐观写入的新有效期继续显示。
+            try await reconcileSealRecordFromRunningBundleIfNeeded(
+                existing: existing,
+                metadata: metadata,
+                accounts: accounts
+            )
             try await cleanupDuplicateSealRecords(records: records, keepID: existing.id)
             return
         }
@@ -76,6 +95,45 @@ actor SelfAppRegistrar {
 
         // 清理历史残留的重复记录
         try await cleanupDuplicateSealRecords(records: records, keepID: id)
+    }
+
+    private func confirmSelfSigningHandoff() async {
+        guard let selfSigningHandoffStore, let keychain else { return }
+        do {
+            guard let pending = try await selfSigningHandoffStore.loadPending() else { return }
+            let secret = try await keychain.load(accountID: pending.accountID)
+            let materialStatus: SelfSigningHandoffMaterialStatus
+            if let secret,
+               let certificate = SigningCertificateMaterialPolicy.availableCertificate(
+                   secret: secret,
+                   serialNumber: pending.certificateSerialNumber
+               ) {
+                materialStatus = SigningCertificateMaterialPolicy.reuseStatus(certificate) == .reusable
+                    ? .available : .unusableCertificate
+            } else {
+                materialStatus = .missingPrivateKey
+            }
+            let status = try await selfSigningHandoffStore.confirm(
+                metadata: metadata,
+                pendingID: pending.id,
+                materialStatus: materialStatus
+            )
+            guard status != .noPending, status != .awaitingRestart, status != .superseded else { return }
+            try? await logStore?.append(
+                category: .signing,
+                level: status == .confirmed ? .info : .warning,
+                message: status.message,
+                code: status == .confirmed ? nil : "SEAL-CERT-224"
+            )
+        } catch {
+            // 文件或钥匙串暂不可读时保留记录；不能阻断启动，也不能宣称接管成功。
+            try? await logStore?.append(
+                category: .signing,
+                level: .warning,
+                message: "本机签名启动核验暂未完成：本地记录或钥匙串不可读，保留核验目标，下次维护时重试。",
+                code: "SEAL-CERT-225"
+            )
+        }
     }
 
     // MARK: - 原子更新：先暂存，再提交覆盖，失败回滚
@@ -266,6 +324,20 @@ actor SelfAppRegistrar {
         if existing.certificateSerialNumber != resolvedCertSerial {
             updated.certificateSerialNumber = resolvedCertSerial
             changed = true
+        }
+
+        // 成品目标独立保留；旧包重启只能纠正安装快照，不能把待安装成品标成已安装。
+        if existing.signedIPARelativePath != nil,
+           let runningProfileUUID = metadata.provisioningProfileUUID,
+           let target = existing.signingTargets.first(where: {
+               $0.bundleIdentifier == metadata.bundleIdentifier
+           }), let targetProfileUUID = target.profileUUID {
+            let status: SignedArtifactStatus = targetProfileUUID.caseInsensitiveCompare(runningProfileUUID) == .orderedSame
+                ? .installed : .awaitingVerification
+            if existing.signedArtifactStatus != status {
+                updated.signedArtifactStatus = status
+                changed = true
+            }
         }
 
         // version / buildNumber **不在这里对齐**：它们是 AppRecord 的 `let` 常量。

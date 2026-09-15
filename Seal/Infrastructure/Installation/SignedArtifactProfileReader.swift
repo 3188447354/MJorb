@@ -15,6 +15,10 @@ enum SignedArtifactProfileReader {
     private static let mainProvisionSegmentCount = 3
 
     static func embeddedProfileUUID(in ipaData: Data) -> String? {
+        embeddedProfileDetails(in: ipaData)?.uuid
+    }
+
+    static func embeddedProfileDetails(in ipaData: Data) -> ProvisioningProfileReader.Details? {
         guard let archive = try? Archive(data: ipaData, accessMode: .read) else { return nil }
         guard let entry = archive.first(where: { isMainProvision($0.path) }) else { return nil }
 
@@ -31,7 +35,7 @@ enum SignedArtifactProfileReader {
               let details = try? ProvisioningProfileReader().details(from: profileData) else {
             return nil
         }
-        return details.uuid
+        return details
     }
 
     private static func isMainProvision(_ path: String) -> Bool {

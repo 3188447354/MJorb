@@ -216,8 +216,6 @@ actor RenewalCoordinator {
                 do {
                     try Task.checkCancellation()
                     try await queueStore.markRunning(appID: item.appID)
-                    let queueStore = self.queueStore
-                    let isSeal = app.isSeal
                     let latestApp = app
                     let updated = try await signingCoordinator.signAndInstall(
                         appID: item.appID,
@@ -230,9 +228,8 @@ actor RenewalCoordinator {
                         // 交回 installd 裁决，否则全部被 SEAL-APPID-DEVICELIMIT 误拦。
                         bypassFreeAccountDeviceLimit: true,
                         progress: { stage in
-                            if isSeal, stage == .pushing || stage == .installing {
-                                try? await queueStore.markCompleted(appID: item.appID)
-                            }
+                            // 自更新上传开始不代表安装成功。进程被终止时保留 running，
+                            // 下次启动恢复为 unknown；不能把仍运行旧包的续签记为完成。
                             await progress(
                                 .appProgress(
                                     index: offset + 1,

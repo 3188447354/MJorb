@@ -170,16 +170,8 @@ enum ApplePortalSigningFailure {
         let rawMessage = nsError.localizedDescription
         let normalized = rawMessage.lowercased()
 
-        if normalized.contains("maximum")
-            || normalized.contains("limit")
-            || normalized.contains("too many")
-            || normalized.contains("invalidcertificaterequest") {
-            return ImportFailure(
-                title: "无法创建签名证书",
-                reason: "Apple 拒绝创建签名证书：该账号证书数量已达上限，或本次证书请求无效（Apple 错误 \(diagnostic)）。",
-                recovery: "请稍后重试",
-                code: "SEAL-CERT-204a"
-            )
+        if let failure = CertificateRequestFailurePolicy.requestFailure(error: error, limitCode: "SEAL-CERT-204a") {
+            return failure
         }
 
         if normalized.contains("network")
@@ -412,6 +404,7 @@ actor ApplePortalSigningService {
             stage = .certificate
             let identity = try await signingIdentity(
                 account: account,
+                isSeal: app.isSeal,
                 secret: secret,
                 team: team,
                 session: session,
@@ -618,17 +611,14 @@ actor ApplePortalSigningService {
 
     /// 复用证书的最低剩余有效期：必须覆盖免费账号描述文件的 7 天寿命。
     /// 只查「当前未过期」会把明天就到期的证书签进新包，次日 iOS 判「尚未验证」闪退。
-    private static let certificateReuseMinimumRemainingLifetime: TimeInterval = 7 * 24 * 3600
 
     private static func certificateReusable(_ certificate: ALTCertificate, now: Date = Date()) -> Bool {
-        guard let validity = certificate.data.flatMap(X509CertificateValidityReader.validity(from:)) else {
-            return false
-        }
-        return validity.notAfter.timeIntervalSince(now) > certificateReuseMinimumRemainingLifetime
+        SigningCertificateMaterialPolicy.reuseStatus(certificate, now: now) == .reusable
     }
 
     private func signingIdentity(
         account: AppleAccountRecord,
+        isSeal: Bool,
         secret: AccountSecret,
         team: ALTTeam,
         session: ALTAppleAPISession,
@@ -643,9 +633,7 @@ actor ApplePortalSigningService {
         let effectiveSerial = selectedCertificateSerialNumber ?? secret.certificateSerialNumber
         if let serial = effectiveSerial,
            serial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
-           let data = secret.p12(for: serial),
-           let local = try? ALTCertificate(p12Data: data, password: nil),
-           local.serialNumber.caseInsensitiveCompare(serial) == .orderedSame,
+           let local = SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: serial),
            let machineID = secret.certificateMachineIdentifier,
            machineID.isEmpty == false {
             local.machineIdentifier = machineID
@@ -653,7 +641,7 @@ actor ApplePortalSigningService {
                 // 在生效列表且剩余有效期覆盖 7 天 profile 寿命才可复用：只查列表/只看当下未过期，
                 // 会把「明天就到期的证书」签进新包，次日被 iOS 判「尚未验证」闪退。
                 if certificates.contains(where: {
-                    $0.serialNumber.caseInsensitiveCompare(serial) == .orderedSame
+                    SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber) == SigningCertificateSelectionPolicy.normalizedSerialNumber(serial)
                 }), Self.certificateReusable(local) {
                     return SigningIdentity(
                         certificate: local,
@@ -685,12 +673,10 @@ actor ApplePortalSigningService {
         try Task.checkCancellation()
 
         if let selectedCertificateSerialNumber,
-           let data = secret.p12(for: selectedCertificateSerialNumber),
            let remote = certificates.first(where: {
-               $0.serialNumber.caseInsensitiveCompare(selectedCertificateSerialNumber) == .orderedSame
+               SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber) == SigningCertificateSelectionPolicy.normalizedSerialNumber(selectedCertificateSerialNumber)
            }),
-           let local = try? ALTCertificate(p12Data: data, password: nil),
-           local.serialNumber.caseInsensitiveCompare(selectedCertificateSerialNumber) == .orderedSame,
+           let local = SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: selectedCertificateSerialNumber),
            Self.certificateReusable(local) {
             local.machineIdentifier = remote.machineIdentifier
             return SigningIdentity(
@@ -703,12 +689,10 @@ actor ApplePortalSigningService {
         }
 
         if let serial = secret.certificateSerialNumber,
-           let data = secret.p12(for: serial),
            let remote = certificates.first(where: {
-               $0.serialNumber.caseInsensitiveCompare(serial) == .orderedSame
+               SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber) == SigningCertificateSelectionPolicy.normalizedSerialNumber(serial)
            }),
-           let local = try? ALTCertificate(p12Data: data, password: nil),
-           local.serialNumber.caseInsensitiveCompare(serial) == .orderedSame,
+           let local = SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: serial),
            Self.certificateReusable(local) {
             local.machineIdentifier = remote.machineIdentifier
             return SigningIdentity(
@@ -724,9 +708,7 @@ actor ApplePortalSigningService {
         // 自动创建过的 P12。当前绑定已被撤销时，先在这些历史材料里寻找仍在 Apple
         // 生效列表的证书；找到就自动修复绑定并无感复用，不申请新证书、不撤销旧 App。
         for remote in certificates {
-            guard let data = secret.p12(for: remote.serialNumber),
-                  let local = try? ALTCertificate(p12Data: data, password: nil),
-                  local.serialNumber.caseInsensitiveCompare(remote.serialNumber) == .orderedSame,
+            guard let local = SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: remote.serialNumber),
                   Self.certificateReusable(local) else { continue }
             local.machineIdentifier = remote.machineIdentifier
             return SigningIdentity(
@@ -738,20 +720,34 @@ actor ApplePortalSigningService {
             )
         }
 
-        // Apple 服务器只保存公证证书，不保存创建证书时在本机生成的私钥。
-        // 如果远端仍有这张证书，但本机 P12 丢失/损坏，不能把它当成「没有证书」
-        // 再申请一张：这样一定会撞证书数量上限，而且即使申请成功也无法恢复原证书。
+        // 只对当前运行包、同一 Team 且缺少本机私钥的外部身份允许首次接管。
+        // 先尝试创建而不撤销当前 Seal；Apple 明确拒绝后说明恢复路径。
+        let runningMetadata = await MainActor.run { isSeal ? SelfAppMetadata.current() : nil }
+        let localPrivateKeySerials = Set(certificates.compactMap { certificate -> String? in
+            SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: certificate.serialNumber) == nil
+                ? nil : certificate.serialNumber
+        })
+        let externalSealSerial = SigningCertificateMaterialPolicy.externalSealSerial(
+            isSeal: isSeal,
+            teamID: account.teamID,
+            runningTeamID: runningMetadata?.signingTeamIdentifier,
+            runningSerials: runningMetadata?.certificateSerialNumbers ?? [],
+            remoteSerials: certificates.map(\.serialNumber),
+            localPrivateKeySerials: localPrivateKeySerials,
+            expectedSerialNumber: selectedCertificateSerialNumber ?? secret.certificateSerialNumber
+        )
         let expectedSerial = selectedCertificateSerialNumber ?? secret.certificateSerialNumber
         if let expectedSerial,
            expectedSerial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
             let remoteContainsExpected = certificates.contains {
-                $0.serialNumber.caseInsensitiveCompare(expectedSerial) == .orderedSame
+                SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber) == SigningCertificateSelectionPolicy.normalizedSerialNumber(expectedSerial)
             }
             if remoteContainsExpected,
-               secret.p12(for: expectedSerial).flatMap({ try? ALTCertificate(p12Data: $0, password: nil) }) == nil {
+               SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: expectedSerial) == nil,
+               externalSealSerial == nil {
                 throw Self.missingLocalPrivateKeyFailure(serialNumber: expectedSerial)
             }
-            if remoteContainsExpected == false {
+            if remoteContainsExpected == false, externalSealSerial == nil {
                 // 账号记录仍指向一张已经被撤销/删除的证书。不能把「绑定过的旧证书
                 // 不存在」伪装成「请再申请一张」：当前账号可能正好只剩另一张仍被
                 // 已安装 App 使用的证书，盲目申请只会再次撞数量上限。
@@ -762,12 +758,25 @@ actor ApplePortalSigningService {
             }
         }
 
-        return try await createSigningIdentity(
-            secret: secret,
-            team: team,
-            session: session,
-            deviceName: deviceName,
-            persistSigningMaterial: persistSigningMaterial
+        do {
+            return try await createSigningIdentity(
+                secret: secret,
+                team: team,
+                session: session,
+                deviceName: deviceName,
+                persistSigningMaterial: persistSigningMaterial
+            )
+        } catch let failure as ImportFailure where failure.code == "SEAL-CERT-204b" && externalSealSerial != nil {
+            throw Self.externalSealIdentityFailure(underlying: failure)
+        }
+    }
+
+    static func externalSealIdentityFailure(underlying: ImportFailure) -> ImportFailure {
+        Self.failure(
+            title: "Seal 尚未建立本机签名身份",
+            reason: "当前 Seal 使用外部工具签发的证书，本机没有对应私钥。登录同一个 Apple ID 不会同步该私钥；为保护当前 Seal，已保留其证书。尝试创建本机证书时，Apple 拒绝了新增请求。\n\(underlying.reason)",
+            recovery: "请先用原电脑签名工具为 Seal 续期以保持可用，再在电脑端检查该账号证书状态。待账号允许新建证书后，回到 Seal 再次续签；本页重复检查或重新登录不会补回外部私钥。",
+            code: "SEAL-CERT-221"
         )
     }
 
@@ -776,7 +785,7 @@ actor ApplePortalSigningService {
         return Self.failure(
             title: "本机缺少证书私钥",
             reason: "Apple 账号下仍有证书（序列号末尾 …\(normalizedSerial.suffix(12))），但本机没有可用的 P12 私钥。已安装的 App 仍可能继续运行，因为它们使用的是包内已签入的证书；新签名不能只靠 Apple 服务器上的公钥证书完成。",
-            recovery: "请稍后重试",
+            recovery: "请在原签名工具检查这张证书的签名身份；重新登录 Apple ID 无法恢复缺失的本机私钥。",
             code: "SEAL-CERT-204c"
         )
     }
@@ -792,7 +801,7 @@ actor ApplePortalSigningService {
         return Self.failure(
             title: "本机绑定的证书已不存在",
             reason: "本机记录绑定的证书序列号末尾为 …\(normalizedSerial.suffix(12))，Apple 侧已找不到它。\(remainingText)。已安装 App 仍可能继续运行，但不能用另一张证书的公钥冒充本机私钥签名。",
-            recovery: "请稍后重试",
+            recovery: "请在「我的」中核对账号证书清单及本机签名身份；若当前 Seal 来自电脑工具，请先用原工具保持 Seal 可用，再处理证书绑定。",
             code: "SEAL-CERT-204d"
         )
     }
@@ -813,13 +822,8 @@ actor ApplePortalSigningService {
             )
             requested = created
         } catch {
-            guard Self.isCertificateLimitError(error) else { throw error }
-            throw Self.failure(
-                title: "签名证书数量已达上限",
-                reason: "该 Apple ID 的签名证书数量已达上限，且没有可自动释放的无用证书。",
-                recovery: "请稍后重试",
-                code: "SEAL-CERT-204b"
-            )
+            if let failure = CertificateRequestFailurePolicy.requestFailure(error: error) { throw failure }
+            throw error
         }
 
         do {
@@ -950,21 +954,6 @@ actor ApplePortalSigningService {
             team: team,
             session: refreshedSession
         )) != nil
-    }
-
-    private static func isCertificateLimitError(_ error: Error) -> Bool {
-        if let apiError = error as? ALTAppleAPIError,
-           case .invalidCertificateRequest = apiError {
-            return true
-        }
-        let nsError = error as NSError
-        let normalized = "\(nsError.domain) \(nsError.code) \(nsError.localizedDescription) \(String(describing: error))".lowercased()
-        return nsError.code == 3022
-            || normalized.contains("3022")
-            || normalized.contains("maximum number of certificates")
-            || normalized.contains("maximum") && normalized.contains("certificate")
-            || normalized.contains("too many") && normalized.contains("certificate")
-            || normalized.contains("invalidcertificaterequest")
     }
 
     private func fetchCertificates(

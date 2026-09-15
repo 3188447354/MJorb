@@ -426,6 +426,30 @@
 
 ## 二、历史记录
 
+### 2026-09-15 · 1.1.11：外部签名首次接管、证书诊断与重启确认
+
+- **现象**：爱思用同一 Apple ID 安装 Seal 后，本机续签两次报 204b，清理日志均声称「1 张远端证书本机均有私钥」。
+- **根因**：保留候选同时包含「有私钥」与「Seal 在用但无私钥」，日志混淆两者；两个创建入口将 AltSign 请求无效也判为证书上限。缺失本机私钥的外部身份没有独立恢复语义。另查明重新认证未合并历史 P12、当前绑定损坏时清空全部材料，会再次破坏本机续签能力。
+- **修复**：共用私钥/序列号与 >7 天复用判据；准确区分 AltSign 请求无效和真实名额限制，保留脱敏 domain/code。运行包同 Team 的外部 Seal 身份允许尝试建立本机新身份，但不撤旧证；真实上限返回 221 恢复指引。自动清理保护所有运行包授权证书、已装应用/扩展及设备 profile 引用，设备或应用身份未知时保留。清理日志分列私钥、可复用、寿命不足、自保护和核验状态。
+- **自更新**：安装前重载私钥并从成品 profile 读取目标身份，原子保存待确认记录；下一进程启动核对运行包/私钥后确认。删除安装返回后撤旧证与删除旧 P12 的路径。旧包启动时纠正乐观有效期但保留待更新源；批量上传阶段不再提前标记完成。
+- **涉及文件**：CertificateRequestFailurePolicy、SigningCertificateMaterialPolicy、ApplePortalSigningService、ApplePortalCertificateService、SigningCoordinator、CertificateCleanupPolicy、AccountSecret、SettingsViewModel、SelfSigningHandoffStore、SelfAppRegistrar、RenewalCoordinator、SignedArtifactProfileReader、SigningProgressView 及对应测试/静态守卫。
+- **验证状态**：新增结构守卫先在旧实现检出 6 个问题，集成后通过；既有守卫与变异检查通过。Swift 单测/编译待本次 GitHub Actions；真机爱思安装→首次续签→重启确认→再次复用待回归，不声称真机已修复。
+- **限制**：Apple 确实无名额且外部私钥不可取得时，软件不能凭同一账号恢复私钥；保留原工具续期及电脑辅助恢复路径。重启后的中断批量项维持 unknown，由用户恢复；没有可靠操作关联 ID 时不自动完成另一轮任务。旧证书不自动回收。
+- **常犯坑位补记**：私钥存在、证书可复用、证书受保护是三个不同条件；同进程安装返回不等于新包已经运行；恢复旧运行包快照时不能删除尚未安装的新源文件。
+
+### 2026-09-15 · 续签 Seal 报证书上限：清理两次跳过，静态定位两处诊断失真
+
+- **现象**：截图显示 Seal v1.1.10 续签失败「签名证书数量已达上限」。本次附件 `Seal-log.txt` 内容仅覆盖 2026-09-09，含旧的序列号前导零误判及设备存储不足，没有此次 204b 或证书清理记录，不能据此确认本次运行根因。
+- **后补真机证据**：`Seal-log(5).txt` 对应本次故障：12:04:43 准备签名 Seal，12:04:45 前置清理报告「1 张远端证书本机均有私钥」，12:04:53 失败后清理再次报告同句并抛 204b；11:55:27–38 有相同序列。故可确认清理已触发两次但候选为空，随后仍报告创建失败，并非旧版遗漏 204b 触发条件。11:45–46 另一账号的 LiveContainer、StikDebug 已签装成功，不能拿其成功或撤销记录推定 Seal 账号有可用私钥。
+- **用户确认签名来源**：当前 Seal 由爱思助手使用同一 Apple ID 签名安装，进入 Seal 后仍用该账号续签。相同账号不意味着爱思生成的私钥已进入 Seal 的 AccountSecret/P12；外部签名身份无法直接由本机接管，成为目前最符合证据的阻断路径：本机无对应私钥 → 不能复用 → 当前运行证书被自保护保留 → 新建失败 → 再次清理仍无候选。尚未直接读取本机 P12 状态，且 204b 丢失原始错误，不能把真正的 Apple 名额限制当成已独立验证的事实。后续处理应解决签名身份接管/初始化与准确诊断，不能靠撤销当前 Seal 证书或重复登录同一账号绕过。
+- **静态证据**：`ApplePortalSigningService.isCertificateLimitError` 把 `invalidCertificateRequest` 直接判为上限；核对 `project.yml` 锁定 AltSign revision `87f61ceb1161d90f3c6b2e35bad7ebab15367a90`，该错误也用于本地 CSR 生成/编码失败及服务端 3250，服务端 7460 则单独映射 `tooManyCertificates`。因此截图文案不能独立证明真实名额已满。
+- **另一处确定问题**：`CertificateCleanupPolicy.makePlan` 会保留无私钥但属于 Seal 当前运行包的证书；`autoCleanOrphanCertificatesIfPossible` 却在候选为空时统一记录「远端证书本机均有私钥」。保护自身证书与拥有私钥是不同条件，该日志存在确定的反例。
+- **待核实的运行路径**：若当前 Seal 使用外部工具签发、而本机无对应 P12，保护逻辑保留旧证书，复用失败后申请新证书可能撞限；另一条路径是本机有 P12 但证书剩余寿命不足 7 天，签名拒绝复用，清理却仍因有 P12 保留。此次是否命中任一路径，必须用最新真机日志及证书状态确认，不能从旧记录推定。
+- **修复状态**：本轮仅排查和记录，未修改业务代码、未撤销证书。下一步需要本次失败的原始错误 domain/code、证书清理结果、运行包证书与本地材料匹配情况；修复应分别处理真实名额限制、请求无效和自保护阻断，不能移除 Seal 自保护。
+- **涉及文件**：`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、`Seal/Core/Signing/SigningCoordinator.swift`、`Seal/Core/Signing/CertificateCleanupPolicy.swift`、AltSign `Sources/ALTAppleAPI+Operations.swift`。
+- **验证状态**：完成源码、锁定依赖版本及新真机日志核对；新日志缺少复用拒绝原因、真实 P12 状态和原始 Apple 错误，尚不能在「无私钥自保护」「有私钥但不可复用」「创建错误被误归类」之间作最终归因。Windows 未运行 Swift 编译/真机重现，未证明修复有效。
+- **常犯坑位补记**：错误显示文案不等于底层原因；无清理候选不等于全部有私钥。诊断必须区分无私钥自保护、有私钥但寿命不足、清单获取失败和撤销失败，并先核对日志日期与故障是否对应。
+
 
 ### 2026-09-15 · Seal Team 校验测试用例漏设 isSeal → swift-regression 失败
 

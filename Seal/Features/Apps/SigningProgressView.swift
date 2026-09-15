@@ -198,7 +198,6 @@ struct SigningProgressView: View {
             Text(userFacingReason(failure))
                 .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(Color.sealTextSecondary)
-                .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
             // Only show recovery hint when it differs from primary action button
             let recovery = recoveryText(failure)
@@ -206,7 +205,7 @@ struct SigningProgressView: View {
                 Text(recovery)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.sealAccent)
-                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(14)
@@ -484,7 +483,8 @@ struct SigningProgressView: View {
     /// 确定性失败：重试 / 重新安装都无法改变结果，只能按指引手动处理后重试。
     /// 按钮统一为「知道了」并关闭，不做无效重试。
     private func isNonRetryableFailure(_ failure: ImportFailure) -> Bool {
-        failure.code == "SEAL-APPID-DEVICELIMIT"
+        CertificateRequestFailurePolicy.isNonRetryableFailure(failure)
+            || failure.code == "SEAL-APPID-DEVICELIMIT"
             || failure.code == "SEAL-INSTALL-702l"   // 安装被 iOS 拒绝（免费账号 3 应用上限 / 完整性校验）
             || failure.code == "SEAL-INSTALL-702s"   // 设备存储空间不足
     }

@@ -27,7 +27,7 @@ struct CertificateCleanupPolicyTests {
         )
     }
 
-    // MARK: - makePlan（新策略：无私钥一律撤）
+    // MARK: - makePlan（自动清理须保护所有已知引用）
 
     /// 全部无钥匙、无关联 App 的证书一律可撤。
     @Test
@@ -58,10 +58,9 @@ struct CertificateCleanupPolicyTests {
         #expect(plan.kept.map(\.serialNumber) == ["BB22"])
     }
 
-    /// 新策略：即使已安装 App 在用，只要本机无私钥也一律撤（留着也没法签新包）。
-    /// 与旧版的核心区别：不再因为「关联 App 在用」就保留。
+    /// 本机没有私钥也不能撤销其他已安装应用正在使用的证书。
     @Test
-    func certificateUsedByInstalledAppIsStillRevocableIfNoLocalKey() {
+    func certificateUsedByInstalledAppIsKeptWithoutLocalKey() {
         let apps = [makeApp(name: "微信", serial: "0AA11")]
         let plan = CertificateCleanupPolicy.makePlan(
             certificates: [makeCertificate("AA11"), makeCertificate("BB22")],
@@ -70,15 +69,13 @@ struct CertificateCleanupPolicyTests {
             deviceReferencedSerials: [],
             sealActiveSerialNumber: nil
         )
-        // 两张都无私钥 → 两张都可撤（不再因关联 App 而保留）
-        #expect(plan.revocable.count == 2)
-        #expect(plan.kept.isEmpty)
+        #expect(plan.revocable.map(\.serialNumber) == ["BB22"])
+        #expect(plan.kept.map(\.serialNumber) == ["AA11"])
     }
 
-    /// 新策略：设备端 profile 引用的证书，只要本机无私钥也一律撤。
-    /// 与旧版的核心区别：不再因为「设备端在用」就保留。
+    /// 设备 profile 可能属于其他签名工具，引用同样需要保护。
     @Test
-    func certificateReferencedByDeviceProfileIsStillRevocableIfNoLocalKey() {
+    func certificateReferencedByDeviceProfileIsKeptWithoutLocalKey() {
         let plan = CertificateCleanupPolicy.makePlan(
             certificates: [makeCertificate("AA11"), makeCertificate("BB22")],
             apps: [],
@@ -86,12 +83,11 @@ struct CertificateCleanupPolicyTests {
             deviceReferencedSerials: ["AA11"],
             sealActiveSerialNumber: nil
         )
-        // 两张都无私钥 → 两张都可撤（不再因设备端引用而保留）
-        #expect(plan.revocable.count == 2)
-        #expect(plan.kept.isEmpty)
+        #expect(plan.revocable.map(\.serialNumber) == ["BB22"])
+        #expect(plan.kept.map(\.serialNumber) == ["AA11"])
     }
 
-    /// 设备端核验不可用（未连接隧道）时 deviceVerified 为 false，但不影响可撤判定。
+    /// 设备核验不可用时不能将未知误判为无人使用。
     @Test
     func unverifiedDeviceMarksPlanAsNotDeviceVerified() {
         let plan = CertificateCleanupPolicy.makePlan(
@@ -101,7 +97,7 @@ struct CertificateCleanupPolicyTests {
             deviceReferencedSerials: nil,
             sealActiveSerialNumber: nil
         )
-        #expect(plan.revocable.count == 1)
+        #expect(plan.revocable.isEmpty)
         #expect(plan.deviceVerified == false)
     }
 
@@ -115,9 +111,8 @@ struct CertificateCleanupPolicyTests {
             deviceReferencedSerials: ["0BB22"],
             sealActiveSerialNumber: nil
         )
-        // 只有 BB22 无私钥 → 只有 BB22 可撤（AA11 有私钥所以保留）
-        #expect(plan.revocable.map(\.serialNumber) == ["BB22"])
-        #expect(plan.kept.map(\.serialNumber) == ["0AA11"])
+        #expect(plan.revocable.isEmpty)
+        #expect(plan.kept.map(\.serialNumber) == ["0AA11", "BB22"])
     }
 
     /// Seal 自保护：Seal 自身正在使用的证书，即使本机无私钥也必须保留。
@@ -134,6 +129,8 @@ struct CertificateCleanupPolicyTests {
         // AA11 是 Seal 在用证书 → 即使无私钥也 kept；BB22 无私钥且非 Seal → revocable
         #expect(plan.revocable.map(\.serialNumber) == ["BB22"])
         #expect(plan.kept.map(\.serialNumber) == ["AA11"])
+        #expect(plan.localPrivateKeyCount == 0)
+        #expect(plan.protectedSealWithoutKeyCount == 1)
     }
 
     /// Seal 自保护：序列号归一化（前导 0 差异）不能让 Seal 在用证书误入可撤。
@@ -152,6 +149,28 @@ struct CertificateCleanupPolicyTests {
     }
 
     // MARK: - sacrificeCandidates（用户确认后的全撤候选）
+
+    @Test
+    func allCertificatesAuthorizedByRunningSealAreProtected() {
+        let plan = CertificateCleanupPolicy.makePlan(
+            certificates: [makeCertificate("AA11"), makeCertificate("BB22")],
+            apps: [], localUsableSerials: [], deviceReferencedSerials: [],
+            sealActiveSerialNumber: "AA11", sealActiveSerialNumbers: ["0AA11", "0BB22"]
+        )
+        #expect(plan.revocable.isEmpty)
+        #expect(plan.localPrivateKeyCount == 0)
+        #expect(plan.protectedSealWithoutKeyCount == 2)
+    }
+
+    @Test
+    func unknownInstalledIdentityPreventsAutomaticRevocation() {
+        let plan = CertificateCleanupPolicy.makePlan(
+            certificates: [makeCertificate("AA11")],
+            apps: [makeApp(name: "Unknown", serial: nil)], localUsableSerials: [],
+            deviceReferencedSerials: [], sealActiveSerialNumber: nil
+        )
+        #expect(plan.revocable.isEmpty)
+    }
 
     /// 用户确认后的「全撤」候选：所有无私钥证书，与 makePlan 新策略行为一致。
     @Test

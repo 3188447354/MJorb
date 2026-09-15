@@ -87,6 +87,18 @@ struct AccountSecret: Codable, Equatable, Sendable {
         try container.encode(certificateMachineIdentifierBySerial, forKey: .certificateMachineIdentifierBySerial)
     }
 
+    /// 重新认证只替换登录凭据，完整保留当前及历史签名材料。
+    func preservingSigningMaterial(from previous: AccountSecret?) -> AccountSecret {
+        guard let previous, previous.accountIdentifier == accountIdentifier else { return self }
+        var copy = self
+        copy.certificateP12 = previous.certificateP12
+        copy.certificateSerialNumber = previous.certificateSerialNumber
+        copy.certificateMachineIdentifier = previous.certificateMachineIdentifier
+        copy.certificateP12BySerial = previous.certificateP12BySerial
+        copy.certificateMachineIdentifierBySerial = previous.certificateMachineIdentifierBySerial
+        return copy
+    }
+
     /// 用新的 authToken 和 dsid 创建副本（自动重登时使用）。
     func withNewSession(dsid: String, authToken: String) -> AccountSecret {
         AccountSecret(

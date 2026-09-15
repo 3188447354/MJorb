@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import AltSign
 @testable import Seal
 
 struct ApplePortalSigningFailureTests {
@@ -34,11 +35,7 @@ struct ApplePortalSigningFailureTests {
     func certificateLimitFailureDoesNotAuthorizeAutomaticRevocation() {
         let failure = ApplePortalSigningFailure.make(
             stage: .certificate,
-            error: NSError(
-                domain: "ApplePortal",
-                code: 3022,
-                userInfo: [NSLocalizedDescriptionKey: "Maximum number of certificates reached"]
-            )
+            error: ALTAppleAPIError(.tooManyCertificates)
         )
 
         // 证书上限被细分为 SEAL-CERT-204a；回收已收敛为签名/续签内的无感自动清理，

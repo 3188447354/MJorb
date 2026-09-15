@@ -426,6 +426,13 @@
 
 ## 二、历史记录
 
+### 2026-09-15 · 1.1.16：Seal 自续签安装被自身挂起，旧 profile 未替换并触发重装循环
+- **真机现象**：Seal 自续签后仍显示旧描述文件；启动恢复反复自动重装。`Seal-log(6).txt` 的每轮都有“Seal 自更新安装：第1次，按上游 Install 覆盖”，但随后没有一次“安装返回”或“Seal.app 落盘核验”，下一次启动仍读到旧 profile。
+- **根因**：自替换分支在固定 250ms 后或 Rust 发出安装前哨兵时，通过私有 `UIApplication.suspend` 主动挂起 Seal。`installation_proxy` socket 和等待任务都由 Seal 当前进程持有，进程被挂起后安装命令无法完成，成功回调、落盘核验和 handoff 清理都不可能执行。1.1.15 只切断了跨进程无限恢复次数，没有消除首次安装被挂起的原因。
+- **修复**：删除 `SelfReplacementController` 以及三条主动回主屏调用。自替换与普通安装一样保持进程和连接存活，完整等待 installd 返回；系统完成覆盖时自然终止旧进程，下一次启动按 handoff 对 Seal.app 内实际 profile、Team 和证书闭环核验。继续保留每份签名成品只能自动恢复一次的持久化限制。
+- **涉及文件**：`MinimuxerInstallChannel.swift`、删除 `SelfReplacementController.swift`、`verify-certificate-handoff.py`、版本与发布记录。
+- **验证状态**：真机日志已经定位到唯一中断点；本地证书 handoff 结构守护、113 项发布安全检查、54 项变异自检和差异检查通过。Swift 编译/单测/UI 回归由本次 Actions 验证；真机需安装 1.1.16 后确认 Seal 不循环、描述文件日期刷新且剩余接近完整 7 天。
+
 ### 2026-09-15 · 1.1.15：启动 profile mismatch 导致 Seal 无限自动重装
 - **真机现象**：安装 1.1.14 后，Seal 在启动核验 profile mismatch 时反复触发自动覆盖安装，形成无限重装。
 - **根因**：1.1.14 只用 actor 内存时间限制恢复频率；安装导致进程重启后内存计数归零。更严重的是每次恢复安装都会调用 `prepare` 创建新 handoff，下一进程再次把它当作从未恢复的新任务。

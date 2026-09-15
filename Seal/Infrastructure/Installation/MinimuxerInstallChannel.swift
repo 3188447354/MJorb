@@ -340,8 +340,6 @@ actor MinimuxerInstallChannel: InstallChannel {
                     let installation = Task.detached(priority: .userInitiated) {
                         try Minimuxer.installIpa(bundleId: bundleID)
                     }
-                    try await Task.sleep(for: .milliseconds(250))
-                    await SelfReplacementController.returnToHomeScreen()
                     try await installation.value
                 } else {
                     let installOutcome = await offThread(seconds: installTimeout) {
@@ -381,15 +379,14 @@ actor MinimuxerInstallChannel: InstallChannel {
         for attempt in 1...maxAttempts {
             do {
                 if isSelfReplacement {
-                    // Seal 自更新：安装命令发出后尽快回主屏，避免被替换时残留崩溃界面
+                    // 保持进程运行直至 installd 完成。主动调用 UIApplication.suspend 会冻结
+                    // 当前进程内的 installation_proxy 连接，安装永远到不了完成回调。
                     let installation = Task.detached(priority: .userInitiated) {
                         try Minimuxer.stageAndInstall(
                             bundleId: bundleID,
                             ipaBytes: ipaData
                         )
                     }
-                    try await Task.sleep(for: .milliseconds(250))
-                    await SelfReplacementController.returnToHomeScreen()
                     try await installation.value
                 } else {
                     let outcome = await offThread(seconds: mergedTimeout) {
@@ -450,7 +447,7 @@ actor MinimuxerInstallChannel: InstallChannel {
                     // lookup + afcd 快照）之后才发的 101 哨兵——预检在无线配对 + 大文件 +
                     // 设备 IO 繁忙时可长达数十秒，进度条会假停在 100% 干等。后续 101 哨兵
                     // 到达时 stage 已是 .installing，切阶段逻辑幂等无副作用。
-                    // 自更新路径（selfReplaceProgress）仍以 p > 1.0 为界，回主屏时机不变。
+                    // 自更新同样只更新阶段，不再主动挂起承载安装连接的进程。
                     if p >= 1.0 {
                         Task { await onProgress(1.01) }
                         return
@@ -458,22 +455,13 @@ actor MinimuxerInstallChannel: InstallChannel {
                     Task { await onProgress(p) }
                 }
                 if isSelfReplacement {
-                    // 上传（0→100%）完成后，把「回主屏」押后到预检（lookup / afcd 快照）结束、
-                    // installd 安装命令即将下发那一刻（Rust 回传哨兵 1.01）。这样回主屏与
-                    // 「正在安装」对齐：既不会像固定 250ms 一样在上传中途就闪回主屏，
-                    // 也不会在「上传完成=1.0」就回屏、让主屏先空转 1-3 秒才出现安装图标。
-                    let selfReplaceProgress: @Sendable (Double) -> Void = { [onProgress] p in
-                        if p > 1.0 {
-                            Task { @MainActor in SelfReplacementController.returnToHomeScreen() }
-                            return
-                        }
-                        Task { await onProgress(p) }
-                    }
+                    // 自替换也必须让 installation_proxy 完整返回；iOS 成功替换应用时会自然
+                    // 终止旧进程。提前 suspend 会冻结当前连接并留下旧 profile。
                     let installation = Task.detached(priority: .userInitiated) {
                         try Minimuxer.stageAndInstall(
                             bundleId: bundleID,
                             ipaBytes: ipaData,
-                            progress: selfReplaceProgress
+                            progress: syncProgress
                         )
                     }
                     try await installation.value

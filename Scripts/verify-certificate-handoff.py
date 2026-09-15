@@ -29,6 +29,9 @@ def violations(load):
          'handoff must persist before installation'),
         ('forceUpgrade' not in load('Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift'),
          'self-refresh must use the upstream installation_proxy install operation'),
+        ('SelfReplacementController' not in load('Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift')
+         and 'returnToHomeScreen' not in load('Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift'),
+         'self replacement must not suspend the process that owns the installation_proxy connection'),
         ('force_upgrade' not in load('Vendor/Minimuxer/RustBridge/src/bridge_idevice.rs')
          and 'force_upgrade' not in load('Vendor/Minimuxer/RustBridge/src/idevice_support/install.rs')
          and '.upgrade(' not in load('Vendor/Minimuxer/RustBridge/src/idevice_support/install.rs'),

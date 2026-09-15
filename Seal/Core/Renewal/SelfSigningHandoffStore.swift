@@ -1,5 +1,6 @@
 import Foundation
 
+/// 旧版 handoff 记录，仅用于兼容迁移。新代码请使用 SelfReplacementTransactionStore。
 /// 独立于 AppRecord 保存，避免自注册重建记录时丢失安装前的核验目标。
 /// 不包含 Apple ID、P12 或私钥；确认只证明本机材料可用，不代表 Apple 远端仍生效。
 struct SelfSigningHandoff: Codable, Equatable, Sendable {

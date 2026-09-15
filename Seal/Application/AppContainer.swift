@@ -72,8 +72,20 @@ struct AppContainer {
             // 启动即创建/更新 Documents/Seal-log.txt，让文件 App 中的 Seal 目录始终可见。
             // flush 会先加载已有日志，不会因本次镜像而清空历史。
             Task { await logStore.flush() }
-            let selfSigningHandoffStore = SelfSigningHandoffStore(
+            // 自替换事务与旧版 handoff 共用同一文件路径；新事务存取器在读取时
+            // 自动把遗留 handoff 记录迁移成事务，无需保留旧存取器实例。
+            let identityReader = AppBundleSigningIdentityReader()
+            let transactionStore = SelfReplacementTransactionStore(
                 fileURL: sealDirectory.appending(path: "SelfSigningHandoff.json")
+            )
+            let selfReplacement = SelfReplacementCoordinator(
+                store: transactionStore,
+                identityReader: identityReader,
+                ipaIdentityReader: SignedIPAIdentityReader(bundleReader: identityReader),
+                installChannel: installChannel,
+                fileStore: fileStore,
+                keychain: keychain,
+                processID: SelfReplacementProcess.currentID
             )
             let signingCoordinator = SigningCoordinator(
                 appStore: appStore,
@@ -86,7 +98,7 @@ struct AppContainer {
                     logStore: logStore
                 ),
                 logStore: logStore,
-                selfSigningHandoffStore: selfSigningHandoffStore
+                selfReplacement: selfReplacement
             )
             let refreshQueueStore = RefreshQueueStore(
                 fileURL: sealDirectory.appending(path: AppConfiguration.Paths.refreshQueueFile)
@@ -127,12 +139,9 @@ struct AppContainer {
                     appStore: appStore,
                     accountRepository: accountRepository,
                     fileStore: fileStore,
-                    selfSigningHandoffStore: selfSigningHandoffStore,
+                    selfReplacement: selfReplacement,
                     keychain: keychain,
-                    logStore: logStore,
-                    pendingSelfReplacementRecovery: {
-                        try await signingCoordinator.recoverPendingSelfReplacement()
-                    }
+                    logStore: logStore
                 )
             }
             // 维护作业：记录恢复 / Seal 自注册 / 孤儿文件清理。

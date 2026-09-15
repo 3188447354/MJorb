@@ -24,9 +24,9 @@ def violations(load):
         ('SigningCertificateMaterialPolicy.availableCertificate' in portal and 'SigningCertificateMaterialPolicy.availableCertificate' in coordinator,
          'signing and cleanup must share actual local private-key validation'),
         ('preservingSigningMaterial(from:' in settings, 'reauthentication must retain historical P12 material'),
-        ('selfSigningHandoffStore.prepare(' in coordinator
-         and coordinator.index('selfSigningHandoffStore.prepare(') < coordinator.index('try await installChannel.install('),
-         'handoff must persist before installation'),
+        ('selfReplacement.prepare(' in coordinator
+         and coordinator.index('selfReplacement.prepare(') < coordinator.index('selfReplacement.submitPrepared('),
+         'a self replacement transaction must persist before installation is submitted'),
         ('forceUpgrade' not in load('Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift'),
          'self-refresh must use the upstream installation_proxy install operation'),
         ('SelfReplacementController' not in load('Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift')
@@ -36,30 +36,32 @@ def violations(load):
          and 'force_upgrade' not in load('Vendor/Minimuxer/RustBridge/src/idevice_support/install.rs')
          and '.upgrade(' not in load('Vendor/Minimuxer/RustBridge/src/idevice_support/install.rs'),
          'the Rust install chain must not change a refresh into installation_proxy Upgrade'),
-        ('SelfAppMetadata.current()' in self_install
-         and 'SelfSigningHandoffPolicy.evaluate(' in self_install
-         and 'if appVisible, appBundleMatched' in self_install
-         and 'SEAL-INSTALL-731' in coordinator
-         and self_install.index('guard verifiedReplacement else') < self_install.index('updated.state = .installed'),
-         'self-replacement must verify the installed Seal.app profile/team/certificate identity before reporting success'),
+        ('for attempt in 1...2' not in self_install
+         and 'verifiedReplacement' not in self_install
+         and 'SelfAppMetadata.current()' not in self_install
+         and 'verifyInstalled' not in self_install
+         and 'updated.signedArtifactStatus = .awaitingVerification' in self_install,
+         'self replacement must be confirmed by the next launch, never by the installing process'),
         ('bundle.bundleURL.appending(path: "embedded.mobileprovision")' in metadata
          and 'bundle.url(forResource: "embedded", withExtension: "mobileprovision")' not in metadata,
          'running Seal profile verification must bypass Bundle resource caching'),
-        ('status == .profileMismatch' in registrar
-         and 'claimAutomaticRecovery(pendingID: pending.id)' in registrar
-         and 'pendingSelfReplacementRecovery()' in registrar
-         and 'recoverPendingSelfReplacement()' in coordinator
-         and 'pendingSelfReplacementRecovery:' in app_container
-         and 'automaticRecoveryAttemptedAt' in load('Seal/Core/Renewal/SelfSigningHandoffStore.swift'),
-         'a startup profile mismatch may retry an already-signed Seal artifact only through a persistent one-shot claim'),
+        ('recoverPendingSelfReplacement' not in coordinator
+         and 'pendingSelfReplacementRecovery' not in registrar
+         and 'pendingSelfReplacementRecovery' not in app_container
+         and 'claimAutomaticRecovery' not in registrar
+         and 'claimAutomaticRecovery' not in load('Seal/Core/Renewal/SelfSigningHandoffStore.swift'),
+         'startup must never auto-reinstall an already-signed Seal artifact'),
+        ('SelfReplacementTransactionStore(' in app_container
+         and 'SelfReplacementCoordinator(' in app_container
+         and 'selfReplacement: selfReplacement' in app_container,
+         'the container must wire the persistent replacement transaction into signing and registration'),
         ('SignedArtifactBundleIDReader.mainInfoDictionary(in: signedData)' in self_install
          and 'selfInfo["UIFileSharingEnabled"] as? Bool == true' in self_install
          and 'selfInfo["LSSupportsOpeningDocumentsInPlace"] as? Bool == true' in self_install,
          'a self-signed artifact must preserve the Files document-sharing configuration'),
         ('removeAllProfiles(' not in load('Seal/Infrastructure/Installation/DeviceProfileCleaner.swift')
-         and 'status == .confirmed' in load('Seal/Core/Renewal/SelfAppRegistrar.swift')
-         and 'DeviceProfileCleaner.removeStaleProfiles(' in load('Seal/Core/Renewal/SelfAppRegistrar.swift'),
-         'old Seal profiles may only be cleaned after the replacement process confirms its running identity'),
+         and 'confirmSelfSigningHandoff' not in registrar,
+         'stale Seal profiles must never be cleaned through the removed handoff confirmation path'),
         ('rotationCandidates(' in portal and 'failure.code == "SEAL-CERT-204b"' in portal
          and 'removeStoredCertificateMaterial' in portal and 'revokeCertificate(' in portal,
          '3022 must rotate an unusable certificate and retry certificate creation in the same portal transaction'),

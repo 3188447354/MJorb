@@ -6,10 +6,9 @@ actor SelfAppRegistrar {
     private let appStore: any AppStore
     private let accountRepository: any AccountRepository
     private let fileStore: AppFileStore
-    private let selfSigningHandoffStore: SelfSigningHandoffStore?
+    private let selfReplacement: (any SelfReplacing)?
     private let keychain: KeychainVault?
     private let logStore: SealLogStore?
-    private let pendingSelfReplacementRecovery: (@Sendable () async throws -> Void)?
 
     // 固定 ID，确保 Seal 记录和文件夹路径始终一致，不会出现多个文件夹
     private let fixedSealID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
@@ -22,30 +21,23 @@ actor SelfAppRegistrar {
         appStore: any AppStore,
         accountRepository: any AccountRepository,
         fileStore: AppFileStore,
-        selfSigningHandoffStore: SelfSigningHandoffStore? = nil,
+        selfReplacement: (any SelfReplacing)? = nil,
         keychain: KeychainVault? = nil,
-        logStore: SealLogStore? = nil,
-        pendingSelfReplacementRecovery: (@Sendable () async throws -> Void)? = nil
+        logStore: SealLogStore? = nil
     ) {
         self.metadata = metadata
         self.appStore = appStore
         self.accountRepository = accountRepository
         self.fileStore = fileStore
-        self.selfSigningHandoffStore = selfSigningHandoffStore
+        self.selfReplacement = selfReplacement
         self.keychain = keychain
         self.logStore = logStore
-        self.pendingSelfReplacementRecovery = pendingSelfReplacementRecovery
     }
 
     func ensureRegistered() async throws {
         guard isRegistering == false else { return }
         isRegistering = true
         defer { isRegistering = false }
-
-        // 所有早退分支之前核验，包含待安装自更新源；只读运行包和钥匙串，不发网络请求。
-        // 后台恢复若成功返回，磁盘上的 Seal.app 已经更新；本实例持有的是启动时旧
-        // metadata，不能继续用旧 profile 把刚写好的记录覆盖回去。
-        if await confirmSelfSigningHandoff() { return }
 
         let records = try await appStore.fetchAll()
         let accounts = try await accountRepository.fetchAll()
@@ -100,94 +92,6 @@ actor SelfAppRegistrar {
 
         // 清理历史残留的重复记录
         try await cleanupDuplicateSealRecords(records: records, keepID: id)
-    }
-
-    /// 返回 true 表示已完成一次后台恢复安装，本轮注册必须立即停止。
-    private func confirmSelfSigningHandoff() async -> Bool {
-        guard let selfSigningHandoffStore, let keychain else { return false }
-        do {
-            guard let pending = try await selfSigningHandoffStore.loadPending() else { return false }
-            let secret = try await keychain.load(accountID: pending.accountID)
-            let materialStatus: SelfSigningHandoffMaterialStatus
-            if let secret,
-               let certificate = SigningCertificateMaterialPolicy.availableCertificate(
-                   secret: secret,
-                   serialNumber: pending.certificateSerialNumber
-               ) {
-                materialStatus = SigningCertificateMaterialPolicy.reuseStatus(certificate) == .reusable
-                    ? .available : .unusableCertificate
-            } else {
-                materialStatus = .missingPrivateKey
-            }
-            let status = try await selfSigningHandoffStore.confirm(
-                metadata: metadata,
-                pendingID: pending.id,
-                materialStatus: materialStatus
-            )
-            guard status != .noPending, status != .awaitingRestart, status != .superseded else { return false }
-            if status == .confirmed, let profileUUID = metadata.provisioningProfileUUID {
-                let cleanup = await DeviceProfileCleaner.removeStaleProfiles(
-                    for: metadata.bundleIdentifier,
-                    keeping: profileUUID
-                )
-                try? await logStore?.append(
-                    category: .installation,
-                    message: "Seal 新进程确认后清理旧描述文件：\(cleanup.logMessage)"
-                )
-            }
-            try? await logStore?.append(
-                category: .signing,
-                level: status == .confirmed ? .info : .warning,
-                message: status.message,
-                code: status == .confirmed ? nil : "SEAL-CERT-224"
-            )
-            if status == .profileMismatch,
-               let pendingSelfReplacementRecovery,
-               try await selfSigningHandoffStore.claimAutomaticRecovery(pendingID: pending.id) {
-                try? await logStore?.append(
-                    category: .installation,
-                    message: "启动核验发现 Seal.app 仍是旧描述文件；本签名成品首次且仅一次自动恢复覆盖安装。"
-                )
-                await logStore?.flush()
-                do {
-                    try await pendingSelfReplacementRecovery()
-                    return true
-                } catch let failure as ImportFailure {
-                    try? await logStore?.append(
-                        category: .installation,
-                        level: .warning,
-                        message: "Seal 后台恢复安装未完成：\(failure.reason)",
-                        code: failure.code
-                    )
-                } catch {
-                    let nsError = error as NSError
-                    try? await logStore?.append(
-                        category: .installation,
-                        level: .warning,
-                        message: "Seal 后台恢复安装遇到错误：[\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)",
-                        code: "SEAL-INSTALL-732"
-                    )
-                }
-                await logStore?.flush()
-            } else if status == .profileMismatch {
-                try? await logStore?.append(
-                    category: .installation,
-                    level: .warning,
-                    message: "该签名成品已经自动恢复过一次，仍未匹配；停止自动安装，等待新的手动续签成品。",
-                    code: "SEAL-INSTALL-736"
-                )
-            }
-            return false
-        } catch {
-            // 文件或钥匙串暂不可读时保留记录；不能阻断启动，也不能宣称接管成功。
-            try? await logStore?.append(
-                category: .signing,
-                level: .warning,
-                message: "本机签名启动核验暂未完成：本地记录或钥匙串不可读，保留核验目标，下次维护时重试。",
-                code: "SEAL-CERT-225"
-            )
-            return false
-        }
     }
 
     // MARK: - 原子更新：先暂存，再提交覆盖，失败回滚

@@ -64,51 +64,6 @@ struct SelfSigningHandoffTests {
     }
 
     @Test
-    func automaticRecoveryCanBeClaimedOnlyOncePerSignedArtifact() async throws {
-        let directory = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let store = SelfSigningHandoffStore(
-            fileURL: directory.appending(path: "handoff.json"),
-            fileProtector: MarkerFileProtector()
-        )
-        let accountID = UUID()
-        try await store.prepare(
-            accountID: accountID,
-            bundleIdentifier: "com.mjorb.seal",
-            teamIdentifier: "TEAM",
-            profileUUID: "profile-one",
-            certificateSerialNumber: "0ABC"
-        )
-        let first = try #require(await store.loadPending())
-        #expect(try await store.claimAutomaticRecovery(pendingID: first.id))
-        #expect(try await store.claimAutomaticRecovery(pendingID: first.id) == false)
-
-        // 自动恢复内部会再次 prepare 同一成品；已领取状态必须保留。
-        try await store.prepare(
-            accountID: accountID,
-            bundleIdentifier: "com.mjorb.seal",
-            teamIdentifier: "TEAM",
-            profileUUID: "profile-one",
-            certificateSerialNumber: "ABC"
-        )
-        let sameArtifact = try #require(await store.loadPending())
-        #expect(sameArtifact.automaticRecoveryAttemptedAt != nil)
-        #expect(try await store.claimAutomaticRecovery(pendingID: sameArtifact.id) == false)
-
-        // 用户重新签名产生新 profile 后，新的成品重新拥有一次恢复资格。
-        try await store.prepare(
-            accountID: accountID,
-            bundleIdentifier: "com.mjorb.seal",
-            teamIdentifier: "TEAM",
-            profileUUID: "profile-two",
-            certificateSerialNumber: "ABC"
-        )
-        let newArtifact = try #require(await store.loadPending())
-        #expect(newArtifact.automaticRecoveryAttemptedAt == nil)
-        #expect(try await store.claimAutomaticRecovery(pendingID: newArtifact.id))
-    }
-
-    @Test
     func persistenceFailureIsReportedBeforeInstallationCanStart() async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

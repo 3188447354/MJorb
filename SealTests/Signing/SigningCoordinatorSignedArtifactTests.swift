@@ -55,6 +55,127 @@ struct SigningCoordinatorSignedArtifactTests {
     }
 
     @Test
+    func sealInstallDelegatesOnePreparedTransaction() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let appID = UUID()
+        let accountID = UUID()
+        let source = environment.root.appending(path: "SealSigned.ipa")
+        try Self.makeMinimalValidIPA(
+            at: source,
+            bundleID: "com.mjorb.seal",
+            executableName: "Seal",
+            extraInfoPlistEntries: [
+                "UIFileSharingEnabled": true,
+                "LSSupportsOpeningDocumentsInPlace": true
+            ]
+        )
+        let signedPath = try await environment.fileStore.storeSignedIPA(sourceURL: source, appID: appID)
+        let sha = try await environment.fileStore.sha256(relativePath: signedPath)
+        let app = AppRecord(
+            id: appID,
+            originalBundleIdentifier: "com.mjorb.seal",
+            mappedBundleIdentifier: "com.mjorb.seal",
+            name: "Seal",
+            version: "1.0",
+            buildNumber: "1",
+            size: 18,
+            state: .installed,
+            expiryDate: Date().addingTimeInterval(3_600),
+            accountID: accountID,
+            signedDeviceIdentifier: "DEVICE-1",
+            provisioningProfileExpirationDate: Date().addingTimeInterval(6 * 86_400),
+            lastInstalledAt: Date(),
+            ipaRelativePath: "Apps/\(appID.uuidString)/Original.ipa",
+            signedIPARelativePath: signedPath,
+            signedIPASHA256: sha,
+            signedArtifactStatus: .available,
+            isSeal: true,
+            importedAt: Date()
+        )
+        try await environment.appStore.save(app)
+        let replacement = RecordingSelfReplacement()
+        let coordinator = SigningCoordinator(
+            appStore: environment.appStore,
+            accountRepository: environment.accountRepository,
+            keychain: KeychainVault(),
+            fileStore: environment.fileStore,
+            installChannel: environment.installChannel,
+            selfReplacement: replacement
+        )
+
+        let result = try await coordinator.installSignedArtifact(appID: appID) { _ in }
+
+        // Seal 安装必须委托给自替换事务：恰好 prepare 一次、submit 一次，
+        // 当前进程不再直接触碰安装通道，也不在本进程内推进安装成功。
+        #expect(await replacement.prepareCount == 1)
+        #expect(await replacement.submitCount == 1)
+        #expect(await replacement.preparedAppID == appID)
+        #expect(await replacement.preparedAccountID == accountID)
+        #expect(await replacement.preparedSignedPath == signedPath)
+        #expect(await environment.installChannel.installCount == 0)
+        #expect(await environment.installChannel.verifyCount == 0)
+        #expect(result.signedArtifactStatus == .awaitingVerification)
+        let stored = try #require(try await environment.appStore.fetchAll().first { $0.id == appID })
+        #expect(stored.signedArtifactStatus == .awaitingVerification)
+        #expect(stored.state == .installed)
+    }
+
+    @Test
+    func sealInstallWithoutReplacementCoordinatorIsRejectedBeforeInstall() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let appID = UUID()
+        let source = environment.root.appending(path: "SealSigned.ipa")
+        try Self.makeMinimalValidIPA(
+            at: source,
+            bundleID: "com.mjorb.seal",
+            executableName: "Seal",
+            extraInfoPlistEntries: [
+                "UIFileSharingEnabled": true,
+                "LSSupportsOpeningDocumentsInPlace": true
+            ]
+        )
+        let signedPath = try await environment.fileStore.storeSignedIPA(sourceURL: source, appID: appID)
+        let sha = try await environment.fileStore.sha256(relativePath: signedPath)
+        let app = AppRecord(
+            id: appID,
+            originalBundleIdentifier: "com.mjorb.seal",
+            mappedBundleIdentifier: "com.mjorb.seal",
+            name: "Seal",
+            version: "1.0",
+            buildNumber: "1",
+            size: 18,
+            state: .installed,
+            accountID: UUID(),
+            signedDeviceIdentifier: "DEVICE-1",
+            provisioningProfileExpirationDate: Date().addingTimeInterval(6 * 86_400),
+            ipaRelativePath: "Apps/\(appID.uuidString)/Original.ipa",
+            signedIPARelativePath: signedPath,
+            signedIPASHA256: sha,
+            signedArtifactStatus: .available,
+            isSeal: true,
+            importedAt: Date()
+        )
+        try await environment.appStore.save(app)
+        let coordinator = SigningCoordinator(
+            appStore: environment.appStore,
+            accountRepository: environment.accountRepository,
+            keychain: KeychainVault(),
+            fileStore: environment.fileStore,
+            installChannel: environment.installChannel
+        )
+
+        do {
+            _ = try await coordinator.installSignedArtifact(appID: appID) { _ in }
+            Issue.record("Seal install without a replacement coordinator must not reach the install channel")
+        } catch let failure as ImportFailure {
+            #expect(failure.code == "SEAL-INSTALL-737")
+        }
+        #expect(await environment.installChannel.installCount == 0)
+    }
+
+    @Test
     func missingSignedFileIsKeptAsRecordAndMarkedMissing() async throws {
         let environment = try makeEnvironment()
         defer { try? FileManager.default.removeItem(at: environment.root) }
@@ -200,6 +321,47 @@ private extension SigningCoordinatorSignedArtifactTests {
     }
 }
 
+private actor RecordingSelfReplacement: SelfReplacing {
+    private(set) var prepareCount = 0
+    private(set) var submitCount = 0
+    private(set) var preparedAppID: UUID?
+    private(set) var preparedAccountID: UUID?
+    private(set) var preparedSignedPath: String?
+
+    func prepare(
+        app: AppRecord,
+        accountID: UUID,
+        signedIPARelativePath: String
+    ) async throws -> SelfReplacementTransaction {
+        prepareCount += 1
+        preparedAppID = app.id
+        preparedAccountID = accountID
+        preparedSignedPath = signedIPARelativePath
+        let id = UUID()
+        return .make(
+            id: id,
+            accountID: accountID,
+            preparedProcessID: UUID(),
+            installedBefore: .unknown(bundleIdentifier: app.mappedBundleIdentifier ?? app.originalBundleIdentifier),
+            candidate: .legacy(
+                transactionID: id,
+                bundleIdentifier: app.mappedBundleIdentifier ?? app.originalBundleIdentifier,
+                teamIdentifier: "TEAM",
+                profileUUID: "profile",
+                certificateSerialNumber: "ABC"
+            ),
+            signedIPARelativePath: signedIPARelativePath
+        )
+    }
+
+    func submitPrepared(
+        transactionID: UUID,
+        progress: @escaping @Sendable (Double) async -> Void
+    ) async throws {
+        submitCount += 1
+    }
+}
+
 private actor SignedArtifactInstallChannel: InstallChannel {
     private(set) var installCount = 0
     private(set) var verifyCount = 0
@@ -236,7 +398,8 @@ private extension SigningCoordinatorSignedArtifactTests {
         bundleID: String,
         executableName: String?,
         executableData: Data = Data("fixture-executable".utf8),
-        executableEntryName: String = "Demo"
+        executableEntryName: String = "Demo",
+        extraInfoPlistEntries: [String: Any] = [:]
     ) throws {
         let archive = try Archive(url: url, accessMode: .create)
 
@@ -258,6 +421,7 @@ private extension SigningCoordinatorSignedArtifactTests {
             "CFBundleName": "Demo"
         ]
         if let executableName { infoPlist["CFBundleExecutable"] = executableName }
+        extraInfoPlistEntries.forEach { infoPlist[$0.key] = $0.value }
         let infoPlistData = try PropertyListSerialization.data(
             fromPropertyList: infoPlist,
             format: .xml,

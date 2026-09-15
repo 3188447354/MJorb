@@ -8,7 +8,26 @@ enum SelfReplacementFailure: Error, Equatable, Sendable {
     case candidateChanged
 }
 
-actor SelfReplacementCoordinator {
+/// Seal 自替换委托边界：签名协调器只负责「准备一笔事务 + 提交一次安装」，
+/// 安装结果由下一次启动的新进程对账确认。
+protocol SelfReplacing: Actor {
+    func prepare(
+        app: AppRecord,
+        accountID: UUID,
+        signedIPARelativePath: String
+    ) async throws -> SelfReplacementTransaction
+    func submitPrepared(
+        transactionID: UUID,
+        progress: @escaping @Sendable (Double) async -> Void
+    ) async throws
+}
+
+/// 同一进程即使重新构造容器也不能冒充重启；进程身份在启动时固定。
+enum SelfReplacementProcess {
+    static let currentID = UUID()
+}
+
+actor SelfReplacementCoordinator: SelfReplacing {
     private let store: SelfReplacementTransactionStore
     private let identityReader: AppBundleSigningIdentityReader
     private let ipaIdentityReader: SignedIPAIdentityReader

@@ -39,7 +39,13 @@ struct SelfAppPendingHandoffTests {
                 bundleURL: root.appending(path: "Running.app"), bundleIdentifier: "com.mjorb.seal",
                 originalBundleIdentifier: nil, name: "Seal", version: "1.0", buildNumber: "1", iconData: nil,
                 expirationDate: oldExpiry, signingTeamIdentifier: "TEAM", signingApplicationIdentifier: nil,
-                provisioningProfileUUID: "OLD", certificateSerialNumbers: ["DEF"]
+                provisioningProfileUUID: "OLD", certificateSerialNumbers: ["DEF"],
+                installedIdentity: .fixtureMain(
+                    bundleIdentifier: "com.mjorb.seal",
+                    teamIdentifier: "TEAM",
+                    profileUUID: "OLD",
+                    signerSerialNumber: "DEF"
+                )
             ),
             appStore: appStore, accountRepository: HandoffEmptyAccountRepository(), fileStore: fileStore
         )
@@ -102,6 +108,45 @@ struct SelfAppPendingHandoffTests {
         #expect(outstanding.count == 1)
         #expect(outstanding.first?.state == .unknown)
         #expect(outstanding.first?.id == item.id)
+    }
+
+    @Test
+    func unreadableIdentityNeverFallsBackToProfileAuthorizedSerial() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "SealUnreadableIdentity-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let documents = root.appending(path: "Documents", directoryHint: .isDirectory)
+        let cache = root.appending(path: "Caches", directoryHint: .isDirectory)
+        let id = UUID()
+        let relativePath = "Apps/\(id.uuidString)/Original.ipa"
+        let ipaURL = documents.appending(path: relativePath)
+        try FileManager.default.createDirectory(at: ipaURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("seal".utf8).write(to: ipaURL)
+        let appStore = try CoreDataAppStore(inMemory: true)
+        let fileStore = AppFileStore(documentsDirectory: documents, cacheDirectory: cache)
+        let expiry = Date(timeIntervalSince1970: 1_700_000_000)
+        try await appStore.save(AppRecord(
+            id: id, originalBundleIdentifier: "com.mjorb.seal",
+            mappedBundleIdentifier: "com.mjorb.seal", name: "Seal", version: "1.0",
+            buildNumber: "1", size: 1, state: .installed, expiryDate: expiry,
+            signingTeamID: "TEAM", certificateSerialNumber: "DEF",
+            provisioningProfileUUID: "OLD", provisioningProfileExpirationDate: expiry,
+            ipaRelativePath: relativePath, isSeal: true, importedAt: .distantPast
+        ))
+        let registrar = SelfAppRegistrar(
+            metadata: SelfAppMetadata(
+                bundleURL: root.appending(path: "Running.app"), bundleIdentifier: "com.mjorb.seal",
+                originalBundleIdentifier: nil, name: "Seal", version: "1.0", buildNumber: "1", iconData: nil,
+                expirationDate: expiry, signingTeamIdentifier: "TEAM", signingApplicationIdentifier: nil,
+                provisioningProfileUUID: "OLD", certificateSerialNumbers: ["PROFILE-ONLY"]
+            ),
+            appStore: appStore, accountRepository: HandoffEmptyAccountRepository(), fileStore: fileStore
+        )
+
+        try await registrar.ensureRegistered()
+
+        // 真实 CMS 身份读取失败时，只能保留既有记录，绝不能把描述文件授权证书当成实际签名者。
+        let updated = try #require(try await appStore.fetchAll().first)
+        #expect(updated.certificateSerialNumber == "DEF")
     }
 }
 
@@ -277,7 +322,8 @@ private struct ReplacementRegistrarFixture {
                 signingTeamIdentifier: candidateTeam,
                 signingApplicationIdentifier: nil,
                 provisioningProfileUUID: candidateProfileUUID,
-                certificateSerialNumbers: [candidateSigner]
+                certificateSerialNumbers: [candidateSigner],
+                installedIdentity: running
             ),
             appStore: appStore,
             accountRepository: HandoffEmptyAccountRepository(),

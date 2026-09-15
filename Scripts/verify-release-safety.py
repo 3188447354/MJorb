@@ -451,14 +451,13 @@ def violations(load=read):
           and "sealActualSignerSerialNumber: sealActualSigner" in auto_cleanup,
           "Seal self-protection: auto cleanup must pass Seal's actual signer from installedIdentity")
 
-    # Seal 自保护（注册时必须从运行包描述文件读真实证书序列号）：
-    # 爱思/其他工具签的 Seal，证书不是 Seal 创建的，旧记录里可能是 nil 或过期值。
-    # 如果注册时 certificateSerialNumber 继承旧记录而非从描述文件读，
-    # 前置清理会误撤 Seal 在用的证书 → 变砖（2026-09-15 真机确认）。
+    # Seal 自保护（注册/结算时只能以运行包主程序的真实 CMS 签名者为准）：
+    # 描述文件授权证书列表不等于实际签名者；身份读取失败时保留既有记录，
+    # 绝不回退到 profile 授权列表（2026-09-15 真机确认误撤会变砖）。
     registrar = load("Seal/Core/Renewal/SelfAppRegistrar.swift")
-    check("metadata.certificateSerialNumbers.first" in registrar
-          and "?? existing?.certificateSerialNumber" in registrar,
-          "Seal self-protection: registrar must read real cert serial from provisioning profile, not inherit from old record")
+    check("metadata.installedIdentity?.mainTarget?.signerSerialNumber" in registrar
+          and "metadata.certificateSerialNumbers.first" not in registrar,
+          "Seal self-protection: registrar must use the actual CMS signer, never the profile-authorized list")
     metadata = load("Seal/Core/Renewal/SelfAppMetadata.swift")
     check("certificateSerialNumbers: profileDetails?.certificateSerialNumbers" in metadata,
           "Seal self-protection: SelfAppMetadata must read certificateSerialNumbers from profile")
@@ -500,6 +499,38 @@ def violations(load=read):
     check("CertificateRevocationImpact.isActualSealSigner(" in settings_vm
           and "SEAL-CERT-230a" in settings_vm,
           "Seal self-protection: manual revoke must refuse the actual Seal signer")
+
+    # 自续签事务化结构断言：旧 handoff 模式必须绝迹，单次提交与真实身份读取必须在场。
+    forbidden_patterns = {
+        "Seal/Core/Signing/SigningCoordinator.swift": [
+            "for attempt in 1...2",
+            "recoverPendingSelfReplacement",
+        ],
+        "Seal/Core/Renewal/SelfAppRegistrar.swift": [
+            "pendingSelfReplacementRecovery",
+            "claimAutomaticRecovery",
+        ],
+    }
+    for path, patterns in forbidden_patterns.items():
+        text = load(path)
+        for pattern in patterns:
+            check(pattern not in text,
+                  f"Transaction: forbidden legacy pattern '{pattern}' must be gone in {path}")
+    required_patterns = {
+        "Seal/Core/Renewal/SelfReplacementTransactionStore.swift": [
+            "claimSubmission",
+            "alreadySubmitted",
+        ],
+        "Seal/Infrastructure/Renewal/AppBundleSigningIdentityReader.swift": [
+            "checkMachOCodeSignatures",
+            "signerNotAuthorizedByProfile",
+        ],
+    }
+    for path, patterns in required_patterns.items():
+        text = load(path)
+        for pattern in patterns:
+            check(pattern in text,
+                  f"Transaction: required pattern '{pattern}' missing in {path}")
 
     # 一键确认盘活（SEAL-CERT-204e）：在用的无钥匙证书绝不静默撤，必须经失败页确认。
     check("if case .blockedByInUseKeylessCerts" in cleanup_retry,

@@ -48,8 +48,7 @@ def violations(load):
         ('recoverPendingSelfReplacement' not in coordinator
          and 'pendingSelfReplacementRecovery' not in registrar
          and 'pendingSelfReplacementRecovery' not in app_container
-         and 'claimAutomaticRecovery' not in registrar
-         and 'claimAutomaticRecovery' not in load('Seal/Core/Renewal/SelfSigningHandoffStore.swift'),
+         and 'claimAutomaticRecovery' not in registrar,
          'startup must never auto-reinstall an already-signed Seal artifact'),
         ('SelfReplacementTransactionStore(' in app_container
          and 'SelfReplacementCoordinator(' in app_container

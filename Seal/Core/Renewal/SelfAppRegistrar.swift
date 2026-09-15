@@ -194,10 +194,11 @@ actor SelfAppRegistrar {
                 expiryDate: metadata.expirationDate,
                 accountID: resolvedAccountID,
                 signingTeamID: metadata.signingTeamIdentifier ?? existing?.signingTeamID,
-                // 关键：Seal 的证书序列号必须从运行包描述文件里实时读取，不能继承旧记录。
+                // 关键：Seal 的证书序列号只能取运行包主程序的真实 CMS 签名者，
+                // 绝不把描述文件授权证书列表当成实际签名者；身份读取失败时保留既有记录。
                 // 爱思/其他工具签的 Seal，证书不是 Seal 创建的，旧记录里可能是 nil 或过期值，
                 // 导致前置清理误撤 Seal 在用的证书 → 变砖（2026-09-15 真机确认）。
-                certificateSerialNumber: metadata.certificateSerialNumbers.first
+                certificateSerialNumber: metadata.installedIdentity?.mainTarget?.signerSerialNumber
                     ?? existing?.certificateSerialNumber,
                 provisioningProfileExpirationDate: metadata.expirationDate,
                 ipaRelativePath: files.ipaRelativePath,
@@ -353,10 +354,10 @@ actor SelfAppRegistrar {
             changed = true
         }
 
-        // ── 证书序列号：同版本续签可能换证书，必须从运行包实时回补 ──
-        // 爱思/其他工具签的 Seal，或同版本续签新建证书后，记录里的旧值会导致
-        // 前置清理误撤 Seal 在用的证书（2026-09-15 真机确认）。
-        let resolvedCertSerial = metadata.certificateSerialNumbers.first
+        // ── 证书序列号：同版本续签可能换证书，只能以运行包真实 CMS 签名者为准回补 ──
+        // 描述文件授权证书列表不是实际签名者；身份读取失败时保留既有记录，
+        // 避免前置清理误撤 Seal 在用的证书（2026-09-15 真机确认）。
+        let resolvedCertSerial = metadata.installedIdentity?.mainTarget?.signerSerialNumber
             ?? existing.certificateSerialNumber
         if existing.certificateSerialNumber != resolvedCertSerial {
             updated.certificateSerialNumber = resolvedCertSerial

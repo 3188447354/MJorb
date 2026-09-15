@@ -42,6 +42,19 @@ enum CertificateRevocationImpact {
         }
     }
 
+    /// 该证书是否就是当前运行 Seal 的真实 CMS 签名者。
+    /// 真实签名者被撤，Seal 立即「不再可用」；任何撤销入口都必须先挡住它。
+    /// 返回 false 只表示「无法证明是 A」，绝不表示「可以放心撤」——签名者未知时
+    /// 调用方必须整体停止撤销。
+    static func isActualSealSigner(serialNumber: String, actualSealSignerSerialNumber: String?) -> Bool {
+        guard let signer = actualSealSignerSerialNumber,
+              signer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            return false
+        }
+        return SigningCertificateSelectionPolicy.normalizedSerialNumber(serialNumber)
+            == SigningCertificateSelectionPolicy.normalizedSerialNumber(signer)
+    }
+
     /// 该证书是否就是本机当前用于签名的那一张。
     /// 撤销它会同时清掉本机 P12 与账号上的序列号记录。
     static func isLocalCertificate(serialNumber: String, account: AppleAccountRecord) -> Bool {

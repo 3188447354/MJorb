@@ -437,16 +437,19 @@ def violations(load=read):
     check("selectedCertificateSerialNumber: nil" in cleanup_retry,
           "Auto-cleanup: retry must drop the revoked binding")
 
-    # Seal 自保护（前置清理绝不碰 Seal 在用证书）：
-    # 签其他 App 时前置清理如果撤了 Seal 的证书（比如覆盖安装 keychain 丢私钥后，
+    # Seal 自保护（前置清理绝不碰 Seal 真实签名证书）：
+    # 签其他 App 时前置清理如果撤了 Seal 的真实签名证书（比如覆盖安装 keychain 丢私钥后，
     # Seal 正用一张无私钥证书跑着），Seal 下次启动就「不再可用」直接变砖。
-    # makePlan 必须接受 sealActiveSerialNumber 参数并纳入 kept，
-    # autoCleanOrphanCertificatesIfPossible 必须从 apps.isSeal 取出序列号传入。
-    check("sealActiveSerialNumber" in cleanup_policy
-          and "sealActive = normalizedSealActive, sealActive == serial" in cleanup_policy,
-          "Seal self-protection: makePlan must keep Seal's active serial even without local key")
-    check("$0.isSeal" in auto_cleanup and "sealActiveSerialNumber: sealActiveSerial" in auto_cleanup,
-          "Seal self-protection: auto cleanup must pass Seal's active serial from apps.isSeal")
+    # makePlan 必须只认真实 CMS 签名者（sealActualSignerSerialNumber + identityConfidence），
+    # 真实签名者读不出来时整份计划必须 blocked（一张都不撤）。
+    check("sealActualSignerSerialNumber" in cleanup_policy
+          and "identityConfidence" in cleanup_policy
+          and "static func blocked(reason: String)" in cleanup_policy
+          and "serial == normalizedSealSigner" in cleanup_policy,
+          "Seal self-protection: makePlan must protect the actual CMS signer and block when unknown")
+    check("installedIdentity" in auto_cleanup
+          and "sealActualSignerSerialNumber: sealActualSigner" in auto_cleanup,
+          "Seal self-protection: auto cleanup must pass Seal's actual signer from installedIdentity")
 
     # Seal 自保护（注册时必须从运行包描述文件读真实证书序列号）：
     # 爱思/其他工具签的 Seal，证书不是 Seal 创建的，旧记录里可能是 nil 或过期值。
@@ -460,20 +463,43 @@ def violations(load=read):
     check("certificateSerialNumbers: profileDetails?.certificateSerialNumbers" in metadata,
           "Seal self-protection: SelfAppMetadata must read certificateSerialNumbers from profile")
 
-    # Seal 自保护（所有证书清理路径都必须优先从运行包读真实序列号）：
-    # DB 记录可能是旧值，用旧值做保护会误撤 Seal 实际在用的证书。
-    # 三处清理路径（前置清理 / 一键全撤 / 手动清理）都必须优先从运行包读。
-    check("SelfAppMetadata.current()?.certificateSerialNumbers.first" in coord
-          and "?? apps.first(where: { $0.isSeal })?.certificateSerialNumber" in coord,
-          "Seal self-protection: auto cleanup must prefer running bundle cert serial over DB record")
-    check("SelfAppMetadata.current()?.certificateSerialNumbers.first" in settings_vm
-          and "?? apps.first(where: { $0.isSeal })?.certificateSerialNumber" in settings_vm,
-          "Seal self-protection: manual cleanup must prefer running bundle cert serial over DB record")
-    # 一键全撤路径（revokeKeylessCertificatesAfterConfirmation）
+    # Seal 自保护（所有证书清理路径都必须只相信真实 CMS 签名者）：
+    # 描述文件授权列表可能包含并未实际签名的证书，DB 记录可能是旧值；
+    # 两处协调器路径（前置清理 / 一键全撤）与设置页两处路径（分析 / 执行）
+    # 都必须从 installedIdentity 读真实签名者，且身份不完整时整体停止。
+    check("SelfAppMetadata.current()?.installedIdentity" in coord
+          and "runningIdentity?.isComplete == true" in coord,
+          "Seal self-protection: coordinator paths must read the actual CMS signer identity")
+    check("SelfAppMetadata.current()?.installedIdentity" in settings_vm
+          and "runningIdentity?.isComplete == true" in settings_vm,
+          "Seal self-protection: settings paths must read the actual CMS signer identity")
+    # 一键全撤路径（revokeKeylessCertificatesAfterConfirmation）身份不可读时必须拒绝撤销。
     revoke_keyless = section(coord, "func revokeKeylessCertificatesAfterConfirmation(",
                              "private func autoCleanOrphanCertificatesIfPossible(")
-    check("SelfAppMetadata.current()?.certificateSerialNumbers.first" in revoke_keyless,
-          "Seal self-protection: revoke keyless must prefer running bundle cert serial over DB record")
+    check("SelfAppMetadata.current()?.installedIdentity" in revoke_keyless
+          and "SEAL-CERT-230" in revoke_keyless,
+          "Seal self-protection: revoke keyless must stop when the actual signer is unreadable")
+    # 危险推断已被根除：描述文件授权列表首项 / 运行包授权集合不得再用于保护决策。
+    for path in ("Seal/Core/Signing/SigningCoordinator.swift",
+                 "Seal/Features/Settings/SettingsViewModel.swift",
+                 "Seal/Infrastructure/Signing/ApplePortalSigningService.swift"):
+        text = load(path)
+        check("SelfAppMetadata.current()?.certificateSerialNumbers.first" not in text
+              and "runningSealSerials" not in text,
+              f"Seal self-protection: profile-based signer inference must be gone in {path}")
+    # 接管决策：空槽位直接建、满槽位只能请求撤销非 A 候选、签名者未知一律阻断。
+    takeover = load("Seal/Core/Signing/CertificateTakeoverPolicy.swift")
+    check("case reuseLocal(serialNumber: String)" in takeover
+          and "case createLocal" in takeover
+          and "case requestRevocation(candidateSerialNumbers: [String])" in takeover
+          and "case blocked(reason: String)" in takeover
+          and "guard identityComplete," in takeover
+          and "remoteSerialNumbers.filter { normalize($0) != protected }" in takeover,
+          "Takeover: decision policy must cover reuse/create/requestRevocation/blocked and never offer A")
+    # 手动撤销（证书页逐张撤销）必须先挡住真实签名者 A；身份不可读时拒绝一切撤销。
+    check("CertificateRevocationImpact.isActualSealSigner(" in settings_vm
+          and "SEAL-CERT-230a" in settings_vm,
+          "Seal self-protection: manual revoke must refuse the actual Seal signer")
 
     # 一键确认盘活（SEAL-CERT-204e）：在用的无钥匙证书绝不静默撤，必须经失败页确认。
     check("if case .blockedByInUseKeylessCerts" in cleanup_retry,

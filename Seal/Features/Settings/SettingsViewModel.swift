@@ -444,6 +444,30 @@ final class SettingsViewModel: ObservableObject {
                 )
             }
 
+            // 真实签名者 A 永远不可撤销：撤了当前运行的 Seal 立刻「不再可用」。
+            // 身份读不出来时无法证明目标不是 A，一律拒绝（只相信真实 CMS 签名者）。
+            let runningIdentity = SelfAppMetadata.current()?.installedIdentity
+            guard runningIdentity?.isComplete == true,
+                  let sealActualSigner = runningIdentity?.mainTarget?.signerSerialNumber else {
+                throw Self.failure(
+                    title: "无法撤销证书",
+                    reason: "无法确认当前 Seal 的真实签名证书，为保护 Seal 已停止撤销。",
+                    recovery: "重启 Seal 后重试",
+                    code: "SEAL-CERT-230"
+                )
+            }
+            if CertificateRevocationImpact.isActualSealSigner(
+                serialNumber: serialNumber,
+                actualSealSignerSerialNumber: sealActualSigner
+            ) {
+                throw Self.failure(
+                    title: "不能撤销这张证书",
+                    reason: "这张证书正在给当前运行的 Seal 签名，撤销后 Seal 会立即无法打开。",
+                    recovery: "如需更换签名身份，请用电脑按相同 Bundle ID 重新签名安装 Seal",
+                    code: "SEAL-CERT-230a"
+                )
+            }
+
             try await applePortalCertificateService.revokeCertificate(
                 serialNumber: serialNumber,
                 account: account,
@@ -496,6 +520,8 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    /// 用户确认撤销候选 C 后的接管流程：重拉远端清单、重读真实签名者 A，再撤 C；
+    /// 撤完重新拉清单确认出现空位，才创建本机身份 B。B 创建失败不清除 A 的任何记录。
     func revokeCertificateAndCreateLocal(
         serialNumber: String,
         for account: AppleAccountRecord
@@ -503,7 +529,8 @@ final class SettingsViewModel: ObservableObject {
         guard isCertificateOperationRunning == false,
               let keychain,
               let accountRepository,
-              let applePortalCertificateService else { return }
+              let applePortalCertificateService,
+              let applePortalInventoryService else { return }
         guard let operationLease = await acquireOperation(.managingCertificate) else { return }
         defer { releaseOperation(operationLease) }
 
@@ -521,11 +548,71 @@ final class SettingsViewModel: ObservableObject {
                 )
             }
 
+            // 用户确认后、撤销前：重新拉远端清单 + 重新读取真实签名者 A。
+            // 确认与执行之间状态可能已变化，撤销不可逆，绝不复用旧快照。
+            let runningIdentity = SelfAppMetadata.current()?.installedIdentity
+            guard runningIdentity?.isComplete == true,
+                  let sealActualSigner = runningIdentity?.mainTarget?.signerSerialNumber else {
+                throw Self.failure(
+                    title: "无法更换证书",
+                    reason: "无法确认当前 Seal 的真实签名证书，为保护 Seal 已停止撤销。",
+                    recovery: "重启 Seal 后重试",
+                    code: "SEAL-CERT-230"
+                )
+            }
+            if CertificateRevocationImpact.isActualSealSigner(
+                serialNumber: serialNumber,
+                actualSealSignerSerialNumber: sealActualSigner
+            ) {
+                throw Self.failure(
+                    title: "不能撤销这张证书",
+                    reason: "这张证书正在给当前运行的 Seal 签名，撤销后 Seal 会立即无法打开。",
+                    recovery: "如需更换签名身份，请用电脑按相同 Bundle ID 重新签名安装 Seal",
+                    code: "SEAL-CERT-230a"
+                )
+            }
+            let preRevokeInventory = try await applePortalInventoryService.fetchInventory(
+                account: account,
+                secret: originalSecret,
+                scope: .certificates
+            )
+            guard preRevokeInventory.certificates.contains(where: {
+                SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber)
+                    == SigningCertificateSelectionPolicy.normalizedSerialNumber(serialNumber)
+            }) else {
+                throw Self.failure(
+                    title: "证书状态已变化",
+                    reason: "这张证书已不在 Apple 的生效列表里（可能刚被撤销）。未创建新证书。",
+                    recovery: "重新同步证书后确认当前状态",
+                    code: "SEAL-CERT-219"
+                )
+            }
+
             try await applePortalCertificateService.revokeCertificate(
                 serialNumber: serialNumber,
                 account: account,
                 secret: originalSecret
             )
+
+            // 撤销成功后重新拉清单确认出现空位，才创建 B；确认不了空位就不创建，
+            // 避免在仍旧满员的账号上再撞一次确定性 3022/7460。
+            let postRevokeInventory = try await applePortalInventoryService.fetchInventory(
+                account: account,
+                secret: originalSecret,
+                scope: .certificates
+            )
+            let targetStillActive = postRevokeInventory.certificates.contains(where: {
+                SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber)
+                    == SigningCertificateSelectionPolicy.normalizedSerialNumber(serialNumber)
+            })
+            guard targetStillActive == false else {
+                throw Self.failure(
+                    title: "未能确认证书槽位已释放",
+                    reason: "撤销请求已提交，但 Apple 生效列表里仍能看到这张证书。未创建新证书。",
+                    recovery: "稍后重新同步证书再试",
+                    code: "SEAL-CERT-231"
+                )
+            }
 
             var clearedSecret = originalSecret
             var clearedAccount = account
@@ -623,20 +710,21 @@ final class SettingsViewModel: ObservableObject {
             }
 
             let deviceReferenced = await DeviceProfileInspector.referencedCertificateSerials()
-            // Seal 自保护：正在使用的证书永远不撤，避免手动清理把 Seal 自己变砖。
-            // 关键：优先从运行包描述文件读真实证书序列号，而不是 DB 记录。
-            // DB 记录可能是旧值，用旧值做保护会误撤 Seal 实际在用的证书。
-            let sealActiveSerial = await MainActor.run {
-                SelfAppMetadata.current()?.certificateSerialNumbers.first
-            } ?? apps.first(where: { $0.isSeal })?.certificateSerialNumber
-            let runningSealSerials = Set(SelfAppMetadata.current()?.certificateSerialNumbers ?? [])
+            // Seal 自保护：真实签名证书永远不撤，避免手动清理把 Seal 自己变砖。
+            // 只相信真实 CMS 签名者（installedIdentity），不信描述文件授权列表、不信 DB 记录。
+            // 身份读不出来时无法证明任何一张证书不是 Seal 的命，计划整体阻断。
+            let runningIdentity = SelfAppMetadata.current()?.installedIdentity
+            guard runningIdentity?.isComplete == true,
+                  let sealActualSigner = runningIdentity?.mainTarget?.signerSerialNumber else {
+                return CertificateCleanupPlan.blocked(reason: "无法确认当前 Seal 的真实签名证书")
+            }
             let plan = CertificateCleanupPolicy.makePlan(
                 certificates: inventory.certificates,
                 apps: apps,
                 localUsableSerials: localUsableSerials,
-                deviceReferencedSerials: runningSealSerials.isEmpty ? nil : deviceReferenced,
-                sealActiveSerialNumber: sealActiveSerial,
-                sealActiveSerialNumbers: runningSealSerials
+                deviceReferencedSerials: deviceReferenced,
+                sealActualSignerSerialNumber: sealActualSigner,
+                identityConfidence: .complete
             )
             try? await logStore?.append(
                 category: .account,
@@ -704,19 +792,36 @@ final class SettingsViewModel: ObservableObject {
                 }
             }
             // 执行时重新核验设备引用，不能用空集合冒充之前核验过的真实清单。
-            // Seal 自保护：优先从运行包描述文件读真实证书序列号，而不是 DB 记录。
-            let sealActiveSerial = await MainActor.run {
-                SelfAppMetadata.current()?.certificateSerialNumbers.first
-            } ?? apps.first(where: { $0.isSeal })?.certificateSerialNumber
-            let runningSealSerials = Set(SelfAppMetadata.current()?.certificateSerialNumbers ?? [])
+            // 执行撤销前必须重新读取一次真实身份：signer 读不出来，或 signer 与生成计划时
+            // 相比发生了变化（这段时间内 Seal 被换签），整批撤销停止。
+            let runningIdentity = SelfAppMetadata.current()?.installedIdentity
+            guard runningIdentity?.isComplete == true,
+                  let sealActualSigner = runningIdentity?.mainTarget?.signerSerialNumber else {
+                throw Self.failure(
+                    title: "无法撤销证书",
+                    reason: "无法确认当前 Seal 的真实签名证书，为保护 Seal 已停止撤销，未撤销任何证书。",
+                    recovery: "重启 Seal 后重新分析再试",
+                    code: "SEAL-CERT-219b"
+                )
+            }
+            if let planSigner = plan.sealActualSignerSerialNumber,
+               SigningCertificateSelectionPolicy.normalizedSerialNumber(planSigner)
+                != SigningCertificateSelectionPolicy.normalizedSerialNumber(sealActualSigner) {
+                throw Self.failure(
+                    title: "证书状态已变化",
+                    reason: "Seal 的签名证书在确认后发生了变化，先前的清理计划已作废。未撤销任何证书。",
+                    recovery: "重新分析后再试",
+                    code: "SEAL-CERT-219"
+                )
+            }
             let freshDeviceReferenced = await DeviceProfileInspector.referencedCertificateSerials()
             let freshPlan = CertificateCleanupPolicy.makePlan(
                 certificates: freshInventory.certificates,
                 apps: apps,
                 localUsableSerials: localUsableSerials,
-                deviceReferencedSerials: runningSealSerials.isEmpty ? nil : freshDeviceReferenced,
-                sealActiveSerialNumber: sealActiveSerial,
-                sealActiveSerialNumbers: runningSealSerials
+                deviceReferencedSerials: freshDeviceReferenced,
+                sealActualSignerSerialNumber: sealActualSigner,
+                identityConfidence: .complete
             )
             let confirmedSerials = Set(plan.revocable.map {
                 SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber)

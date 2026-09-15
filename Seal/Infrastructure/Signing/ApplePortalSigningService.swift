@@ -1,4 +1,4 @@
-import Foundation
+﻿import Foundation
 import UIKit
 @preconcurrency import AltSign
 
@@ -776,8 +776,17 @@ actor ApplePortalSigningService {
         }
 
         // 运行包证书只用于安排轮换顺序：当前 Seal 的证书最后撤销，尽量缩短失效窗口。
-        let runningMetadata = await MainActor.run { isSeal ? SelfAppMetadata.current() : nil }
-        let runningSealSerials = Set(runningMetadata?.certificateSerialNumbers ?? [])
+        // 只认真实 CMS 签名者：描述文件授权列表可能包含并未实际签名的证书（Task 10）。
+        let runningIdentity = await MainActor.run {
+            isSeal ? SelfAppMetadata.current()?.installedIdentity : nil
+        }
+        let sealActualSignerSerials: Set<String>
+        if let runningIdentity, runningIdentity.isComplete,
+           let signer = runningIdentity.mainTarget?.signerSerialNumber {
+            sealActualSignerSerials = [signer]
+        } else {
+            sealActualSignerSerials = []
+        }
 
         // AltStore/SideStore 的免费团队真实链路：门户已有证书但没有任何可签满 7 天的
         // 本机身份时，先撤销旧证书，再创建新证书。免费团队只有一个活动开发证书槽位，
@@ -786,7 +795,7 @@ actor ApplePortalSigningService {
             let candidates = SigningCertificateMaterialPolicy.rotationCandidates(
                 remoteSerialNumbers: certificates.map(\.serialNumber),
                 reuseStatusBySerial: reuseStatusBySerial,
-                runningSealSerialNumbers: runningSealSerials
+                runningSealSerialNumbers: sealActualSignerSerials
             )
             if candidates.isEmpty == false {
                 return try await rotateCertificatesAndCreateIdentity(
@@ -815,7 +824,7 @@ actor ApplePortalSigningService {
             let candidates = SigningCertificateMaterialPolicy.rotationCandidates(
                 remoteSerialNumbers: certificates.map(\.serialNumber),
                 reuseStatusBySerial: reuseStatusBySerial,
-                runningSealSerialNumbers: runningSealSerials
+                runningSealSerialNumbers: sealActualSignerSerials
             )
             guard candidates.isEmpty == false else { throw failure }
             return try await rotateCertificatesAndCreateIdentity(

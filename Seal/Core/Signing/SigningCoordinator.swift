@@ -573,22 +573,25 @@ actor SigningCoordinator {
         guard candidates.isEmpty == false else {
             return KeylessCertificateSacrificeResult(revokedSerials: [], affectedInstalledApps: [])
         }
-        // Seal 自身正在使用的证书绝不可撤销：撤销会让 Seal 立刻打不开（自更新场景，
+        // Seal 真实签名者绝不可撤销：撤销会让 Seal 立刻打不开（自更新场景，
         // 2026-09-14 真机踩到）。一键全撤只针对历史及第三方证书，Seal 命根子证书无条件跳过。
         //
-        // 关键：优先从运行包描述文件读真实证书序列号，而不是 DB 记录。
-        // DB 记录可能是旧值，用旧值做保护会误撤 Seal 实际在用的证书（2026-09-15 真机确认）。
+        // 只相信真实 CMS 签名者（installedIdentity），不信描述文件授权列表、不信 DB 记录：
+        // 授权列表可能包含并未实际签名的证书，DB 记录可能是旧值（2026-09-15 真机确认）。
+        // 身份读不出来时无法证明任何一张证书不是 Seal 的命，整批撤销停止。
         let apps = (try? await appStore.fetchAll()) ?? []
-        let runningSealSerial = await MainActor.run {
-            SelfAppMetadata.current()?.certificateSerialNumbers.first
+        let runningIdentity = await MainActor.run { SelfAppMetadata.current()?.installedIdentity }
+        guard runningIdentity?.isComplete == true,
+              let sealActualSigner = runningIdentity?.mainTarget?.signerSerialNumber else {
+            throw Self.failure(
+                reason: "无法确认当前 Seal 的真实签名证书，为保护 Seal 已停止撤销。",
+                recovery: "重启 Seal 后重试",
+                code: "SEAL-CERT-230"
+            )
         }
-        let sealProtectedSerials = Set(apps.compactMap { app -> String? in
-            guard app.isSeal else { return nil }
-            // 优先用运行包的真实序列号，兜底才用 DB 记录
-            let serial = runningSealSerial ?? app.certificateSerialNumber
-            guard let serial else { return nil }
-            return SigningCertificateSelectionPolicy.normalizedSerialNumber(serial)
-        })
+        let sealProtectedSerials: Set<String> = [
+            SigningCertificateSelectionPolicy.normalizedSerialNumber(sealActualSigner)
+        ]
         let certificateService = ApplePortalCertificateService()
         var revokedSerials: [String] = []
         for certificate in candidates {
@@ -688,21 +691,19 @@ actor SigningCoordinator {
         }
 
         guard let apps = try? await appStore.fetchAll() else { return .unavailable }
-        // Seal 自保护：找出 Seal 自身正在使用的证书序列号，前置清理绝不碰它，
-        // 哪怕本机已无私钥。撤了 Seal 下次启动直接「不再可用」，变砖。
-        // 自更新后的旧证仍可能供其他应用使用，不自动撤销。
+        // Seal 自保护：前置清理绝不碰 Seal 的真实签名证书，哪怕本机已无私钥。
+        // 撤了 Seal 下次启动直接「不再可用」，变砖。
         //
-        // 关键：优先从运行包描述文件读真实证书序列号，而不是 DB 记录。
-        // DB 记录可能是旧值（比如爱思签的 Seal 首次注册时为 nil，或同版本续签换证后未回补），
-        // 用旧值做保护会误撤 Seal 实际在用的证书（2026-09-15 真机确认）。
-        let sealActiveSerial = await MainActor.run {
-            SelfAppMetadata.current()?.certificateSerialNumbers.first
-        } ?? apps.first(where: { $0.isSeal })?.certificateSerialNumber
-        let runningSealSerials = await MainActor.run {
-            Set(SelfAppMetadata.current()?.certificateSerialNumbers ?? [])
-        }
-        guard !runningSealSerials.isEmpty else {
-            try? await logStore?.append(category: .signing, message: "证书自动清理跳过：无法确认当前 Seal 的全部授权证书，保留现有证书")
+        // 只相信真实 CMS 签名者（installedIdentity），不信描述文件授权列表、不信 DB 记录：
+        // 授权列表可能包含并未实际签名的证书，DB 记录可能是旧值（2026-09-15 真机确认）。
+        // 身份读不出来时无法证明任何一张证书不是 Seal 的命，自动清理整体关闭。
+        let runningIdentity = await MainActor.run { SelfAppMetadata.current()?.installedIdentity }
+        guard runningIdentity?.isComplete == true,
+              let sealActualSigner = runningIdentity?.mainTarget?.signerSerialNumber else {
+            try? await logStore?.append(
+                category: .signing,
+                message: "证书自动清理跳过：无法确认当前 Seal 的真实签名证书，保留现有证书"
+            )
             return .unavailable
         }
         let plan = CertificateCleanupPolicy.makePlan(
@@ -710,8 +711,8 @@ actor SigningCoordinator {
             apps: apps,
             localUsableSerials: localUsableSerials,
             deviceReferencedSerials: deviceReferenced,
-            sealActiveSerialNumber: sealActiveSerial,
-            sealActiveSerialNumbers: runningSealSerials
+            sealActualSignerSerialNumber: sealActualSigner,
+            identityConfidence: .complete
         )
         let reuseStatuses = inventory.certificates.compactMap { certificate -> SigningCertificateReuseStatus? in
             guard let local = SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: certificate.serialNumber) else { return nil }

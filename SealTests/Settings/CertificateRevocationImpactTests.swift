@@ -133,4 +133,45 @@ struct CertificateRevocationImpactTests {
         #expect(message.contains("没有已安装的应用"))
         #expect(message.contains("本机当前使用") == false)
     }
+
+    /// 真实签名者判定必须归一化前导 0：AltSign 剥 0、DER 保留 0 是同一张证书（坑位 1）。
+    @Test
+    func actualSealSignerMatchesAcrossLeadingZeroDifferences() {
+        #expect(
+            CertificateRevocationImpact.isActualSealSigner(
+                serialNumber: "0E76A893",
+                actualSealSignerSerialNumber: "E76A893"
+            )
+        )
+        #expect(
+            CertificateRevocationImpact.isActualSealSigner(
+                serialNumber: "E76A893",
+                actualSealSignerSerialNumber: "0E76A893"
+            )
+        )
+        #expect(
+            CertificateRevocationImpact.isActualSealSigner(
+                serialNumber: "AABBCC",
+                actualSealSignerSerialNumber: "E76A893"
+            ) == false
+        )
+    }
+
+    /// 真实签名者未知时，判定结果必须为 false —— 由调用方在「未知」时整体停止撤销，
+    /// 这里的 false 只表示「无法证明这张证书是 A」，绝不表示「可以放心撤」。
+    @Test
+    func actualSealSignerIsFalseWhenSignerUnknown() {
+        #expect(
+            CertificateRevocationImpact.isActualSealSigner(
+                serialNumber: "AA11",
+                actualSealSignerSerialNumber: nil
+            ) == false
+        )
+        #expect(
+            CertificateRevocationImpact.isActualSealSigner(
+                serialNumber: "AA11",
+                actualSealSignerSerialNumber: ""
+            ) == false
+        )
+    }
 }

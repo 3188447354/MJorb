@@ -329,6 +329,26 @@ def violations(load=read):
           and "CertificateRevocationImpact.isLocalCertificate(" in cert_view,
           "Certificates: manual revoke must be gated to non-local certificates")
 
+    # Fast IPA 的产物由 build-unsigned-ipa.sh 按版本命名为 Seal_<version>.ipa。
+    # 验证/上传若退回旧的 Seal.ipa 固定名，会在编译成功后误报文件不存在。
+    ios_fast = load(".github/workflows/ios-fast.yml")
+    check("bash Scripts/verify-ipa.sh build/Seal_*.ipa" in ios_fast
+          and "build/Seal_*.ipa.sha256" in ios_fast
+          and "build/Seal.ipa" not in ios_fast,
+          "CI: Fast IPA verification and upload must use the versioned artifact name")
+
+    # ensure-rustbridge 以 xcframework 内的 .source-fingerprint 判定能否复用。
+    # 只缓存 target/ 会让每个新 runner 都因指纹缺失而重建并扫描整个静态库。
+    rust_cache_inputs = (
+        load(".github/workflows/ios.yml"),
+        load(".github/workflows/ios-release.yml"),
+        ios_fast,
+    )
+    check(all("Vendor/Minimuxer/RustBridge/lib/RustBridge.xcframework" in workflow
+              and "'Vendor/Minimuxer/RustBridge/src/**'" in workflow
+              for workflow in rust_cache_inputs),
+          "CI: every iOS Rust cache must preserve the matched xcframework and key it by Rust sources")
+
     # ── 外围专项：供应链（GitHub Action 必须钉到 commit SHA）──────────────
     # actions/cache@v5 这类浮动 major tag 可以被上游移动指向任意代码 ——
     # 只要上游账号或仓库被入侵，CI 就会执行攻击者的代码，并拿到发布用的凭据。

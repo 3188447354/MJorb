@@ -66,7 +66,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             Vendor/Minimuxer/RustBridge/target
-          key: rustbridge-${{ runner.os }}-${{ hashFiles('Vendor/Minimuxer/RustBridge/Cargo.lock') }}
+            Vendor/Minimuxer/RustBridge/lib/RustBridge.xcframework
+          key: rustbridge-${{ runner.os }}-${{ hashFiles('Vendor/Minimuxer/RustBridge/Cargo.lock', 'Vendor/Minimuxer/RustBridge/Cargo.toml', 'Vendor/Minimuxer/RustBridge/Makefile', 'Vendor/Minimuxer/RustBridge/src/**') }}
           restore-keys: |
             rustbridge-${{ runner.os }}-
 
@@ -212,7 +213,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             Vendor/Minimuxer/RustBridge/target
-          key: rustbridge-${{ runner.os }}-${{ hashFiles('Vendor/Minimuxer/RustBridge/Cargo.lock') }}
+            Vendor/Minimuxer/RustBridge/lib/RustBridge.xcframework
+          key: rustbridge-${{ runner.os }}-${{ hashFiles('Vendor/Minimuxer/RustBridge/Cargo.lock', 'Vendor/Minimuxer/RustBridge/Cargo.toml', 'Vendor/Minimuxer/RustBridge/Makefile', 'Vendor/Minimuxer/RustBridge/src/**') }}
           restore-keys: |
             rustbridge-${{ runner.os }}-
 

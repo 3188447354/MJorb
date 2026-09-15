@@ -426,6 +426,13 @@
 
 ## 二、历史记录
 
+### 2026-09-15 · Fast IPA 编译成功后验证找错文件，且每次重复重建 RustBridge
+- **现象**：Actions `34946362592` 的 `Build fast unsigned IPA` 已成功，随后 `Verify unsigned IPA` 报 `cannot find or open build/Seal.ipa`；整轮耗时约 9 分钟，其中 `Ensure RustBridge` 固定占 4 分钟。
+- **根因**：打包脚本已输出带版本号的 `build/Seal_*.ipa`，`ios-fast.yml` 的验证和上传仍写死旧文件名 `build/Seal.ipa`。Rust 缓存只保存 Cargo `target`，没有保存重建后的 `RustBridge.xcframework/.source-fingerprint`；新 runner 检出时记录为空，因此每轮都重建并扫描 2562 个归档对象。完整 `ios.yml` 的缓存键还只包含 `Cargo.lock`，Rust 源码变化后只能恢复旧快照且无法保存新快照。
+- **修复**：Fast IPA 的验证与上传统一使用 `build/Seal_*.ipa` 及配套哈希/Info.plist；三套 iOS 工作流把 xcframework（含源码指纹）加入 Rust 缓存，缓存键统一覆盖 Cargo 清单、Makefile 和全部 Rust 源码。首次成功写入缓存后，后续同一 Rust 指纹直接通过 `ensure-rustbridge.sh` 的一致性检查。
+- **涉及文件**：`.github/workflows/ios-fast.yml`、`ios-release.yml`、`ios.yml`。
+- **验证状态**：失败日志已证明业务代码编译成功；本地发布安全守护、变异自检和差异检查通过，并新增固定产物名与 Rust 缓存结构守护。重新推送后只触发编译，不下载产物。
+
 ### 2026-09-15 · 1.1.16：Seal 自续签安装被自身挂起，旧 profile 未替换并触发重装循环
 - **真机现象**：Seal 自续签后仍显示旧描述文件；启动恢复反复自动重装。`Seal-log(6).txt` 的每轮都有“Seal 自更新安装：第1次，按上游 Install 覆盖”，但随后没有一次“安装返回”或“Seal.app 落盘核验”，下一次启动仍读到旧 profile。
 - **根因**：自替换分支在固定 250ms 后或 Rust 发出安装前哨兵时，通过私有 `UIApplication.suspend` 主动挂起 Seal。`installation_proxy` socket 和等待任务都由 Seal 当前进程持有，进程被挂起后安装命令无法完成，成功回调、落盘核验和 handoff 清理都不可能执行。1.1.15 只切断了跨进程无限恢复次数，没有消除首次安装被挂起的原因。

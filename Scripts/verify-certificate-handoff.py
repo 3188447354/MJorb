@@ -9,6 +9,7 @@ def violations(load):
     coordinator = load('Seal/Core/Signing/SigningCoordinator.swift')
     portal = load('Seal/Infrastructure/Signing/ApplePortalSigningService.swift')
     certificate_service = load('Seal/Infrastructure/Signing/ApplePortalCertificateService.swift')
+    profile_binding = load('Seal/Core/Signing/ProvisioningProfileBinding.swift')
     settings = load('Seal/Features/Settings/SettingsViewModel.swift')
     checks = [
         ('本机均有私钥' not in coordinator, 'cleanup must not infer private keys from no revocable certificates'),
@@ -21,6 +22,27 @@ def violations(load):
         ('selfSigningHandoffStore.prepare(' in coordinator
          and coordinator.index('selfSigningHandoffStore.prepare(') < coordinator.index('try await installChannel.install('),
          'handoff must persist before installation'),
+        ('rotationCandidates(' in portal and 'failure.code == "SEAL-CERT-204b"' in portal
+         and 'removeStoredCertificateMaterial' in portal and 'revokeCertificate(' in portal,
+         '3022 must rotate an unusable certificate and retry certificate creation in the same portal transaction'),
+        (portal.index('let prepared = try signingWorkspace.prepare(') < portal.index('let identity = try await signingIdentity('),
+         'IPA and disk preflight must complete before a certificate can be rotated'),
+        ('证书决策：' in portal and '证书轮换：' in portal and '描述文件核验：' in portal,
+         'certificate, rotation, and fresh profile evidence must be present in exported diagnostics'),
+        (coordinator.index('beginBackgroundTask') < coordinator.index('portal.sign(')
+         and coordinator.rindex('endBackgroundTask') > coordinator.index('portal.sign('),
+         'Seal self-renewal must hold an iOS background execution assertion across signing and installation'),
+        ('requestedAfter:' in profile_binding and 'minimumRemainingLifetime:' in profile_binding,
+         'embedded profile validation must prove this request produced a fresh full-window profile'),
+        ('guard Self.certificateReusable(fullCert)' in portal,
+         'a newly created certificate must itself cover the complete seven-day profile window'),
+        ('let rollbackSecret = (try? await keychain.load(accountID: accountID))' in coordinator
+         and 'let currentAccounts = try? await accountRepository.fetchAll()' in coordinator
+         and 'keychain.save(rollbackSecret' in coordinator,
+         'post-rotation persistence failure must not restore an Apple-revoked certificate'),
+        ('resignAppsAffectedByCertificateRotation(' in coordinator
+         and 'if lhs.isSeal != rhs.isSeal { return lhs.isSeal == false }' in coordinator,
+         'apps affected by rotation must be restored automatically with Seal installed last'),
     ]
     return [message for valid, message in checks if not valid]
 

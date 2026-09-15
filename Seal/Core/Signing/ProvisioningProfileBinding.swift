@@ -20,7 +20,9 @@ struct ProvisioningProfileBinding: Codable, Equatable, Sendable {
         expectedBundleID: String,
         expectedCertificateSerialNumber: String,
         expectedDeviceIdentifier: String,
-        now: Date = Date()
+        now: Date = Date(),
+        requestedAfter: Date? = nil,
+        minimumRemainingLifetime: TimeInterval? = nil
     ) throws -> ProvisioningProfileBinding {
         guard teamIdentifier.caseInsensitiveCompare(expectedTeamID) == .orderedSame else {
             throw Self.failure(
@@ -40,6 +42,13 @@ struct ProvisioningProfileBinding: Codable, Equatable, Sendable {
                 code: "SEAL-PROFILE-312"
             )
         }
+        if let requestedAfter, let minimumRemainingLifetime {
+            try validateFreshness(
+                now: now,
+                requestedAfter: requestedAfter,
+                minimumRemainingLifetime: minimumRemainingLifetime
+            )
+        }
         let normalizedExpectedSerial = Self.normalizedSerial(expectedCertificateSerialNumber)
         let normalizedSerials = Set(certificateSerialNumbers.map(Self.normalizedSerial))
         guard normalizedSerials.contains(normalizedExpectedSerial) else {
@@ -57,6 +66,31 @@ struct ProvisioningProfileBinding: Codable, Equatable, Sendable {
             )
         }
         return self
+    }
+
+    func validateFreshness(
+        now: Date = Date(),
+        requestedAfter: Date,
+        minimumRemainingLifetime: TimeInterval
+    ) throws {
+        guard let creationDate else {
+            throw Self.failure(
+                reason: "Apple 返回的描述文件缺少 CreationDate，无法证明它由本轮请求生成。",
+                code: "SEAL-PROFILE-315"
+            )
+        }
+        guard creationDate >= requestedAfter else {
+            throw Self.failure(
+                reason: "Apple 返回的是本轮请求之前生成的旧描述文件。",
+                code: "SEAL-PROFILE-315a"
+            )
+        }
+        guard expirationDate.timeIntervalSince(now) >= minimumRemainingLifetime else {
+            throw Self.failure(
+                reason: "Apple 返回的描述文件剩余有效期不足完整 7 天窗口。",
+                code: "SEAL-PROFILE-316"
+            )
+        }
     }
 
     static func validateEntitlements(

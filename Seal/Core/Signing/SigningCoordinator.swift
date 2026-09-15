@@ -11,6 +11,18 @@ struct KeylessCertificateSacrificeResult: Sendable {
     let affectedInstalledApps: [AppRecord]
 }
 
+private actor CertificateRotationTransactionState {
+    private var revokedSerials: [String] = []
+
+    func record(_ serials: [String]) {
+        revokedSerials.append(contentsOf: serials)
+    }
+
+    func snapshot() -> [String] {
+        revokedSerials
+    }
+}
+
 actor SigningCoordinator {
     private let appStore: any AppStore
     private let accountRepository: any AccountRepository
@@ -118,6 +130,24 @@ actor SigningCoordinator {
         let originalSecret = secret
         let originalAccount = account
         var didPersistNewSignedArtifact = false
+        let certificateRotationState = CertificateRotationTransactionState()
+        // 自续签从证书轮换开始就不能被锁屏/切后台挂起。安装阶段原有保活只覆盖最后一步，
+        // 无法保护撤证后到新包安装前的关键窗口，因此 Seal 自身持有贯穿整条链路的后台任务。
+        let selfRenewalBackgroundTask = await MainActor.run {
+            app.isSeal && installAfterSigning
+                ? UIApplication.shared.beginBackgroundTask(withName: "Seal Self Renewal")
+                : UIBackgroundTaskIdentifier.invalid
+        }
+        if selfRenewalBackgroundTask != .invalid {
+            try? await logStore?.append(category: .renewal, message: "Seal 自续签事务：后台保活已启动，覆盖证书、描述文件、签名和安装")
+        }
+        defer {
+            if selfRenewalBackgroundTask != .invalid {
+                Task { @MainActor in
+                    UIApplication.shared.endBackgroundTask(selfRenewalBackgroundTask)
+                }
+            }
+        }
 
         do {
             try Task.checkCancellation()
@@ -227,6 +257,14 @@ actor SigningCoordinator {
                             originalAccount: originalAccount
                         )
                     },
+                    persistRevokedSigningMaterial: { updatedSecret, revokedSerials in
+                        try await self.persistRevokedSigningMaterial(
+                            updatedSecret,
+                            revokedSerials: revokedSerials,
+                            accountID: accountID
+                        )
+                        await certificateRotationState.record(revokedSerials)
+                    },
                     progress: { stage in
                         await progress(stage)
                     }
@@ -280,6 +318,14 @@ actor SigningCoordinator {
                             originalAccount: originalAccount
                         )
                     },
+                    persistRevokedSigningMaterial: { updatedSecret, revokedSerials in
+                        try await self.persistRevokedSigningMaterial(
+                            updatedSecret,
+                            revokedSerials: revokedSerials,
+                            accountID: accountID
+                        )
+                        await certificateRotationState.record(revokedSerials)
+                    },
                     progress: { stage in
                         await progress(stage)
                     }
@@ -332,12 +378,30 @@ actor SigningCoordinator {
             try await appStore.save(app)
             didPersistNewSignedArtifact = true
 
+            let rotationRevokedSerials = await certificateRotationState.snapshot()
+            if app.isSeal, rotationRevokedSerials.isEmpty == false {
+                await resignAppsAffectedByCertificateRotation(
+                    revokedSerials: rotationRevokedSerials,
+                    accountID: accountID,
+                    excludingAppID: appID,
+                    includeSeal: false
+                )
+            }
+
             guard installAfterSigning else { return app }
 
             // 签名时通道若未就绪，安装前再试一次启动（签名期间通道可能已恢复）
             if channelReady == false {
                 _ = try? await installChannel.start()
             }
+
+            try? await logStore?.append(
+                category: .installation,
+                message: "签名产物核验通过：证书 …\(SigningCertificateSelectionPolicy.normalizedSerialNumber(portalResult.certificateSerialNumber).suffix(8))，主描述文件到期 \(ISO8601DateFormatter().string(from: portalResult.expirationDate))；继续使用本次签名前启动的缓存设备通道安装"
+            )
+            // 覆盖安装 Seal 会终止当前进程；安装前强制镜像，确保本轮证书/profile
+            // 证据以及受影响应用恢复结果已经写入 Documents/Seal-log.txt。
+            await logStore?.flush()
 
             let installed = try await installSignedIPA(
                 app: app,
@@ -347,6 +411,14 @@ actor SigningCoordinator {
                 progress: progress,
                 onInstallProgress: onInstallProgress
             )
+            if app.isSeal == false, rotationRevokedSerials.isEmpty == false {
+                await resignAppsAffectedByCertificateRotation(
+                    revokedSerials: rotationRevokedSerials,
+                    accountID: accountID,
+                    excludingAppID: appID,
+                    includeSeal: true
+                )
+            }
             // 自更新的接管确认由下次启动核对运行包完成；不在这里撤销旧证书。
             return installed
         } catch is CancellationError {
@@ -792,6 +864,11 @@ actor SigningCoordinator {
         originalSecret: AccountSecret,
         originalAccount: AppleAccountRecord
     ) async throws {
+        // 轮换链路可能已经撤销旧证书并把清空后的状态持久化。补偿基线必须读取
+        // 此刻的 Keychain/账号记录，不能回滚到函数入口那张已被 Apple 撤销的证书。
+        let rollbackSecret = (try? await keychain.load(accountID: accountID)) ?? originalSecret
+        let currentAccounts = try? await accountRepository.fetchAll()
+        let rollbackAccount = currentAccounts?.first(where: { $0.id == accountID }) ?? originalAccount
         do {
             try await keychain.save(updatedSecret, for: accountID)
             guard let reloaded = try await keychain.load(accountID: accountID),
@@ -817,12 +894,12 @@ actor SigningCoordinator {
             let originalError = error
             var rollbackFailures: [String] = []
             do {
-                try await keychain.save(originalSecret, for: accountID)
+                try await keychain.save(rollbackSecret, for: accountID)
             } catch {
                 rollbackFailures.append("Keychain")
             }
             do {
-                try await accountRepository.save(originalAccount)
+                try await accountRepository.save(rollbackAccount)
             } catch {
                 rollbackFailures.append("账号记录")
             }
@@ -834,6 +911,96 @@ actor SigningCoordinator {
                 )
             }
             throw originalError
+        }
+    }
+
+    private func persistRevokedSigningMaterial(
+        _ updatedSecret: AccountSecret,
+        revokedSerials: [String],
+        accountID: UUID
+    ) async throws {
+        try await keychain.save(updatedSecret, for: accountID)
+        guard var updatedAccount = try await accountRepository.fetchAll().first(where: {
+            $0.id == accountID
+        }) else {
+            throw Self.failure(
+                reason: "旧证书已撤销，但未找到对应账号记录，无法持久化轮换状态。",
+                recovery: "重新添加并验证 Apple ID",
+                code: "SEAL-CERT-228"
+            )
+        }
+        let revoked = Set(revokedSerials.map {
+            SigningCertificateSelectionPolicy.normalizedSerialNumber($0)
+        })
+        if let serial = updatedAccount.certificateSerialNumber,
+           revoked.contains(SigningCertificateSelectionPolicy.normalizedSerialNumber(serial)) {
+            updatedAccount.certificateSerialNumber = nil
+        }
+        if let serial = updatedAccount.selectedCertificateSerialNumber,
+           revoked.contains(SigningCertificateSelectionPolicy.normalizedSerialNumber(serial)) {
+            updatedAccount.selectedCertificateSerialNumber = nil
+        }
+        try await accountRepository.save(updatedAccount)
+        try? await logStore?.append(
+            category: .signing,
+            message: "证书轮换事务：Apple 已撤销 \(revokedSerials.count) 张旧证书，本机绑定已同步清除"
+        )
+        await logStore?.flush()
+    }
+
+    private func resignAppsAffectedByCertificateRotation(
+        revokedSerials: [String],
+        accountID: UUID,
+        excludingAppID: UUID,
+        includeSeal: Bool
+    ) async {
+        let revoked = Set(revokedSerials.map {
+            SigningCertificateSelectionPolicy.normalizedSerialNumber($0)
+        })
+        guard let apps = try? await appStore.fetchAll() else { return }
+        let affected = apps.filter { candidate in
+            guard candidate.id != excludingAppID,
+                  candidate.accountID == accountID,
+                  (candidate.state == .installed || candidate.isSeal),
+                  includeSeal || candidate.isSeal == false else { return false }
+            let serials = [candidate.certificateSerialNumber]
+                .compactMap { $0 }
+                + candidate.signingTargets.flatMap(\.certificateSerialNumbers)
+            return serials.contains {
+                revoked.contains(SigningCertificateSelectionPolicy.normalizedSerialNumber($0))
+            }
+        }.sorted { lhs, rhs in
+            if lhs.isSeal != rhs.isSeal { return lhs.isSeal == false }
+            return lhs.name < rhs.name
+        }
+        guard affected.isEmpty == false else { return }
+        try? await logStore?.append(
+            category: .renewal,
+            message: "证书轮换事务：自动续签 \(affected.count) 个受旧证书影响的已安装应用，Seal 始终最后安装"
+        )
+        for candidate in affected {
+            do {
+                _ = try await signAndInstall(
+                    appID: candidate.id,
+                    accountID: accountID,
+                    requestedBundleIdentifier: candidate.mappedBundleIdentifier ?? candidate.preferredBundleIdentifier,
+                    selectedCertificateSerialNumber: nil,
+                    forceResign: true,
+                    bypassFreeAccountDeviceLimit: true,
+                    progress: { _ in }
+                )
+                try? await logStore?.append(
+                    category: .renewal,
+                    message: "证书轮换事务：受影响应用 \(candidate.name) 已重新签名安装"
+                )
+            } catch {
+                let nsError = error as NSError
+                try? await logStore?.append(
+                    category: .renewal,
+                    level: .error,
+                    message: "证书轮换事务：受影响应用 \(candidate.name) 自动恢复失败 [\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)"
+                )
+            }
         }
     }
 

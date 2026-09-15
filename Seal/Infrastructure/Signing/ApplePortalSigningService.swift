@@ -232,19 +232,33 @@ func withAppleTimeout<T: Sendable>(
 }
 
 actor ApplePortalSigningService {
+    private static let profileRequestClockTolerance: TimeInterval = 10 * 60
+    private static let minimumFreshProfileLifetime: TimeInterval = 7 * 24 * 3600 - profileRequestClockTolerance
     private let anisetteProvider: any AnisetteProvider
     private let signingWorkspace: SigningWorkspace
     private let accountClient: AppleAccountClient
+    private let logStore: SealLogStore?
     // 对齐 AltStore：防止并发签名时重复创建 App Group
     // App Group 操作通过 actor 串行化；批量签名为串行循环，无并发创建风险
 
     init(
         anisetteProvider: any AnisetteProvider = AnisetteV3Client(),
-        signingWorkspace: SigningWorkspace = SigningWorkspace()
+        signingWorkspace: SigningWorkspace = SigningWorkspace(),
+        logStore: SealLogStore? = nil
     ) {
         self.anisetteProvider = anisetteProvider
         self.signingWorkspace = signingWorkspace
         self.accountClient = AppleAccountClient(anisetteProvider: anisetteProvider)
+        self.logStore = logStore
+    }
+
+    private func diagnostic(_ message: String, level: SealLogEntry.Level = .info) async {
+        try? await logStore?.append(category: .signing, level: level, message: message)
+    }
+
+    private static func diagnosticDate(_ date: Date?) -> String {
+        guard let date else { return "缺失" }
+        return ISO8601DateFormatter().string(from: date)
     }
 
 
@@ -260,12 +274,18 @@ actor ApplePortalSigningService {
         selectedCertificateSerialNumber: String? = nil,
         allowDroppingExtensions: Bool,
         persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void,
+        persistRevokedSigningMaterial: @escaping @Sendable (AccountSecret, [String]) async throws -> Void,
         progress: @Sendable (SigningStage) async -> Void
     ) async throws -> PortalSigningResult {
         let secretState = SigningSecretState(secret)
         let persistence: @Sendable (AccountSecret, String) async throws -> Void = {
             updatedSecret, serialNumber in
             try await persistSigningMaterial(updatedSecret, serialNumber)
+            await secretState.update(updatedSecret)
+        }
+        let revokedPersistence: @Sendable (AccountSecret, [String]) async throws -> Void = {
+            updatedSecret, revokedSerials in
+            try await persistRevokedSigningMaterial(updatedSecret, revokedSerials)
             await secretState.update(updatedSecret)
         }
 
@@ -282,6 +302,7 @@ actor ApplePortalSigningService {
                 selectedCertificateSerialNumber: selectedCertificateSerialNumber,
                 allowDroppingExtensions: allowDroppingExtensions,
                 persistSigningMaterial: persistence,
+                persistRevokedSigningMaterial: revokedPersistence,
                 progress: progress
             )
         } catch let failure as ImportFailure where failure.code == "SEAL-AUTH-107" {
@@ -313,6 +334,7 @@ actor ApplePortalSigningService {
                 selectedCertificateSerialNumber: nil,
                 allowDroppingExtensions: allowDroppingExtensions,
                 persistSigningMaterial: persistence,
+                persistRevokedSigningMaterial: revokedPersistence,
                 progress: progress
             )
         } catch ALTAppleAPIError.invalidAnisetteData {
@@ -330,6 +352,7 @@ actor ApplePortalSigningService {
                     selectedCertificateSerialNumber: selectedCertificateSerialNumber,
                     allowDroppingExtensions: allowDroppingExtensions,
                     persistSigningMaterial: persistence,
+                    persistRevokedSigningMaterial: revokedPersistence,
                     progress: progress
                 )
             } catch let failure as ImportFailure {
@@ -364,6 +387,7 @@ actor ApplePortalSigningService {
         selectedCertificateSerialNumber: String?,
         allowDroppingExtensions: Bool,
         persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void,
+        persistRevokedSigningMaterial: @escaping @Sendable (AccountSecret, [String]) async throws -> Void,
         progress: @Sendable (SigningStage) async -> Void
     ) async throws -> PortalSigningResult {
         var stage: ApplePortalSigningStage = .account
@@ -397,20 +421,6 @@ actor ApplePortalSigningService {
                 name: deviceName,
                 team: team,
                 session: session
-            )
-            try Task.checkCancellation()
-
-            await progress(.preparingCertificate)
-            stage = .certificate
-            let identity = try await signingIdentity(
-                account: account,
-                isSeal: app.isSeal,
-                secret: secret,
-                team: team,
-                session: session,
-                deviceName: deviceName,
-                selectedCertificateSerialNumber: selectedCertificateSerialNumber,
-                persistSigningMaterial: persistSigningMaterial
             )
             try Task.checkCancellation()
 
@@ -452,8 +462,26 @@ actor ApplePortalSigningService {
             )
             try Task.checkCancellation()
 
+            // 证书轮换可能立刻让旧 profile 失效。磁盘容量、IPA 解包、Bundle 结构和
+            // 本地重写必须全部先成功，确认已经具备可签产物后才允许触碰 Apple 证书。
+            await progress(.preparingCertificate)
+            stage = .certificate
+            let identity = try await signingIdentity(
+                account: account,
+                isSeal: app.isSeal,
+                secret: secret,
+                team: team,
+                session: session,
+                deviceName: deviceName,
+                selectedCertificateSerialNumber: selectedCertificateSerialNumber,
+                persistSigningMaterial: persistSigningMaterial,
+                persistRevokedSigningMaterial: persistRevokedSigningMaterial
+            )
+            try Task.checkCancellation()
+
             await progress(.preparingAppID)
             stage = .appID
+            let profileRequestStartedAt = Date()
             let profilePreparation = try await provisioningProfiles(
                 mappings: prepared.bundleIDMappings,
                 mappedMainBundleID: prepared.mappedMainBundleID,
@@ -492,7 +520,8 @@ actor ApplePortalSigningService {
                 teamID: team.identifier,
                 certificateSerialNumber: identity.certificate.serialNumber,
                 deviceIdentifier: deviceIdentifier,
-                requestedEntitlements: profilePreparation.requestedEntitlements
+                requestedEntitlements: profilePreparation.requestedEntitlements,
+                requestedAfter: profileRequestStartedAt.addingTimeInterval(-Self.profileRequestClockTolerance)
             )
             guard let mainBinding = profileBindings[prepared.mappedMainBundleID] else {
                 throw Self.failure(
@@ -500,6 +529,14 @@ actor ApplePortalSigningService {
                     reason: "签名完成后未找到主应用的 embedded.mobileprovision：\(prepared.mappedMainBundleID)。",
                     recovery: "重新获取描述文件",
                     code: "SEAL-PROFILE-317a"
+                )
+            }
+            for binding in profileBindings.values.sorted(by: { $0.bundleIdentifier < $1.bundleIdentifier }) {
+                let serials = binding.certificateSerialNumbers.map {
+                    "…" + SigningCertificateSelectionPolicy.normalizedSerialNumber($0).suffix(8)
+                }.joined(separator: "、")
+                await diagnostic(
+                    "描述文件核验：Bundle=\(binding.bundleIdentifier)，UUID=\(binding.profileUUID ?? "缺失")，创建=\(Self.diagnosticDate(binding.creationDate))，到期=\(Self.diagnosticDate(binding.expirationDate))，证书=\(serials)，本轮新申请=是"
                 )
             }
 
@@ -624,7 +661,8 @@ actor ApplePortalSigningService {
         session: ALTAppleAPISession,
         deviceName: String,
         selectedCertificateSerialNumber: String?,
-        persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void
+        persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void,
+        persistRevokedSigningMaterial: @escaping @Sendable (AccountSecret, [String]) async throws -> Void
     ) async throws -> SigningIdentity {
         // 快速路径：本地证书可读时先做"本地 + 可选校验"——能拉到 Apple 证书列表就比对，
         // 证书仍有效才复用本地证书；拉不到（大陆 IP 时限流很慢）则退回本地证书保持提速。
@@ -643,6 +681,7 @@ actor ApplePortalSigningService {
                 if certificates.contains(where: {
                     SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber) == SigningCertificateSelectionPolicy.normalizedSerialNumber(serial)
                 }), Self.certificateReusable(local) {
+                    await diagnostic("证书决策：复用 Apple 生效列表中的本机证书 …\(SigningCertificateSelectionPolicy.normalizedSerialNumber(serial).suffix(8))，剩余有效期已通过完整 7 天校验")
                     return SigningIdentity(
                         certificate: local,
                         secret: secret.activated(
@@ -657,6 +696,7 @@ actor ApplePortalSigningService {
                 // 但免费账号证书可能已过期或临近到期；复用会让 iOS 判定"尚未验证"导致闪退，
                 // 因此剩余寿命不足 7 天时必须落入慢速路径重新申请，不得复用。
                 if Self.certificateReusable(local) {
+                    await diagnostic("证书决策：Apple 证书列表暂不可用，复用本机证书 …\(SigningCertificateSelectionPolicy.normalizedSerialNumber(serial).suffix(8))；本地有效期已通过完整 7 天校验")
                     return SigningIdentity(
                         certificate: local,
                         secret: secret.activated(
@@ -671,6 +711,21 @@ actor ApplePortalSigningService {
         // 慢速路径：本地证书不可用，从 Apple 服务器获取证书列表
         let certificates = try await fetchCertificates(team: team, session: session)
         try Task.checkCancellation()
+
+        var reuseStatusBySerial: [String: SigningCertificateReuseStatus] = [:]
+        for remote in certificates {
+            guard let local = SigningCertificateMaterialPolicy.availableCertificate(
+                secret: secret,
+                serialNumber: remote.serialNumber
+            ) else { continue }
+            reuseStatusBySerial[remote.serialNumber] = SigningCertificateMaterialPolicy.reuseStatus(local)
+        }
+        let reusableCount = reuseStatusBySerial.values.filter { $0 == .reusable }.count
+        let insufficientCount = reuseStatusBySerial.values.filter { $0 == .insufficientLifetime }.count
+        let invalidCount = reuseStatusBySerial.values.filter { $0 == .invalidValidity }.count
+        await diagnostic(
+            "证书决策：远端 \(certificates.count) 张，可复用 \(reusableCount) 张，剩余不足 7 天 \(insufficientCount) 张，日期无效 \(invalidCount) 张，无本机私钥 \(certificates.count - reuseStatusBySerial.count) 张"
+        )
 
         if let selectedCertificateSerialNumber,
            let remote = certificates.first(where: {
@@ -720,40 +775,29 @@ actor ApplePortalSigningService {
             )
         }
 
-        // 只对当前运行包、同一 Team 且缺少本机私钥的外部身份允许首次接管。
-        // 先尝试创建而不撤销当前 Seal；Apple 明确拒绝后说明恢复路径。
+        // 运行包证书只用于安排轮换顺序：当前 Seal 的证书最后撤销，尽量缩短失效窗口。
         let runningMetadata = await MainActor.run { isSeal ? SelfAppMetadata.current() : nil }
-        let localPrivateKeySerials = Set(certificates.compactMap { certificate -> String? in
-            SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: certificate.serialNumber) == nil
-                ? nil : certificate.serialNumber
-        })
-        let externalSealSerial = SigningCertificateMaterialPolicy.externalSealSerial(
-            isSeal: isSeal,
-            teamID: account.teamID,
-            runningTeamID: runningMetadata?.signingTeamIdentifier,
-            runningSerials: runningMetadata?.certificateSerialNumbers ?? [],
-            remoteSerials: certificates.map(\.serialNumber),
-            localPrivateKeySerials: localPrivateKeySerials,
-            expectedSerialNumber: selectedCertificateSerialNumber ?? secret.certificateSerialNumber
-        )
-        let expectedSerial = selectedCertificateSerialNumber ?? secret.certificateSerialNumber
-        if let expectedSerial,
-           expectedSerial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-            let remoteContainsExpected = certificates.contains {
-                SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber) == SigningCertificateSelectionPolicy.normalizedSerialNumber(expectedSerial)
-            }
-            if remoteContainsExpected,
-               SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: expectedSerial) == nil,
-               externalSealSerial == nil {
-                throw Self.missingLocalPrivateKeyFailure(serialNumber: expectedSerial)
-            }
-            if remoteContainsExpected == false, externalSealSerial == nil {
-                // 账号记录仍指向一张已经被撤销/删除的证书。不能把「绑定过的旧证书
-                // 不存在」伪装成「请再申请一张」：当前账号可能正好只剩另一张仍被
-                // 已安装 App 使用的证书，盲目申请只会再次撞数量上限。
-                throw Self.staleCertificateBindingFailure(
-                    serialNumber: expectedSerial,
-                    availableCertificateCount: certificates.count
+        let runningSealSerials = Set(runningMetadata?.certificateSerialNumbers ?? [])
+
+        // AltStore/SideStore 的免费团队真实链路：门户已有证书但没有任何可签满 7 天的
+        // 本机身份时，先撤销旧证书，再创建新证书。免费团队只有一个活动开发证书槽位，
+        // 继续 add 只会确定性得到 3022/7460。
+        if team.type == .free, certificates.isEmpty == false {
+            let candidates = SigningCertificateMaterialPolicy.rotationCandidates(
+                remoteSerialNumbers: certificates.map(\.serialNumber),
+                reuseStatusBySerial: reuseStatusBySerial,
+                runningSealSerialNumbers: runningSealSerials
+            )
+            if candidates.isEmpty == false {
+                return try await rotateCertificatesAndCreateIdentity(
+                    candidates: candidates,
+                    certificates: certificates,
+                    secret: secret,
+                    team: team,
+                    session: session,
+                    deviceName: deviceName,
+                    persistSigningMaterial: persistSigningMaterial,
+                    persistRevokedSigningMaterial: persistRevokedSigningMaterial
                 )
             }
         }
@@ -766,8 +810,84 @@ actor ApplePortalSigningService {
                 deviceName: deviceName,
                 persistSigningMaterial: persistSigningMaterial
             )
-        } catch let failure as ImportFailure where failure.code == "SEAL-CERT-204b" && externalSealSerial != nil {
-            throw Self.externalSealIdentityFailure(underlying: failure)
+        } catch let failure as ImportFailure where failure.code == "SEAL-CERT-204b" {
+            // 付费团队或 Apple 侧规则变化时，以明确 3022 为触发点执行同一轮换链路。
+            let candidates = SigningCertificateMaterialPolicy.rotationCandidates(
+                remoteSerialNumbers: certificates.map(\.serialNumber),
+                reuseStatusBySerial: reuseStatusBySerial,
+                runningSealSerialNumbers: runningSealSerials
+            )
+            guard candidates.isEmpty == false else { throw failure }
+            return try await rotateCertificatesAndCreateIdentity(
+                candidates: candidates,
+                certificates: certificates,
+                secret: secret,
+                team: team,
+                session: session,
+                deviceName: deviceName,
+                persistSigningMaterial: persistSigningMaterial,
+                persistRevokedSigningMaterial: persistRevokedSigningMaterial
+            )
+        }
+    }
+
+    private func rotateCertificatesAndCreateIdentity(
+        candidates: [SigningCertificateRotationCandidate],
+        certificates: [ALTX509Certificate],
+        secret: AccountSecret,
+        team: ALTTeam,
+        session: ALTAppleAPISession,
+        deviceName: String,
+        persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void,
+        persistRevokedSigningMaterial: @escaping @Sendable (AccountSecret, [String]) async throws -> Void
+    ) async throws -> SigningIdentity {
+        await diagnostic("证书轮换：最多检查 \(candidates.count) 张不可用于完整 7 天签名的证书；逐张释放并立即尝试创建，当前 Seal 在用证书排在最后")
+        var updatedSecret = secret
+        var revokedSerials: [String] = []
+        for (index, candidate) in candidates.enumerated() {
+            try Task.checkCancellation()
+            guard let certificate = certificates.first(where: {
+                SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber)
+                    == SigningCertificateSelectionPolicy.normalizedSerialNumber(candidate.serialNumber)
+            }) else { continue }
+            let serial = SigningCertificateSelectionPolicy.normalizedSerialNumber(candidate.serialNumber)
+            await diagnostic("证书轮换：撤销 …\(serial.suffix(8))，原因=\(rotationReasonText(candidate.reason))，运行中Seal=\(candidate.isRunningSealCertificate ? "是" : "否")")
+            try await revokeCertificate(certificate, team: team, session: session)
+            updatedSecret.removeStoredCertificateMaterial(serialNumber: candidate.serialNumber)
+            revokedSerials.append(candidate.serialNumber)
+            // 每撤销一张立刻持久化，避免进程在多张证书之间被系统终止后仍把已撤销
+            // P12 当成有效材料；随后马上尝试创建，成功即停止继续撤销。
+            try await persistRevokedSigningMaterial(updatedSecret, [candidate.serialNumber])
+            await diagnostic("证书轮换：已撤销并持久化 \(revokedSerials.count) 张，立即创建本机证书")
+            do {
+                let identity = try await createSigningIdentity(
+                    secret: updatedSecret,
+                    team: team,
+                    session: session,
+                    deviceName: deviceName,
+                    persistSigningMaterial: persistSigningMaterial
+                )
+                let newSerial = SigningCertificateSelectionPolicy.normalizedSerialNumber(identity.certificate.serialNumber)
+                await diagnostic("证书轮换：新证书已创建并保存，序列号末尾 …\(newSerial.suffix(8))")
+                return identity
+            } catch let failure as ImportFailure where failure.code == "SEAL-CERT-204b"
+                && index + 1 < candidates.count {
+                await diagnostic("证书轮换：释放一张后 Apple 仍返回 3022，继续处理下一张不可用证书", level: .warning)
+            }
+        }
+        throw Self.failure(
+            title: "证书轮换失败",
+            reason: "已释放 \(revokedSerials.count) 张不可用证书，但 Apple 仍未允许创建新的本机签名身份。",
+            recovery: "稍后重试",
+            code: "SEAL-CERT-227"
+        )
+    }
+
+    private func rotationReasonText(_ reason: SigningCertificateRotationReason) -> String {
+        switch reason {
+        case .missingPrivateKey: return "无本机私钥"
+        case .insufficientLifetime: return "剩余不足7天"
+        case .invalidValidity: return "证书日期无效"
         }
     }
 
@@ -842,6 +962,14 @@ actor ApplePortalSigningService {
                 )
             }
             let fullCert = ALTCertificate(x509: certificate, privateKey: requested.privateKey)
+            guard Self.certificateReusable(fullCert) else {
+                throw Self.failure(
+                    title: "新证书有效期不足",
+                    reason: "Apple 刚创建的证书无法覆盖一份完整 7 天描述文件，Seal 已停止使用该证书。",
+                    recovery: "确认手机日期时间为自动设置后重试",
+                    code: "SEAL-CERT-229"
+                )
+            }
             guard let p12 = try? fullCert.unencryptedP12Data() else {
                 throw Self.failure(
                     title: "无法保存新证书",
@@ -859,6 +987,10 @@ actor ApplePortalSigningService {
             )
 
             try await persistSigningMaterial(updatedSecret, certificate.serialNumber)
+            let validity = certificate.data.flatMap(X509CertificateValidityReader.validity(from:))
+            await diagnostic(
+                "新证书核验：序列号末尾 …\(SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber).suffix(8))，生效=\(Self.diagnosticDate(validity?.notBefore))，到期=\(Self.diagnosticDate(validity?.notAfter))，本机P12=已保存"
+            )
             return SigningIdentity(certificate: fullCert, secret: updatedSecret)
         } catch {
             let cleanedUp = await cleanUpNewCertificate(
@@ -1340,6 +1472,8 @@ actor ApplePortalSigningService {
         // 对齐 AltStore 官方实现：先获取，再尝试删除旧描述文件，删除成功则重新获取生成新的。
         // 免费账号从 2023-03-20 起无法删除描述文件，每次 fetch 会自动重新生成，
         // 因此删除失败时直接返回已获取的描述文件即可。
+        let requestStartedAt = Date()
+        let requestedAfter = requestStartedAt.addingTimeInterval(-Self.profileRequestClockTolerance)
         let firstBox: LegacyBox<ALTProvisioningProfile> = try await withAppleTimeout(30) {
             try await withCheckedThrowingContinuation {
                 continuation in
@@ -1384,11 +1518,15 @@ actor ApplePortalSigningService {
             deleteSucceeded = false
         }
 
-        guard deleteSucceeded else {
+        let candidate: ALTProvisioningProfile
+        if deleteSucceeded == false {
             // 免费账号无法删除描述文件（2023-03-20 起 Apple 限制），
-            // 但删除操作本身会触发 Apple 重新生成描述文件，因此必须再 fetch 一次，
-            // 确保返回的是删除操作后的新生成结果，而不是第一次 fetch 到的旧文件。
-            let regeneratedBox: LegacyBox<ALTProvisioningProfile> = try await withAppleTimeout(30) {
+            // AltStore 上游确认每次 fetch 已经重新生成，直接校验第一次结果；若 Apple
+            // 实际返回旧日期，下面的 freshness 检查会在同一 session 再 fetch 一次。
+            candidate = profile
+        } else {
+            // 删除成功（付费账号），重新获取生成新的描述文件
+            let secondBox: LegacyBox<ALTProvisioningProfile> = try await withAppleTimeout(30) {
                 try await withCheckedThrowingContinuation {
                     continuation in
                     let callback = ContinuationBox(continuation)
@@ -1402,25 +1540,43 @@ actor ApplePortalSigningService {
                     }
                 }
             }
-            return regeneratedBox.value
+            candidate = secondBox.value
         }
 
-        // 删除成功（付费账号），重新获取生成新的描述文件
-        let secondBox: LegacyBox<ALTProvisioningProfile> = try await withAppleTimeout(30) {
-            try await withCheckedThrowingContinuation {
-                continuation in
-                let callback = ContinuationBox(continuation)
-                ALTAppleAPI.shared.fetchProvisioningProfile(
-                    for: appID,
-                    deviceType: .iphone,
-                    team: team,
-                    session: session
-                ) { profile, error in
-                    Self.resume(callback, value: profile, error: error)
+        do {
+            try validateFreshProfile(candidate, requestedAfter: requestedAfter)
+            return candidate
+        } catch let failure as ImportFailure where [
+            "SEAL-PROFILE-315", "SEAL-PROFILE-315a", "SEAL-PROFILE-316"
+        ].contains(failure.code) {
+            await diagnostic("描述文件首次结果不是本轮完整 7 天文件，立即在同一 Apple 会话重新申请一次", level: .warning)
+            let retryBox: LegacyBox<ALTProvisioningProfile> = try await withAppleTimeout(30) {
+                try await withCheckedThrowingContinuation { continuation in
+                    let callback = ContinuationBox(continuation)
+                    ALTAppleAPI.shared.fetchProvisioningProfile(
+                        for: appID,
+                        deviceType: .iphone,
+                        team: team,
+                        session: session
+                    ) { profile, error in
+                        Self.resume(callback, value: profile, error: error)
+                    }
                 }
             }
+            try validateFreshProfile(retryBox.value, requestedAfter: requestedAfter)
+            return retryBox.value
         }
-        return secondBox.value
+    }
+
+    private func validateFreshProfile(
+        _ profile: ALTProvisioningProfile,
+        requestedAfter: Date
+    ) throws {
+        let binding = try ProvisioningProfileReader().binding(from: profile.data)
+        try binding.validateFreshness(
+            requestedAfter: requestedAfter,
+            minimumRemainingLifetime: Self.minimumFreshProfileLifetime
+        )
     }
 
 
@@ -1614,7 +1770,8 @@ actor ApplePortalSigningService {
         teamID: String,
         certificateSerialNumber: String,
         deviceIdentifier: String,
-        requestedEntitlements: [String: [String: ProvisioningEntitlementValue]]
+        requestedEntitlements: [String: [String: ProvisioningEntitlementValue]],
+        requestedAfter: Date
     ) throws -> [String: ProvisioningProfileBinding] {
         let reader = ProvisioningProfileReader()
         var bindings: [String: ProvisioningProfileBinding] = [:]
@@ -1635,7 +1792,9 @@ actor ApplePortalSigningService {
                     expectedTeamID: teamID,
                     expectedBundleID: target.bundleIdentifier,
                     expectedCertificateSerialNumber: certificateSerialNumber,
-                    expectedDeviceIdentifier: deviceIdentifier
+                    expectedDeviceIdentifier: deviceIdentifier,
+                    requestedAfter: requestedAfter,
+                    minimumRemainingLifetime: Self.minimumFreshProfileLifetime
                 )
             try ProvisioningProfileBinding.validateEntitlements(
                 requested: requestedEntitlements[target.bundleIdentifier] ?? [:],

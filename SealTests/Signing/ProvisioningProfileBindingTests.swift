@@ -31,6 +31,42 @@ struct ProvisioningProfileBindingTests {
     }
 
     @Test
+    func rejectsProfileThatPredatesTheCurrentRequest() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let binding = ProvisioningProfileBinding(
+            bundleIdentifier: "com.example.app", profileUUID: "OLD", profileName: "Old",
+            teamIdentifier: "TEAM123", creationDate: now.addingTimeInterval(-3600),
+            expirationDate: now.addingTimeInterval(8 * 24 * 3600),
+            certificateSerialNumbers: ["A1B2C3"], deviceIdentifiers: ["UDID-123"], entitlements: [:]
+        )
+        #expect(throws: ImportFailure.self) {
+            _ = try binding.validated(
+                expectedTeamID: "TEAM123", expectedBundleID: "com.example.app",
+                expectedCertificateSerialNumber: "A1B2C3", expectedDeviceIdentifier: "UDID-123",
+                now: now, requestedAfter: now.addingTimeInterval(-60), minimumRemainingLifetime: 7 * 24 * 3600 - 600
+            )
+        }
+    }
+
+    @Test
+    func rejectsFreshProfileThatDoesNotProvideAFullSevenDayWindow() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let binding = ProvisioningProfileBinding(
+            bundleIdentifier: "com.example.app", profileUUID: "SHORT", profileName: "Short",
+            teamIdentifier: "TEAM123", creationDate: now.addingTimeInterval(-10),
+            expirationDate: now.addingTimeInterval(6 * 24 * 3600),
+            certificateSerialNumbers: ["A1B2C3"], deviceIdentifiers: ["UDID-123"], entitlements: [:]
+        )
+        #expect(throws: ImportFailure.self) {
+            _ = try binding.validated(
+                expectedTeamID: "TEAM123", expectedBundleID: "com.example.app",
+                expectedCertificateSerialNumber: "A1B2C3", expectedDeviceIdentifier: "UDID-123",
+                now: now, requestedAfter: now.addingTimeInterval(-60), minimumRemainingLifetime: 7 * 24 * 3600 - 600
+            )
+        }
+    }
+
+    @Test
     func rejectsUnsupportedEntitlementInsteadOfSilentlyDroppingIt() {
         #expect(throws: ImportFailure.self) {
             try ProvisioningProfileBinding.validateEntitlements(

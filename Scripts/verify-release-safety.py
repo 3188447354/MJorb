@@ -44,8 +44,11 @@ def violations(load=read):
     check("InstalledAppDeviceVerifier.isInstalled" not in install,
           "R02: lookup cannot turn failed replacement into success")
     portal = load("Seal/Infrastructure/Signing/ApplePortalSigningService.swift")
-    check("recoverCertificateCapacityAndCreate" not in portal,
-          "R03: do not auto-revoke other certificates on capacity failure")
+    rotation = section(portal, "private func rotateCertificatesAndCreateIdentity(", "static func externalSealIdentityFailure(")
+    check("revokeCertificate(" in rotation
+          and "persistRevokedSigningMaterial(updatedSecret, [candidate.serialNumber])" in rotation
+          and "createSigningIdentity(" in rotation,
+          "R03: capacity recovery must revoke, persist, then create in one portal transaction")
     create = section(portal, "private func createSigningIdentity(", "private func waitForCreatedCertificate(")
     check("revokeCertificate(" not in create and "cleanUpNewCertificate(" in create,
           "R03: only cleanup of this operation's new certificate is allowed")
@@ -301,10 +304,10 @@ def violations(load=read):
           and "fullSerialText(certificate.serialNumber)" in cert_view,
           "Certificates: UI must show full identity and associated apps")
     signing_service = load("Seal/Infrastructure/Signing/ApplePortalSigningService.swift")
-    check("static func staleCertificateBindingFailure(" in signing_service
-          and "remoteContainsExpected == false" in signing_service
-          and "static func missingLocalPrivateKeyFailure(" in signing_service,
-          "Certificates: stale binding must not blindly request another certificate")
+    check("if team.type == .free, certificates.isEmpty == false" in signing_service
+          and 'catch let failure as ImportFailure where failure.code == "SEAL-CERT-204b"' in signing_service
+          and "rotationCandidates(" in signing_service,
+          "Certificates: unusable/stale bindings must rotate before a free-team request or after exact 3022")
     settings = load("Seal/Features/Settings/SettingsViewModel.swift")
     check("let expirationDate = portalPresence == .invalid" in settings,
           "Certificates: revoked remote certificates must not show stale local expiry")
@@ -313,8 +316,10 @@ def violations(load=read):
     account_secret = load("Seal/Core/Accounts/AccountSecret.swift")
     check("certificateP12BySerial[oldKey] = oldP12" in account_secret,
           "Certificates: creating a new certificate must not discard older local P12 material")
-    check("for remote in certificates" in signing_service
-          and "SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: remote.serialNumber)" in signing_service,
+    reuse_section = section(signing_service, "// 根治「创建新证书覆盖旧 P12」的问题", "// 运行包证书只用于安排轮换顺序")
+    check("for remote in certificates" in reuse_section
+          and "SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: remote.serialNumber)" in reuse_section
+          and "Self.certificateReusable(local)" in reuse_section,
           "Certificates: signing must reuse any stored P12 whose remote certificate is still active")
     check("isCertificateImporterPresented" not in cert_view
           and "从 P12 备份恢复本机私钥" not in cert_view,
@@ -536,8 +541,8 @@ def main():
         ("Seal/Core/Signing/SigningCoordinator.swift", "        var updated = app\n",
          "        var updated = app\n        // InstalledAppDeviceVerifier.isInstalled\n", "R02:"),
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "actor ApplePortalSigningService {",
-         "actor ApplePortalSigningService {\n// recoverCertificateCapacityAndCreate\n", "R03:"),
+         "            try await persistRevokedSigningMaterial(updatedSecret, [candidate.serialNumber])\n            await diagnostic(\"证书轮换：已撤销",
+         "            // revoked state persistence removed\n            await diagnostic(\"证书轮换：已撤销", "R03:"),
         (".github/workflows/ios.yml",
          "if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true",
          "if: inputs.publish_release == true",
@@ -675,9 +680,9 @@ def main():
          "CertificateRevocationImpact.affectedAppsUnused(",
          "Certificates: UI must show full identity and associated apps"),
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "if remoteContainsExpected == false, externalSealSerial == nil {",
+         "if team.type == .free, certificates.isEmpty == false {",
          "if false {",
-         "Certificates: stale binding must not blindly request another certificate"),
+         "Certificates: unusable/stale bindings must rotate before a free-team request or after exact 3022"),
         ("Seal/Features/Settings/SettingsViewModel.swift",
          "let expirationDate = portalPresence == .invalid",
          "let expirationDate = false",
@@ -691,7 +696,7 @@ def main():
          "certificateP12BySerial.removeValue(forKey: oldKey)",
          "Certificates: creating a new certificate must not discard older local P12 material"),
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "for remote in certificates {",
+         "for remote in certificates {\n            guard let local = SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: remote.serialNumber),\n                  Self.certificateReusable(local) else { continue }",
          "if false {",
          "Certificates: signing must reuse any stored P12 whose remote certificate is still active"),
         (".github/workflows/ios.yml",

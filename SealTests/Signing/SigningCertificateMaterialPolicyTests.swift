@@ -46,6 +46,34 @@ struct SigningCertificateMaterialPolicyTests {
     }
 
     @Test
+    func capacityRecoveryRotatesOnlyCertificatesThatCannotCoverANewProfile() {
+        let candidates = SigningCertificateMaterialPolicy.rotationCandidates(
+            remoteSerialNumbers: ["0AA11", "BB22", "CC33", "DD44"],
+            reuseStatusBySerial: [
+                "AA11": .reusable,
+                "BB22": .insufficientLifetime,
+                "CC33": .invalidValidity
+            ],
+            runningSealSerialNumbers: ["0DD44"]
+        )
+
+        #expect(candidates.map(\.serialNumber) == ["CC33", "BB22", "DD44"])
+        #expect(candidates.map(\.reason) == [.invalidValidity, .insufficientLifetime, .missingPrivateKey])
+    }
+
+    @Test
+    func capacityRecoveryKeepsRunningSealCertificateUntilLast() {
+        let candidates = SigningCertificateMaterialPolicy.rotationCandidates(
+            remoteSerialNumbers: ["SEAL", "ORPHAN"],
+            reuseStatusBySerial: [:],
+            runningSealSerialNumbers: ["0SEAL"]
+        )
+
+        #expect(candidates.map(\.serialNumber) == ["ORPHAN", "SEAL"])
+        #expect(candidates.last?.isRunningSealCertificate == true)
+    }
+
+    @Test
     func missingOrCorruptP12DoesNotCountAsLocalPrivateKey() {
         var secret = AccountSecret(email: "test@example.invalid", accountIdentifier: "test", dsid: "test", authToken: "test", password: nil)
         #expect(SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: "AA11") == nil)

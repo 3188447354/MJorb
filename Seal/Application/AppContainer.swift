@@ -79,7 +79,8 @@ struct AppContainer {
                 fileStore: fileStore,
                 installChannel: installChannel,
                 portal: ApplePortalSigningService(
-                    anisetteProvider: anisetteProvider
+                    anisetteProvider: anisetteProvider,
+                    logStore: logStore
                 ),
                 logStore: logStore,
                 selfSigningHandoffStore: selfSigningHandoffStore

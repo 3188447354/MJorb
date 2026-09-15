@@ -1200,20 +1200,34 @@ actor SigningCoordinator {
                     code: "SEAL-INSTALL-737"
                 )
             }
-            let transaction = try await selfReplacement.prepare(
-                app: updated,
-                accountID: accountID,
-                signedIPARelativePath: signedPath
-            )
-            try await updateState(appID: app.id, stage: .pushing)
-            await progress(.pushing)
-            try await selfReplacement.submitPrepared(
-                transactionID: transaction.id,
-                progress: onInstallProgress
-            )
-            updated.signedArtifactStatus = .awaitingVerification
-            try await appStore.save(updated)
-            return updated
+            do {
+                let transaction = try await selfReplacement.prepare(
+                    app: updated,
+                    accountID: accountID,
+                    signedIPARelativePath: signedPath
+                )
+                try await updateState(appID: app.id, stage: .pushing)
+                await progress(.pushing)
+                try await selfReplacement.submitPrepared(
+                    transactionID: transaction.id,
+                    progress: onInstallProgress
+                )
+                updated.signedArtifactStatus = .awaitingVerification
+                try await appStore.save(updated)
+                return updated
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let failure as ImportFailure {
+                throw failure
+            } catch let failure as SelfReplacementFailure {
+                throw Self.selfReplacementFailure(failure)
+            } catch {
+                throw Self.failure(
+                    reason: "Seal 自更新安装遇到未预期错误。",
+                    recovery: "重新启动 Seal 后再续签",
+                    code: "SEAL-SELF-109"
+                )
+            }
         }
 
         do {
@@ -1443,6 +1457,7 @@ actor SigningCoordinator {
     private static func title(for code: String) -> String {
         if code == "SEAL-APPID-DEVICELIMIT" { return "应用数量已达上限" }
         if code.hasPrefix("SEAL-INSTALL-") { return "安装失败" }
+        if code.hasPrefix("SEAL-SELF-") { return "Seal 自更新中止" }
         if code.hasPrefix("SEAL-AUTH-DB-") || code.hasPrefix("SEAL-SIGN-DB-") { return "本机数据错误" }
         if code.hasPrefix("SEAL-AUTH-") { return "无法使用账号" }
         if code.hasPrefix("SEAL-PAIR-") { return "设备配对失败" }
@@ -1450,6 +1465,41 @@ actor SigningCoordinator {
         if code.hasPrefix("SEAL-APPID-") { return "应用标识被拒" }
         if code.hasPrefix("SEAL-BUNDLE-") { return "Bundle ID 冲突" }
         return "无法完成签名"
+    }
+
+    /// 自更新安装阶段（prepare/submit）抛出的裸 SelfReplacementFailure 此前会被上层兜成
+    /// 笼统的 SEAL-SIGN-500，掩盖真实原因；这里转成带明确错误码与可操作引导的 ImportFailure。
+    private static func selfReplacementFailure(_ failure: SelfReplacementFailure) -> ImportFailure {
+        switch failure {
+        case .runningIdentityUnknown:
+            return ImportFailure(
+                title: "无法确认当前 Seal 的签名身份",
+                reason: "安装前无法确认正在运行的 Seal 由哪个证书签名（主程序或网络扩展的签名身份读取不完整），为避免装上后打不开，已停止本次自更新。",
+                recovery: "先用当前 Apple ID 在 Seal 里完整签名并安装一次 Seal（而不是续签），之后就能正常续签了",
+                code: "SEAL-SELF-105"
+            )
+        case .bundleShapeChanged:
+            return ImportFailure(
+                title: "Seal 自更新包结构不一致",
+                reason: "签名后的 Seal 包里的主程序/扩展组合与当前运行的 Seal 不一致，已停止安装以保证更新后仍能正常使用。",
+                recovery: "重新获取完整 Seal IPA（含网络扩展）后再续签",
+                code: "SEAL-SELF-106"
+            )
+        case .localSigningIdentityUnavailable:
+            return ImportFailure(
+                title: "Seal 自更新缺少可用签名证书",
+                reason: "本次签名用到的证书在本机已不可用（私钥缺失或已被撤销），无法完成自更新。",
+                recovery: "在「我的」→「签名证书」检查证书状态后重试",
+                code: "SEAL-SELF-107"
+            )
+        case .candidateChanged:
+            return ImportFailure(
+                title: "Seal 自更新签名包被改动",
+                reason: "准备安装的 Seal 签名包在校验后被修改（SHA-256 不一致），已停止安装。",
+                recovery: "重新签名后再安装",
+                code: "SEAL-SELF-108"
+            )
+        }
     }
 
     private static let freeAccountDeviceLimit = 3

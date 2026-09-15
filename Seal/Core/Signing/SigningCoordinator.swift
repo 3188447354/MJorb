@@ -1179,20 +1179,20 @@ actor SigningCoordinator {
         // 安装统一走本地通道（LocalDevVPN + Minimuxer + installation_proxy）。
         // OTA（itms-services）路线已按决策下线：安装一律经设备安装服务完成。
         if app.isSeal {
+            guard let accountID = app.accountID,
+                  let signedProfile = SignedArtifactProfileReader.embeddedProfileDetails(in: signedData),
+                  let teamID = signedProfile.teamIdentifier,
+                  let profileUUID = signedProfile.uuid,
+                  let savedSecret = try await keychain.load(accountID: accountID),
+                  let serial = signedProfile.certificateSerialNumbers.first(where: {
+                      guard let candidate = SigningCertificateMaterialPolicy.availableCertificate(secret: savedSecret, serialNumber: $0) else { return false }
+                      return SigningCertificateMaterialPolicy.reuseStatus(candidate) == .reusable
+                  }),
+                  let local = SigningCertificateMaterialPolicy.availableCertificate(secret: savedSecret, serialNumber: serial),
+                  SigningCertificateMaterialPolicy.reuseStatus(local) == .reusable else {
+                throw ImportFailure(title: "本机签名材料尚未就绪", reason: "自更新前未能确认已保存的证书私钥或签名包身份，已停止安装并保留当前 Seal。", recovery: "请重新签名；若仍失败，请导出日志检查本机签名材料。", code: "SEAL-CERT-226")
+            }
             if let selfSigningHandoffStore {
-                guard let accountID = app.accountID,
-                      let signedProfile = SignedArtifactProfileReader.embeddedProfileDetails(in: signedData),
-                      let teamID = signedProfile.teamIdentifier,
-                      let profileUUID = signedProfile.uuid,
-                      let savedSecret = try await keychain.load(accountID: accountID),
-                      let serial = signedProfile.certificateSerialNumbers.first(where: {
-                          guard let candidate = SigningCertificateMaterialPolicy.availableCertificate(secret: savedSecret, serialNumber: $0) else { return false }
-                          return SigningCertificateMaterialPolicy.reuseStatus(candidate) == .reusable
-                      }),
-                      let local = SigningCertificateMaterialPolicy.availableCertificate(secret: savedSecret, serialNumber: serial),
-                      SigningCertificateMaterialPolicy.reuseStatus(local) == .reusable else {
-                    throw ImportFailure(title: "本机签名材料尚未就绪", reason: "自更新前未能确认已保存的证书私钥或签名包身份，已停止安装并保留当前 Seal。", recovery: "请重新签名；若仍失败，请导出日志检查本机签名材料。", code: "SEAL-CERT-226")
-                }
                 try await selfSigningHandoffStore.prepare(
                     accountID: accountID,
                     bundleIdentifier: effectiveBundleID,

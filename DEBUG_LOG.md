@@ -449,14 +449,29 @@
   2. `SelfAppRegistrar.atomicallyUpdateSealRecord` 第 168 行改为：
      `certificateSerialNumber: metadata.certificateSerialNumbers.first ?? existing?.certificateSerialNumber`，
      优先用描述文件里的真实值，兜底才继承旧记录。
-  3. 护栏 `verify-release-safety.py` 新增两条断言：
+  3. `SelfAppRegistrar.reconcileSealRecordFromRunningBundleIfNeeded` 增加证书序列号回补：
+     同版本续签换证后，必须从运行包实时回补 `certificateSerialNumber`，不能只更新 profile 身份。
+  4. 所有证书清理路径（前置清理 / 一键全撤 / 手动清理）都改为**优先从运行包读真实序列号**：
+     ```swift
+     let sealActiveSerial = await MainActor.run {
+         SelfAppMetadata.current()?.certificateSerialNumbers.first
+     } ?? apps.first(where: { $0.isSeal })?.certificateSerialNumber
+     ```
+     DB 记录只是兜底，不是主来源。
+  5. 护栏 `verify-release-safety.py` 新增 5 条断言：
      - `SelfAppRegistrar` 必须从 `metadata.certificateSerialNumbers` 读证书序列号
      - `SelfAppMetadata` 必须从 `profileDetails?.certificateSerialNumbers` 读
-- **涉及文件**：`SelfAppMetadata.swift`、`SelfAppRegistrar.swift`、`verify-release-safety.py`。
-- **验证状态**：本地护栏 **104 检查 + 51 变异 PASS**；云 CI 编译与真机回归待验证。
+     - 前置清理必须优先从运行包读
+     - 手动清理必须优先从运行包读
+     - 一键全撤必须优先从运行包读
+- **涉及文件**：`SelfAppMetadata.swift`、`SelfAppRegistrar.swift`、`SigningCoordinator.swift`、
+  `SettingsViewModel.swift`、`verify-release-safety.py`。
+- **验证状态**：本地护栏 **107 检查 + 51 变异 PASS**；云 CI 编译与真机回归待验证。
 - **常犯坑位补记**：Seal 自身记录的任何字段（证书、Team、Bundle ID）都必须从**运行包的
   描述文件/Info.plist 实时读取**，绝不继承旧记录。旧记录可能是上次安装时的值，早已过期。
   「读取当前运行状态」和「读取历史记录」是两个完全不同的语义，混用必出问题。
+  **所有涉及 Seal 自保护的逻辑（证书清理、续签、安装前校验）都必须优先从运行包读，
+  DB 记录只能作为兜底。**
 
 
 ### 2026-09-15 · 前置清理误撤 Seal 在用证书 → Seal 续签/签其他 App 后变砖（"不再可用"）

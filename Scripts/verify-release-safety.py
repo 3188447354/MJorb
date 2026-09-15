@@ -432,6 +432,21 @@ def violations(load=read):
     check("certificateSerialNumbers: profileDetails?.certificateSerialNumbers" in metadata,
           "Seal self-protection: SelfAppMetadata must read certificateSerialNumbers from profile")
 
+    # Seal 自保护（所有证书清理路径都必须优先从运行包读真实序列号）：
+    # DB 记录可能是旧值，用旧值做保护会误撤 Seal 实际在用的证书。
+    # 三处清理路径（前置清理 / 一键全撤 / 手动清理）都必须优先从运行包读。
+    check("SelfAppMetadata.current()?.certificateSerialNumbers.first" in coord
+          and "?? apps.first(where: { $0.isSeal })?.certificateSerialNumber" in coord,
+          "Seal self-protection: auto cleanup must prefer running bundle cert serial over DB record")
+    check("SelfAppMetadata.current()?.certificateSerialNumbers.first" in settings_vm
+          and "?? apps.first(where: { $0.isSeal })?.certificateSerialNumber" in settings_vm,
+          "Seal self-protection: manual cleanup must prefer running bundle cert serial over DB record")
+    # 一键全撤路径（revokeKeylessCertificatesAfterConfirmation）
+    revoke_keyless = section(coord, "func revokeKeylessCertificatesAfterConfirmation(",
+                             "private func autoCleanOrphanCertificatesIfPossible(")
+    check("SelfAppMetadata.current()?.certificateSerialNumbers.first" in revoke_keyless,
+          "Seal self-protection: revoke keyless must prefer running bundle cert serial over DB record")
+
     # 一键确认盘活（SEAL-CERT-204e）：在用的无钥匙证书绝不静默撤，必须经失败页确认。
     check("if case .blockedByInUseKeylessCerts" in cleanup_retry,
           "204e must surface when keyless certificates are still in use")

@@ -541,9 +541,18 @@ actor SigningCoordinator {
         }
         // Seal 自身正在使用的证书绝不可撤销：撤销会让 Seal 立刻打不开（自更新场景，
         // 2026-09-14 真机踩到）。一键全撤只针对历史及第三方证书，Seal 命根子证书无条件跳过。
+        //
+        // 关键：优先从运行包描述文件读真实证书序列号，而不是 DB 记录。
+        // DB 记录可能是旧值，用旧值做保护会误撤 Seal 实际在用的证书（2026-09-15 真机确认）。
         let apps = (try? await appStore.fetchAll()) ?? []
+        let runningSealSerial = await MainActor.run {
+            SelfAppMetadata.current()?.certificateSerialNumbers.first
+        }
         let sealProtectedSerials = Set(apps.compactMap { app -> String? in
-            guard app.isSeal, let serial = app.certificateSerialNumber else { return nil }
+            guard app.isSeal else { return nil }
+            // 优先用运行包的真实序列号，兜底才用 DB 记录
+            let serial = runningSealSerial ?? app.certificateSerialNumber
+            guard let serial else { return nil }
             return SigningCertificateSelectionPolicy.normalizedSerialNumber(serial)
         })
         let certificateService = ApplePortalCertificateService()
@@ -652,7 +661,13 @@ actor SigningCoordinator {
         // Seal 自保护：找出 Seal 自身正在使用的证书序列号，前置清理绝不碰它，
         // 哪怕本机已无私钥。撤了 Seal 下次启动直接「不再可用」，变砖。
         // Seal 旧证回收走续签流程的 revokeReplacedSealCertificate（装成功后才撤）。
-        let sealActiveSerial = apps.first(where: { $0.isSeal })?.certificateSerialNumber
+        //
+        // 关键：优先从运行包描述文件读真实证书序列号，而不是 DB 记录。
+        // DB 记录可能是旧值（比如爱思签的 Seal 首次注册时为 nil，或同版本续签换证后未回补），
+        // 用旧值做保护会误撤 Seal 实际在用的证书（2026-09-15 真机确认）。
+        let sealActiveSerial = await MainActor.run {
+            SelfAppMetadata.current()?.certificateSerialNumbers.first
+        } ?? apps.first(where: { $0.isSeal })?.certificateSerialNumber
         let plan = CertificateCleanupPolicy.makePlan(
             certificates: inventory.certificates,
             apps: apps,

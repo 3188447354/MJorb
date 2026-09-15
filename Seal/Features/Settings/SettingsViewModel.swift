@@ -624,7 +624,11 @@ final class SettingsViewModel: ObservableObject {
 
             let deviceReferenced = await DeviceProfileInspector.referencedCertificateSerials()
             // Seal 自保护：正在使用的证书永远不撤，避免手动清理把 Seal 自己变砖。
-            let sealActiveSerial = apps.first(where: { $0.isSeal })?.certificateSerialNumber
+            // 关键：优先从运行包描述文件读真实证书序列号，而不是 DB 记录。
+            // DB 记录可能是旧值，用旧值做保护会误撤 Seal 实际在用的证书。
+            let sealActiveSerial = await MainActor.run {
+                SelfAppMetadata.current()?.certificateSerialNumbers.first
+            } ?? apps.first(where: { $0.isSeal })?.certificateSerialNumber
             let plan = CertificateCleanupPolicy.makePlan(
                 certificates: inventory.certificates,
                 apps: apps,
@@ -699,12 +703,16 @@ final class SettingsViewModel: ObservableObject {
             }
             // 设备端引用不重复核验：prepare 与 execute 间隔极短，且设备端 profile 只会随
             // 安装新增，操作租约保证其间 Seal 内没有任何签名/安装在跑。
+            // Seal 自保护：优先从运行包描述文件读真实证书序列号，而不是 DB 记录。
+            let sealActiveSerial = await MainActor.run {
+                SelfAppMetadata.current()?.certificateSerialNumbers.first
+            } ?? apps.first(where: { $0.isSeal })?.certificateSerialNumber
             let freshPlan = CertificateCleanupPolicy.makePlan(
                 certificates: freshInventory.certificates,
                 apps: apps,
                 localUsableSerials: localUsableSerials,
                 deviceReferencedSerials: plan.deviceVerified ? [] : nil,
-                sealActiveSerialNumber: apps.first(where: { $0.isSeal })?.certificateSerialNumber
+                sealActiveSerialNumber: sealActiveSerial
             )
             let confirmedSerials = Set(plan.revocable.map {
                 SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber)

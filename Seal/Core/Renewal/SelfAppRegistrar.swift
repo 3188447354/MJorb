@@ -258,6 +258,16 @@ actor SelfAppRegistrar {
             changed = true
         }
 
+        // ── 证书序列号：同版本续签可能换证书，必须从运行包实时回补 ──
+        // 爱思/其他工具签的 Seal，或同版本续签新建证书后，记录里的旧值会导致
+        // 前置清理误撤 Seal 在用的证书（2026-09-15 真机确认）。
+        let resolvedCertSerial = metadata.certificateSerialNumbers.first
+            ?? existing.certificateSerialNumber
+        if existing.certificateSerialNumber != resolvedCertSerial {
+            updated.certificateSerialNumber = resolvedCertSerial
+            changed = true
+        }
+
         // version / buildNumber **不在这里对齐**：它们是 AppRecord 的 `let` 常量。
         // 版本变化时走的是 `atomicallyUpdateSealRecord`（用运行包重打包并整体重建记录），
         // 本函数只在「版本一致」分支被调用，因此不存在「DB 版本 ≠ 运行版本」的窗口。

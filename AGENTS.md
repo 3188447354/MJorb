@@ -2,14 +2,14 @@
 
 > 本文件是跨工具、跨会话的项目规则（含换 Trae 账号后继续工作的约定）。
 > 所有对代码的改动请先读这里；「改动前自查清单」是硬门槛。
-> 关联文档：`REWRITE_ROADMAP.md`（三链路取舍）、`DEBUG_LOG.md`（根因沉淀）、
-> `SEAL_RELEASE_GUIDE.md`（发布手册）、`SIGNING_CHAIN_ANALYSIS_20260913.md`（签名链分析）。
+> 关联文档：`CODE_AUDIT_20260915.md`（当前根因、企业级改造规范、实施与验证顺序）、
+> `RELEASE_NOTES.md`（发布正文）。
 
 ## 0. 项目本质
 
 本仓库以**签名 / 安装 / 续签**三条链路为焦点（自签 iOS 应用工具 Seal）。
 改动常跨 Swift + Rust(Bridge) 两层，Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
-记忆/进度/规则存放在：本文件 + `DEBUG_LOG.md` + `REWRITE_ROADMAP.md`，换账号在仓库内即可接力。
+记忆/进度/规则存放在：本文件 + `CODE_AUDIT_20260915.md`，换账号在仓库内即可接力。
 
 ## 1. 改动前必过自查清单（硬性，5 项缺一不可）
 
@@ -18,7 +18,7 @@
 1. **做完结果会怎么样** —— 明确可验收的产出/行为变化。
 2. **有没有遗漏** —— 边界、关联路径、未覆盖分支。
 3. **会不会导致其他出错** —— 签名/续签/安装三环节尤其防互相牵连；回退/兜底是什么。
-4. **规不规范** —— 与项目既有风格、`REWRITE_ROADMAP.md` 原则、Apple 官方规范一致。
+4. **规不规范** —— 与项目既有风格、`CODE_AUDIT_20260915.md` 的企业级规范、Apple 官方规范一致。
 5. **上游是否已有** —— Seal/AltStore/SideStore/jas/zsign 已有等价实现则优先对齐/复用，不自造轮子。
 
 ## 2. 代码规范
@@ -86,8 +86,8 @@
 - **真机优先**：涉及安装/installd 的改动必须走回归样本（微信 / 黄豆短剧 / LCSign / lanmanga）真机验证；
   单测/编译通过 ≠ 可用。
 - **自证**：不声称「已修复/已完成」直到有验证证据。
-- 出错、修 bug、或发现常犯坑位 → 必须写进 `DEBUG_LOG.md` 顶部「历史记录」（现象→根因→修复→涉及文件→验证状态），
-  坑位沉淀到「常犯坑位」节，动手前先查阅。
+- 出错、修 bug、或发现常犯坑位 → 必须更新 `CODE_AUDIT_20260915.md` 的「变更证据台账」
+  （现象→证据→根因→修复→涉及文件→验证状态），动手前先查阅。
 
 ## 6. 版本与发布
 
@@ -95,7 +95,7 @@
   与 SealTunnel 扩展**两处一致**）。内置更新比较 `CFBundleShortVersionString` 与 Release `tag_name`
   （支持 `1.0.13`/`v1.0.13` 前缀），Release tag 必须与 MARKETING_VERSION 对齐，否则检测不到。
   `CURRENT_PROJECT_VERSION` 由 CI `GITHUB_RUN_NUMBER` 覆盖，`project.yml` 里默认值不用手动改。
-- 发布流程见 `SEAL_RELEASE_GUIDE.md`；`RELEASE_NOTES.md` 是每次发布正文来源。
+- 发布步骤以 `.github/workflows/` 的当前实现为准；`RELEASE_NOTES.md` 是每次发布正文来源。
 - 跨仓库发 Release（源 `sunuannian1/Trae-seal` → 目标 `sunuannian1/Seal-Releases`）**不传 `--target`**，
   否则用源仓库 SHA 会 422（`target_commitish invalid`）。
 

@@ -31,6 +31,7 @@ struct SelfReplacementTransaction: Codable, Equatable, Sendable {
     var submission: Submission?
     var settledAt: Date?
     var failureCode: String?
+    var cleanupSummary: String?
 
     static func make(
         id: UUID,
@@ -54,7 +55,8 @@ struct SelfReplacementTransaction: Codable, Equatable, Sendable {
             phase: .prepared,
             submission: nil,
             settledAt: nil,
-            failureCode: nil
+            failureCode: nil,
+            cleanupSummary: nil
         )
     }
 }

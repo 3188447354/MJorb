@@ -360,6 +360,18 @@ private actor RecordingSelfReplacement: SelfReplacing {
     ) async throws {
         submitCount += 1
     }
+
+    func reconcileAtLaunch() async throws -> SelfReplacementReconcileAction { .none }
+
+    func settle() async throws -> SettledSelfReplacement {
+        throw SelfReplacementStoreError.pendingNotFound
+    }
+
+    func closeAsNotInstalled() async throws {}
+
+    func requireRecovery(reason: String) async throws {}
+
+    func finishCleanup(_ summary: ProfileCleanupSummary) async throws {}
 }
 
 private actor SignedArtifactInstallChannel: InstallChannel {

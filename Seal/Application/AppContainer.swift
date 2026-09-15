@@ -140,6 +140,11 @@ struct AppContainer {
                     accountRepository: accountRepository,
                     fileStore: fileStore,
                     selfReplacement: selfReplacement,
+                    profileCleaner: DeviceProfileCleaner(
+                        readRunningIdentity: {
+                            try identityReader.read(bundleURL: Bundle.main.bundleURL)
+                        }
+                    ),
                     keychain: keychain,
                     logStore: logStore
                 )

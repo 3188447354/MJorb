@@ -142,7 +142,3 @@ enum SelfManagementState: String, Codable, Sendable {
     case selfManaged
     case recoveryRequired
 }
-
-enum SelfReplacementProcess {
-    static let currentID = UUID()
-}

@@ -37,8 +37,27 @@ struct SelfReplacementPolicyTests {
     @Test
     func mainMatchesButExtensionMismatchRequiresRecovery() {
         let transaction = SelfReplacementTransaction.fixture
-        var running = InstalledIdentity.fixture
-        running.targets[1].signerSerialNumber = "DIFFERENT"
+        let installed = InstalledIdentity.fixture
+        let running = InstalledIdentity(
+            bundleURL: installed.bundleURL,
+            version: installed.version,
+            buildNumber: installed.buildNumber,
+            targets: [
+                .mainFixture,
+                SignedTargetIdentity(
+                    kind: .appExtension,
+                    bundleIdentifier: "com.example.seal.share",
+                    teamIdentifier: "T3432ZHJUF9",
+                    applicationIdentifier: "T3432ZHJUF9.com.example.seal.share",
+                    profileUUID: "profile-uuid",
+                    profileExpirationDate: .distantFuture,
+                    signerSerialNumber: "DIFFERENT",
+                    signerCertificateSHA256: String(repeating: "A", count: 64),
+                    status: .complete
+                )
+            ],
+            readErrors: []
+        )
         let action = SelfReplacementPolicy.reconcile(
             transaction: transaction,
             running: running,

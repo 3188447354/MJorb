@@ -7,6 +7,7 @@ actor SelfAppRegistrar {
     private let accountRepository: any AccountRepository
     private let fileStore: AppFileStore
     private let selfReplacement: (any SelfReplacing)?
+    private let profileCleaner: (any SelfReplacementProfileCleaning)?
     private let keychain: KeychainVault?
     private let logStore: SealLogStore?
 
@@ -22,6 +23,7 @@ actor SelfAppRegistrar {
         accountRepository: any AccountRepository,
         fileStore: AppFileStore,
         selfReplacement: (any SelfReplacing)? = nil,
+        profileCleaner: (any SelfReplacementProfileCleaning)? = nil,
         keychain: KeychainVault? = nil,
         logStore: SealLogStore? = nil
     ) {
@@ -30,6 +32,7 @@ actor SelfAppRegistrar {
         self.accountRepository = accountRepository
         self.fileStore = fileStore
         self.selfReplacement = selfReplacement
+        self.profileCleaner = profileCleaner
         self.keychain = keychain
         self.logStore = logStore
     }
@@ -39,12 +42,22 @@ actor SelfAppRegistrar {
         isRegistering = true
         defer { isRegistering = false }
 
-        let records = try await appStore.fetchAll()
+        var records = try await appStore.fetchAll()
         let accounts = try await accountRepository.fetchAll()
-        let existing = SelfAppRecordSelection.preferredExistingSealRecord(
+        var existing = SelfAppRecordSelection.preferredExistingSealRecord(
             in: records,
             currentBundleIdentifier: metadata.bundleIdentifier
         )
+
+        // 启动只对账上一进程留下的自替换事务，绝不在这里发起安装。
+        // 结算会推进记录，之后必须重新读取，避免旧快照覆盖刚确认的真实身份。
+        if try await reconcileSelfReplacement(existing: existing, accounts: accounts) {
+            records = try await appStore.fetchAll()
+            existing = SelfAppRecordSelection.preferredExistingSealRecord(
+                in: records,
+                currentBundleIdentifier: metadata.bundleIdentifier
+            )
+        }
 
         // 已导入、待下次安装生效的自更新源（hasPendingSelfUpdateSource）：
         // 其版本通常比当前运行中的 Bundle 新。此窗口内 App 若重启，仍运行旧版，
@@ -202,6 +215,72 @@ actor SelfAppRegistrar {
             try? await fileStore.cancel(staged)
             throw error
         }
+    }
+
+    // MARK: - 自替换启动对账：只确认/关闭事务，绝不发起安装
+
+    /// 消费上一次启动留下的自替换事务。返回值表示是否发生了结算（记录被推进），
+    /// 调用方在结算后必须重新读取记录，避免用旧快照覆盖刚确认的真实身份。
+    @discardableResult
+    private func reconcileSelfReplacement(
+        existing: AppRecord?,
+        accounts: [AppleAccountRecord]
+    ) async throws -> Bool {
+        guard let selfReplacement else { return false }
+        switch try await selfReplacement.reconcileAtLaunch() {
+        case .none, .awaitNextLaunch:
+            return false
+        case .closeAsNotInstalled:
+            try await selfReplacement.closeAsNotInstalled()
+            return false
+        case .requireRecovery(let reason):
+            try await selfReplacement.requireRecovery(reason: reason)
+            return false
+        case .settle:
+            let settled = try await selfReplacement.settle()
+            if let existing {
+                try await atomicallyApplyInstalledIdentity(
+                    settled.installedIdentity,
+                    to: existing,
+                    accounts: accounts
+                )
+            }
+            // 先推进记录，再精准清理：清理发生时记录必须已指向候选身份，
+            // 清理失败只进事务审计，不回滚已确认的安装身份。
+            let request = ProfileCleanupRequest(
+                transactionID: settled.transactionID,
+                bundleIdentifier: settled.mainBundleIdentifier,
+                keepingProfileUUID: settled.mainProfileUUID,
+                installedIdentityReadAt: settled.installedIdentityReadAt
+            )
+            let cleanup = await profileCleaner?.removeStaleProfiles(request)
+                ?? ProfileCleanupSummary(stage: "skipped-no-cleaner")
+            try await selfReplacement.finishCleanup(cleanup)
+            return true
+        }
+    }
+
+    /// 把结算确认的真实运行身份写入 Seal 记录：真实 signer 序列号、主 profile UUID、
+    /// Team 与到期时间全部来自 `InstalledIdentity.mainTarget`，不读描述文件授权列表第一项。
+    private func atomicallyApplyInstalledIdentity(
+        _ identity: InstalledIdentity,
+        to existing: AppRecord,
+        accounts: [AppleAccountRecord]
+    ) async throws {
+        guard let main = identity.mainTarget else { return }
+        var updated = existing
+        updated.certificateSerialNumber = main.signerSerialNumber
+        updated.provisioningProfileUUID = main.profileUUID
+        updated.signingTeamID = main.teamIdentifier
+        updated.expiryDate = main.profileExpirationDate
+        updated.provisioningProfileExpirationDate = main.profileExpirationDate
+        updated.signedArtifactStatus = .installed
+        updated.accountID = SelfAppAccountBinding.resolvedAccountID(
+            teamIdentifier: main.teamIdentifier,
+            accounts: accounts,
+            fallbackAccountID: existing.accountID
+        )
+        try await appStore.save(updated)
     }
 
     // MARK: - 清理重复的 Seal 记录

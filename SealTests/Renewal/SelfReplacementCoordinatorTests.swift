@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import Seal
@@ -38,6 +39,87 @@ struct SelfReplacementCoordinatorTests {
         }
         #expect(await fixture.channel.installCallCount == 1)
     }
+
+    @Test
+    func settleReturnsRunningIdentityAndMarksSettling() async throws {
+        let running = InstalledIdentity.fixtureMain()
+        let fixture = try await CoordinatorFixture.make(
+            channel: CountingInstallChannel(),
+            running: running,
+            candidate: .matching(running, transactionID: UUID())
+        )
+
+        let settled = try await fixture.coordinator.settle()
+
+        #expect(settled.transactionID == fixture.transaction.id)
+        #expect(settled.mainBundleIdentifier == "com.example.seal")
+        #expect(settled.mainProfileUUID == "PROFILE-UUID")
+        #expect(settled.installedIdentity == running)
+        #expect(try await fixture.store.loadPending()?.phase == .settling)
+    }
+
+    @Test
+    func settleRejectsWhenRunningIdentityNoLongerMatchesCandidate() async throws {
+        let running = InstalledIdentity.fixtureMain()
+        let overwritten = InstalledIdentity.fixtureMain(signerSerialNumber: "OTHER-SERIAL")
+        let fixture = try await CoordinatorFixture.make(
+            channel: CountingInstallChannel(),
+            running: overwritten,
+            candidate: .matching(running, transactionID: UUID())
+        )
+
+        await #expect(throws: SelfReplacementFailure.candidateChanged) {
+            try await fixture.coordinator.settle()
+        }
+        #expect(try await fixture.store.loadPending()?.phase == .prepared)
+    }
+
+    @Test
+    func finishCleanupConfirmsTransactionWithAuditSummary() async throws {
+        let running = InstalledIdentity.fixtureMain()
+        let fixture = try await CoordinatorFixture.make(
+            channel: CountingInstallChannel(),
+            running: running,
+            candidate: .matching(running, transactionID: UUID())
+        )
+        _ = try await fixture.coordinator.settle()
+
+        var summary = ProfileCleanupSummary()
+        summary.scanned = 3
+        summary.matched = 2
+        summary.removed = 1
+        try await fixture.coordinator.finishCleanup(summary)
+
+        #expect(try await fixture.store.loadPending() == nil)
+        let persisted = try #require(try await fixture.store.loadAny())
+        #expect(persisted.phase == .confirmed)
+        #expect(persisted.settledAt != nil)
+        #expect(persisted.cleanupSummary == summary.logMessage)
+    }
+
+    @Test
+    func closeAsNotInstalledClosesTransactionWithoutTouchingChannel() async throws {
+        let channel = CountingInstallChannel()
+        let fixture = try await CoordinatorFixture.make(channel: channel)
+
+        try await fixture.coordinator.closeAsNotInstalled()
+
+        #expect(try await fixture.store.loadPending() == nil)
+        let persisted = try #require(try await fixture.store.loadAny())
+        #expect(persisted.phase == .installedOldIdentity)
+        #expect(await channel.installCallCount == 0)
+    }
+
+    @Test
+    func requireRecoveryKeepsTransactionPendingForNextLaunchEvaluation() async throws {
+        let fixture = try await CoordinatorFixture.make(channel: CountingInstallChannel())
+
+        try await fixture.coordinator.requireRecovery(reason: "当前 Seal 与安装前身份、候选身份都不一致")
+
+        let pending = try #require(try await fixture.store.loadPending())
+        #expect(pending.phase == .recoveryRequired)
+        #expect(pending.failureCode == "当前 Seal 与安装前身份、候选身份都不一致")
+    }
 }
 
 private actor CountingInstallChannel: InstallChannel {
@@ -70,7 +152,11 @@ private struct CoordinatorFixture {
     let transaction: SelfReplacementTransaction
     let channel: CountingInstallChannel
 
-    static func make(channel: CountingInstallChannel) async throws -> CoordinatorFixture {
+    static func make(
+        channel: CountingInstallChannel,
+        running: InstalledIdentity? = nil,
+        candidate: CandidateIdentity? = nil
+    ) async throws -> CoordinatorFixture {
         let root = FileManager.default.temporaryDirectory
             .appending(path: "SealCoordinatorTests-\(UUID().uuidString)", directoryHint: .isDirectory)
         let documents = root.appending(path: "Documents", directoryHint: .isDirectory)
@@ -82,14 +168,24 @@ private struct CoordinatorFixture {
             fileURL: root.appending(path: "SelfSigningHandoff.json")
         )
         let fileStore = AppFileStore(documentsDirectory: documents, cacheDirectory: cache)
-        let transaction = SelfReplacementTransaction.fixture
+        // submitPrepared 会读取候选 IPA 并校验 SHA-256，必须与事务记录一致。
+        let signedData = Data("signed-ipa".utf8)
+        let signedURL = documents.appending(path: "Apps/Seal/Signed.ipa")
+        try FileManager.default.createDirectory(
+            at: signedURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try signedData.write(to: signedURL)
+        let signedSHA = SHA256.hash(data: signedData).map { String(format: "%02X", $0) }.joined()
+        let transaction = SelfReplacementTransaction.fixture(
+            candidate: candidate,
+            ipaSHA256: signedSHA
+        )
         _ = try await store.create(transaction)
 
         let coordinator = SelfReplacementCoordinator(
             store: store,
-            identityReader: AppBundleSigningIdentityReader { _ in
-                .init(serialNumber: "ABC123", cmsValid: true, codeDirectoryValid: true)
-            },
+            readRunningIdentity: { running ?? .unknown(bundleIdentifier: "com.example.seal") },
             ipaIdentityReader: SignedIPAIdentityReader(
                 bundleReader: AppBundleSigningIdentityReader { _ in
                     .init(serialNumber: "ABC123", cmsValid: true, codeDirectoryValid: true)
@@ -110,20 +206,76 @@ private struct CoordinatorFixture {
 }
 
 private extension SelfReplacementTransaction {
-    static var fixture: SelfReplacementTransaction {
-        SelfReplacementTransaction.make(
-            id: UUID(),
+    static func fixture(
+        candidate: CandidateIdentity? = nil,
+        ipaSHA256: String
+    ) -> SelfReplacementTransaction {
+        let id = UUID()
+        let resolvedCandidate = candidate ?? CandidateIdentity(
+            transactionID: id,
+            ipaSHA256: ipaSHA256,
+            version: "",
+            buildNumber: "",
+            targets: [SignedTargetIdentity(
+                kind: .mainApp,
+                bundleIdentifier: "com.example.seal",
+                teamIdentifier: "TEAM",
+                applicationIdentifier: "",
+                profileUUID: "PROFILE-UUID",
+                profileExpirationDate: .distantPast,
+                signerSerialNumber: "ABC123",
+                signerCertificateSHA256: "",
+                status: .unreadable
+            )]
+        )
+        return SelfReplacementTransaction.make(
+            id: id,
             accountID: UUID(),
             preparedProcessID: UUID(),
             installedBefore: .unknown(bundleIdentifier: "com.example.seal"),
-            candidate: .legacy(
-                transactionID: UUID(),
-                bundleIdentifier: "com.example.seal",
-                teamIdentifier: "TEAM",
-                profileUUID: "PROFILE-UUID",
-                certificateSerialNumber: "ABC123"
-            ),
+            candidate: resolvedCandidate,
             signedIPARelativePath: "Apps/Seal/Signed.ipa"
+        )
+    }
+}
+
+extension InstalledIdentity {
+    static func fixtureMain(
+        bundleIdentifier: String = "com.example.seal",
+        version: String = "1.0",
+        buildNumber: String = "1",
+        teamIdentifier: String = "TEAM",
+        profileUUID: String = "PROFILE-UUID",
+        signerSerialNumber: String = "ABC123"
+    ) -> InstalledIdentity {
+        InstalledIdentity(
+            bundleURL: URL(fileURLWithPath: "/Running/Seal.app"),
+            version: version,
+            buildNumber: buildNumber,
+            targets: [SignedTargetIdentity(
+                kind: .mainApp,
+                bundleIdentifier: bundleIdentifier,
+                teamIdentifier: teamIdentifier,
+                applicationIdentifier: "\(teamIdentifier).\(bundleIdentifier)",
+                profileUUID: profileUUID,
+                profileExpirationDate: Date(timeIntervalSince1970: 1_800_000_000),
+                signerSerialNumber: signerSerialNumber,
+                signerCertificateSHA256: "SHA256",
+                status: .complete
+            )],
+            readErrors: []
+        )
+    }
+}
+
+extension CandidateIdentity {
+    static func matching(_ running: InstalledIdentity, transactionID: UUID) -> CandidateIdentity {
+        CandidateIdentity(
+            transactionID: transactionID,
+            ipaSHA256: "IPA-SHA",
+            version: running.version,
+            buildNumber: running.buildNumber,
+            targets: running.targets
         )
     }
 }

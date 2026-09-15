@@ -26,12 +26,13 @@ actor SelfReplacementTransactionStore {
         return transaction
     }
 
-    func loadPending() throws -> SelfReplacementTransaction? {
+    /// 读取事务（含已关闭），供结算审计断言使用。
+    func loadAny() throws -> SelfReplacementTransaction? {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         let data = try Data(contentsOf: fileURL)
         // 先尝试新 schema；失败后尝试旧 SelfSigningHandoff 迁移。
         if let transaction = try? JSONDecoder().decode(SelfReplacementTransaction.self, from: data) {
-            return transaction.settledAt == nil && transaction.phase != .confirmed ? transaction : nil
+            return transaction
         }
         if let legacy = try? JSONDecoder().decode(LegacySelfSigningHandoff.self, from: data) {
             let migrated = SelfReplacementTransaction(
@@ -53,12 +54,22 @@ actor SelfReplacementTransactionStore {
                 phase: .awaitingReplacementConfirmation,
                 submission: .init(id: legacy.id, claimedAt: .distantPast),
                 settledAt: nil,
-                failureCode: nil
+                failureCode: nil,
+                cleanupSummary: nil
             )
             try write(migrated)
             return migrated
         }
         return nil
+    }
+
+    func loadPending() throws -> SelfReplacementTransaction? {
+        guard let transaction = try loadAny(),
+              transaction.settledAt == nil,
+              transaction.phase != .confirmed else {
+            return nil
+        }
+        return transaction
     }
 
     func requirePending(id: UUID) throws -> SelfReplacementTransaction {
@@ -105,11 +116,20 @@ actor SelfReplacementTransactionStore {
         try write(transaction)
     }
 
-    func markSettled(transactionID: UUID) throws {
+    /// 终态关闭事务（确认落盘 / 仍在运行旧身份）。关闭后不再参与启动对账，
+    /// 但记录保留在磁盘上作为审计证据，直到下一笔事务覆盖。
+    func close(
+        transactionID: UUID,
+        phase: SelfReplacementTransaction.Phase,
+        cleanupSummary: String? = nil
+    ) throws {
         var transaction = try requirePending(id: transactionID)
-        transaction.phase = .confirmed
+        transaction.phase = phase
         transaction.settledAt = Date()
         transaction.updatedAt = Date()
+        if let cleanupSummary {
+            transaction.cleanupSummary = cleanupSummary
+        }
         try write(transaction)
     }
 

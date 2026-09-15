@@ -29,7 +29,27 @@ struct ProfileCleanupSummary: Sendable, Equatable {
     }
 }
 
+/// 自替换结算后的显式清理请求：锚定到具体事务与刚确认的安装身份。
+struct ProfileCleanupRequest: Sendable, Equatable {
+    let transactionID: UUID
+    let bundleIdentifier: String
+    let keepingProfileUUID: String
+    let installedIdentityReadAt: Date
+}
+
+/// 结算路径的清理边界，便于用桩替换真实设备清理。
+protocol SelfReplacementProfileCleaning: Sendable {
+    func removeStaleProfiles(_ request: ProfileCleanupRequest) async -> ProfileCleanupSummary
+}
+
 struct DeviceProfileCleaner: Sendable {
+    /// 清理前重读运行身份的入口；缺失时一律跳过，绝不在身份不明时删除 profile。
+    private let readRunningIdentity: (@Sendable () throws -> InstalledIdentity)?
+
+    init(readRunningIdentity: (@Sendable () throws -> InstalledIdentity)? = nil) {
+        self.readRunningIdentity = readRunningIdentity
+    }
+
     /// 删除设备端与 `bundleIdentifier` 相同、但 UUID ≠ `keepingProfileUUID` 的旧描述文件。
     ///
     /// 这是「最佳努力」清理：任何一步失败都不阻断主安装 / 签名结果，失败细节进返回的摘要。
@@ -112,5 +132,35 @@ struct DeviceProfileCleaner: Sendable {
             }
         }
         return summary
+    }
+}
+
+extension DeviceProfileCleaner: SelfReplacementProfileCleaning {
+    /// 结算后的精准清理：清理前重读当前运行身份，只有主程序 profile 仍等于
+    /// 结算时确认的 `keepingProfileUUID` 才删除旧 profile；身份已变化或不可读
+    /// 时整批放弃，绝不误删正在使用的 profile。清理失败只进摘要，不回滚已确认身份。
+    func removeStaleProfiles(_ request: ProfileCleanupRequest) async -> ProfileCleanupSummary {
+        guard let readRunningIdentity else {
+            return ProfileCleanupSummary(stage: "skipped-identity-unavailable")
+        }
+        let identity: InstalledIdentity
+        do {
+            identity = try readRunningIdentity()
+        } catch {
+            var summary = ProfileCleanupSummary(stage: "skipped-identity-unavailable")
+            summary.firstError = String(describing: error)
+            return summary
+        }
+        guard identity.isComplete else {
+            return ProfileCleanupSummary(stage: "skipped-identity-unavailable")
+        }
+        guard let mainProfileUUID = identity.mainTarget?.profileUUID,
+              mainProfileUUID.caseInsensitiveCompare(request.keepingProfileUUID) == .orderedSame else {
+            return ProfileCleanupSummary(stage: "skipped-identity-changed")
+        }
+        return await Self.removeStaleProfiles(
+            for: request.bundleIdentifier,
+            keeping: request.keepingProfileUUID
+        )
     }
 }

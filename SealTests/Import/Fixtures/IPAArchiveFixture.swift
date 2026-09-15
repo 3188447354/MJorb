@@ -53,7 +53,7 @@ enum IPAArchiveFixture {
                 if app.malformedInfo {
                     infoData = Data("not a property list".utf8)
                 } else {
-                    infoData = try propertyListData([
+                    var info: [String: Any] = [
                         "CFBundleDisplayName": app.name,
                         "CFBundleIdentifier": app.bundleIdentifier,
                         "CFBundleShortVersionString": app.version,
@@ -63,7 +63,11 @@ enum IPAArchiveFixture {
                                 "CFBundleIconFiles": ["AppIcon60x60"]
                             ]
                         ]
-                    ])
+                    ]
+                    if includeMobileProvision {
+                        info["CFBundleExecutable"] = app.name
+                    }
+                    infoData = try propertyListData(info)
                 }
                 try add(infoData, path: "\(appRoot)/Info.plist", to: archive)
             }
@@ -150,8 +154,12 @@ enum IPAArchiveFixture {
     }
 
     /// 供 SignedIPAIdentityReader 测试使用的最小描述文件数据。
-    /// 实际内容不追求 Apple 格式完整，只要 ProvisioningProfileReader 能解析出关键字段即可。
+    /// DeveloperCertificates 使用真实 DER X.509 证书，确保 ProvisioningProfileReader
+    /// 能通过 SecCertificateCreateWithData 解析出证书序列号与指纹。
     static func makeMinimalMobileProvisionData() -> Data {
+        let certificateEntries = [
+            "<data>\(TestDeveloperCertificate.certificateBDER.base64EncodedString())</data>"
+        ].joined()
         let xml = """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -173,10 +181,7 @@ enum IPAArchiveFixture {
                 <string>T3432ZHJUF9.com.example.seal</string>
             </dict>
             <key>DeveloperCertificates</key>
-            <array>
-                <data>QUFBQQ==</data>
-                <data>QkJCQg==</data>
-            </array>
+            <array>\(certificateEntries)</array>
         </dict>
         </plist>
         """

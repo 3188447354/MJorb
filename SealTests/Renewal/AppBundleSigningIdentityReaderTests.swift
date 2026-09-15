@@ -5,28 +5,30 @@ import Testing
 struct AppBundleSigningIdentityReaderTests {
     @Test
     func choosesCMSActualSignerInsteadOfFirstAuthorizedCertificate() throws {
+        let serialB = TestDeveloperCertificate.serialNumberHex(der: TestDeveloperCertificate.certificateBDER)
+        let fingerprintB = TestDeveloperCertificate.sha256Fingerprint(der: TestDeveloperCertificate.certificateBDER)
         let fixture = try IdentityBundleFixture.make(
-            authorized: [
-                .init(serialNumber: "AAAA", sha256Fingerprint: String(repeating: "A", count: 64)),
-                .init(serialNumber: "BBBB", sha256Fingerprint: String(repeating: "B", count: 64))
+            authorizedDERs: [
+                TestDeveloperCertificate.certificateADER,
+                TestDeveloperCertificate.certificateBDER
             ]
         )
         let reader = AppBundleSigningIdentityReader(
             inspectExecutable: { _ in
-                .init(serialNumber: "BBBB", cmsValid: true, codeDirectoryValid: true)
+                .init(serialNumber: serialB, cmsValid: true, codeDirectoryValid: true)
             }
         )
 
         let identity = try reader.read(bundleURL: fixture.bundleURL)
-        #expect(identity.mainTarget?.signerSerialNumber == "BBBB")
-        #expect(identity.mainTarget?.signerCertificateSHA256 == String(repeating: "B", count: 64))
+        #expect(identity.mainTarget?.signerSerialNumber == serialB)
+        #expect(identity.mainTarget?.signerCertificateSHA256 == fingerprintB)
     }
 
     @Test
     func mainTargetUnreadableWhenExecutableInspectionThrows() throws {
-        let fixture = try IdentityBundleFixture.make(authorized: [
-            .init(serialNumber: "AAAA", sha256Fingerprint: String(repeating: "A", count: 64))
-        ])
+        let fixture = try IdentityBundleFixture.make(
+            authorizedDERs: [TestDeveloperCertificate.certificateADER]
+        )
         let reader = AppBundleSigningIdentityReader(
             inspectExecutable: { _ in throw IdentityReadFailure.signerMissing }
         )
@@ -38,9 +40,9 @@ struct AppBundleSigningIdentityReaderTests {
 
     @Test
     func inconsistentArchitecturesWhenInspectReturnsDifferentSerials() throws {
-        let fixture = try IdentityBundleFixture.make(authorized: [
-            .init(serialNumber: "AAAA", sha256Fingerprint: String(repeating: "A", count: 64))
-        ])
+        let fixture = try IdentityBundleFixture.make(
+            authorizedDERs: [TestDeveloperCertificate.certificateADER]
+        )
         let reader = AppBundleSigningIdentityReader(
             inspectExecutable: { _ in throw IdentityReadFailure.inconsistentArchitectures }
         )
@@ -52,10 +54,9 @@ struct AppBundleSigningIdentityReaderTests {
 
     @Test
     func extensionFailureMakesInstalledIdentityIncomplete() throws {
+        let serialA = TestDeveloperCertificate.serialNumberHex(der: TestDeveloperCertificate.certificateADER)
         let fixture = try IdentityBundleFixture.make(
-            authorized: [
-                .init(serialNumber: "AAAA", sha256Fingerprint: String(repeating: "A", count: 64))
-            ],
+            authorizedDERs: [TestDeveloperCertificate.certificateADER],
             extensionBundleID: "com.example.seal.share"
         )
         let reader = AppBundleSigningIdentityReader(
@@ -63,7 +64,7 @@ struct AppBundleSigningIdentityReaderTests {
                 if url.path.contains("PlugIns") {
                     throw IdentityReadFailure.signerMissing
                 }
-                return .init(serialNumber: "AAAA", cmsValid: true, codeDirectoryValid: true)
+                return .init(serialNumber: serialA, cmsValid: true, codeDirectoryValid: true)
             }
         )
 
@@ -79,7 +80,7 @@ private struct IdentityBundleFixture {
     let bundleURL: URL
 
     static func make(
-        authorized: [ProvisioningProfileReader.DeveloperCertificateIdentity],
+        authorizedDERs: [Data],
         extensionBundleID: String? = nil
     ) throws -> IdentityBundleFixture {
         let root = FileManager.default.temporaryDirectory
@@ -98,7 +99,7 @@ private struct IdentityBundleFixture {
         )
         try infoData.write(to: bundleURL.appending(path: "Info.plist"))
 
-        let profileData = try makeProfileData(authorized: authorized)
+        let profileData = try makeProfileData(authorizedDERs: authorizedDERs)
         try profileData.write(to: bundleURL.appending(path: "embedded.mobileprovision"))
 
         try Data("main-executable".utf8).write(to: bundleURL.appending(path: "Seal"))
@@ -124,12 +125,10 @@ private struct IdentityBundleFixture {
         return IdentityBundleFixture(bundleURL: bundleURL)
     }
 
-    private static func makeProfileData(
-        authorized: [ProvisioningProfileReader.DeveloperCertificateIdentity]
-    ) throws -> Data {
-        // 构造最小 XML plist，让 ProvisioningProfileReader 能解析出 DeveloperCertificates
-        let certificateEntries = authorized.map {
-            "<data>\(Data($0.serialNumber.utf8).base64EncodedString())</data>"
+    private static func makeProfileData(authorizedDERs: [Data]) throws -> Data {
+        // DeveloperCertificates 必须是真实 DER X.509 证书，SecCertificateCreateWithData 才能解析。
+        let certificateEntries = authorizedDERs.map {
+            "<data>\($0.base64EncodedString())</data>"
         }.joined()
         let xml = """
         <?xml version="1.0" encoding="UTF-8"?>

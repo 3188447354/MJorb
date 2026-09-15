@@ -25,11 +25,12 @@ struct SelfReplacementPolicyTests {
 
     @Test
     func sameProcessReturnsAwaitNextLaunch() {
+        let transaction = SelfReplacementTransaction.fixture
         let action = SelfReplacementPolicy.reconcile(
-            transaction: .fixture,
+            transaction: transaction,
             running: .fixture,
-            currentProcessID: SelfReplacementTransaction.fixture.preparedProcessID,
-            preparedProcessID: SelfReplacementTransaction.fixture.preparedProcessID
+            currentProcessID: transaction.preparedProcessID,
+            preparedProcessID: transaction.preparedProcessID
         )
         #expect(action == .awaitNextLaunch)
     }

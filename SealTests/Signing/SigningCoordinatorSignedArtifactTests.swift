@@ -410,9 +410,10 @@ private extension SigningCoordinatorSignedArtifactTests {
         bundleID: String,
         executableName: String?,
         executableData: Data = Data("fixture-executable".utf8),
-        executableEntryName: String = "Demo",
+        executableEntryName: String? = nil,
         extraInfoPlistEntries: [String: Any] = [:]
     ) throws {
+        let entryName = executableEntryName ?? executableName ?? "Demo"
         let archive = try Archive(url: url, accessMode: .create)
 
         func addData(_ data: Data, _ path: String) throws {
@@ -445,6 +446,6 @@ private extension SigningCoordinatorSignedArtifactTests {
         try addData(Data("mock-mobileprovision".utf8), "Payload/Demo.app/embedded.mobileprovision")
 
         // Not a cryptographic signature fixture; exercise structural validation only.
-        try addData(executableData, "Payload/Demo.app/\(executableEntryName)")
+        try addData(executableData, "Payload/Demo.app/\(entryName)")
     }
 }

@@ -224,17 +224,31 @@ public struct Minimuxer {
     }
 
     /// 上传+安装合并调用：**安装主链路**（同一缓存隧道会话内完成两段，见 install.rs 会话不变量）
-    public static func stageAndInstall(bundleId: String, ipaBytes: Data) throws {
-        try RustIdevice.stageAndInstall(bundleId: bundleId, ipaBytes: ipaBytes)
+    public static func stageAndInstall(
+        bundleId: String,
+        ipaBytes: Data,
+        forceUpgrade: Bool = false
+    ) throws {
+        try RustIdevice.stageAndInstall(
+            bundleId: bundleId,
+            ipaBytes: ipaBytes,
+            forceUpgrade: forceUpgrade
+        )
     }
 
     /// 带 AFC 上传进度（0-1）的合并调用，供 UI 展示真实传输百分比。
     public static func stageAndInstall(
         bundleId: String,
         ipaBytes: Data,
+        forceUpgrade: Bool = false,
         progress: @escaping (Double) -> Void
     ) throws {
-        try RustIdevice.stageAndInstall(bundleId: bundleId, ipaBytes: ipaBytes, progress: progress)
+        try RustIdevice.stageAndInstall(
+            bundleId: bundleId,
+            ipaBytes: ipaBytes,
+            forceUpgrade: forceUpgrade,
+            progress: progress
+        )
     }
 
     public static func removeApp(bundleId: String) throws {

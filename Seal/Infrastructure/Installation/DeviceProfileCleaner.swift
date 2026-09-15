@@ -47,18 +47,6 @@ struct DeviceProfileCleaner: Sendable {
         return await removeProfiles(matching: [bundleIdentifier], keeping: keepingProfileUUID)
     }
 
-    /// 自更新「安装前」调用：新 profile 尚未落到设备，凡匹配 bundle ID 的都是旧文件，全部删除。
-    /// 即使随后安装失败，启动校验只看包内 embedded.mobileprovision、与设备 profile 列表无关，
-    /// 旧应用仍可打开，因此此处删除是安全的。
-    @discardableResult
-    static func removeAllProfiles(for bundleIdentifiers: [String]) async -> ProfileCleanupSummary {
-        let ids = bundleIdentifiers.filter { $0.isEmpty == false }
-        guard ids.isEmpty == false else {
-            return ProfileCleanupSummary(stage: "skipped-empty-ids")
-        }
-        return await removeProfiles(matching: ids, keeping: nil)
-    }
-
     private static func removeProfiles(
         matching bundleIdentifiers: [String],
         keeping keepingProfileUUID: String?

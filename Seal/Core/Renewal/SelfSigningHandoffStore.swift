@@ -42,7 +42,7 @@ enum SelfSigningHandoffStatus: Equatable, Sendable {
         case .certificateMismatch: "当前运行包描述文件未授权预期证书，尚未确认接管"
         case .missingPrivateKey: "当前运行包已匹配，但本机缺少可解析且私钥匹配的签名材料；请检查账号签名材料，必要时通过电脑恢复"
         case .unusableCertificate: "当前运行包已匹配，但本机证书有效期无法核验或剩余不足 7 天，尚未确认本机续签能力"
-        case .confirmed: "重启核验通过：运行包团队、描述文件和授权证书匹配，本机私钥可用且证书剩余有效期超过 7 天；旧证书保持不变"
+        case .confirmed: "重启核验通过：运行包团队、描述文件和授权证书匹配，本机私钥可用且证书剩余有效期超过 7 天"
         }
     }
 }

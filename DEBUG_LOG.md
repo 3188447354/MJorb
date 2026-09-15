@@ -426,6 +426,14 @@
 
 ## 二、历史记录
 
+### 2026-09-15 · 1.1.13：Seal 自续签显示成功后桌面提示“不再可用”
+- **现象**：Seal 由爱思助手签入并运行；在 Seal 内使用同一 Apple ID 自续签，界面显示成功，回到桌面后 Seal 无法再次打开。进程已无法启动，因此本次没有新的 App 沙盒日志。
+- **当前代码证据与根因**：自更新分支在 installation_proxy 返回后直接写入成功状态，没有像普通 App 一样核验设备结果；同时 Rust 把自更新的 `Install/Upgrade` 选择交给一次 Bundle 查询，只要查询未命中就会把调用方已经明确知道是覆盖安装的操作降成首次 `Install`。因此“安装调用返回”与“本轮新签名身份已经替换到设备”之间没有闭环。安装前删除旧描述文件还让失败路径提前改变设备状态，破坏了先确认新身份、再清理旧身份的顺序。
+- **修复**：Swift 将 `isSelfReplacement` 明确传到 Rust，installation_proxy 对 Seal 始终使用 `Upgrade`；安装返回后同时核对设备可见 Bundle、包内新 profile UUID 与证书序列号，未命中则重建同一安装通道并重试一次，仍未命中绝不写成功；旧 profile 延后到新 Seal 进程启动并通过 handoff 身份确认后按 Bundle ID 定向清理。
+- **日志**：记录每次自更新的安装尝试、Bundle 可见性、精确 profile/证书匹配结果，并立即镜像导出日志。
+- **涉及文件**：`SigningCoordinator.swift`、`MinimuxerInstallChannel.swift`、`DeviceProfileInspector.swift`、`SelfAppRegistrar.swift`、`Minimuxer.swift`、`MinimuxerBridgeIdevice.swift`、Rust `bridge_idevice.rs` / `install.rs`。
+- **验证状态**：Rust 单测、静态护栏及云 CI 待本次提交执行；真机仍需用 1.1.13 做一次自续签后确认可重新打开。
+
 ### 2026-09-15 · 1.1.12：3022 证书上限与旧描述文件导致续签中断（根因闭环）
 - **现象**：同一 Apple ID 由爱思等外部工具签装 Seal 后，在 Seal 内续签会返回 `ALTAppleAPIErrorDomain code=3022`；即使某次签装成功，旧证书或旧描述文件也可能让应用次日失效。日志只能看到最终上限错误，缺少远端证书、本机私钥和描述文件日期证据。
 - **根因**：AltSign/SideStore 上游确认 3022 对应 Apple 原始 `resultCode=7460`（开发证书数量上限）；私钥在签名客户端本地生成，同一 Apple ID 不能从 Apple 取回外部工具私钥。旧实现保留外部证书后继续申请，必然再次撞上限；同时描述文件只校验“尚未过期”，不能证明是本轮新申请且能覆盖完整免费周期。

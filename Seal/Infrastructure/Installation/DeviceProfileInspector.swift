@@ -11,6 +11,45 @@ import Foundation
 @preconcurrency import Minimuxer
 
 struct DeviceProfileInspector: Sendable {
+    /// 安装后核对设备 profile 存储里是否出现本轮 Seal 的精确身份。
+    /// `nil` 表示设备通道或解析不可用；`false` 表示成功枚举但目标身份不存在。
+    static func containsProfile(
+        bundleIdentifier: String,
+        profileUUID: String,
+        certificateSerialNumber: String
+    ) async -> Bool? {
+        let fileManager = FileManager.default
+        let workingDir = fileManager.temporaryDirectory
+            .appendingPathComponent("seal-profile-verify-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: workingDir) }
+
+        guard let dumpDir = try? Provision.dumpProfiles(docsPath: workingDir.path),
+              let profileURLs = try? fileManager.contentsOfDirectory(
+                at: URL(fileURLWithPath: dumpDir),
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+              ) else { return nil }
+
+        let expectedSerial = SigningCertificateSelectionPolicy.normalizedSerialNumber(
+            certificateSerialNumber
+        )
+        let reader = ProvisioningProfileReader()
+        var parsed = 0
+        var handledUUIDs = Set<String>()
+        for fileURL in profileURLs {
+            guard let data = try? Data(contentsOf: fileURL),
+                  let details = try? reader.details(from: data) else { continue }
+            if let uuid = details.uuid, handledUUIDs.insert(uuid).inserted == false { continue }
+            parsed += 1
+            guard details.bundleIdentifier?.caseInsensitiveCompare(bundleIdentifier) == .orderedSame,
+                  details.uuid?.caseInsensitiveCompare(profileUUID) == .orderedSame else { continue }
+            return details.certificateSerialNumbers.contains {
+                SigningCertificateSelectionPolicy.normalizedSerialNumber($0) == expectedSerial
+            }
+        }
+        return parsed > 0 ? false : nil
+    }
+
     /// 设备端全部描述文件引用的证书序列号集合（已归一化，见 DEBUG_LOG 坑位 1）。
     ///
     /// 返回 `nil` 表示**无法核验**（未连接设备/隧道不可用/dump 或解析失败），

@@ -44,7 +44,8 @@ internal func _rust_bridge_idevice_install_ipa(
 internal func _rust_bridge_idevice_stage_and_install(
 	_ bundleId: UnsafePointer<Int8>?,
 	_ ipaPtr: UnsafePointer<UInt8>?,
-	_ ipaLen: UInt32
+	_ ipaLen: UInt32,
+	_ forceUpgrade: UInt8
 ) -> UnsafeMutablePointer<RustIdeviceFfiError>?
 
 @_silgen_name("rust_bridge_idevice_stage_and_install_with_callback")
@@ -52,6 +53,7 @@ internal func _rust_bridge_idevice_stage_and_install_with_callback(
 	_ bundleId: UnsafePointer<Int8>?,
 	_ ipaPtr: UnsafePointer<UInt8>?,
 	_ ipaLen: UInt32,
+	_ forceUpgrade: UInt8,
 	_ progressCb: (@convention(c) (UInt64, UnsafeMutableRawPointer?) -> Void)?,
 	_ progressCtx: UInt
 ) -> UnsafeMutablePointer<RustIdeviceFfiError>?
@@ -228,13 +230,14 @@ public class RustIdevice {
 	/// 上传 + 安装合并调用：**安装主链路**。
 	/// 上传与安装必须共用同一条缓存的隧道会话（shim afcd 暂存视图绑定会话，
 	/// 跨会话暂存包对 installd 不可见 → MissingPackagePath）。
-	public static func stageAndInstall(bundleId: String, ipaBytes: Data) throws {
+	public static func stageAndInstall(bundleId: String, ipaBytes: Data, forceUpgrade: Bool = false) throws {
 		let ipaLength = try rustIdeviceCheckedLength(ipaBytes.count)
 		let error = ipaBytes.withUnsafeBytes { buffer in
 			_rust_bridge_idevice_stage_and_install(
 				bundleId,
 				buffer.bindMemory(to: UInt8.self).baseAddress,
-				ipaLength
+				ipaLength,
+				forceUpgrade ? 1 : 0
 			)
 		}
 
@@ -245,6 +248,7 @@ public class RustIdevice {
 	public static func stageAndInstall(
 		bundleId: String,
 		ipaBytes: Data,
+		forceUpgrade: Bool = false,
 		progress: @escaping (Double) -> Void
 	) throws {
 		let ipaLength = try rustIdeviceCheckedLength(ipaBytes.count)
@@ -257,6 +261,7 @@ public class RustIdevice {
 				bundleId,
 				buffer.bindMemory(to: UInt8.self).baseAddress,
 				ipaLength,
+				forceUpgrade ? 1 : 0,
 				progressTrampoline,
 				UInt(bitPattern: ctx)
 			)
@@ -374,4 +379,3 @@ public class RustIdevice {
     }
 
 }
-

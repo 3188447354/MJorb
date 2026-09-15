@@ -1201,37 +1201,64 @@ actor SigningCoordinator {
                     certificateSerialNumber: serial
                 )
             }
-            // Persist the real signed-profile expiry before iOS replaces this running app.
+            try await updateState(appID: app.id, stage: .pushing)
+            await progress(.pushing)
+            // 不在安装前删除运行中 Seal 的系统 profile。只有新进程启动并核对到
+            // 本轮 UUID/证书后，SelfAppRegistrar 才会保留新 profile、清除旧 profile。
+            // 如果 installd 返回但旧进程仍存活，必须检查设备确实落入本轮身份；未命中
+            // 就重置通道并用同一已签 IPA 再做一次强制 Upgrade，不能显示假成功。
+            var verifiedReplacement = false
+            for attempt in 1...2 {
+                if attempt > 1 {
+                    await installChannel.reset()
+                    _ = try await installChannel.start()
+                }
+                try? await logStore?.append(
+                    category: .installation,
+                    message: "Seal 自更新安装：第 \(attempt) 次，强制 Upgrade，目标 Bundle=\(effectiveBundleID)，profile=\(profileUUID)，证书=\(SigningCertificateSelectionPolicy.normalizedSerialNumber(serial))"
+                )
+                await logStore?.flush()
+                try await installChannel.install(
+                    ipaData: signedData,
+                    bundleID: effectiveBundleID,
+                    isSelfReplacement: true,
+                    onProgress: onInstallProgress
+                )
+                try await updateState(appID: app.id, stage: .verifying)
+                await progress(.verifying)
+                let appVisible = (try? await installChannel.verifyInstalled(bundleID: effectiveBundleID)) != nil
+                let profileMatched = await DeviceProfileInspector.containsProfile(
+                    bundleIdentifier: effectiveBundleID,
+                    profileUUID: profileUUID,
+                    certificateSerialNumber: serial
+                )
+                try? await logStore?.append(
+                    category: .installation,
+                    level: appVisible && profileMatched == true ? .info : .warning,
+                    message: "Seal 自更新设备核验：第 \(attempt) 次，Bundle=\(appVisible ? "已发现" : "未发现")，本轮profile/证书=\(profileMatched == true ? "已匹配" : profileMatched == false ? "未匹配" : "无法读取")"
+                )
+                await logStore?.flush()
+                if appVisible, profileMatched == true {
+                    verifiedReplacement = true
+                    break
+                }
+            }
+            guard verifiedReplacement else {
+                throw ImportFailure(
+                    title: "Seal 自更新未落到新身份",
+                    reason: "安装服务返回后，设备上仍未同时出现本轮 Bundle ID、描述文件 UUID 和新证书身份。Seal 没有把这次操作记为成功。",
+                    recovery: "保持 LocalDevVPN 后再次续签",
+                    code: "SEAL-INSTALL-731"
+                )
+            }
             updated.state = .installed
             updated.signedArtifactStatus = .installed
             updated.lastInstallFailureCode = nil
             updated.lastInstallFailureReason = nil
             updated.expiryDate = expirationDate
             updated.lastInstalledAt = Date()
-            try await appStore.save(updated)
-            try await updateState(appID: app.id, stage: .pushing)
-            await progress(.pushing)
-            // 自更新必须在安装前清旧描述文件：installd 替换 Seal 后本进程即被终止，
-            // 事后的异步清理基本活不到执行，Seal 自身 profile 因此只增不删。
-            // 新 profile 随安装落设备，此刻凡匹配的都是旧文件；安装失败也不影响旧应用启动
-            // （启动校验只看包内 embedded.mobileprovision，与设备 profile 列表无关）。
-            // 匹配范围含：当前运行 ID + 记录目标 ID + 包内真实 ID，覆盖历史改 ID 残留。
-            let cleanupSummary = await DeviceProfileCleaner.removeAllProfiles(
-                for: [Bundle.main.bundleIdentifier, bundleIdentifier, effectiveBundleID].compactMap { $0 }
-            )
-            try? await logStore?.append(
-                category: .installation,
-                message: "自更新安装前清理：\(cleanupSummary.logMessage)"
-            )
-            try await installChannel.install(
-                ipaData: signedData,
-                bundleID: effectiveBundleID,
-                isSelfReplacement: true,
-                onProgress: onInstallProgress
-            )
             updated.hasPendingSelfUpdateSource = false
             try await appStore.save(updated)
-            removeStaleProfiles(signedData: signedData, effectiveBundleID: effectiveBundleID)
             return updated
         }
 

@@ -124,6 +124,7 @@ pub async fn yeet_app_afc_rppairing(
 pub async fn stage_and_install_rppairing<F>(
     bundle_id: String,
     ipa_bytes: &[u8],
+    force_upgrade: bool,
     mut upload_cb: F,
 ) -> Result<(), IdeviceError>
 where
@@ -134,7 +135,7 @@ where
         .map_err(|e| ctx(e, "yeet/连接AFC"))?;
     stage_via_afc(&mut afc, &bundle_id, ipa_bytes, &mut upload_cb).await?;
     drop(afc);
-    install_ipa_rppairing(bundle_id, &mut upload_cb).await
+    install_ipa_rppairing(bundle_id, force_upgrade, &mut upload_cb).await
 }
 
 /// 在给定 AFC 连接上完成暂存（幂等建目录、分块写入、同连接回读校验）。
@@ -286,6 +287,7 @@ fn install_candidates(bundle_id: &str, file_name: &str) -> Vec<(String, Value)> 
 /// 已定位到包，立即停止换路径并把真实错误抛出。
 pub async fn install_ipa_rppairing<F>(
     bundle_id: String,
+    force_upgrade: bool,
     on_install_issued: &mut F,
 ) -> Result<(), IdeviceError>
 where
@@ -325,11 +327,14 @@ where
         .await
         .map_err(|e| ctx(e, "install/连接instproxy"))?;
 
-    let already_installed = lookup_app_rppairing(bundle_id.clone())
+    let discovered_as_installed = lookup_app_rppairing(bundle_id.clone())
         .await
         .ok()
         .flatten()
         .is_some();
+    // 自更新调用方在撤销旧证书前已经确认 Seal 正在运行。撤证后设备查询可能
+    // 隐藏这份失效应用，不能据此把覆盖安装降级成首次 Install。
+    let already_installed = should_upgrade(force_upgrade, discovered_as_installed);
 
 
     // 预检快照（不阻断安装，只记录事实）：合并调用后上传刚完成、
@@ -427,6 +432,10 @@ fn is_missing_package_path(error: &IdeviceError) -> bool {
     format!("{error:?}").contains("MissingPackagePath")
 }
 
+fn should_upgrade(force_upgrade: bool, discovered_as_installed: bool) -> bool {
+    force_upgrade || discovered_as_installed
+}
+
 async fn issue_install_command(
     client: &mut InstallationProxyClient,
     upgrade: bool,
@@ -478,6 +487,14 @@ mod tests {
             }
             None => assert!(false, "options must be a dictionary"),
         }
+    }
+
+    #[test]
+    fn self_replacement_forces_upgrade_when_lookup_hides_revoked_app() {
+        assert!(should_upgrade(true, false));
+        assert!(should_upgrade(true, true));
+        assert!(should_upgrade(false, true));
+        assert!(!should_upgrade(false, false));
     }
 
     #[test]

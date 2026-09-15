@@ -119,6 +119,16 @@ actor SelfAppRegistrar {
                 materialStatus: materialStatus
             )
             guard status != .noPending, status != .awaitingRestart, status != .superseded else { return }
+            if status == .confirmed, let profileUUID = metadata.provisioningProfileUUID {
+                let cleanup = await DeviceProfileCleaner.removeStaleProfiles(
+                    for: metadata.bundleIdentifier,
+                    keeping: profileUUID
+                )
+                try? await logStore?.append(
+                    category: .installation,
+                    message: "Seal 新进程确认后清理旧描述文件：\(cleanup.logMessage)"
+                )
+            }
             try? await logStore?.append(
                 category: .signing,
                 level: status == .confirmed ? .info : .warning,

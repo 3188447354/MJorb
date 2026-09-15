@@ -7,6 +7,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def violations(load):
     coordinator = load('Seal/Core/Signing/SigningCoordinator.swift')
+    install_body = coordinator.split('private func installSignedIPA(', 1)[1].split('private func removeStaleProfiles(', 1)[0]
+    self_install = install_body.split('if app.isSeal {', 1)[1].split('\n        do {', 1)[0]
     portal = load('Seal/Infrastructure/Signing/ApplePortalSigningService.swift')
     certificate_service = load('Seal/Infrastructure/Signing/ApplePortalCertificateService.swift')
     profile_binding = load('Seal/Core/Signing/ProvisioningProfileBinding.swift')
@@ -22,6 +24,20 @@ def violations(load):
         ('selfSigningHandoffStore.prepare(' in coordinator
          and coordinator.index('selfSigningHandoffStore.prepare(') < coordinator.index('try await installChannel.install('),
          'handoff must persist before installation'),
+        (load('Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift').count('forceUpgrade: true') == 2,
+         'Seal self-replacement must explicitly issue an Upgrade even if revoked apps disappear from lookup'),
+        ('force_upgrade: u8' in load('Vendor/Minimuxer/RustBridge/src/bridge_idevice.rs')
+         and 'should_upgrade(force_upgrade, discovered_as_installed)' in load('Vendor/Minimuxer/RustBridge/src/idevice_support/install.rs'),
+         'the explicit self-upgrade flag must cross the Swift/Rust FFI and control installation_proxy mode'),
+        ('DeviceProfileInspector.containsProfile(' in coordinator
+         and 'verifyInstalled(bundleID: effectiveBundleID)' in coordinator
+         and 'SEAL-INSTALL-731' in coordinator
+         and self_install.index('guard verifiedReplacement else') < self_install.index('updated.state = .installed'),
+         'self-replacement must verify the installed bundle and exact new profile identity before reporting success'),
+        ('removeAllProfiles(' not in load('Seal/Infrastructure/Installation/DeviceProfileCleaner.swift')
+         and 'status == .confirmed' in load('Seal/Core/Renewal/SelfAppRegistrar.swift')
+         and 'DeviceProfileCleaner.removeStaleProfiles(' in load('Seal/Core/Renewal/SelfAppRegistrar.swift'),
+         'old Seal profiles may only be cleaned after the replacement process confirms its running identity'),
         ('rotationCandidates(' in portal and 'failure.code == "SEAL-CERT-204b"' in portal
          and 'removeStoredCertificateMaterial' in portal and 'revokeCertificate(' in portal,
          '3022 must rotate an unusable certificate and retry certificate creation in the same portal transaction'),

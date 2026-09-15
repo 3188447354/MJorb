@@ -383,7 +383,11 @@ actor MinimuxerInstallChannel: InstallChannel {
                 if isSelfReplacement {
                     // Seal 自更新：安装命令发出后尽快回主屏，避免被替换时残留崩溃界面
                     let installation = Task.detached(priority: .userInitiated) {
-                        try Minimuxer.stageAndInstall(bundleId: bundleID, ipaBytes: ipaData)
+                        try Minimuxer.stageAndInstall(
+                            bundleId: bundleID,
+                            ipaBytes: ipaData,
+                            forceUpgrade: true
+                        )
                     }
                     try await Task.sleep(for: .milliseconds(250))
                     await SelfReplacementController.returnToHomeScreen()
@@ -467,7 +471,12 @@ actor MinimuxerInstallChannel: InstallChannel {
                         Task { await onProgress(p) }
                     }
                     let installation = Task.detached(priority: .userInitiated) {
-                        try Minimuxer.stageAndInstall(bundleId: bundleID, ipaBytes: ipaData, progress: selfReplaceProgress)
+                        try Minimuxer.stageAndInstall(
+                            bundleId: bundleID,
+                            ipaBytes: ipaData,
+                            forceUpgrade: true,
+                            progress: selfReplaceProgress
+                        )
                     }
                     try await installation.value
                 } else {

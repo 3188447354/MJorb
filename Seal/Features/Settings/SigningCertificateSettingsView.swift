@@ -12,6 +12,8 @@ struct SigningCertificateSettingsView: View {
             VStack(alignment: .leading, spacing: 18) {
                 accountCard
 
+                selfManagementCard
+
                 Text("签名证书")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.sealTextSecondary)
@@ -47,12 +49,14 @@ struct SigningCertificateSettingsView: View {
                 selectedAccountID = viewModel.activeAccount?.id
             }
             await viewModel.load(force: true)
+            await viewModel.refreshSelfManagementState()
             guard let account = activeAccount else { return }
             await viewModel.refreshCertificateHealthLocally(for: account)
             await viewModel.refreshCertificateInventory(for: account, force: true)
         }
         .refreshable {
             await viewModel.load(force: true)
+            await viewModel.refreshSelfManagementState()
             guard let account = activeAccount else { return }
             await viewModel.refreshCertificateHealthLocally(for: account)
             await viewModel.refreshCertificateInventory(for: account, force: true)
@@ -135,6 +139,54 @@ struct SigningCertificateSettingsView: View {
         } else {
             noAccountCard
         }
+    }
+
+    /// 自管理状态卡：当前真实签名者、本机可用身份、事务状态和下一步。
+    /// View 只读 ViewModel 汇总好的展示模型，不自己猜状态。
+    private var selfManagementCard: some View {
+        let presentation = viewModel.selfManagement
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
+                Text(presentation.title)
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 8)
+                if presentation.state == .awaitingReplacementConfirmation {
+                    Button {
+                        Task { await viewModel.refreshSelfManagementState() }
+                    } label: {
+                        Text("检查安装结果")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.sealAccent)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.sealAccent.opacity(0.12), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            Text(presentation.detail)
+                .font(.caption)
+                .foregroundStyle(Color.sealTextSecondary)
+            HStack(spacing: 8) {
+                Text("当前真实签名者")
+                    .font(.caption)
+                    .foregroundStyle(Color.sealTextSecondary)
+                Spacer(minLength: 8)
+                Text(viewModel.sealActualSignerSerialNumber.map(fullSerialText) ?? "读取失败")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(Color.sealTextSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            if presentation.showsComputerRecovery {
+                Text("不要卸载 Seal。请用电脑按相同 Bundle ID、扩展标识和 Team 覆盖安装。")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.sealDanger)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .glassSurface(cornerRadius: 24)
     }
 
     /// 单个证书卡片：本机在用证书（如有）在上，账号下其余证书（可撤销）合并展示。
@@ -262,15 +314,58 @@ struct SigningCertificateSettingsView: View {
         }
     }
 
+    /// 证书角色的固定标签含义：真实签名者 > 本机持有私钥 > 仅 Apple 端存在；
+    /// 身份读不出来时无法证明任何一张不是 Seal 的命，一律标「关联状态无法确认」。
+    private func roleLabels(for certificate: ApplePortalCertificateSnapshot) -> [CertificateRoleLabel] {
+        guard let signer = viewModel.sealActualSignerSerialNumber else {
+            return [.associationUnknown]
+        }
+        var labels: [CertificateRoleLabel] = []
+        if CertificateRevocationImpact.isActualSealSigner(
+            serialNumber: certificate.serialNumber,
+            actualSealSignerSerialNumber: signer
+        ) {
+            labels.append(.currentSealSigner)
+        } else if certificate.hasLocalPrivateKey {
+            labels.append(.locallyUsable)
+        } else {
+            labels.append(.external)
+        }
+        if CertificateRevocationImpact.associatedApps(
+            serialNumber: certificate.serialNumber,
+            apps: relatedApps
+        ).isEmpty == false {
+            labels.append(.associatedOnThisDevice)
+        }
+        return labels
+    }
+
     private func remoteCertificateRow(
         _ certificate: ApplePortalCertificateSnapshot
     ) -> some View {
-        HStack(alignment: .center, spacing: 10) {
+        let labels = roleLabels(for: certificate)
+        // 真实签名者或「无法确认关联」都不提供撤销入口（ViewModel 层还有硬拒绝兜底）。
+        let revocationAllowed = labels.contains(.currentSealSigner) == false
+            && labels.contains(.associationUnknown) == false
+        return HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(certificate.displayName)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    ForEach(labels, id: \.title) { label in
+                        Text(label.title)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(label == .currentSealSigner ? Color.sealDanger : Color.sealTextSecondary)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(
+                                (label == .currentSealSigner ? Color.sealDanger : Color.sealTextSecondary).opacity(0.12),
+                                in: Capsule()
+                            )
+                    }
+                }
                 Text(fullSerialText(certificate.serialNumber))
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(Color.sealTextSecondary)
@@ -279,17 +374,19 @@ struct SigningCertificateSettingsView: View {
                     .foregroundStyle(Color.sealTextSecondary)
             }
             Spacer(minLength: 8)
-            Button {
-                certificatePendingRevocation = certificate
-            } label: {
-                Text("撤销")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.sealDanger)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(Color.sealDanger.opacity(0.12), in: Capsule())
+            if revocationAllowed {
+                Button {
+                    certificatePendingRevocation = certificate
+                } label: {
+                    Text("撤销")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.sealDanger)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(Color.sealDanger.opacity(0.12), in: Capsule())
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .padding(.vertical, 10)
     }

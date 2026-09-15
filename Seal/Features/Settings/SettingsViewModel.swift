@@ -12,6 +12,94 @@ enum SettingsRoute: Hashable {
     case storage
 }
 
+/// 自管理状态的展示模型：View 只读这里，不自己猜状态。
+struct SelfManagementPresentation: Equatable, Sendable {
+    let state: SelfManagementState
+    let title: String
+    let detail: String
+    let allowsInstall: Bool
+    let showsComputerRecovery: Bool
+
+    init(_ state: SelfManagementState) {
+        self.state = state
+        let values: (String, String, Bool, Bool)
+        switch state {
+        case .externalBootstrap:
+            values =
+                ("电脑签名，等待本机接管", "先准备 Seal 本机可控的签名证书。", true, false)
+        case .preparingLocalIdentity:
+            values =
+                ("正在准备本机签名身份", "请保持 Seal 在前台。", false, false)
+        case .localIdentityReady:
+            values =
+                ("本机身份已就绪", "可以提交一次覆盖安装。", true, false)
+        case .awaitingReplacementConfirmation:
+            values =
+                ("已提交安装，等待重新打开 Seal 确认", "不会自动再次安装。", false, false)
+        case .selfManaged:
+            values =
+                ("Seal 已由本机管理", "后续续签复用本机证书。", true, false)
+        case .recoveryRequired:
+            values =
+                ("需要电脑覆盖恢复", "不要卸载 Seal。", false, true)
+        }
+        title = values.0
+        detail = values.1
+        allowsInstall = values.2
+        showsComputerRecovery = values.3
+    }
+}
+
+/// 证书行标签的固定含义。
+enum CertificateRoleLabel: Equatable, Sendable {
+    case currentSealSigner       // 当前 Seal 实际使用
+    case locallyUsable           // 本机持有匹配私钥
+    case external                // Apple 端存在但本机没有私钥
+    case associatedOnThisDevice  // 只统计本机已安装 App
+    case associationUnknown      // 无法确认
+
+    var title: String {
+        switch self {
+        case .currentSealSigner: return "当前 Seal 实际使用"
+        case .locallyUsable: return "本机持有私钥"
+        case .external: return "仅 Apple 端存在"
+        case .associatedOnThisDevice: return "本机已安装 App 在用"
+        case .associationUnknown: return "关联状态无法确认"
+        }
+    }
+}
+
+/// 自管理状态解析：真实身份 + 未结算事务 + 签名者是否持有本机私钥。
+/// 事务在进行中时优先展示事务状态；身份读不出来一律按需要恢复处理。
+enum SelfManagementStateResolver {
+    static func resolve(
+        identity: InstalledIdentity?,
+        pendingTransaction: SelfReplacementTransaction?,
+        signerHasLocalPrivateKey: Bool
+    ) -> SelfManagementState {
+        guard let identity, identity.isComplete,
+              let signer = identity.mainTarget?.signerSerialNumber,
+              SigningCertificateSelectionPolicy.normalizedSerialNumber(signer).isEmpty == false
+        else {
+            return .recoveryRequired
+        }
+        if let pendingTransaction {
+            switch pendingTransaction.phase {
+            case .prepared:
+                return .localIdentityReady
+            case .submitting, .awaitingReplacementConfirmation, .installedOldIdentity, .settling:
+                return .awaitingReplacementConfirmation
+            case .recoveryRequired:
+                return .recoveryRequired
+            case .confirmed:
+                // loadPending 不会返回已确认事务；防御分支按无事务处理。
+                break
+            }
+        }
+        return signerHasLocalPrivateKey ? .selfManaged : .externalBootstrap
+    }
+}
+
 @MainActor
 final class SettingsViewModel: ObservableObject {
     struct PendingTeamSelection: Identifiable {
@@ -57,6 +145,10 @@ final class SettingsViewModel: ObservableObject {
     @Published var alertFailure: ImportFailure?
     @Published var requestedRoute: SettingsRoute?
     @Published private(set) var pendingTeamSelection: PendingTeamSelection?
+    @Published private(set) var selfManagement: SelfManagementPresentation =
+        .init(.externalBootstrap)
+    /// 当前运行 Seal 的真实 CMS 签名者；读不出来时为 nil（证书行据此打标签）。
+    @Published private(set) var sealActualSignerSerialNumber: String?
 
     let verificationBroker = VerificationCodeBroker()
 
@@ -76,6 +168,7 @@ final class SettingsViewModel: ObservableObject {
     private let anisetteEnvironment: (any AnisetteEnvironmentManaging)?
     private let signingPreferenceStore: SigningPreferenceStore?
     private let operationCoordinator: OperationCoordinator?
+    private let selfReplacementStore: SelfReplacementTransactionStore?
     private var hasLoaded = false
     private var loadGeneration = 0
     private static let pairingAssistantInboxFileName = "SealPairing.mobiledevicepairing"
@@ -95,7 +188,8 @@ final class SettingsViewModel: ObservableObject {
         notificationPreferences: NotificationPreferences,
         anisetteEnvironment: any AnisetteEnvironmentManaging,
         signingPreferenceStore: SigningPreferenceStore,
-        operationCoordinator: OperationCoordinator? = nil
+        operationCoordinator: OperationCoordinator? = nil,
+        selfReplacementStore: SelfReplacementTransactionStore? = nil
     ) {
         self.accountRepository = accountRepository
         self.keychain = keychain
@@ -113,6 +207,7 @@ final class SettingsViewModel: ObservableObject {
         self.anisetteEnvironment = anisetteEnvironment
         self.signingPreferenceStore = signingPreferenceStore
         self.operationCoordinator = operationCoordinator
+        self.selfReplacementStore = selfReplacementStore
         notificationsEnabled = notificationPreferences.isEnabled
         reminderHours = notificationPreferences.leadHours
     }
@@ -134,6 +229,7 @@ final class SettingsViewModel: ObservableObject {
         anisetteEnvironment = nil
         signingPreferenceStore = nil
         operationCoordinator = nil
+        selfReplacementStore = nil
         alertFailure = startupFailure
     }
 
@@ -154,6 +250,7 @@ final class SettingsViewModel: ObservableObject {
         anisetteEnvironment = nil
         signingPreferenceStore = nil
         operationCoordinator = nil
+        selfReplacementStore = nil
         hasLoaded = true
     }
 
@@ -1186,11 +1283,41 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    /// 汇总 Seal 自管理状态：真实签名身份 + 未结算事务 + 签名者是否持有本机私钥。
+    /// 只依赖本地数据（运行包 / 事务文件 / keychain），不访问网络。
+    func refreshSelfManagementState() async {
+        let identity = SelfAppMetadata.current()?.installedIdentity
+        let signer = (identity?.isComplete == true)
+            ? identity?.mainTarget?.signerSerialNumber
+            : nil
+        sealActualSignerSerialNumber = signer
+        // 事务文件读不出来按「无事务」处理；身份不可读已由 resolver 兜到恢复态。
+        let transaction = try? await selfReplacementStore?.loadPending()
+        var signerIsLocal = false
+        if let signer, let keychain {
+            for account in accounts {
+                guard let secret = try? await keychain.load(accountID: account.id),
+                      secret.p12(for: signer) != nil else { continue }
+                signerIsLocal = true
+                break
+            }
+        }
+        selfManagement = SelfManagementPresentation(
+            SelfManagementStateResolver.resolve(
+                identity: identity,
+                pendingTransaction: transaction,
+                signerHasLocalPrivateKey: signerIsLocal
+            )
+        )
+    }
+
     func refreshCertificateInventory(
         for account: AppleAccountRecord,
         force: Bool = true
     ) async {
         guard let keychain, let applePortalInventoryService else { return }
+        // 证书清单刷新时同步自管理状态；本地数据即可判定，网络失败不影响。
+        await refreshSelfManagementState()
         if force == false, certificateInventories[account.id] != nil { return }
         if certificateInventoryLoadingIDs.contains(account.id) { return }
 

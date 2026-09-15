@@ -194,7 +194,8 @@ struct AppContainer {
                     notificationPreferences: notificationPreferences,
                     anisetteEnvironment: anisetteProvider,
                     signingPreferenceStore: signingPreferenceStore,
-                    operationCoordinator: operationCoordinator
+                    operationCoordinator: operationCoordinator,
+                    selfReplacementStore: transactionStore
                 ),
                 certificateExportHandler: certificateExportHandler
             )

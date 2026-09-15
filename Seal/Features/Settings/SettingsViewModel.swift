@@ -623,11 +623,14 @@ final class SettingsViewModel: ObservableObject {
             }
 
             let deviceReferenced = await DeviceProfileInspector.referencedCertificateSerials()
+            // Seal 自保护：正在使用的证书永远不撤，避免手动清理把 Seal 自己变砖。
+            let sealActiveSerial = apps.first(where: { $0.isSeal })?.certificateSerialNumber
             let plan = CertificateCleanupPolicy.makePlan(
                 certificates: inventory.certificates,
                 apps: apps,
                 localUsableSerials: localUsableSerials,
-                deviceReferencedSerials: deviceReferenced
+                deviceReferencedSerials: deviceReferenced,
+                sealActiveSerialNumber: sealActiveSerial
             )
             try? await logStore?.append(
                 category: .account,
@@ -700,7 +703,8 @@ final class SettingsViewModel: ObservableObject {
                 certificates: freshInventory.certificates,
                 apps: apps,
                 localUsableSerials: localUsableSerials,
-                deviceReferencedSerials: plan.deviceVerified ? [] : nil
+                deviceReferencedSerials: plan.deviceVerified ? [] : nil,
+                sealActiveSerialNumber: apps.first(where: { $0.isSeal })?.certificateSerialNumber
             )
             let confirmedSerials = Set(plan.revocable.map {
                 SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber)

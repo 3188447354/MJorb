@@ -49,4 +49,20 @@ struct SealLogStoreTests {
         #expect(storedText.contains("session-secret") == false)
     }
 
+    @Test
+    func launchMirrorLoadsExistingLogBeforeWriting() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "SealTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appending(path: "Logs.json")
+        let first = SealLogStore(fileURL: fileURL, fileProtector: MarkerFileProtector())
+        try await first.append(category: .system, message: "persisted-before-relaunch")
+        await first.flush()
+
+        let relaunched = SealLogStore(fileURL: fileURL, fileProtector: MarkerFileProtector())
+        await relaunched.flush()
+
+        #expect(try await relaunched.entries().map(\.message) == ["persisted-before-relaunch"])
+    }
+
 }

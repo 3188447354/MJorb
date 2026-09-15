@@ -426,13 +426,20 @@
 
 ## 二、历史记录
 
+### 2026-09-15 · 1.1.14：Seal 可打开但 profile 不匹配、日期不更新、Files 中 Seal 目录消失
+- **真机现象**：1.1.13 自续签后 Seal 可以继续打开，但详情显示“描述文件不匹配”，到期日保持 `2026-09-22 14:54`；反复续签仍不变化。相同设备上的 LiveContainer 能成功生成并安装 `15:00` 到期的新 profile，证明 Apple 登录、证书创建、profile 申请和普通应用安装链路可用。Files 的“我的 iPhone”中同时没有 Seal 目录。
+- **根因**：1.1.13 把 installation_proxy 操作强制改成 `Upgrade`，与 SideStore 当前刷新实现固定调用 `installation_proxy_install` 不一致。更关键的是安装后只用“Bundle 查询可见 + 系统 profile 存储出现目标 UUID/证书”判成功；真机证明 profile 可以进入系统存储而 Seal.app 仍保留旧的 `embedded.mobileprovision`，因此代码写入假成功和新日期，下一次启动又从旧运行包纠正回旧日期。启动核验只记录 mismatch，没有复用已签成品恢复。日志镜像则要等首次 flush 才创建 Documents 文件，无法保证 Files 入口存在。
+- **修复**：撤掉 Swift/Rust 全链路的强制 Upgrade 参数，恢复上游 Install 覆盖且禁止卸载；安装后直接从 `Bundle.main.bundleURL/embedded.mobileprovision` 读磁盘文件，按 Bundle、Team、profile UUID、证书四项匹配，系统 profile 枚举仅写日志。启动命中 `.profileMismatch` 时自动核对上轮已签 IPA 的四项身份及 SHA/有效期并重装一次，不再次访问 Apple；恢复成功后立即停止本轮旧 metadata 回写。日志 flush 先加载历史，AppContainer 启动即镜像 Documents，避免清空历史并恢复 Files 目录。
+- **涉及文件**：`SelfAppMetadata.swift`、`SelfSigningHandoffStore.swift`、`SelfAppRegistrar.swift`、`SigningCoordinator.swift`、`AppContainer.swift`、`SealLogStore.swift`、`MinimuxerInstallChannel.swift`、Minimuxer Swift/Rust Bridge、`install.rs`、结构守护与日志测试。
+- **验证状态**：本机 `cargo check` 通过；证书 handoff 守护、113 项发布安全检查、54 项变异自检和差异检查通过。Swift 编译/单测/UI 回归待本次 Actions，真机需用 1.1.14 复测新日期与 Files 目录。
+
 ### 2026-09-15 · 1.1.13：Seal 自续签显示成功后桌面提示“不再可用”
 - **现象**：Seal 由爱思助手签入并运行；在 Seal 内使用同一 Apple ID 自续签，界面显示成功，回到桌面后 Seal 无法再次打开。进程已无法启动，因此本次没有新的 App 沙盒日志。
 - **当前代码证据与根因**：自更新分支在 installation_proxy 返回后直接写入成功状态，没有像普通 App 一样核验设备结果；同时 Rust 把自更新的 `Install/Upgrade` 选择交给一次 Bundle 查询，只要查询未命中就会把调用方已经明确知道是覆盖安装的操作降成首次 `Install`。因此“安装调用返回”与“本轮新签名身份已经替换到设备”之间没有闭环。安装前删除旧描述文件还让失败路径提前改变设备状态，破坏了先确认新身份、再清理旧身份的顺序。
 - **修复**：Swift 将 `isSelfReplacement` 明确传到 Rust，installation_proxy 对 Seal 始终使用 `Upgrade`；安装返回后同时核对设备可见 Bundle、包内新 profile UUID 与证书序列号，未命中则重建同一安装通道并重试一次，仍未命中绝不写成功；旧 profile 延后到新 Seal 进程启动并通过 handoff 身份确认后按 Bundle ID 定向清理。
 - **日志**：记录每次自更新的安装尝试、Bundle 可见性、精确 profile/证书匹配结果，并立即镜像导出日志。
 - **涉及文件**：`SigningCoordinator.swift`、`MinimuxerInstallChannel.swift`、`DeviceProfileInspector.swift`、`SelfAppRegistrar.swift`、`Minimuxer.swift`、`MinimuxerBridgeIdevice.swift`、Rust `bridge_idevice.rs` / `install.rs`。
-- **验证状态**：Rust 单测、静态护栏及云 CI 待本次提交执行；真机仍需用 1.1.13 做一次自续签后确认可重新打开。
+- **验证状态**：Actions `34937629653` 的 build-package、rork-sign 与 swift-regression 均通过；真机确认 Seal 不再变成“不再可用”，但暴露出 profile 未替换和日期不更新。该条“强制 Upgrade”结论已被 1.1.14 的真机证据与上游实现推翻，禁止继续沿用。
 
 ### 2026-09-15 · 1.1.12：3022 证书上限与旧描述文件导致续签中断（根因闭环）
 - **现象**：同一 Apple ID 由爱思等外部工具签装 Seal 后，在 Seal 内续签会返回 `ALTAppleAPIErrorDomain code=3022`；即使某次签装成功，旧证书或旧描述文件也可能让应用次日失效。日志只能看到最终上限错误，缺少远端证书、本机私钥和描述文件日期证据。

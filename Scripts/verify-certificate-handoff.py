@@ -13,6 +13,9 @@ def violations(load):
     certificate_service = load('Seal/Infrastructure/Signing/ApplePortalCertificateService.swift')
     profile_binding = load('Seal/Core/Signing/ProvisioningProfileBinding.swift')
     settings = load('Seal/Features/Settings/SettingsViewModel.swift')
+    registrar = load('Seal/Core/Renewal/SelfAppRegistrar.swift')
+    metadata = load('Seal/Core/Renewal/SelfAppMetadata.swift')
+    app_container = load('Seal/Application/AppContainer.swift')
     checks = [
         ('本机均有私钥' not in coordinator, 'cleanup must not infer private keys from no revocable certificates'),
         ('revokeReplacedSealCertificate(' not in coordinator, 'self-update must not revoke old identity after install callback'),
@@ -24,16 +27,30 @@ def violations(load):
         ('selfSigningHandoffStore.prepare(' in coordinator
          and coordinator.index('selfSigningHandoffStore.prepare(') < coordinator.index('try await installChannel.install('),
          'handoff must persist before installation'),
-        (load('Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift').count('forceUpgrade: true') == 2,
-         'Seal self-replacement must explicitly issue an Upgrade even if revoked apps disappear from lookup'),
-        ('force_upgrade: u8' in load('Vendor/Minimuxer/RustBridge/src/bridge_idevice.rs')
-         and 'should_upgrade(force_upgrade, discovered_as_installed)' in load('Vendor/Minimuxer/RustBridge/src/idevice_support/install.rs'),
-         'the explicit self-upgrade flag must cross the Swift/Rust FFI and control installation_proxy mode'),
-        ('DeviceProfileInspector.containsProfile(' in coordinator
-         and 'verifyInstalled(bundleID: effectiveBundleID)' in coordinator
+        ('forceUpgrade' not in load('Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift'),
+         'self-refresh must use the upstream installation_proxy install operation'),
+        ('force_upgrade' not in load('Vendor/Minimuxer/RustBridge/src/bridge_idevice.rs')
+         and 'force_upgrade' not in load('Vendor/Minimuxer/RustBridge/src/idevice_support/install.rs')
+         and '.upgrade(' not in load('Vendor/Minimuxer/RustBridge/src/idevice_support/install.rs'),
+         'the Rust install chain must not change a refresh into installation_proxy Upgrade'),
+        ('SelfAppMetadata.current()' in self_install
+         and 'SelfSigningHandoffPolicy.evaluate(' in self_install
+         and 'if appVisible, appBundleMatched' in self_install
          and 'SEAL-INSTALL-731' in coordinator
          and self_install.index('guard verifiedReplacement else') < self_install.index('updated.state = .installed'),
-         'self-replacement must verify the installed bundle and exact new profile identity before reporting success'),
+         'self-replacement must verify the installed Seal.app profile/team/certificate identity before reporting success'),
+        ('bundle.bundleURL.appending(path: "embedded.mobileprovision")' in metadata
+         and 'bundle.url(forResource: "embedded", withExtension: "mobileprovision")' not in metadata,
+         'running Seal profile verification must bypass Bundle resource caching'),
+        ('status == .profileMismatch' in registrar
+         and 'pendingSelfReplacementRecovery()' in registrar
+         and 'recoverPendingSelfReplacement()' in coordinator
+         and 'pendingSelfReplacementRecovery:' in app_container,
+         'a startup profile mismatch must retry the already-signed Seal artifact without contacting Apple'),
+        ('SignedArtifactBundleIDReader.mainInfoDictionary(in: signedData)' in self_install
+         and 'selfInfo["UIFileSharingEnabled"] as? Bool == true' in self_install
+         and 'selfInfo["LSSupportsOpeningDocumentsInPlace"] as? Bool == true' in self_install,
+         'a self-signed artifact must preserve the Files document-sharing configuration'),
         ('removeAllProfiles(' not in load('Seal/Infrastructure/Installation/DeviceProfileCleaner.swift')
          and 'status == .confirmed' in load('Seal/Core/Renewal/SelfAppRegistrar.swift')
          and 'DeviceProfileCleaner.removeStaleProfiles(' in load('Seal/Core/Renewal/SelfAppRegistrar.swift'),

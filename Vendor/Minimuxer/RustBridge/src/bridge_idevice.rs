@@ -133,7 +133,7 @@ pub extern "C" fn rust_bridge_idevice_install_ipa(
     };
 
     runtime.block_on(async move {
-        match install_ipa_rppairing(bundle_id, false, &mut |_| {}).await {
+        match install_ipa_rppairing(bundle_id, &mut |_| {}).await {
             Ok(()) => std::ptr::null_mut(),
             Err(err) => crate::ffi_err!(err),
         }
@@ -145,7 +145,6 @@ pub extern "C" fn rust_bridge_idevice_stage_and_install(
     bundle_id: *const c_char,
     ipa_ptr: *const u8,
     ipa_len: u32,
-    force_upgrade: u8,
 ) -> *mut IdeviceFfiError {
     let Some(bundle_id) = c_string_arg(bundle_id) else {
         return invalid_argument_error();
@@ -158,7 +157,7 @@ pub extern "C" fn rust_bridge_idevice_stage_and_install(
     };
 
     runtime.block_on(async move {
-        match stage_and_install_rppairing(bundle_id, ipa_bytes, force_upgrade != 0, |_| {}).await {
+        match stage_and_install_rppairing(bundle_id, ipa_bytes, |_| {}).await {
             Ok(()) => std::ptr::null_mut(),
             Err(err) => crate::ffi_err!(err),
         }
@@ -173,7 +172,6 @@ pub extern "C" fn rust_bridge_idevice_stage_and_install_with_callback(
     bundle_id: *const c_char,
     ipa_ptr: *const u8,
     ipa_len: u32,
-    force_upgrade: u8,
     progress_cb: Option<extern "C" fn(u64, *mut std::ffi::c_void)>,
     progress_ctx: usize,
 ) -> *mut IdeviceFfiError {
@@ -193,7 +191,7 @@ pub extern "C" fn rust_bridge_idevice_stage_and_install_with_callback(
                 cb(pct, progress_ctx as *mut std::ffi::c_void);
             }
         };
-        match stage_and_install_rppairing(bundle_id, ipa_bytes, force_upgrade != 0, upload_cb).await {
+        match stage_and_install_rppairing(bundle_id, ipa_bytes, upload_cb).await {
             Ok(()) => std::ptr::null_mut(),
             Err(err) => crate::ffi_err!(err),
         }

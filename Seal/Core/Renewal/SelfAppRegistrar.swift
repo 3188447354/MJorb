@@ -9,6 +9,8 @@ actor SelfAppRegistrar {
     private let selfSigningHandoffStore: SelfSigningHandoffStore?
     private let keychain: KeychainVault?
     private let logStore: SealLogStore?
+    private let pendingSelfReplacementRecovery: (@Sendable () async throws -> Void)?
+    private var lastPendingSelfReplacementRecoveryAt: Date?
 
     // 固定 ID，确保 Seal 记录和文件夹路径始终一致，不会出现多个文件夹
     private let fixedSealID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
@@ -23,7 +25,8 @@ actor SelfAppRegistrar {
         fileStore: AppFileStore,
         selfSigningHandoffStore: SelfSigningHandoffStore? = nil,
         keychain: KeychainVault? = nil,
-        logStore: SealLogStore? = nil
+        logStore: SealLogStore? = nil,
+        pendingSelfReplacementRecovery: (@Sendable () async throws -> Void)? = nil
     ) {
         self.metadata = metadata
         self.appStore = appStore
@@ -32,6 +35,7 @@ actor SelfAppRegistrar {
         self.selfSigningHandoffStore = selfSigningHandoffStore
         self.keychain = keychain
         self.logStore = logStore
+        self.pendingSelfReplacementRecovery = pendingSelfReplacementRecovery
     }
 
     func ensureRegistered() async throws {
@@ -40,7 +44,9 @@ actor SelfAppRegistrar {
         defer { isRegistering = false }
 
         // 所有早退分支之前核验，包含待安装自更新源；只读运行包和钥匙串，不发网络请求。
-        await confirmSelfSigningHandoff()
+        // 后台恢复若成功返回，磁盘上的 Seal.app 已经更新；本实例持有的是启动时旧
+        // metadata，不能继续用旧 profile 把刚写好的记录覆盖回去。
+        if await confirmSelfSigningHandoff() { return }
 
         let records = try await appStore.fetchAll()
         let accounts = try await accountRepository.fetchAll()
@@ -97,10 +103,11 @@ actor SelfAppRegistrar {
         try await cleanupDuplicateSealRecords(records: records, keepID: id)
     }
 
-    private func confirmSelfSigningHandoff() async {
-        guard let selfSigningHandoffStore, let keychain else { return }
+    /// 返回 true 表示已完成一次后台恢复安装，本轮注册必须立即停止。
+    private func confirmSelfSigningHandoff() async -> Bool {
+        guard let selfSigningHandoffStore, let keychain else { return false }
         do {
-            guard let pending = try await selfSigningHandoffStore.loadPending() else { return }
+            guard let pending = try await selfSigningHandoffStore.loadPending() else { return false }
             let secret = try await keychain.load(accountID: pending.accountID)
             let materialStatus: SelfSigningHandoffMaterialStatus
             if let secret,
@@ -118,7 +125,7 @@ actor SelfAppRegistrar {
                 pendingID: pending.id,
                 materialStatus: materialStatus
             )
-            guard status != .noPending, status != .awaitingRestart, status != .superseded else { return }
+            guard status != .noPending, status != .awaitingRestart, status != .superseded else { return false }
             if status == .confirmed, let profileUUID = metadata.provisioningProfileUUID {
                 let cleanup = await DeviceProfileCleaner.removeStaleProfiles(
                     for: metadata.bundleIdentifier,
@@ -135,6 +142,37 @@ actor SelfAppRegistrar {
                 message: status.message,
                 code: status == .confirmed ? nil : "SEAL-CERT-224"
             )
+            if status == .profileMismatch,
+               lastPendingSelfReplacementRecoveryAt.map({ Date().timeIntervalSince($0) >= 60 }) ?? true,
+               let pendingSelfReplacementRecovery {
+                lastPendingSelfReplacementRecoveryAt = Date()
+                try? await logStore?.append(
+                    category: .installation,
+                    message: "启动核验发现 Seal.app 仍是旧描述文件，自动复用已签 IPA 恢复覆盖安装。"
+                )
+                await logStore?.flush()
+                do {
+                    try await pendingSelfReplacementRecovery()
+                    return true
+                } catch let failure as ImportFailure {
+                    try? await logStore?.append(
+                        category: .installation,
+                        level: .warning,
+                        message: "Seal 后台恢复安装未完成：\(failure.reason)",
+                        code: failure.code
+                    )
+                } catch {
+                    let nsError = error as NSError
+                    try? await logStore?.append(
+                        category: .installation,
+                        level: .warning,
+                        message: "Seal 后台恢复安装遇到错误：[\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)",
+                        code: "SEAL-INSTALL-732"
+                    )
+                }
+                await logStore?.flush()
+            }
+            return false
         } catch {
             // 文件或钥匙串暂不可读时保留记录；不能阻断启动，也不能宣称接管成功。
             try? await logStore?.append(
@@ -143,6 +181,7 @@ actor SelfAppRegistrar {
                 message: "本机签名启动核验暂未完成：本地记录或钥匙串不可读，保留核验目标，下次维护时重试。",
                 code: "SEAL-CERT-225"
             )
+            return false
         }
     }
 

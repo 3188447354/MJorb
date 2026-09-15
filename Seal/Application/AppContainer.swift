@@ -69,6 +69,9 @@ struct AppContainer {
             let logStore = SealLogStore(
                 fileURL: sealDirectory.appending(path: AppConfiguration.Paths.sealLogFile)
             )
+            // 启动即创建/更新 Documents/Seal-log.txt，让文件 App 中的 Seal 目录始终可见。
+            // flush 会先加载已有日志，不会因本次镜像而清空历史。
+            Task { await logStore.flush() }
             let selfSigningHandoffStore = SelfSigningHandoffStore(
                 fileURL: sealDirectory.appending(path: "SelfSigningHandoff.json")
             )
@@ -126,7 +129,10 @@ struct AppContainer {
                     fileStore: fileStore,
                     selfSigningHandoffStore: selfSigningHandoffStore,
                     keychain: keychain,
-                    logStore: logStore
+                    logStore: logStore,
+                    pendingSelfReplacementRecovery: {
+                        try await signingCoordinator.recoverPendingSelfReplacement()
+                    }
                 )
             }
             // 维护作业：记录恢复 / Seal 自注册 / 孤儿文件清理。

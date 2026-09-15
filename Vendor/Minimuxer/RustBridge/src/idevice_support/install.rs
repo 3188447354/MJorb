@@ -124,7 +124,6 @@ pub async fn yeet_app_afc_rppairing(
 pub async fn stage_and_install_rppairing<F>(
     bundle_id: String,
     ipa_bytes: &[u8],
-    force_upgrade: bool,
     mut upload_cb: F,
 ) -> Result<(), IdeviceError>
 where
@@ -135,7 +134,7 @@ where
         .map_err(|e| ctx(e, "yeet/连接AFC"))?;
     stage_via_afc(&mut afc, &bundle_id, ipa_bytes, &mut upload_cb).await?;
     drop(afc);
-    install_ipa_rppairing(bundle_id, force_upgrade, &mut upload_cb).await
+    install_ipa_rppairing(bundle_id, &mut upload_cb).await
 }
 
 /// 在给定 AFC 连接上完成暂存（幂等建目录、分块写入、同连接回读校验）。
@@ -287,7 +286,6 @@ fn install_candidates(bundle_id: &str, file_name: &str) -> Vec<(String, Value)> 
 /// 已定位到包，立即停止换路径并把真实错误抛出。
 pub async fn install_ipa_rppairing<F>(
     bundle_id: String,
-    force_upgrade: bool,
     on_install_issued: &mut F,
 ) -> Result<(), IdeviceError>
 where
@@ -327,16 +325,6 @@ where
         .await
         .map_err(|e| ctx(e, "install/连接instproxy"))?;
 
-    let discovered_as_installed = lookup_app_rppairing(bundle_id.clone())
-        .await
-        .ok()
-        .flatten()
-        .is_some();
-    // 自更新调用方在撤销旧证书前已经确认 Seal 正在运行。撤证后设备查询可能
-    // 隐藏这份失效应用，不能据此把覆盖安装降级成首次 Install。
-    let already_installed = should_upgrade(force_upgrade, discovered_as_installed);
-
-
     // 预检快照（不阻断安装，只记录事实）：合并调用后上传刚完成、
     // 若此刻 afcd 侧仍看不到文件，说明写入未持久化；若看得到而 installd
     // 全部候选仍报 MissingPackagePath，则说明 installd 视图 ≠ afcd 视图。
@@ -363,7 +351,7 @@ where
         }
     }
 
-    run_install_chain(&mut inst_client, already_installed, &bundle_id, &file_name, on_install_issued)
+    run_install_chain(&mut inst_client, &bundle_id, &file_name, on_install_issued)
         .await
         .map_err(|e| match e {
             // 把 afcd 侧快照附加到最终错误上（快照仅 shim 通道产生）
@@ -380,7 +368,6 @@ where
 /// installd 已定位到包，立即停止换路径抛出真实错误。
 pub(crate) async fn run_install_chain<F>(
     inst_client: &mut InstallationProxyClient,
-    already_installed: bool,
     bundle_id: &str,
     file_name: &str,
     on_install_issued: &mut F,
@@ -396,11 +383,11 @@ where
     // 造成主屏上先空转（自进程仍跑预检）再出现安装图标的空档。
     on_install_issued(INSTALL_ISSUED_PCT);
 
-    // 第一轮：按候选链逐一尝试（lookup 失败按未安装处理，不阻断首装）
+    // 第一轮：按 SideStore 上游刷新链路始终下发 Install；同 Bundle ID 由 installd
+    // 原地覆盖并保留数据容器，不能切换成 Upgrade 或卸载重装。
     let mut last_missing_path_error: Option<IdeviceError> = None;
     for (path, options) in &candidates {
-        let result =
-            issue_install_command(inst_client, already_installed, path, options).await;
+        let result = issue_install_command(inst_client, path, options).await;
         match result {
             Ok(()) => return Ok(()),
             Err(e) if is_missing_package_path(&e) => {
@@ -409,10 +396,7 @@ where
             Err(e) => {
                 return Err(ctx(
                     e,
-                    &format!(
-                        "install/组合（{path}）已被 installd 定位到（{}）,真实安装错误",
-                        if already_installed { "Upgrade" } else { "Install" }
-                    ),
+                    &format!("install/组合（{path}）已被 installd 定位到（Install），真实安装错误"),
                 ))
             }
         }
@@ -432,25 +416,12 @@ fn is_missing_package_path(error: &IdeviceError) -> bool {
     format!("{error:?}").contains("MissingPackagePath")
 }
 
-fn should_upgrade(force_upgrade: bool, discovered_as_installed: bool) -> bool {
-    force_upgrade || discovered_as_installed
-}
-
 async fn issue_install_command(
     client: &mut InstallationProxyClient,
-    upgrade: bool,
     path: &str,
     options: &Value,
 ) -> Result<(), IdeviceError> {
-    if upgrade {
-        client
-            .upgrade(path, Some(options.clone()))
-            .await
-    } else {
-        client
-            .install(path, Some(options.clone()))
-            .await
-    }
+    client.install(path, Some(options.clone())).await
 }
 
 pub async fn remove_app_rppairing(bundle_id: String) -> Result<(), IdeviceError> {
@@ -487,14 +458,6 @@ mod tests {
             }
             None => assert!(false, "options must be a dictionary"),
         }
-    }
-
-    #[test]
-    fn self_replacement_forces_upgrade_when_lookup_hides_revoked_app() {
-        assert!(should_upgrade(true, false));
-        assert!(should_upgrade(true, true));
-        assert!(should_upgrade(false, true));
-        assert!(!should_upgrade(false, false));
     }
 
     #[test]

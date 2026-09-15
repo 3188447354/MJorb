@@ -34,11 +34,13 @@ struct SelfAppMetadata: Sendable {
         let buildNumber = (bundle.object(
             forInfoDictionaryKey: "CFBundleVersion"
         ) as? String) ?? "1"
-        let profileURL = bundle.url(forResource: "embedded", withExtension: "mobileprovision")
+        // 直接读取 .app 路径，不能依赖 Bundle 的资源查询缓存。自替换安装可能在当前
+        // 进程尚未退出时原地更新 Seal.app；此时只有磁盘上的 embedded.mobileprovision
+        // 能证明新包是否真的落盘。
+        let profileURL = bundle.bundleURL.appending(path: "embedded.mobileprovision")
         // 用 details 而不是 summary：summary 不含 UUID/Name/CreationDate，
         // 而「同版本续签是否生效」只能靠 profile 身份判断。
-        let profileDetails = profileURL
-            .flatMap { try? Data(contentsOf: $0, options: .mappedIfSafe) }
+        let profileDetails = (try? Data(contentsOf: profileURL, options: .mappedIfSafe))
             .flatMap { try? ProvisioningProfileReader().details(from: $0) }
 
         return SelfAppMetadata(

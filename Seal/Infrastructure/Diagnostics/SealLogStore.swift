@@ -63,6 +63,7 @@ actor SealLogStore {
         if FileManager.default.fileExists(atPath: fileURL.path) {
             try FileManager.default.removeItem(at: fileURL)
         }
+        mirrorToDocuments()
     }
 
     func exportText() throws -> String {
@@ -106,6 +107,7 @@ actor SealLogStore {
 
     /// 立即把内存缓冲落盘（供测试及需要即时持久的场景；日常 append 仍走节流批量落盘）
     func flush() {
+        loadBufferIfNeeded()
         persist(buffer)
         // 每次落盘都同步镜像到 Documents：只镜像 error 会导致顺利签名/续签后
         // 文件 App 的 Seal 文件夹里根本没有 Seal-log.txt 可查。

@@ -385,8 +385,7 @@ actor MinimuxerInstallChannel: InstallChannel {
                     let installation = Task.detached(priority: .userInitiated) {
                         try Minimuxer.stageAndInstall(
                             bundleId: bundleID,
-                            ipaBytes: ipaData,
-                            forceUpgrade: true
+                            ipaBytes: ipaData
                         )
                     }
                     try await Task.sleep(for: .milliseconds(250))
@@ -474,7 +473,6 @@ actor MinimuxerInstallChannel: InstallChannel {
                         try Minimuxer.stageAndInstall(
                             bundleId: bundleID,
                             ipaBytes: ipaData,
-                            forceUpgrade: true,
                             progress: selfReplaceProgress
                         )
                     }

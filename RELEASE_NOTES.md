@@ -1,11 +1,11 @@
-# 1.1.13：Seal 自续签覆盖安装闭环
+# 1.1.14：修正 Seal 自续签假成功与日志目录消失
 
-- Seal 自续签始终向 iOS installation_proxy 下发 Upgrade，避免任何一次 Bundle 查询未命中时被误当成首次安装。
-- 安装返回后核对设备中的 Bundle ID、描述文件 UUID 与证书序列号；未落入本轮签名身份时自动重建通道重试，且不再显示假成功。
-- 旧描述文件改为新 Seal 进程启动并确认自身签名身份后再清理，安装未完成时保留旧运行身份。
-- 新增自更新尝试次数、设备可见性、描述文件与证书匹配结果日志，便于无法复现时定位真实断点。
+- Seal 自续签恢复 SideStore 上游实际使用的 installation_proxy Install 覆盖操作，保留同 Bundle ID 的应用数据容器。
+- 安装成功必须直接读取设备上 Seal.app 内嵌描述文件，并逐项匹配 Bundle ID、Team、profile UUID 与证书；系统 profile 库只作为诊断证据。
+- 启动发现仍是旧描述文件时，后台复用上轮已签且通过完整性校验的 IPA 自动恢复安装，不重新请求 Apple 或生成另一份描述文件。
+- 启动即恢复 `Documents/Seal-log.txt` 镜像，Files 中持续显示 Seal 目录；日志新增实际 Seal.app 身份与系统 profile 库的分项结果。
 
-验证：Rust 安装策略测试、结构守护、发布安全检查与云 CI。真机需安装本版本后完成一次 Seal 自续签，确认桌面可再次打开且显示新申请的 7 天描述文件。
+验证：本地 Rust 编译检查、结构守护和发布安全检查；Swift 编译、单测与 UI 回归由本次 GitHub Actions 执行。真机需安装 1.1.14 后确认 Seal 自续签到期日更新且 Files 中日志目录保留。
 
 ---
 

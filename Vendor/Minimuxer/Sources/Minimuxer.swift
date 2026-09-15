@@ -226,13 +226,11 @@ public struct Minimuxer {
     /// 上传+安装合并调用：**安装主链路**（同一缓存隧道会话内完成两段，见 install.rs 会话不变量）
     public static func stageAndInstall(
         bundleId: String,
-        ipaBytes: Data,
-        forceUpgrade: Bool = false
+        ipaBytes: Data
     ) throws {
         try RustIdevice.stageAndInstall(
             bundleId: bundleId,
-            ipaBytes: ipaBytes,
-            forceUpgrade: forceUpgrade
+            ipaBytes: ipaBytes
         )
     }
 
@@ -240,13 +238,11 @@ public struct Minimuxer {
     public static func stageAndInstall(
         bundleId: String,
         ipaBytes: Data,
-        forceUpgrade: Bool = false,
         progress: @escaping (Double) -> Void
     ) throws {
         try RustIdevice.stageAndInstall(
             bundleId: bundleId,
             ipaBytes: ipaBytes,
-            forceUpgrade: forceUpgrade,
             progress: progress
         )
     }

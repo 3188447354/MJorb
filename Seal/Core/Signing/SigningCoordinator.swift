@@ -763,6 +763,39 @@ actor SigningCoordinator {
         return .cleaned
     }
 
+    /// 启动核验发现 Seal 仍运行旧 profile 时，复用上轮已经完成签名且通过 SHA 校验的
+    /// IPA 再做一次安装；不重新访问 Apple，也不再申请描述文件或轮换证书。
+    func recoverPendingSelfReplacement() async throws {
+        guard let selfSigningHandoffStore,
+              let pending = try await selfSigningHandoffStore.loadPending() else { return }
+        guard let app = try await appStore.fetchAll().first(where: {
+            $0.isSeal && $0.mappedBundleIdentifier?.caseInsensitiveCompare(pending.bundleIdentifier) == .orderedSame
+        }), let signedPath = app.signedIPARelativePath else {
+            throw Self.failure(
+                reason: "待恢复的 Seal 签名包记录不存在。",
+                recovery: "在 Seal 应用页重新续签",
+                code: "SEAL-INSTALL-733"
+            )
+        }
+        let signedData = try await fileStore.read(relativePath: signedPath)
+        guard let profile = SignedArtifactProfileReader.embeddedProfileDetails(in: signedData),
+              let bundleID = SignedArtifactBundleIDReader.bundleIdentifier(in: signedData),
+              bundleID.caseInsensitiveCompare(pending.bundleIdentifier) == .orderedSame,
+              profile.teamIdentifier?.caseInsensitiveCompare(pending.teamIdentifier) == .orderedSame,
+              profile.uuid?.caseInsensitiveCompare(pending.profileUUID) == .orderedSame,
+              profile.certificateSerialNumbers.contains(where: {
+                  SigningCertificateSelectionPolicy.normalizedSerialNumber($0)
+                      == SigningCertificateSelectionPolicy.normalizedSerialNumber(pending.certificateSerialNumber)
+              }) else {
+            throw Self.failure(
+                reason: "本机已签 IPA 与待恢复的 Bundle、Team、profile 或证书身份不一致，已停止自动安装。",
+                recovery: "在 Seal 应用页重新续签",
+                code: "SEAL-INSTALL-734"
+            )
+        }
+        _ = try await installSignedArtifact(appID: app.id, progress: { _ in })
+    }
+
     func installSignedArtifact(
         appID: UUID,
         progress: @Sendable (SigningStage) async -> Void
@@ -1179,6 +1212,16 @@ actor SigningCoordinator {
         // 安装统一走本地通道（LocalDevVPN + Minimuxer + installation_proxy）。
         // OTA（itms-services）路线已按决策下线：安装一律经设备安装服务完成。
         if app.isSeal {
+            guard let selfInfo = SignedArtifactBundleIDReader.mainInfoDictionary(in: signedData),
+                  selfInfo["UIFileSharingEnabled"] as? Bool == true,
+                  selfInfo["LSSupportsOpeningDocumentsInPlace"] as? Bool == true else {
+                throw ImportFailure(
+                    title: "Seal 文件共享配置缺失",
+                    reason: "签名后的 Seal 包没有保留 Documents 文件共享配置，继续安装会让 Files 中的 Seal 日志目录消失。",
+                    recovery: "重新获取完整 Seal IPA 后再续签",
+                    code: "SEAL-INSTALL-735"
+                )
+            }
             guard let accountID = app.accountID,
                   let signedProfile = SignedArtifactProfileReader.embeddedProfileDetails(in: signedData),
                   let teamID = signedProfile.teamIdentifier,
@@ -1205,8 +1248,9 @@ actor SigningCoordinator {
             await progress(.pushing)
             // 不在安装前删除运行中 Seal 的系统 profile。只有新进程启动并核对到
             // 本轮 UUID/证书后，SelfAppRegistrar 才会保留新 profile、清除旧 profile。
-            // 如果 installd 返回但旧进程仍存活，必须检查设备确实落入本轮身份；未命中
-            // 就重置通道并用同一已签 IPA 再做一次强制 Upgrade，不能显示假成功。
+            // 如果 installd 返回但旧进程仍存活，必须直接读取 Seal.app 磁盘中的
+            // embedded.mobileprovision。系统 profile 库出现新 UUID 只证明 profile 被暂存，
+            // 不能证明应用包已替换（1.1.13 真机已复现该假成功）。
             var verifiedReplacement = false
             for attempt in 1...2 {
                 if attempt > 1 {
@@ -1215,7 +1259,7 @@ actor SigningCoordinator {
                 }
                 try? await logStore?.append(
                     category: .installation,
-                    message: "Seal 自更新安装：第 \(attempt) 次，强制 Upgrade，目标 Bundle=\(effectiveBundleID)，profile=\(profileUUID)，证书=\(SigningCertificateSelectionPolicy.normalizedSerialNumber(serial))"
+                    message: "Seal 自更新安装：第 \(attempt) 次，按上游 Install 覆盖，目标 Bundle=\(effectiveBundleID)，profile=\(profileUUID)，证书=\(SigningCertificateSelectionPolicy.normalizedSerialNumber(serial))"
                 )
                 await logStore?.flush()
                 try await installChannel.install(
@@ -1227,18 +1271,34 @@ actor SigningCoordinator {
                 try await updateState(appID: app.id, stage: .verifying)
                 await progress(.verifying)
                 let appVisible = (try? await installChannel.verifyInstalled(bundleID: effectiveBundleID)) != nil
-                let profileMatched = await DeviceProfileInspector.containsProfile(
+                let deviceProfileMatched = await DeviceProfileInspector.containsProfile(
                     bundleIdentifier: effectiveBundleID,
                     profileUUID: profileUUID,
                     certificateSerialNumber: serial
                 )
+                let installedMetadata = await MainActor.run { SelfAppMetadata.current() }
+                let installedStatus = installedMetadata.map {
+                    SelfSigningHandoffPolicy.evaluate(
+                        pending: SelfSigningHandoff(
+                            accountID: accountID,
+                            bundleIdentifier: effectiveBundleID,
+                            teamIdentifier: teamID,
+                            profileUUID: profileUUID,
+                            certificateSerialNumber: serial,
+                            preparedInProcess: SelfSigningHandoffStore.currentProcessIdentifier
+                        ),
+                        metadata: $0,
+                        materialStatus: .available
+                    )
+                }
+                let appBundleMatched = installedStatus == .confirmed
                 try? await logStore?.append(
                     category: .installation,
-                    level: appVisible && profileMatched == true ? .info : .warning,
-                    message: "Seal 自更新设备核验：第 \(attempt) 次，Bundle=\(appVisible ? "已发现" : "未发现")，本轮profile/证书=\(profileMatched == true ? "已匹配" : profileMatched == false ? "未匹配" : "无法读取")"
+                    level: appVisible && appBundleMatched ? .info : .warning,
+                    message: "Seal 自更新落盘核验：第 \(attempt) 次，Bundle=\(appVisible ? "已发现" : "未发现")，Seal.app内嵌身份=\(installedStatus?.message ?? "无法读取")，系统profile库=\(deviceProfileMatched == true ? "已匹配" : deviceProfileMatched == false ? "未匹配" : "无法读取")"
                 )
                 await logStore?.flush()
-                if appVisible, profileMatched == true {
+                if appVisible, appBundleMatched {
                     verifiedReplacement = true
                     break
                 }

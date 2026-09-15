@@ -22,6 +22,13 @@ enum SignedArtifactBundleIDReader {
     private static let mainInfoPlistSegmentCount = 3
 
     static func bundleIdentifier(in ipaData: Data) -> String? {
+        guard let plist = mainInfoDictionary(in: ipaData),
+              let identifier = plist["CFBundleIdentifier"] as? String,
+              identifier.isEmpty == false else { return nil }
+        return identifier
+    }
+
+    static func mainInfoDictionary(in ipaData: Data) -> [String: Any]? {
         guard let archive = try? Archive(data: ipaData, accessMode: .read) else { return nil }
 
         guard let entry = archive.first(where: { isMainInfoPlist($0.path) }) else { return nil }
@@ -41,13 +48,11 @@ enum SignedArtifactBundleIDReader {
                   options: [],
                   format: nil
               ),
-              let plist = value as? [String: Any],
-              let identifier = plist["CFBundleIdentifier"] as? String,
-              identifier.isEmpty == false
+              let plist = value as? [String: Any]
         else {
             return nil
         }
-        return identifier
+        return plist
     }
 
     private static func isMainInfoPlist(_ path: String) -> Bool {

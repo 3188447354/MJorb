@@ -10,7 +10,6 @@ actor SelfAppRegistrar {
     private let keychain: KeychainVault?
     private let logStore: SealLogStore?
     private let pendingSelfReplacementRecovery: (@Sendable () async throws -> Void)?
-    private var lastPendingSelfReplacementRecoveryAt: Date?
 
     // 固定 ID，确保 Seal 记录和文件夹路径始终一致，不会出现多个文件夹
     private let fixedSealID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
@@ -143,12 +142,11 @@ actor SelfAppRegistrar {
                 code: status == .confirmed ? nil : "SEAL-CERT-224"
             )
             if status == .profileMismatch,
-               lastPendingSelfReplacementRecoveryAt.map({ Date().timeIntervalSince($0) >= 60 }) ?? true,
-               let pendingSelfReplacementRecovery {
-                lastPendingSelfReplacementRecoveryAt = Date()
+               let pendingSelfReplacementRecovery,
+               try await selfSigningHandoffStore.claimAutomaticRecovery(pendingID: pending.id) {
                 try? await logStore?.append(
                     category: .installation,
-                    message: "启动核验发现 Seal.app 仍是旧描述文件，自动复用已签 IPA 恢复覆盖安装。"
+                    message: "启动核验发现 Seal.app 仍是旧描述文件；本签名成品首次且仅一次自动恢复覆盖安装。"
                 )
                 await logStore?.flush()
                 do {
@@ -171,6 +169,13 @@ actor SelfAppRegistrar {
                     )
                 }
                 await logStore?.flush()
+            } else if status == .profileMismatch {
+                try? await logStore?.append(
+                    category: .installation,
+                    level: .warning,
+                    message: "该签名成品已经自动恢复过一次，仍未匹配；停止自动安装，等待新的手动续签成品。",
+                    code: "SEAL-INSTALL-736"
+                )
             }
             return false
         } catch {

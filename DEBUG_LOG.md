@@ -426,6 +426,13 @@
 
 ## 二、历史记录
 
+### 2026-09-15 · 1.1.15：启动 profile mismatch 导致 Seal 无限自动重装
+- **真机现象**：安装 1.1.14 后，Seal 在启动核验 profile mismatch 时反复触发自动覆盖安装，形成无限重装。
+- **根因**：1.1.14 只用 actor 内存时间限制恢复频率；安装导致进程重启后内存计数归零。更严重的是每次恢复安装都会调用 `prepare` 创建新 handoff，下一进程再次把它当作从未恢复的新任务。
+- **修复**：在 `SelfSigningHandoff.json` 中持久化 `automaticRecoveryAttemptedAt`，安装前原子领取恢复资格；`prepare` 遇到相同账号、Bundle、Team、profile UUID 和归一化证书序列号时继承该状态。每份成品最多自动安装一次；仍不匹配则记录 `SEAL-INSTALL-736` 并停止，只有手动续签生成新 profile 才重置资格。
+- **涉及文件**：`SelfSigningHandoffStore.swift`、`SelfAppRegistrar.swift`、`SelfSigningHandoffTests.swift`、版本与发布记录。
+- **验证状态**：新增回归测试覆盖首次领取、同成品重复领取、同成品重新 prepare 和新 profile 重置；完整云 CI 待本次推送。
+
 ### 2026-09-15 · 1.1.14：Seal 可打开但 profile 不匹配、日期不更新、Files 中 Seal 目录消失
 - **真机现象**：1.1.13 自续签后 Seal 可以继续打开，但详情显示“描述文件不匹配”，到期日保持 `2026-09-22 14:54`；反复续签仍不变化。相同设备上的 LiveContainer 能成功生成并安装 `15:00` 到期的新 profile，证明 Apple 登录、证书创建、profile 申请和普通应用安装链路可用。Files 的“我的 iPhone”中同时没有 Seal 目录。
 - **根因**：1.1.13 把 installation_proxy 操作强制改成 `Upgrade`，与 SideStore 当前刷新实现固定调用 `installation_proxy_install` 不一致。更关键的是安装后只用“Bundle 查询可见 + 系统 profile 存储出现目标 UUID/证书”判成功；真机证明 profile 可以进入系统存储而 Seal.app 仍保留旧的 `embedded.mobileprovision`，因此代码写入假成功和新日期，下一次启动又从旧运行包纠正回旧日期。启动核验只记录 mismatch，没有复用已签成品恢复。日志镜像则要等首次 flush 才创建 Documents 文件，无法保证 Files 入口存在。

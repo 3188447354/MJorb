@@ -10,6 +10,9 @@ struct SelfSigningHandoff: Codable, Equatable, Sendable {
     let profileUUID: String
     let certificateSerialNumber: String
     let preparedInProcess: UUID
+    /// 同一份签名成品最多允许一次启动自动恢复。必须落盘，不能只存在内存里；
+    /// 否则安装导致进程重启后计数归零，会形成无限自动重装。
+    var automaticRecoveryAttemptedAt: Date? = nil
     var confirmedAt: Date? = nil
 }
 
@@ -101,13 +104,23 @@ actor SelfSigningHandoffStore {
               !SigningCertificateSelectionPolicy.normalizedSerialNumber(certificateSerialNumber).isEmpty else {
             throw ImportFailure(title: "无法准备本机签名核验", reason: "签名包缺少完整的团队、描述文件或证书身份。", recovery: "重新签名后重试", code: "SEAL-CERT-222")
         }
+        let existing = try? loadPending()
+        let sameArtifact = existing.map {
+            $0.accountID == accountID
+                && $0.bundleIdentifier.caseInsensitiveCompare(bundleIdentifier) == .orderedSame
+                && $0.teamIdentifier.caseInsensitiveCompare(teamIdentifier) == .orderedSame
+                && $0.profileUUID.caseInsensitiveCompare(profileUUID) == .orderedSame
+                && SigningCertificateSelectionPolicy.normalizedSerialNumber($0.certificateSerialNumber)
+                    == SigningCertificateSelectionPolicy.normalizedSerialNumber(certificateSerialNumber)
+        } ?? false
         try write(SelfSigningHandoff(
             accountID: accountID,
             bundleIdentifier: bundleIdentifier,
             teamIdentifier: teamIdentifier,
             profileUUID: profileUUID,
             certificateSerialNumber: certificateSerialNumber,
-            preparedInProcess: processIdentifier
+            preparedInProcess: processIdentifier,
+            automaticRecoveryAttemptedAt: sameArtifact ? existing?.automaticRecoveryAttemptedAt : nil
         ))
     }
 
@@ -115,6 +128,17 @@ actor SelfSigningHandoffStore {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         let record = try JSONDecoder().decode(SelfSigningHandoff.self, from: Data(contentsOf: fileURL))
         return record.confirmedAt == nil ? record : nil
+    }
+
+    /// 原子领取一次自动恢复资格。调用安装前先写盘；即使安装杀掉当前进程，下一进程
+    /// 也能看到已经尝试过，不会再次自动安装同一成品。
+    func claimAutomaticRecovery(pendingID: UUID) throws -> Bool {
+        guard var pending = try loadPending(),
+              pending.id == pendingID,
+              pending.automaticRecoveryAttemptedAt == nil else { return false }
+        pending.automaticRecoveryAttemptedAt = Date()
+        try write(pending)
+        return true
     }
 
     /// 调用者读取钥匙串会让出 actor，故再次核对 ID；绝不覆盖新一轮安装的目标。

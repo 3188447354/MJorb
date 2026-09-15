@@ -1,3 +1,13 @@
+# 1.1.15：阻止 Seal 启动恢复无限重装
+
+- 同一份已签 Seal IPA 最多自动恢复安装一次，恢复资格在安装前持久化；进程被替换或重启后不会重置计数。
+- 自动恢复内部再次准备同一 profile 时保留“已经尝试”状态，彻底切断启动→重装→重启→再次重装循环。
+- 一次恢复后仍不匹配时停止后台安装并记录 `SEAL-INSTALL-736`；用户手动续签生成新 profile 后才获得新的一次恢复机会。
+
+验证：新增跨重启、重复 prepare、产生新 profile 三段回归测试；完整 Swift/UI/Rust/IPA 验证由本次 GitHub Actions 执行。
+
+---
+
 # 1.1.14：修正 Seal 自续签假成功与日志目录消失
 
 - Seal 自续签恢复 SideStore 上游实际使用的 installation_proxy Install 覆盖操作，保留同 Bundle ID 的应用数据容器。

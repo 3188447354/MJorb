@@ -43,10 +43,12 @@ def violations(load):
          and 'bundle.url(forResource: "embedded", withExtension: "mobileprovision")' not in metadata,
          'running Seal profile verification must bypass Bundle resource caching'),
         ('status == .profileMismatch' in registrar
+         and 'claimAutomaticRecovery(pendingID: pending.id)' in registrar
          and 'pendingSelfReplacementRecovery()' in registrar
          and 'recoverPendingSelfReplacement()' in coordinator
-         and 'pendingSelfReplacementRecovery:' in app_container,
-         'a startup profile mismatch must retry the already-signed Seal artifact without contacting Apple'),
+         and 'pendingSelfReplacementRecovery:' in app_container
+         and 'automaticRecoveryAttemptedAt' in load('Seal/Core/Renewal/SelfSigningHandoffStore.swift'),
+         'a startup profile mismatch may retry an already-signed Seal artifact only through a persistent one-shot claim'),
         ('SignedArtifactBundleIDReader.mainInfoDictionary(in: signedData)' in self_install
          and 'selfInfo["UIFileSharingEnabled"] as? Bool == true' in self_install
          and 'selfInfo["LSSupportsOpeningDocumentsInPlace"] as? Bool == true' in self_install,

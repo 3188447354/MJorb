@@ -127,6 +127,9 @@ enum ProfileDisplayStatus: Equatable, Sendable {
 enum AppSigningPresentationHelpers {
     static let renewNowAction = "立即续签"
     static let keepSealOpenTip = "请保持 Seal 打开，不要锁屏或切换 App。"
+    /// Seal 自续签=覆盖安装正在运行的自己：iOS 只有等旧进程退到后台才会用新版完成替换。
+    /// 所以这阶段不是「保持前台干等」，而是「进度走完后按 Home 回主屏幕触发替换，再重新打开」。
+    static let sealReplacementTip = "进度走完后请按 Home 键回到主屏幕，iOS 会用新版替换 Seal；替换完成后再重新打开即可。"
 
     static func certificateName(serial: String?) -> String {
         guard let serial, serial.isEmpty == false else { return "签名时创建" }

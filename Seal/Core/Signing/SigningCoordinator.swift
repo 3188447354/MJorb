@@ -67,7 +67,11 @@ actor SigningCoordinator {
         // 避免只持有“签名开始时快照”而在失败回看时误显示“证书未准备”。
         onCertificateResolved: @Sendable @escaping (String) async -> Void = { _ in },
         // 安装阶段 IPC 传输进度（0-1），透传到 InstallChannel 的上传回调。
-        onInstallProgress: @escaping @Sendable (Double) async -> Void = { _ in }
+        onInstallProgress: @escaping @Sendable (Double) async -> Void = { _ in },
+        // 仅批量续签置 true：让 Seal 上传完成时补发一次 .installing 阶段给 progress 回调。
+        // 单签续签 Seal 靠 onInstallProgress 的 1.01 → SigningProgressView.onChange 触发回主页，
+        // 保持默认 false 则不在此补发，避免对同一事件重复触发。
+        broadcastInstallingForSelfReplacement: Bool = false
     ) async throws -> AppRecord {
         guard var app = try await appStore.fetchAll().first(where: { $0.id == appID }) else {
             throw Self.failure(
@@ -165,30 +169,22 @@ actor SigningCoordinator {
                 targetBundleIdentifier: targetBundleIdentifier
             )
             let deviceIdentifier: String
-            // 宽松策略：通道暂时不可用时不中止签名，先用配对缓存的 UDID 完成签名，
-            // 签名完成后再尝试启动通道安装（签名耗时通常足够 VPN/Minimuxer 恢复）
-            var channelReady = false
+            // 连接设备并行化：隧道启动丢到后台任务，与「卷证书/申请描述文件/签名」同步进行。
+            // 签名所需的 UDID 从配对缓存快速读取即可——Apple 描述文件只认 UDID，与隧道是否就绪无关，
+            // 不再在签名前硬等整段隧道诊断（reset + RSD 握手 + 轮询）。签名完成进入安装时，
+            // installSignedIPA 会 ensure 通道就绪，而平行隧道通常早已起来 → 安装阶段接近零等待。
+            var channelStart: Task<String, Error>?
             if installAfterSigning {
                 try await updateState(appID: appID, stage: .waitingForChannel)
                 await progress(.waitingForChannel)
-                do {
-                    deviceIdentifier = try await installChannel.start()
-                    channelReady = true
-                } catch {
-                    if let cached = await installChannel.storedDeviceIdentifier(),
-                       cached.isEmpty == false {
-                        deviceIdentifier = cached
-                    } else {
-                        throw Self.failure(
-                            reason: "签名前需要先完成一次设备配对，以便按 Apple 官方设备列表生成描述文件。",
-                            recovery: "先完成设备配对后重试",
-                            code: "SEAL-PAIR-211"
-                        )
-                    }
-                }
-            } else if let storedDeviceIdentifier = await installChannel.storedDeviceIdentifier(),
-                      storedDeviceIdentifier.isEmpty == false {
+                channelStart = Task { try await installChannel.start() }
+            }
+            if let storedDeviceIdentifier = await installChannel.storedDeviceIdentifier(),
+               storedDeviceIdentifier.isEmpty == false {
                 deviceIdentifier = storedDeviceIdentifier
+            } else if installAfterSigning, let channelStart {
+                // 无配对缓存（首次未配对）→ 只能靠隧道启动拿到 UDID
+                deviceIdentifier = try await channelStart.value
             } else {
                 throw Self.failure(
                     reason: "签名前需要先完成一次设备配对，以便按 Apple 官方设备列表生成描述文件。",
@@ -390,9 +386,10 @@ actor SigningCoordinator {
 
             guard installAfterSigning else { return app }
 
-            // 签名时通道若未就绪，安装前再试一次启动（签名期间通道可能已恢复）
-            if channelReady == false {
-                _ = try? await installChannel.start()
+            // 签名期间已在后台平行拉起隧道（channelStart）。进入安装前 await 它，
+            // 让安装直接用已就绪的通道；即使这里失败，installSignedIPA 还会再 ensure 一次。
+            if let channelStart {
+                _ = try? await channelStart.value
             }
 
             try? await logStore?.append(
@@ -409,7 +406,8 @@ actor SigningCoordinator {
                 bundleIdentifier: portalResult.mappedMainBundleID,
                 expirationDate: portalResult.expirationDate,
                 progress: progress,
-                onInstallProgress: onInstallProgress
+                onInstallProgress: onInstallProgress,
+                broadcastInstallingForSelfReplacement: broadcastInstallingForSelfReplacement
             )
             if app.isSeal == false, rotationRevokedSerials.isEmpty == false {
                 await resignAppsAffectedByCertificateRotation(
@@ -1136,7 +1134,8 @@ actor SigningCoordinator {
         bundleIdentifier: String,
         expirationDate: Date,
         progress: @Sendable (SigningStage) async -> Void,
-        onInstallProgress: @escaping @Sendable (Double) async -> Void = { _ in }
+        onInstallProgress: @escaping @Sendable (Double) async -> Void = { _ in },
+        broadcastInstallingForSelfReplacement: Bool = false
     ) async throws -> AppRecord {
         var updated = app
         // 安装期间申请后台保活，防止锁屏/切后台时 iOS 挂起网络连接
@@ -1147,6 +1146,14 @@ actor SigningCoordinator {
             Task { @MainActor in
                 UIApplication.shared.endBackgroundTask(bgTask)
             }
+        }
+
+        // 所有安装路径（缓存复用/新签/续签）的唯一漏斗：安装前确保设备通道就绪。
+        // 签名流程已平行拉起隧道（start() 命中 900s 缓存）→ 这里通常瞬间返回；
+        // 缓存/纯安装路径没平行启动时，这里兜底启动一次，保证 install() 不会因
+        // isReady() 为假直接抛 channelNotReady。
+        if try await !installChannel.isReady() {
+            _ = try? await installChannel.start()
         }
 
         let signedData = try await fileStore.read(relativePath: signedPath)
@@ -1217,7 +1224,17 @@ actor SigningCoordinator {
                 await progress(.pushing)
                 try await selfReplacement.submitPrepared(
                     transactionID: transaction.id,
-                    progress: onInstallProgress
+                    progress: { installProgress in
+                        // 仅批量续签（broadcastInstallingForSelfReplacement=true）在上传完成的
+                        // >1.0 哨兵补发 .installing：批量 progress 回调只透传 SigningStage、
+                        // 接不到 1.01，需补发才能驱动 consumeBatchEvent 的自动回主页。
+                        // 单签续签 Seal 靠 onInstallProgress 的 1.01 → SigningProgressView.onChange
+                        // 触发，保持默认 false 即不在此补发，避免对同一事件重复回主页。
+                        if broadcastInstallingForSelfReplacement, installProgress > 1.0 {
+                            await progress(.installing)
+                        }
+                        await onInstallProgress(installProgress)
+                    }
                 )
                 updated.signedArtifactStatus = .awaitingVerification
                 try await appStore.save(updated)

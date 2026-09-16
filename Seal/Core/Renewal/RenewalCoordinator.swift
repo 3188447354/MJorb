@@ -227,6 +227,9 @@ actor RenewalCoordinator {
                         // （设备级跨 team）装 6 个应用的用户，批量续签时必须跳过本机预检，
                         // 交回 installd 裁决，否则全部被 SEAL-APPID-DEVICELIMIT 误拦。
                         bypassFreeAccountDeviceLimit: true,
+                        // Seal 走 submitPrepared 上传完成时补发 .installing，
+                        // 驱动批量入口 consumeBatchEvent 的自动回主页逻辑。
+                        broadcastInstallingForSelfReplacement: true,
                         progress: { stage in
                             // 自更新上传开始不代表安装成功。进程被终止时保留 running，
                             // 下次启动恢复为 unknown；不能把仍运行旧包的续签记为完成。

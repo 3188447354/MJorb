@@ -1461,6 +1461,12 @@ final class AppsViewModel: ObservableObject {
             if app.isSeal && (stage == .pushing || stage == .installing) {
                 batchRefreshSession?.status = .preparingSealUpdate
                 persistPendingBatchResultForSealUpdate()
+                // 批量续签 Seal：进入 .installing（上传完成）后同样自动回主页触发 iOS 替换，
+                // 与单签 SigningProgressView 行为一致。Seal 自续签必然替换运行中的自己，
+                // 进程会被新包终止，其后排队的续签项会一并中断（与手按 Home 相同）。
+                if stage == .installing {
+                    SelfInstallAutoBackground.backgroundAfterSealUpload()
+                }
             } else {
                 batchRefreshSession?.status = .running
             }

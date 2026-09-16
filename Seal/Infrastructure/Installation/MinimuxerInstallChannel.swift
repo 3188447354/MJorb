@@ -12,6 +12,12 @@ actor MinimuxerInstallChannel: InstallChannel {
 
     private static let startHardTimeoutSeconds: Double = 75
     private static let blockingCallTimeoutSeconds: Double = 5.0
+    /// 设备标识缓存窗口。签名/续签是一条从「连设备」到「装完」的长会话，
+    /// 批量续签在两次 start 之间会隔很久（每个 App 都要签名、申请描述文件），
+    /// 原 60s 窗口一过期就整体重跑诊断（reset + 18s RSD 握手 + 36×500ms 轮询），
+    /// 于是每个 App 都在「连接设备」卡一下。窗口放宽到整场会话，
+    /// 命中仍要求 isReady() 为真，设备真的断开不会用到陈腐缓存。
+    private static let cacheWindowSeconds: Double = 900
 
     init(
         pairingStore: PairingStore,
@@ -24,10 +30,11 @@ actor MinimuxerInstallChannel: InstallChannel {
     }
 
     func start() async throws -> String {
-        // 优化：如果最近 60 秒内成功启动过且设备仍就绪，直接返回缓存的 UDID
+        // 优化：如果最近一次成功启动仍在缓存窗口内且设备仍就绪，直接返回缓存的 UDID，
+        // 避免批量签名/续签对每个 App 都重跑完整诊断（reset + RSD 握手 + 轮询）卡在「连设备」。
         if let cached = cachedDeviceIdentifier,
            let lastStart = lastSuccessfulStart,
-           Date().timeIntervalSince(lastStart) < 60,
+           Date().timeIntervalSince(lastStart) < Self.cacheWindowSeconds,
            await isReady() {
             return cached
         }

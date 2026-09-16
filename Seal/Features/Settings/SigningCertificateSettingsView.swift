@@ -13,6 +13,21 @@ struct SigningCertificateSettingsView: View {
                 accountCard
 
                 selfManagementCard
+                    // 自更新覆盖安装由「重新打开的新进程」对账确认：旧进程结算发生在
+                    // 重新启动 Seal 之后。这里在等待确认态下自动轮询本地状态，一旦对账
+                    // 完成（事务被结算/关闭）本页自动切到已完成，无需人手点「检查安装结果」。
+                    .task(id: viewModel.selfManagement.state) {
+                        guard viewModel.selfManagement.state == .awaitingReplacementConfirmation else {
+                            return
+                        }
+                        while !Task.isCancelled {
+                            await viewModel.refreshSelfManagementState()
+                            if viewModel.selfManagement.state != .awaitingReplacementConfirmation {
+                                break
+                            }
+                            try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        }
+                    }
 
                 Text("签名证书")
                     .font(.subheadline.weight(.semibold))

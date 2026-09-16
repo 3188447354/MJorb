@@ -5,6 +5,7 @@ struct SigningProgressView: View {
     @ObservedObject var viewModel: AppsViewModel
     let onFinish: (SigningCompletionMode) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var selfReplacementSpin = false
 
     var body: some View {
         SealDrawer(title: title, showsFooter: !isRunning) {
@@ -24,6 +25,14 @@ struct SigningProgressView: View {
             actions
         }
         .interactiveDismissDisabled(isRunning)
+        // Seal 自续签=覆盖安装运行中的自己：进入 .installing（上传完成）后自动切到后台，
+        // 让 iOS 用新版替换旧进程，无需人手按 Home；安装续由重新打开的新进程对账确认。
+        .onChange(of: viewModel.signingSession?.status) { _, newStatus in
+            if case .running(.installing)? = newStatus,
+               viewModel.signingSession?.app.isSeal == true {
+                SelfInstallAutoBackground.backgroundAfterSealUpload()
+            }
+        }
     }
 
     @ViewBuilder
@@ -71,7 +80,8 @@ struct SigningProgressView: View {
             }
 
             if isRenewal {
-                Text(AppSigningPresentationHelpers.keepSealOpenTip)
+                Text(sealRenewal ? AppSigningPresentationHelpers.sealReplacementTip
+                    : AppSigningPresentationHelpers.keepSealOpenTip)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.sealAccent)
             }
@@ -135,19 +145,46 @@ struct SigningProgressView: View {
     }
 
     private func progressRing(_ stage: SigningStage) -> some View {
+        // Seal 自续签的 .installing 是「覆盖运行中的自己」，进度停在 93% 直到 iOS 用
+        // 新版替换旧进程。这里用转圈动效给出「正在替换」反馈，而不是静止数字造成的“卡死”错觉。
+        if case .installing = stage, sealRenewal {
+            return AnyView(selfReplacementInstallingRing)
+        }
         let progress = overallProgress(for: stage)
-        return ZStack {
+        return AnyView(
+            ZStack {
+                Circle()
+                    .stroke(Color.sealTextSecondary.opacity(0.18), lineWidth: 5)
+                Circle()
+                    .trim(from: 0, to: max(0.03, progress))
+                    .stroke(Color.sealAccent, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(.easeInOut(duration: 0.45), value: progress)
+                Text("\(Int(progress * 100))%")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.sealAccent)
+                    .monospacedDigit()
+            }
+            .frame(width: 50, height: 50)
+        )
+    }
+
+    private var selfReplacementInstallingRing: some View {
+        ZStack {
             Circle()
                 .stroke(Color.sealTextSecondary.opacity(0.18), lineWidth: 5)
             Circle()
-                .trim(from: 0, to: max(0.03, progress))
+                .trim(from: 0, to: 0.72)
                 .stroke(Color.sealAccent, style: StrokeStyle(lineWidth: 5, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-                .animation(.easeInOut(duration: 0.45), value: progress)
-            Text("\(Int(progress * 100))%")
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .rotationEffect(.degrees(selfReplacementSpin ? 360 : 0))
+                .animation(
+                    .linear(duration: 0.8).repeatForever(autoreverses: false),
+                    value: selfReplacementSpin
+                )
+                .onAppear { selfReplacementSpin = true }
+            Text("替换中")
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.sealAccent)
-                .monospacedDigit()
         }
         .frame(width: 50, height: 50)
     }
@@ -287,11 +324,14 @@ struct SigningProgressView: View {
     }
 
     private func certificateDisplayName(_ session: SigningSession) -> String {
+        // 与详情页 AppDetailView.certificateName 共用同一个 helper，用会话真实的
+        // selectedCertificateSerialNumber（签名时由 onCertificateResolved 回写）作序列号，
+        // 使签名进度页与详情页展示完全同步；证书尚未确定时保持“未准备”。
         guard let serial = session.selectedCertificateSerialNumber ?? session.account.certificateSerialNumber,
               serial.isEmpty == false else {
             return "未准备"
         }
-        return "可用"
+        return AppSigningPresentationHelpers.certificateName(serial: serial)
     }
 
     private func runtimeBundleIdentifier(_ session: SigningSession) -> String {
@@ -345,6 +385,7 @@ struct SigningProgressView: View {
 
     private var session: SigningSession? { viewModel.signingSession }
     private var isRenewal: Bool { session?.app.belongsInInstalledList == true }
+    private var sealRenewal: Bool { session?.app.isSeal == true }
 
     private var title: String {
         switch session?.status {
@@ -520,4 +561,19 @@ private struct CurrentSegmentFill: View {
     }
 
     private var clampedFraction: CGFloat { max(0, min(1, fraction)) }
+}
+
+enum SelfInstallAutoBackground {
+    @MainActor
+    static func backgroundAfterSealUpload() {
+        Task { @MainActor in
+            // 给 Rust 一点暂存落盘/下发 installd 的余量再切后台，避免打断暂存
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            let app = UIApplication.shared
+            guard app.applicationState == .active else { return }
+            let selector = NSSelectorFromString("suspend")
+            guard app.responds(to: selector) else { return }
+            _ = app.perform(selector)
+        }
+    }
 }

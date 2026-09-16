@@ -35,7 +35,7 @@ struct SelfManagementPresentation: Equatable, Sendable {
                 ("本机身份已就绪", "可以提交一次覆盖安装。", true, false)
         case .awaitingReplacementConfirmation:
             values =
-                ("已提交安装，等待重新打开 Seal 确认", "不会自动再次安装。", false, false)
+                ("已提交安装，等待重新打开 Seal 确认", "请按 Home 回到主屏幕，让 iOS 用新版完成替换，再重新打开 Seal。本页会自动确认安装结果。", false, false)
         case .selfManaged:
             values =
                 ("Seal 已由本机管理", "后续续签复用本机证书。", true, false)

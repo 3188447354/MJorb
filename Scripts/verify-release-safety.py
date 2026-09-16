@@ -113,6 +113,16 @@ def violations(load=read):
     check("func clearFailureCooldown() async" in protocol_body,
           "R06: clearFailureCooldown must be a protocol requirement (dynamic dispatch)")
 
+    # R07: `UIControl.sendAction(_:to:for:)` 的返回类型是 Void，不是 Bool。
+    # 2026-09-16 CI 因 `return UIControl().sendAction(...)` 编译失败（exit 65）：
+    #   SigningProgressView.swift:645:28: error: cannot convert return expression of
+    #   type 'Void' to return type 'Bool'
+    # 「借 UIControl 发消息」是触发私有 selector 的经典写法，很容易顺手当成返回 Bool 用。
+    # 需要判断「转场是否生效」时必须换判据（本项目改成「给足时间后进程是否仍存活」）。
+    signing_progress_view = load("Seal/Features/Apps/SigningProgressView.swift")
+    check("return UIControl().sendAction" not in signing_progress_view,
+          "R07: UIControl.sendAction returns Void, not Bool — cannot be returned")
+
     # R04: Portal 三个服务的回调一律经 ContinuationBox 转发。裸 continuation 第二次 resume
     # 不是可捕获错误，而是 SWIFT TASK CONTINUATION MISUSE 致命崩溃（进程直接终止）。
     # AltSign 存在两条重复回调路径：「先报错、随后迟到地报成功」与「超时先到、回调才到」。
@@ -903,6 +913,10 @@ def main():
          "    func clearFailureCooldown() async\n    func pushIpa",
          "    func pushIpa",
          "R06: clearFailureCooldown must be a protocol requirement"),
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         "        UIControl().sendAction(selector, to: app, for: nil)\n    }",
+         "        return UIControl().sendAction(selector, to: app, for: nil)\n    }",
+         "R07: UIControl.sendAction returns Void"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

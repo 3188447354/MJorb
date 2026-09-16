@@ -611,13 +611,16 @@ private struct CurrentSegmentFill: View {
 /// 现在：
 ///   1. UI 先渲染「正在退回主屏幕」（由 SigningProgressView 的 withAnimation 负责）；
 ///   2. 触发与「按 Home」等价的系统级转场，交给系统播放退场动画；
-///   3. 只有转场完全不可用时才用 `exit(0)` 兜底（系统同样会播放退场动画），
-///      保证进程一定结束，iOS 才能完成替换。
+///   3. 转场后等 3 秒，若进程仍存活（说明转场没生效）才用 `exit(0)` 兜底，
+///      保证进程一定结束、iOS 才能完成替换；转场成功时进程已被挂起，不会走到这里。
 /// 本类型只做「切后台 / 退出」，不碰签名、证书、自替换事务：安装结果仍由重新打开的
 /// 新进程 `SelfReplacementCoordinator` 对账确认。
 enum SelfInstallAutoBackground {
     /// 转场前的可感知停顿：既让 UI 的「正在退回主屏幕」渲染出来，也给 Rust 暂存落盘留余量。
     private static let transitionBeatNanoseconds: UInt64 = 1_200_000_000
+    /// `exit(0)` 兜底的等待时间。取 3 秒：远长于系统退场动画（约 0.3–0.5 秒），
+    /// 确保转场成功时进程早已被挂起、这段代码不会执行，不会打断动画。
+    private static let exitFallbackNanoseconds: UInt64 = 3_000_000_000
 
     @MainActor
     static func returnToHomeAfterSealUpload() {
@@ -626,22 +629,28 @@ enum SelfInstallAutoBackground {
             let app = UIApplication.shared
             // 用户已经自己切走了：不重复触发，避免和用户操作打架。
             guard app.applicationState == .active else { return }
-            if triggerHomeTransition(app) { return }
+            triggerHomeTransition(app)
+            // 兜底：3 秒后进程还活着，说明转场没生效（会永久停在进度页），此时才强制退出。
+            // 转场成功的话进程已被挂起，这行不会执行 —— 所以不会打断退场动画。
+            try? await Task.sleep(nanoseconds: exitFallbackNanoseconds)
             exit(0)
         }
     }
 
     /// 触发与「按 Home」等价的系统转场。`suspend` 是私有 selector：
     /// 先直接 perform，不响应时再用「借 UIControl 发消息」的经典写法兜底。
-    /// 返回 false 表示两条路径都没能把消息送出去，由调用方走 `exit(0)`。
+    ///
+    /// **刻意不返回「是否成功」**：`UIControl.sendAction(_:to:for:)` 的返回类型是 `Void`，
+    /// 不是 `Bool`，无法据其判断转场是否真的触发。早期版本按 `Bool` 用，直接编译失败
+    ///（`cannot convert return expression of type 'Void' to return type 'Bool'`）。
+    /// 现在的判据是「给足时间后进程是否仍存活」，见 `exitFallbackNanoseconds`。
     @MainActor
-    private static func triggerHomeTransition(_ app: UIApplication) -> Bool {
+    private static func triggerHomeTransition(_ app: UIApplication) {
         let selector = NSSelectorFromString("suspend")
         if app.responds(to: selector) {
             _ = app.perform(selector)
-            return true
+            return
         }
-        // `sendAction(_:to:for:)` 在目标不响应时返回 false，正好用作「转场是否触发」的判据。
-        return UIControl().sendAction(selector, to: app, for: nil)
+        UIControl().sendAction(selector, to: app, for: nil)
     }
 }

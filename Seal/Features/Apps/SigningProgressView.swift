@@ -648,6 +648,10 @@ enum SelfInstallAutoBackground {
     /// 这段判断原先直接读 `UIApplication.shared.applicationState`，没有任何测试覆盖，
     /// 而它的 `.inactive` 分支正是「Seal 自续签永久停在 93%」的根因（2026-09-16 真机反馈）。
     /// 这类「错了也不会崩、只会在真机上卡死」的分支必须有测试钉住。
+    ///
+    /// `@MainActor`：`UIApplication` 在 Swift 6 严格并发下是主 actor 隔离的，
+    /// 这里显式跟着走，避免「读它的枚举」被当成跨 actor 访问。它唯一的调用点
+    /// `waitUntilExitIsSafe` 本来就在主 actor 上。
     enum ReturnHomeStep: Equatable {
         /// `.background`：用户真的自己切走了，进程已让出前台，iOS 能完成替换。
         /// 不重复触发转场（避免和用户操作打架），**也不强杀进程**。
@@ -659,6 +663,7 @@ enum SelfInstallAutoBackground {
         case waitForForeground
     }
 
+    @MainActor
     static func step(for state: UIApplication.State) -> ReturnHomeStep {
         switch state {
         case .active:

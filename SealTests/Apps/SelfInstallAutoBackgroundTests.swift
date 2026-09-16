@@ -7,6 +7,10 @@ import UIKit
 /// 这段判断决定「Seal 覆盖安装自己」时旧进程什么时候让出前台 —— iOS 只有在旧进程
 /// 退出前台之后才会用新版完成替换。判断错了**不会崩、不会编译失败、也不会跑挂单测**，
 /// 只会在真机上永久停在 93%（2026-09-16 真机反馈），所以必须由这里钉住。
+///
+/// `@MainActor`：`UIApplication` 在 Swift 6 严格并发下是主 actor 隔离的，
+/// 被测函数跟着隔离，测试也跟着走（与 `ApplicationOperationCoordinatorTests` 同一写法）。
+@MainActor
 struct SelfInstallAutoBackgroundTests {
 
     @Test
@@ -42,10 +46,13 @@ struct SelfInstallAutoBackgroundTests {
 
     @Test
     func exactlyOneStateStandsDown() {
-        // 穷举全部已知状态：一旦有人把别的状态也接上 `.standDown`（= 不再走 exit(0) 兜底，
-        // 也不再触发转场），这里立刻红。
+        // 穷举全部已知状态：一旦有人把别的状态也接上 `.standDown`（= 不再触发转场，
+        // 也不再走 exit(0) 兜底），这里立刻红。
         let known: [UIApplication.State] = [.active, .inactive, .background]
-        let standingDown = known.filter { SelfInstallAutoBackground.step(for: $0) == .standDown }
+        var standingDown: [UIApplication.State] = []
+        for state in known where SelfInstallAutoBackground.step(for: state) == .standDown {
+            standingDown.append(state)
+        }
         #expect(standingDown == [.background])
     }
 }

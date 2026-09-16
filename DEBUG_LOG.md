@@ -35,10 +35,23 @@
 - **守卫里「扫到 0 个调用点」= 检查必然通过**。新写的实参顺序校验第一版正则用了 `(?<![A-Za-z0-9_.])signAndInstall\(`，而真实调用点全是 `coordinator.signAndInstall(`（前一个字符是 `.`），被反向断言全部排除 ⇒ 零调用点 ⇒ 零错误 ⇒ 绿。**凡是「遍历 + 断言」的守卫都必须一并断言「扫到了多少个」，并设下限**，否则改一个正则就能让它静默失效。
 - **变异检查的期望文案必须与真实断言文案对得上**。`any(item.startswith(expected))` 是按前缀匹配的：文案写错会报成 `Guard failed mutation check`，看起来像「变异没被抓到」，实际是断言已被触发但消息不匹配。看到这条失败先核对真实消息，再改锚点。
 - **守卫脚本自己也会慢到被超时杀掉**。`violations()` 在变异检查里要跑 70+ 遍，每遍都 `rglob` 目录 + `strip_comments` 全部 Swift 源码（约 2MB 的纯 Python 字符循环）⇒ 近 3 分钟，超过默认命令超时被 SIGTERM（表现为「无任何输出、exit 1」，很容易误判成脚本崩了）。**每遍内的 `load` 与 `strip_comments` 结果都要缓存**（缓存必须限定在单遍作用域内 —— 跨遍缓存会读到陈旧文本，让变异检查静默失效；另外重绑 `load = load_cached` 前要先把原始 loader 存到另一个名字，否则闭包递归到自己）。`rglob` 结果在进程内只算一次。优化后 48 秒。
+- **两条链路各抄一份同一条规则 = 迟早漂移，而且漂移不会编译失败**。安装阶段的计时起点规则（进入 `.installing` 记一次、重复推送不重置、离开清空）原先在 `AppsViewModel.updateSigningStage` 与 `BatchRefreshSession.advanceStage` 各有一份拷贝。漂移后单签与批量的「已等待 m:ss」必有一个变成假象（永远 0:00，或带上上一项的等待时间），**没有任何编译 / 测试信号**。对策是抽成纯函数（`InstallStageTimeline`）两边共用，并让守卫断言「两处都调它」。
+- **源码文本断言守「形状」，单测守「行为」，两者不能互相替代**。`.inactive → .waitForForeground` 这条分支是「Seal 自续签永久停在 93%」的根因，修完当时**只有守卫里的字符串断言** —— 重构可以把它改成任何返回值，只要那行文字还在，守卫就绿。**凡是「错了不崩、只在真机上卡死」的分支，必须先把判断抽成可测的纯函数（如 `SelfInstallAutoBackground.step(for:)`）再写单测**；守卫那边同时断言「单测文件里的关键断言确实存在」，防止测试被删空后仍然全绿。
 
 ---
 
 ## 历史记录
+
+### 2026-09-16（续 2）· 把两条「只在真机上卡死」的分支补上单测，并消掉一份重复规则
+
+- **背景**：上一轮修掉的 `.inactive` 早退（Seal 自续签永久停在 93%）与安装计时起点规则，当时只有守卫里的源码文本断言，**没有单测覆盖**。这两处都属于「错了不崩、只会在真机上卡死」的类型，恰恰最需要测试钉住。
+- **改动**：
+  1. `SelfInstallAutoBackground` 抽出 `enum ReturnHomeStep { .standDown / .triggerTransition / .waitForForeground }` 与纯函数 `step(for state: UIApplication.State)`，等待循环 `waitUntilExitIsSafe` 改为走它（`.inactive` 等最多 3 秒，仍不恢复才走 `exit(0)` 兜底）。新增 `SelfInstallAutoBackgroundTests`(5)：`.inactive` 必须 `.waitForForeground`、只有 `.background` 才允许 `.standDown`、未知状态按「还在前台」处理、穷举「全部已知状态里恰好一个走 `.standDown`」。
+  2. 安装计时起点规则抽成 `InstallStageTimeline.tick(entering:currentStage:)` → `.keep / .clear / .restart`，`AppsViewModel.updateSigningStage` 与 `BatchRefreshSession.advanceStage` 共用；`updateInstallProgress` 的哨兵分支不再自己写 `status` / `installStartedAt`，改为复用 `updateSigningStage(.installing)`。新增 `InstallStageTimelineTests`(5)。
+  3. 守卫 R10 从文本匹配升级为结构断言：新增 `squash()` 辅助函数（多行代码压成一行式断言，不再拼换行符 + 数缩进空格）；断言等待循环**真的走** `step()` 且真的 `sleep`、`@unknown default` 不放弃、两个新单测文件里的关键断言确实存在。旧的一条变异锚点锚定的是被删掉的旧写法，已替换为 6 条新锚点。
+- **结果**：守卫 **186 源码 + 80 变异 PASS**（上一轮 176 + 75）。
+- **涉及文件**：`Seal/Core/Signing/InstallStageTimeline.swift`(新)、`Seal/Core/Renewal/BatchRefreshSession.swift`、`Seal/Features/Apps/AppsViewModel.swift`、`Seal/Features/Apps/SigningProgressView.swift`、`SealTests/Apps/SelfInstallAutoBackgroundTests.swift`(新)、`SealTests/Signing/InstallStageTimelineTests.swift`(新)、`Scripts/verify-release-safety.py`。
+- **验证状态**：守卫本地 PASS；Swift 单测待 `swift-regression`；真机四项回归（见 `docs/qa/2026-09-16-install-stage-feedback-and-self-replacement-freeze.md`）仍待用户执行。
 
 ### 2026-09-16（续）· 续签「卡在 93%」与「卡在传输」：安装阶段的反馈缺失 + 自替换的永久冻结
 

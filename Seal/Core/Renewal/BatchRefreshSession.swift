@@ -62,12 +62,13 @@ extension BatchRefreshSession {
 
     /// 阶段推进：进入 `.installing` 记下起点供「已等待」计时，离开时清掉，
     /// 避免下一项复用上一项的起点算出「已等待 12 分钟」这种假象。
+    ///
+    /// 起点规则与单签共用 `InstallStageTimeline`：这条规则以前在
+    /// `AppsViewModel.updateSigningStage` 里另有一份拷贝，两处漂移不会编译失败，
+    /// 只会让其中一条链路的计时变成假象。
     mutating func advanceStage(_ stage: SigningStage, at now: Date = Date()) {
-        if stage == .installing {
-            if currentStage != .installing { installStartedAt = now }
-        } else {
-            installStartedAt = nil
-        }
+        let tick = InstallStageTimeline.tick(entering: stage, currentStage: currentStage)
+        installStartedAt = InstallStageTimeline.applied(tick, startedAt: installStartedAt, now: now)
         if stage != .pushing {
             currentInstallProgress = nil
         }

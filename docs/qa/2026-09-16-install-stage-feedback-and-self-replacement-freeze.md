@@ -105,6 +105,8 @@ static func shouldEmitInstalling(uploadProgress: Double, enabled: Bool) -> Bool 
 - `RenewalCoordinator` 给 `signAndInstall` 传 `onInstallProgress`，把 AFC 上传百分比转成事件。
 - `BatchRefreshSession.recordInstallProgress` / `advanceStage`：只在 `.pushing` 采信百分比（其它阶段没有分母，留着就是一个永远不动的数字）；进入 `.installing` 记一次起点，离开时清掉（避免下一项复用上一项的起点算出「已等待 12 分钟」这种假象）。
 
+「起点规则」抽成 `Seal/Core/Signing/InstallStageTimeline.swift`（新）：`tick(entering:currentStage:)` → `.keep / .clear / .restart`，`applied(_:startedAt:now:)` 落到 `Date?` 上。**单签（`AppsViewModel.updateSigningStage`）与批量（`BatchRefreshSession.advanceStage`）共用同一份** —— 这条规则原先两处各抄一遍，漂移不会编译失败、不会跑挂单测，只会让其中一条链路的计时变成假象。`updateInstallProgress` 的哨兵分支也不再自己写 `status` / `installStartedAt`，改为复用 `updateSigningStage(.installing)`。
+
 ### 3.3 安装阶段给出诚实说明 + 计时
 
 `Seal/DesignSystem/InstallWaitNote.swift`（新）：`TimelineView(.periodic(from: .now, by: 1))` 每秒刷新，文案为「设备正在安装，此阶段没有进度回报 · 已等待 m:ss」。单签进度页与批量抽屉共用。
@@ -121,20 +123,41 @@ static func shouldEmitInstalling(uploadProgress: Double, enabled: Bool) -> Bool 
 
 ### 3.5 自替换：只有 `.background` 才算用户离开
 
+判断抽成纯函数，等待循环走它：
+
 ```swift
-var attempts = 0
-while app.applicationState != .active, attempts < inactiveRetryLimit {
-    try? await Task.sleep(nanoseconds: inactiveRetryNanoseconds)
-    if app.applicationState == .background { return }
-    attempts += 1
+enum ReturnHomeStep: Equatable {
+    case standDown           // .background：用户真的切走了
+    case triggerTransition   // .active：触发与「按 Home」等价的转场
+    case waitForForeground   // .inactive：瞬时失焦，进程仍占着前台
 }
-if app.applicationState == .active { triggerHomeTransition(app) }
-try? await Task.sleep(nanoseconds: exitFallbackNanoseconds)
-exit(0)
+
+static func step(for state: UIApplication.State) -> ReturnHomeStep {
+    switch state {
+    case .active: return .triggerTransition
+    case .inactive: return .waitForForeground
+    case .background: return .standDown
+    @unknown default: return .waitForForeground   // 宁可多等一轮，不能静默放弃
+    }
+}
+
+@MainActor
+private static func waitUntilExitIsSafe(_ app: UIApplication) async -> Bool {
+    for _ in 0...inactiveRetryLimit {          // 最多 3 秒
+        switch step(for: app.applicationState) {
+        case .standDown: return false          // 交给 iOS 完成替换，不强杀进程
+        case .triggerTransition: triggerHomeTransition(app); return true
+        case .waitForForeground: try? await Task.sleep(nanoseconds: inactiveRetryNanoseconds)
+        }
+    }
+    return true                                // 一直没恢复 ⇒ 走 exit(0) 兜底
+}
 ```
 
 - `.background` ⇒ 用户真的切走了，iOS 已能完成替换，不重复触发（避免和用户操作打架），也不强杀进程。
 - `.inactive` ⇒ 等最多 3 秒等它恢复（覆盖控制中心/横幅/来电这类短暂遮挡）；恢复不了就照样走 `exit(0)` 兜底，**保证 iOS 一定能完成替换**。
+
+**为什么抽成纯函数**：这段判断原先直接读 `UIApplication.shared.applicationState` 并就地 `return`，没有任何测试覆盖，而它的 `.inactive` 分支正是问题 1 的根因。这类「错了不崩、只会在真机上卡死」的分支必须能单测，所以把「状态 → 动作」的映射独立出来（见 §4 的 `SelfInstallAutoBackgroundTests`）。
 
 ---
 
@@ -142,14 +165,17 @@ exit(0)
 
 `Scripts/verify-release-safety.py`：
 
-- 新增 **R10**（安装阶段「看得见、退得出」）：11 条断言 + 6 个变异锚点，覆盖
+- 新增 **R10**（安装阶段「看得见、退得出」）：16 条断言 + 11 个变异锚点，覆盖
   - 哨兵必须排他（`>` 而非 `>=`）；
   - **两个**安装分支都要走 `bridgedInstallProgress`，且包装里真的发 `.installing`；
   - 批量事件流必须带真实百分比（`onInstallProgress` 订阅 + `.appInstallProgress` 事件）；
   - 两个界面必须有 `InstallWaitNote` 与取消按钮；
   - 运行中不得隐藏 footer；
-  - `returnToHomeAfterSealUpload` 不得在 `.inactive` 上早退、必须保留 `exit(0)` 兜底。
+  - `step(for:)` 必须是**可测纯函数**，`.inactive → .waitForForeground`、`.background → .standDown`、`@unknown default` 不放弃，且等待循环**真的走** `step()` 并真的 `sleep`（结构还在 ≠ 还在用）；
+  - 安装计时起点规则只有一份：`AppsViewModel` 与 `BatchRefreshSession` 都必须调 `InstallStageTimeline.tick`；
+  - 两个新单测文件里的**关键断言确实存在** —— 源码断言守「形状」，单测守「行为」，测试被删空不能仍然全绿。
 - **R09 通用化**：把「实参标签顺序必须与声明一致」做成可复用校验，覆盖 `AppRecord` / `signAndInstall` / `installSignedIPA` / `installCachedSignedIPAIfPossible`，并**断言扫到的调用点数下限** —— 本轮第一版正则把真实调用点（`coordinator.signAndInstall(`，前一个字符是 `.`）全部排除，变成「零调用点 ⇒ 零错误 ⇒ 绿」。
+- 新增 `squash()`：把多行代码压成一行式断言，不再在守卫里拼换行符 + 数缩进空格（缩进一改守卫就会莫名其妙地红）。
 - 修掉守卫自身的性能问题：每遍（= 每个变异）内缓存 `load` / `strip_comments`，`rglob` 结果进程内只算一次。**2 分 47 秒 → 48 秒**（此前已慢到被默认命令超时 SIGTERM，表现为「无输出、exit 1」）。
 
 新增测试：
@@ -157,8 +183,10 @@ exit(0)
 - `SealTests/Signing/InstallStageBridgeTests.swift`（2 条）：哨兵排他性、`enabled == false` 时不补发。
 - `SealTests/Renewal/BatchRefreshSessionTelemetryTests.swift`（5 条）：只在 `.pushing` 采信百分比、越界钳制、安装起点只记一次、离开安装阶段清空遥测。
 - `SealTests/DesignSystem/InstallWaitNoteTests.swift`（2 条）：`m:ss` 格式化与负数钳制。
+- `SealTests/Apps/SelfInstallAutoBackgroundTests.swift`（5 条）：`.inactive` 必须 `.waitForForeground`（问题 1 的根因回归）、只有 `.background` 允许 `.standDown`、未知状态按「还在前台」处理、穷举「全部已知状态里恰好一个走 `.standDown`」。
+- `SealTests/Signing/InstallStageTimelineTests.swift`（5 条）：首次进入安装阶段记起点、重复推送不重置、其它阶段一律清空、`.keep` 不会凭空补一个起点、批量链路与共享规则一致。
 
-结果：**176 源码断言 + 75 变异 PASS**。
+结果：**186 源码断言 + 80 变异 PASS**。
 
 ---
 

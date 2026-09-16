@@ -22,6 +22,14 @@ def section(text, start, end):
         raise AssertionError("section end marker not found after " + start + ": " + end)
     return tail.split(end, 1)[0]
 
+def squash(text):
+    """把连续空白（含换行与缩进）压成单个空格。
+
+    多行代码的断言写成 `"case .inactive: return .waitForForeground"` 这种一行式，
+    比在守卫里拼换行符 + 数缩进空格可靠得多 —— 缩进一改守卫就会莫名其妙地红。
+    """
+    return " ".join(text.split())
+
 def strip_comments(text):
     """去掉 // 与 /* */ 注释，保留字符串字面量原样（字符串里的 // 不是注释）。"""
     out = []
@@ -455,20 +463,64 @@ def violations(load=read):
           and "showsFooter: !isRunning" not in progress_view,
           "R10: hiding the footer while running removes the only way out of a stuck run")
     # Seal 自续签的「回主页」是 93% 的唯一出口：iOS 只有在旧进程让出前台后才完成替换。
-    return_home = strip_comments(section(
-        load("Seal/Features/Apps/SigningProgressView.swift"),
-        "static func returnToHomeAfterSealUpload()",
-        "private static func triggerHomeTransition"
-    ))
-    # `.inactive` 是瞬时失焦（控制中心/通知横幅/来电/系统弹窗），进程仍在前台。
+    progress_raw = load("Seal/Features/Apps/SigningProgressView.swift")
+    # 前台状态 → 动作的映射必须留在**纯函数**里：这段判断原先直接读
+    # `UIApplication.shared.applicationState` 并就地 return，没有任何测试覆盖，
+    # 而它的 `.inactive` 分支正是「Seal 自续签永久停在 93%」的根因（2026-09-16 真机反馈）。
+    check("enum ReturnHomeStep" in progress_raw
+          and "static func step(for state: UIApplication.State) -> ReturnHomeStep" in progress_raw,
+          "R10: the foreground-state decision must stay a testable pure function")
+    step_body = squash(strip_comments(section(
+        progress_raw,
+        "static func step(for state: UIApplication.State) -> ReturnHomeStep",
+        "@MainActor"
+    )))
+    # `.inactive` 是瞬时失焦（控制中心/通知横幅/来电/App 切换器预览/系统弹窗），进程仍在前台。
     # 旧实现把它当成「用户已离开」直接 return，连 exit(0) 兜底一起跳过 ——
     # iOS 永远等不到旧进程让出前台，界面永久停在 93%（2026-09-16 真机反馈）。
-    check("guard app.applicationState == .active else { return }" not in return_home,
+    check("case .inactive: return .waitForForeground" in step_body,
           "R10: .inactive is a transient blur — returning early strands the install at 93%")
-    check("app.applicationState == .background" in return_home,
+    check("case .background: return .standDown" in step_body,
           "R10: only a real background transition means the user left")
+    check("@unknown default: return .waitForForeground" in step_body,
+          "R10: an unknown foreground state must wait, not give up")
+    return_home = squash(strip_comments(section(
+        progress_raw,
+        "static func returnToHomeAfterSealUpload()",
+        "private static func triggerHomeTransition"
+    )))
+    # 结构还在不等于还在用：等待循环必须真的走 step()，否则守卫守的是一个没人调的函数。
+    check("switch step(for: app.applicationState)" in return_home,
+          "R10: the wait loop must route through the tested step function")
+    check("case .waitForForeground: try? await Task.sleep" in return_home
+          and "for _ in 0...inactiveRetryLimit" in return_home,
+          "R10: .inactive must actually be waited out, not merely skipped")
+    # `.standDown` 的语义是「不触发转场、也不强杀进程」：用户已经自己切走了，
+    # 再 exit(0) 会和用户的操作打架。
+    check("case .standDown: return false" in return_home,
+          "R10: a real background transition must not kill the process")
     check("exit(0)" in return_home,
           "R10: the exit fallback must stay reachable on every non-background path")
+    # 源码断言守的是「形状」，单测守的是「行为」。`.inactive` 这条分支必须真的有单测 ——
+    # 否则重构可以改掉它的返回值而守卫只看见「函数还在」（本轮把这段抽成纯函数就是为了它）。
+    auto_bg_tests = load("SealTests/Apps/SelfInstallAutoBackgroundTests.swift")
+    check("SelfInstallAutoBackground.step(for: .inactive) == .waitForForeground" in auto_bg_tests,
+          "R10: the .inactive branch needs a real unit test, not only a source assertion")
+
+    # R10: 安装阶段的计时起点规则（单签 / 批量）只能有一份。
+    # 两处各抄一遍的漂移不会编译失败、不会跑挂单测，只会让其中一条链路的
+    # 「已等待 m:ss」变成假象（永远 0:00，或带上上一项的等待时间）。
+    timeline_source = strip_comments(load("Seal/Core/Signing/InstallStageTimeline.swift"))
+    check("currentStage == .installing ? .keep : .restart" in timeline_source,
+          "R10: repeated .installing pushes must not reset the install clock")
+    for timeline_user in ("Seal/Features/Apps/AppsViewModel.swift",
+                          "Seal/Core/Renewal/BatchRefreshSession.swift"):
+        check("InstallStageTimeline.tick(" in strip_comments(load(timeline_user)),
+              "R10: " + timeline_user + " must use the shared install-start rule")
+    timeline_tests = load("SealTests/Signing/InstallStageTimelineTests.swift")
+    check("InstallStageTimeline.tick(entering: .installing, currentStage: .installing) == .keep"
+          in timeline_tests,
+          "R10: the shared install-start rule needs a real unit test")
 
     # R04: Portal 三个服务的回调一律经 ContinuationBox 转发。裸 continuation 第二次 resume
     # 不是可捕获错误，而是 SWIFT TASK CONTINUATION MISUSE 致命崩溃（进程直接终止）。
@@ -1323,10 +1375,37 @@ def main():
          "        SealDrawer(title: title, showsFooter: true) {",
          "        SealDrawer(title: title, showsFooter: !isRunning) {",
          "R10: hiding the footer while running removes the only way out of a stuck run"),
+        # 把 `.inactive` 改回「放弃」= 原样重演 2026-09-16 的「永久停在 93%」。
         ("Seal/Features/Apps/SigningProgressView.swift",
-         "            if app.applicationState == .background { return }",
-         "            if app.applicationState != .active { return }",
+         "        case .inactive:\n            return .waitForForeground",
+         "        case .inactive:\n            return .standDown",
+         "R10: .inactive is a transient blur"),
+        # 把 `.background` 也接上转场：用户已经自己切走了，再去触发一次就是和用户的操作打架。
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         "        case .background:\n            return .standDown",
+         "        case .background:\n            return .triggerTransition",
          "R10: only a real background transition means the user left"),
+        # `.inactive` 等够 3 秒改成直接放弃等待：控制中心一遮挡就会走到 exit(0)，
+        # 在用户还在前台时把进程杀掉，安装永远完不成。
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         "            case .waitForForeground:\n                try? await Task.sleep(nanoseconds: inactiveRetryNanoseconds)",
+         "            case .waitForForeground:\n                break",
+         "R10: .inactive must actually be waited out"),
+        # 让等待循环不再走被测过的 step()：函数还在，约束已经失效。
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         "            switch step(for: app.applicationState) {",
+         "            switch app.applicationState {",
+         "R10: the wait loop must route through the tested step function"),
+        # 重复推送也重置起点 = 「已等待」永远停在 0:0x，比不显示更像卡死。
+        ("Seal/Core/Signing/InstallStageTimeline.swift",
+         "        return currentStage == .installing ? .keep : .restart",
+         "        return currentStage == .installing ? .restart : .restart",
+         "R10: repeated .installing pushes must not reset the install clock"),
+        # 批量链路自己再抄一份规则：漂移不会编译失败，只会让抽屉的计时变成假象。
+        ("Seal/Core/Renewal/BatchRefreshSession.swift",
+         "        let tick = InstallStageTimeline.tick(entering: stage, currentStage: currentStage)",
+         "        let tick = stage == .installing ? InstallStageTimeline.Tick.restart : InstallStageTimeline.Tick.clear",
+         "R10: Seal/Core/Renewal/BatchRefreshSession.swift must use the shared install-start rule"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

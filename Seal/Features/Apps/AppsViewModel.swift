@@ -1923,17 +1923,19 @@ final class AppsViewModel: ObservableObject {
 
     private func updateSigningStage(_ stage: SigningStage) {
         guard signingSession != nil else { return }
-        if stage == .installing {
-            // 只在**首次**进入安装阶段时记起点：同一阶段会被重复推送
-            //（Seal 自替换的 1.01 哨兵 + 签名侧补发），每次都重置会让「已等待」永远归零。
-            if case .running(.installing) = signingSession?.status {
-                // 已经在安装阶段：保留起点
-            } else {
-                signingSession?.installStartedAt = Date()
-            }
+        let currentStage: SigningStage?
+        if case .running(let running) = signingSession?.status {
+            currentStage = running
         } else {
-            signingSession?.installStartedAt = nil
+            currentStage = nil
         }
+        // 起点规则与批量续签共用 InstallStageTimeline：同一阶段被重复推送时不重置，
+        // 每次都重置会让「已等待 m:ss」永远停在 0:0x，反而更像卡死。
+        let tick = InstallStageTimeline.tick(entering: stage, currentStage: currentStage)
+        signingSession?.installStartedAt = InstallStageTimeline.applied(
+            tick,
+            startedAt: signingSession?.installStartedAt
+        )
         signingSession?.status = .running(stage)
     }
 
@@ -1945,9 +1947,10 @@ final class AppsViewModel: ObservableObject {
         guard signingSession != nil else { return }
         if progress > 1.0 {
             signingSession?.installProgress = 1.0
-            if case .running(let stage) = signingSession?.status, stage == .pushing {
-                signingSession?.status = .running(.installing)
-                signingSession?.installStartedAt = Date()
+            if case .running(.pushing) = signingSession?.status {
+                // 走同一条阶段推进路径：状态与计时起点一起落，避免「切阶段」和「记起点」
+                // 分成两处各写一遍（两处漂移不会编译失败，只会让计时变成假象）。
+                updateSigningStage(.installing)
             }
             return
         }

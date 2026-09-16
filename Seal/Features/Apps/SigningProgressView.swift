@@ -624,8 +624,11 @@ private struct CurrentSegmentFill: View {
 /// 响应就会静默什么都不做，最后由 installd 直接杀进程 —— 用户看到的就是「闪退」。
 /// 现在：
 ///   1. UI 先渲染「正在退回主屏幕」（由 SigningProgressView 的 withAnimation 负责）；
-///   2. 触发与「按 Home」等价的系统级转场，交给系统播放退场动画；
-///   3. 转场后等 3 秒，若进程仍存活（说明转场没生效）才用 `exit(0)` 兜底，
+///   2. 先看当前前台状态（见 `ReturnHomeStep`）：`.background` 说明用户已离开，
+///      交给 iOS 自己完成替换；`.inactive` 是**瞬时**失焦，进程仍占着前台，必须等它恢复
+///      —— 早退会连 `exit(0)` 兜底一起跳过，安装永远完不成（2026-09-16 真机：永久停在 93%）；
+///   3. 触发与「按 Home」等价的系统级转场，交给系统播放退场动画；
+///   4. 转场后等 3 秒，若进程仍存活（说明转场没生效）才用 `exit(0)` 兜底，
 ///      保证进程一定结束、iOS 才能完成替换；转场成功时进程已被挂起，不会走到这里。
 /// 本类型只做「切后台 / 退出」，不碰签名、证书、自替换事务：安装结果仍由重新打开的
 /// 新进程 `SelfReplacementCoordinator` 对账确认。
@@ -633,7 +636,7 @@ enum SelfInstallAutoBackground {
     /// 转场前的可感知停顿：既让 UI 的「正在退回主屏幕」渲染出来，也给 Rust 暂存落盘留余量。
     private static let transitionBeatNanoseconds: UInt64 = 1_200_000_000
     /// `exit(0)` 兜底的等待时间。取 3 秒：远长于系统退场动画（约 0.3–0.5 秒），
-    /// 确保转场成功时进程早已被挂起、这段代码不会执行，不会打断动画。
+    /// 确保转场成功时进程早已被挂起，这段代码不会执行，不会打断动画。
     private static let exitFallbackNanoseconds: UInt64 = 3_000_000_000
 
     /// 等待 `.inactive`（瞬时失焦）自行恢复为 `.active` 的重试间隔与次数。
@@ -641,34 +644,70 @@ enum SelfInstallAutoBackground {
     private static let inactiveRetryNanoseconds: UInt64 = 500_000_000
     private static let inactiveRetryLimit = 6
 
+    /// 前台状态下该怎么走。抽成纯函数是为了**能单测** ——
+    /// 这段判断原先直接读 `UIApplication.shared.applicationState`，没有任何测试覆盖，
+    /// 而它的 `.inactive` 分支正是「Seal 自续签永久停在 93%」的根因（2026-09-16 真机反馈）。
+    /// 这类「错了也不会崩、只会在真机上卡死」的分支必须有测试钉住。
+    enum ReturnHomeStep: Equatable {
+        /// `.background`：用户真的自己切走了，进程已让出前台，iOS 能完成替换。
+        /// 不重复触发转场（避免和用户操作打架），**也不强杀进程**。
+        case standDown
+        /// `.active`：正常触发与「按 Home」等价的系统转场。
+        case triggerTransition
+        /// `.inactive`：瞬时失焦（控制中心、通知横幅、来电、App 切换器预览、系统弹窗），
+        /// **进程仍在前台** —— iOS 不会完成替换，所以必须等它恢复，绝不能直接放弃。
+        case waitForForeground
+    }
+
+    static func step(for state: UIApplication.State) -> ReturnHomeStep {
+        switch state {
+        case .active:
+            return .triggerTransition
+        case .inactive:
+            return .waitForForeground
+        case .background:
+            return .standDown
+        @unknown default:
+            // 未知状态按「还没离开前台」处理：宁可多等一轮，也不能静默放弃安装。
+            return .waitForForeground
+        }
+    }
+
     @MainActor
     static func returnToHomeAfterSealUpload() {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: transitionBeatNanoseconds)
             let app = UIApplication.shared
-
-            // 只有 `.background` 才算「用户真的自己切走了」：此时进程已让出前台，
-            // iOS 能完成替换，不重复触发以免和用户操作打架。
-            //
-            // `.inactive` **不能**当作「用户离开」——它是瞬时失焦（控制中心、通知横幅、
-            // 来电、App 切换器预览、系统弹窗），进程仍在前台，iOS 不会完成替换。
-            // 旧实现在这里直接 `return`，连下面的 `exit(0)` 兜底也一并跳过，
-            // 于是安装永远等不到「旧进程让出前台」→ 界面永久停在 93%（2026-09-16 真机反馈）。
-            // 现在改为等它恢复；恢复不了就走兜底退出，保证 iOS 一定能完成替换。
-            var attempts = 0
-            while app.applicationState != .active, attempts < inactiveRetryLimit {
-                try? await Task.sleep(nanoseconds: inactiveRetryNanoseconds)
-                if app.applicationState == .background { return }
-                attempts += 1
-            }
-            if app.applicationState == .active {
-                triggerHomeTransition(app)
-            }
+            guard await waitUntilExitIsSafe(app) else { return }
             // 兜底：3 秒后进程还活着，说明转场没生效（会永久停在进度页），此时才强制退出。
             // 转场成功的话进程已被挂起，这行不会执行 —— 所以不会打断退场动画。
             try? await Task.sleep(nanoseconds: exitFallbackNanoseconds)
             exit(0)
         }
+    }
+
+    /// 等到「可以安全退出」为止。
+    ///
+    /// - 返回 `false` 表示用户已把 App 切到后台，iOS 自己会完成替换，**不该强杀进程**；
+    /// - 返回 `true` 表示该走 `exit(0)` 兜底：要么已经触发过转场，要么一直是 `.inactive`
+    ///   （进程仍占着前台，iOS 永远等不到替换时机 —— 只能自己退出）。
+    ///
+    /// 旧实现把 `.inactive` 也当成「用户已离开」直接 `return`，连 `exit(0)` 兜底一起跳过，
+    /// 于是安装永远完不成、界面永久停在 93%。
+    @MainActor
+    private static func waitUntilExitIsSafe(_ app: UIApplication) async -> Bool {
+        for _ in 0...inactiveRetryLimit {
+            switch step(for: app.applicationState) {
+            case .standDown:
+                return false
+            case .triggerTransition:
+                triggerHomeTransition(app)
+                return true
+            case .waitForForeground:
+                try? await Task.sleep(nanoseconds: inactiveRetryNanoseconds)
+            }
+        }
+        return true
     }
 
     /// 触发与「按 Home」等价的系统转场。`suspend` 是私有 selector：

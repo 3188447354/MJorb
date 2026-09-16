@@ -2,47 +2,73 @@
 //  SignedArtifactProfileReader.swift
 //  Seal
 //
-//  从「签名后成品 IPA」回读主应用 embedded.mobileprovision 的 UUID，
-//  作为「安装成功后清理设备端旧描述文件时保留刚装 profile」的依据。
-//  对齐 SignedArtifactBundleIDReader：只认恰好三段的 Payload -> <App>.app -> embedded.mobileprovision。
+//  从「签名后成品 IPA」回读 embedded.mobileprovision，作为「安装成功后清理设备端
+//  旧描述文件时保留刚装 profile」的依据。
+//
+//  覆盖**全部**会被 iOS 安装为独立 profile 的位置（主 App 与各扩展）：一次安装会为
+//  每个扩展各装一份 profile，只按主 Bundle ID 清理会让扩展的旧 profile 在设备上
+//  无限累积（2026-09-16 真机：LiveContainer 的 ShareExtension 一天内堆了 6 份，
+//  Seal 自己累积到 17 份）。
 //
 
 import Foundation
 import ZIPFoundation
 
 enum SignedArtifactProfileReader {
-    /// 主应用 embedded.mobileprovision 在 IPA 内的路径段数：Payload / <App>.app / embedded.mobileprovision。
+    /// 「Payload / <App>.app / embedded.mobileprovision」的段数，用于校验路径形状。
     private static let mainProvisionSegmentCount = 3
 
-    static func embeddedProfileUUID(in ipaData: Data) -> String? {
-        embeddedProfileDetails(in: ipaData)?.uuid
+    /// 签名产物内的一份描述文件：Bundle ID 取自 profile 自身的 `application-identifier`
+    /// （已剥掉 TeamIdentifier 前缀），而不是从路径推断 —— 路径名与真实 Bundle ID 不一定一致。
+    struct EmbeddedProfile: Sendable, Equatable {
+        let bundleIdentifier: String
+        let uuid: String
     }
 
-    static func embeddedProfileDetails(in ipaData: Data) -> ProvisioningProfileReader.Details? {
-        guard let archive = try? Archive(data: ipaData, accessMode: .read) else { return nil }
-        guard let entry = archive.first(where: { isMainProvision($0.path) }) else { return nil }
+    /// 枚举签名产物内所有会被安装的 embedded.mobileprovision（主 App + 扩展），按 UUID 去重。
+    ///
+    /// 返回值只应被调用方当作「保留集合」使用：解析不出 UUID / Bundle ID 的条目会被跳过，
+    /// 缺项意味着那一条不会被清理，而不会导致误删（方向是安全的）。
+    static func embeddedProfiles(in ipaData: Data) -> [EmbeddedProfile] {
+        guard let archive = try? Archive(data: ipaData, accessMode: .read) else { return [] }
 
-        var profileData = Data()
-        do {
-            _ = try archive.extract(entry) { chunk in
-                profileData.append(chunk)
+        var profiles: [EmbeddedProfile] = []
+        var seenUUIDs = Set<String>()
+        let reader = ProvisioningProfileReader()
+
+        for entry in archive where isInstalledAppProvision(entry.path) {
+            var profileData = Data()
+            do {
+                _ = try archive.extract(entry) { chunk in
+                    profileData.append(chunk)
+                }
+            } catch {
+                continue
             }
-        } catch {
-            return nil
+            guard profileData.isEmpty == false,
+                  let details = try? reader.details(from: profileData),
+                  let uuid = details.uuid,
+                  let bundleIdentifier = details.bundleIdentifier,
+                  bundleIdentifier.isEmpty == false else {
+                continue
+            }
+            // 同一 profile 可能被重复嵌入（主 App 与扩展共用一份），按 UUID 去重。
+            guard seenUUIDs.insert(uuid.lowercased()).inserted else { continue }
+            profiles.append(EmbeddedProfile(bundleIdentifier: bundleIdentifier, uuid: uuid))
         }
-
-        guard profileData.isEmpty == false,
-              let details = try? ProvisioningProfileReader().details(from: profileData) else {
-            return nil
-        }
-        return details
+        return profiles
     }
 
-    private static func isMainProvision(_ path: String) -> Bool {
+    /// iOS 实际会安装为独立 profile 的位置：Payload 下任意 `.app` 根目录的
+    /// embedded.mobileprovision（主 App、PlugIns/*.appex、AppClips、Watch 等）。
+    ///
+    /// 刻意排除 `Frameworks/*.framework/embedded.mobileprovision`：framework 的 profile
+    /// 不会被 installd 装成设备 profile，把它算进保留集合会让真正的旧 profile 被误判为在用。
+    private static func isInstalledAppProvision(_ path: String) -> Bool {
         let segments = path.split(separator: "/")
-        guard segments.count == mainProvisionSegmentCount else { return false }
-        return segments[0] == "Payload"
-            && segments[1].hasSuffix(".app")
-            && segments[2] == "embedded.mobileprovision"
+        guard segments.count >= mainProvisionSegmentCount,
+              segments[0] == "Payload",
+              segments[segments.count - 1] == "embedded.mobileprovision" else { return false }
+        return segments[segments.count - 2].hasSuffix(".app")
     }
 }

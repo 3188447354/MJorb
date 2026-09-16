@@ -42,6 +42,16 @@ protocol SelfReplacementProfileCleaning: Sendable {
     func removeStaleProfiles(_ request: ProfileCleanupRequest) async -> ProfileCleanupSummary
 }
 
+/// 维护期的批量清理边界，便于用桩替换真实设备清理。
+///
+/// `keepingByBundleID` 的 key 是「Seal 管理的 Bundle ID」，value 是「该 Bundle ID 当前
+/// 正在使用、必须保留的 profile UUID」。**key 集合之外的一律不碰** —— 设备上还有
+/// MDM 配置描述文件、企业证书签的 App、其它工具装的 App，它们不在 Seal 的记录里，
+/// 误删会让那些 App 直接无法启动。
+protocol StaleProfileSweeping: Sendable {
+    func sweepStaleProfiles(keepingByBundleID: [String: String]) async -> ProfileCleanupSummary
+}
+
 struct DeviceProfileCleaner: Sendable {
     /// 清理前重读运行身份的入口；缺失时一律跳过，绝不在身份不明时删除 profile。
     private let readRunningIdentity: (@Sendable () throws -> InstalledIdentity)?
@@ -64,12 +74,35 @@ struct DeviceProfileCleaner: Sendable {
               bundleIdentifier.isEmpty == false else {
             return ProfileCleanupSummary(stage: "skipped-no-keeping-uuid")
         }
-        return await removeProfiles(matching: [bundleIdentifier], keeping: keepingProfileUUID)
+        return await removeStaleProfiles(
+            keepingByBundleID: [bundleIdentifier: keepingProfileUUID]
+        )
+    }
+
+    /// 按 Bundle ID 批量清理。每个 Bundle ID 只保留 map 里指定的那一份 profile，
+    /// 其余同 Bundle ID 的设备端 profile 全部删除。
+    ///
+    /// 空 map 或整份 map 都无效时**什么都不做**：没有明确「保留哪一份」就不删，
+    /// 因为删掉正在用的那一份会让已安装的 App 立刻无法启动（iOS 启动时会校验 profile）。
+    @discardableResult
+    static func removeStaleProfiles(
+        keepingByBundleID: [String: String]
+    ) async -> ProfileCleanupSummary {
+        var normalized: [String: String] = [:]
+        for (bundleID, uuid) in keepingByBundleID {
+            let trimmedBundleID = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedUUID = uuid.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmedBundleID.isEmpty == false, trimmedUUID.isEmpty == false else { continue }
+            normalized[trimmedBundleID.lowercased()] = trimmedUUID.lowercased()
+        }
+        guard normalized.isEmpty == false else {
+            return ProfileCleanupSummary(stage: "skipped-no-managed-bundle-ids")
+        }
+        return await removeProfiles(keepingByBundleID: normalized)
     }
 
     private static func removeProfiles(
-        matching bundleIdentifiers: [String],
-        keeping keepingProfileUUID: String?
+        keepingByBundleID: [String: String]
     ) async -> ProfileCleanupSummary {
         var summary = ProfileCleanupSummary()
         let reader = ProvisioningProfileReader()
@@ -109,16 +142,14 @@ struct DeviceProfileCleaner: Sendable {
                 continue
             }
             // LockDown 路径同一 profile 会落 raw + plist 两个文件，按 UUID 去重
-            guard handledUUIDs.insert(profileUUID).inserted else { continue }
+            guard handledUUIDs.insert(profileUUID.lowercased()).inserted else { continue }
             summary.scanned += 1
-            guard bundleIdentifiers.contains(where: {
-                profileBundleID.caseInsensitiveCompare($0) == .orderedSame
-            }) else {
+            // 只有 Seal 管理的 Bundle ID 才参与判定；其余一律不碰。
+            guard let keepingUUID = keepingByBundleID[profileBundleID.lowercased()] else {
                 continue
             }
             summary.matched += 1
-            if let keepingProfileUUID,
-               profileUUID.caseInsensitiveCompare(keepingProfileUUID) == .orderedSame {
+            if profileUUID.lowercased() == keepingUUID {
                 continue
             }
             do {
@@ -132,6 +163,12 @@ struct DeviceProfileCleaner: Sendable {
             }
         }
         return summary
+    }
+}
+
+extension DeviceProfileCleaner: StaleProfileSweeping {
+    func sweepStaleProfiles(keepingByBundleID: [String: String]) async -> ProfileCleanupSummary {
+        await Self.removeStaleProfiles(keepingByBundleID: keepingByBundleID)
     }
 }
 

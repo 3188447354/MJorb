@@ -462,7 +462,7 @@ final class AppsViewModel: ObservableObject {
         loadGeneration == generation
     }
 
-    /// 空闲时执行维护作业：记录恢复 → Seal 自注册 → 孤儿文件清理。
+    /// 空闲时执行维护作业：记录恢复 → Seal 自注册 → 孤儿文件清理 → 设备端旧描述文件清理。
     ///
     /// 互斥由 `MaintenanceGate` 保证：非空闲（用户正在签名 / 安装 / 续签，或已有维护作业在跑）
     /// 时直接跳过本轮，**不做任何写入或删除**，也不阻塞用户操作。
@@ -475,19 +475,26 @@ final class AppsViewModel: ObservableObject {
         case .skipped:
             break
         case .completed(let report):
-            if report.removedTotal > 0 {
+            if report.orphans.removedTotal > 0 {
                 try? await logStore?.append(
                     category: .system,
-                    message: "已清理 \(report.removedTotal) 个未使用的应用目录",
+                    message: "已清理 \(report.orphans.removedTotal) 个未使用的应用目录",
                     code: "SEAL-STORAGE-005"
                 )
             }
-            if report.skippedInFlightTransactions > 0 {
+            if report.orphans.skippedInFlightTransactions > 0 {
                 // 跳过说明确实存在进行中的导入事务；留痕便于排查「为什么没清干净」。
                 try? await logStore?.append(
                     category: .system,
-                    message: "有 \(report.skippedInFlightTransactions) 个导入事务目录仍在进行，本轮未清理",
+                    message: "有 \(report.orphans.skippedInFlightTransactions) 个导入事务目录仍在进行，本轮未清理",
                     code: "SEAL-STORAGE-008"
+                )
+            }
+            if report.profiles.removed > 0 {
+                try? await logStore?.append(
+                    category: .system,
+                    message: "已清理 \(report.profiles.removed) 份设备端旧描述文件",
+                    code: "SEAL-PROFILE-321"
                 )
             }
         case .aborted(let stage, let reason):

@@ -159,46 +159,50 @@ struct AppDetailView: View {
         .padding(.vertical, 15)
     }
 
-    /// 证书序列号行：标题与其它行一样是左侧黑色主文字，值独占一行、灰色等宽、可长按选中。
-    /// 40 位十六进制序列号放在标题右侧一定会被截断，独占一行才能「显示全面」。
+    /// 证书序列号行：标题左、值右，同一行展示（与下方 Bundle ID 行同一版式）。
+    /// 超长时**中间省略**：序列号头尾信息量最大（前缀标识厂商、尾部唯一性最高），
+    /// 掐掉中段比掐掉尾部更容易核对。完整值仍可长按选中复制。
     private func serialDetailRow(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text(title)
                 .foregroundStyle(.primary)
                 .lineLimit(1)
+            Spacer(minLength: 12)
             Text(value)
-                .font(.system(.subheadline, design: .monospaced))
+                .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(Color.sealTextSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
+                .truncationMode(.middle)
                 .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.vertical, 15)
     }
 
-    /// 描述文件行：不再用「可用」占位，改为展示**该应用实际使用的描述文件 UUID**
-    /// （独占一行、灰色等宽、可选中），便于直接核对设备上装的到底是不是刚签出的那一份。
-    /// 只有真正需要用户处理的异常状态（临期 / 已过期 / 不匹配 / 待校验 / 未记录）才保留
-    /// 状态标签——「可用」这一档由「描述文件有效期至」的颜色承载，信息不丢。
+    /// 描述文件行：标题左、UUID 右，同一行展示，超长中间省略。
+    /// 不再用「可用」占位，直接展示**该应用实际使用的描述文件 UUID**，
+    /// 便于直接核对设备上装的到底是不是刚签出的那一份。
+    /// 只有真正需要用户处理的异常状态（临期 / 已过期 / 不匹配 / 待校验 / 未记录）才在
+    /// 标题右侧保留状态标签——「可用」这一档由「描述文件有效期至」的颜色承载，信息不丢。
     private func profileDetailRow(_ app: AppRecord) -> some View {
         let status = profileStatus(app)
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 14) {
-                Text("描述文件")
-                    .foregroundStyle(.primary)
-                Spacer(minLength: 12)
-                if status != .available {
-                    Text(status.title)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(profileColor(app))
-                }
+        return HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text("描述文件")
+                .foregroundStyle(.primary)
+            if status != .available {
+                Text(status.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(profileColor(app))
+                    .layoutPriority(1)
             }
+            Spacer(minLength: 12)
             Text(AppSigningPresentationHelpers.profileUUIDText(for: app))
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(Color.sealTextSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
+                .truncationMode(.middle)
                 .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.vertical, 15)
     }

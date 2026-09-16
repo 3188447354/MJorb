@@ -332,22 +332,22 @@ struct SigningProgressView: View {
         .frame(minHeight: 42)
     }
 
-    /// 证书序列号专用行：完整序列号（40 位十六进制）在标题右侧放不下会被截断，
-    /// 因此值独占一行、等宽、灰色、可长按选中，保证「序列号显示全面」。
+    /// 证书序列号行：标题左、值右，同一行展示；超长中间省略（保留头尾便于核对）。
     private func runtimeSerialRow(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text(title)
                 .font(.system(size: 14, weight: .regular))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
+            Spacer(minLength: 12)
             Text(value)
                 .font(.system(size: 12, weight: .regular, design: .monospaced))
                 .foregroundStyle(Color.sealTextSecondary)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
+                .truncationMode(.middle)
                 .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .frame(minHeight: 42)
         .padding(.vertical, 4)

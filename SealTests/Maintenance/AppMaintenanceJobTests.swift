@@ -161,6 +161,140 @@ struct AppMaintenanceJobTests {
         }
     }
 
+    // MARK: - 设备端旧描述文件清理（第 4 步）
+
+    @Test
+    func sweepsOnlyBundleIdentifiersWithARecordedProfileUUID() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let known = UUID()
+        let unknown = UUID()
+        let store = InMemoryAppStore(records: [
+            makeRecord(
+                appID: known,
+                mappedBundleIdentifier: "com.example.known",
+                provisioningProfileUUID: "AAAA-BBBB"
+            ),
+            // 没有记录 profile UUID：必须整条跳过，不能猜「保留最新那份」
+            makeRecord(appID: unknown, mappedBundleIdentifier: "com.example.unknown"),
+        ])
+        let sweeper = RecordingProfileSweeper()
+
+        let job = makeJob(fixture, store: store, profileSweeper: sweeper)
+        let outcome = await job.run()
+
+        guard case .completed(let report) = outcome else {
+            Issue.record("应当正常完成，实际：\(outcome)")
+            return
+        }
+        #expect(report.profiles.stage == "done")
+        let maps = await sweeper.receivedKeepMaps
+        #expect(maps.count == 1)
+        #expect(maps.first == ["com.example.known": "AAAA-BBBB"])
+    }
+
+    @Test
+    func sealRunningProfileOverridesTheRecordedValue() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let sealID = UUID()
+        let store = InMemoryAppStore(records: [
+            makeRecord(
+                appID: sealID,
+                mappedBundleIdentifier: "com.mjorb.seal.TEAMID",
+                provisioningProfileUUID: "STALE-RECORD-UUID",
+                isSeal: true
+            )
+        ])
+        let sweeper = RecordingProfileSweeper()
+
+        let job = makeJob(
+            fixture,
+            store: store,
+            profileSweeper: sweeper,
+            sealRunningProfileUUID: { "LIVE-RUNNING-UUID" }
+        )
+        _ = await job.run()
+
+        // 记录里的值可能落后于现实；删掉正在用的那一份会让 Seal 下次启动直接失败。
+        let maps = await sweeper.receivedKeepMaps
+        #expect(maps.first?["com.mjorb.seal.TEAMID"] == "LIVE-RUNNING-UUID")
+    }
+
+    @Test
+    func profileKeepMapIgnoresBlankValues() {
+        let record = makeRecord(
+            appID: UUID(),
+            mappedBundleIdentifier: "   ",
+            provisioningProfileUUID: "   "
+        )
+        let map = AppMaintenanceJob.profileKeepMap(records: [record], sealProfileUUID: nil)
+        #expect(map.isEmpty)
+    }
+
+    @Test
+    func extensionProfilesEnterTheKeepSetOnlyAfterAVerifiedInstall() {
+        // 扩展记录是乐观值：签名阶段就写好了，不等安装校验通过。
+        // 签名成功但安装失败时，它指向一份设备上不存在的 profile ——
+        // 当成保留集合会删掉真正在用的那一份，扩展当场失效。
+        let extensionRecord = AppExtensionRecord(
+            name: "Share",
+            originalBundleIdentifier: "com.example.demo.share",
+            mappedBundleIdentifier: "com.example.demo.share",
+            provisioningProfileUUID: "EXTENSION-UUID"
+        )
+        let installed = makeRecord(
+            appID: UUID(),
+            mappedBundleIdentifier: "com.example.demo",
+            provisioningProfileUUID: "MAIN-UUID",
+            signedArtifactStatus: .installed,
+            extensions: [extensionRecord]
+        )
+        let installedMap = AppMaintenanceJob.profileKeepMap(
+            records: [installed],
+            sealProfileUUID: nil
+        )
+        #expect(installedMap["com.example.demo"] == "MAIN-UUID")
+        #expect(installedMap["com.example.demo.share"] == "EXTENSION-UUID")
+
+        let awaiting = makeRecord(
+            appID: UUID(),
+            mappedBundleIdentifier: "com.example.demo",
+            provisioningProfileUUID: "MAIN-UUID",
+            signedArtifactStatus: .awaitingVerification,
+            extensions: [extensionRecord]
+        )
+        let awaitingMap = AppMaintenanceJob.profileKeepMap(
+            records: [awaiting],
+            sealProfileUUID: nil
+        )
+        #expect(awaitingMap["com.example.demo"] == "MAIN-UUID")
+        #expect(awaitingMap["com.example.demo.share"] == nil, "未确认安装的扩展 UUID 不可信")
+    }
+
+    @Test
+    func abortsBeforeProfileSweepWhenLeaseIsInvalidated() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let sweeper = RecordingProfileSweeper()
+
+        // 检查点 1 = 孤儿文件清理前，检查点 2 = 描述文件清理前 —— 在这里失效
+        let job = makeJob(
+            fixture,
+            gate: AbortOnCheckpointGate(abortFromCheck: 2),
+            profileSweeper: sweeper
+        )
+        let outcome = await job.run()
+
+        guard case .aborted(let stage, _) = outcome else {
+            Issue.record("检查点失效时应当中断，实际：\(outcome)")
+            return
+        }
+        #expect(stage == "描述文件清理")
+        let maps = await sweeper.receivedKeepMaps
+        #expect(maps.isEmpty, "被打断后一份 profile 都不能删")
+    }
+
     // MARK: - 夹具
 
     private struct Fixture {
@@ -229,17 +363,29 @@ struct AppMaintenanceJobTests {
         )
     }
 
-    private func makeRecord(appID: UUID) -> AppRecord {
+    private func makeRecord(
+        appID: UUID,
+        mappedBundleIdentifier: String? = nil,
+        provisioningProfileUUID: String? = nil,
+        signedArtifactStatus: SignedArtifactStatus? = nil,
+        extensions: [AppExtensionRecord] = [],
+        isSeal: Bool = false
+    ) -> AppRecord {
         AppRecord(
             id: appID,
             originalBundleIdentifier: "com.seal.maintenance.\(appID.uuidString.prefix(8))",
+            mappedBundleIdentifier: mappedBundleIdentifier,
             name: "维护测试应用",
             version: "1.0.0",
             buildNumber: "1",
             size: 1024,
             state: .imported,
+            provisioningProfileUUID: provisioningProfileUUID,
+            signedArtifactStatus: signedArtifactStatus,
             ipaRelativePath: "Apps/\(appID.uuidString)/Original.ipa",
-            importedAt: Date()
+            isSeal: isSeal,
+            importedAt: Date(),
+            extensions: extensions
         )
     }
 
@@ -247,7 +393,9 @@ struct AppMaintenanceJobTests {
         _ fixture: Fixture,
         gate: (any MaintenanceLeasing)? = nil,
         store: InMemoryAppStore = InMemoryAppStore(),
-        recovery: AppRecordRecovery? = nil
+        recovery: AppRecordRecovery? = nil,
+        profileSweeper: (any StaleProfileSweeping)? = nil,
+        sealRunningProfileUUID: (@Sendable () -> String?)? = nil
     ) -> AppMaintenanceJob {
         AppMaintenanceJob(
             // 默认闸门「永不失效」，用来测正常路径
@@ -256,7 +404,9 @@ struct AppMaintenanceJobTests {
             fileStore: fixture.fileStore,
             recovery: recovery,
             selfAppRegistrar: nil,
-            logStore: nil
+            logStore: nil,
+            profileSweeper: profileSweeper,
+            sealRunningProfileUUID: sealRunningProfileUUID
         )
     }
 
@@ -265,7 +415,18 @@ struct AppMaintenanceJobTests {
             Issue.record("应当正常完成，实际：\(outcome)")
             return nil
         }
-        return report
+        return report.orphans
+    }
+}
+
+/// 记录「保留集合」的桩，用来断言维护作业到底把哪些 Bundle ID 交给了清理器。
+/// 用 actor 而不是 class：协议要求 `Sendable`，而这里需要可变状态。
+private actor RecordingProfileSweeper: StaleProfileSweeping {
+    private(set) var receivedKeepMaps: [[String: String]] = []
+
+    func sweepStaleProfiles(keepingByBundleID: [String: String]) async -> ProfileCleanupSummary {
+        receivedKeepMaps.append(keepingByBundleID)
+        return ProfileCleanupSummary()
     }
 }
 

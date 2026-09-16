@@ -1317,21 +1317,30 @@ actor SigningCoordinator {
         }
     }
 
-    /// 安装成功后清理设备端「同一 Bundle ID」的旧描述文件，保留刚安装的新 profile。
+    /// 安装成功后清理设备端旧描述文件，保留**本次刚装进设备的那一组** profile。
+    ///
+    /// 一次安装会为每个扩展各装一份 profile，所以保留集合必须按「产物内嵌的全部 profile」
+    /// 来算，不能只认主 Bundle ID —— 否则扩展的旧 profile 会一直堆（2026-09-16 真机：
+    /// LiveContainer 的 ShareExtension 一天内累积 6 份，Seal 自身累积 17 份）。
+    ///
     /// 免费账号 7 天续签/反复重签会在设备端累积 profile，旧文件过期可能误导后续校验。
-    /// 全程「最佳努力」：读不到新 profile UUID 或任何一步失败都静默跳过，绝不阻断安装结果。
+    /// 全程「最佳努力」：读不到产物内嵌 profile 或任何一步失败都静默跳过，绝不阻断安装结果。
     private func removeStaleProfiles(signedData: Data, effectiveBundleID: String) {
-        guard let profileUUID = SignedArtifactProfileReader.embeddedProfileUUID(in: signedData) else {
+        let embeddedProfiles = SignedArtifactProfileReader.embeddedProfiles(in: signedData)
+        guard embeddedProfiles.isEmpty == false else {
             return
+        }
+        var keepingByBundleID: [String: String] = [:]
+        for profile in embeddedProfiles {
+            keepingByBundleID[profile.bundleIdentifier] = profile.uuid
         }
         Task {
             let summary = await DeviceProfileCleaner.removeStaleProfiles(
-                for: effectiveBundleID,
-                keeping: profileUUID
+                keepingByBundleID: keepingByBundleID
             )
             try? await logStore?.append(
                 category: .installation,
-                message: "安装后旧描述文件清理（\(effectiveBundleID)）：\(summary.logMessage)"
+                message: "安装后旧描述文件清理（主 \(effectiveBundleID)，共 \(keepingByBundleID.count) 个 Bundle ID）：\(summary.logMessage)"
             )
         }
     }

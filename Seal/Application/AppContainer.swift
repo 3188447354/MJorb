@@ -149,7 +149,7 @@ struct AppContainer {
                     logStore: logStore
                 )
             }
-            // 维护作业：记录恢复 / Seal 自注册 / 孤儿文件清理。
+            // 维护作业：记录恢复 / Seal 自注册 / 孤儿文件清理 / 设备端旧描述文件清理。
             // 通过 MaintenanceGate 只在空闲时运行，永不阻塞用户的前台操作。
             let maintenanceJob = AppMaintenanceJob(
                 gate: MaintenanceGate(coordinator: operationCoordinator),
@@ -157,7 +157,14 @@ struct AppContainer {
                 fileStore: fileStore,
                 recovery: appRecordRecovery,
                 selfAppRegistrar: selfAppRegistrar,
-                logStore: logStore
+                logStore: logStore,
+                profileSweeper: DeviceProfileCleaner(),
+                sealRunningProfileUUID: {
+                    guard let identity = try? identityReader.read(bundleURL: Bundle.main.bundleURL) else {
+                        return nil
+                    }
+                    return identity.mainTarget?.profileUUID
+                }
             )
 
             return AppContainer(

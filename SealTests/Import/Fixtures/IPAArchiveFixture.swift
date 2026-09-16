@@ -35,7 +35,8 @@ enum IPAArchiveFixture {
         includeShareExtension: Bool = false,
         includeEntitlements: Bool = false,
         includeMobileProvision: Bool = false,
-        extraEntries: [(path: String, data: Data)] = []
+        extraEntries: [(path: String, data: Data)] = [],
+        extensionMobileProvision: Data? = nil
     ) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appending(
@@ -100,7 +101,7 @@ enum IPAArchiveFixture {
                 )
                 if includeMobileProvision {
                     try add(
-                        Self.makeMinimalMobileProvisionData(),
+                        extensionMobileProvision ?? Self.makeMinimalMobileProvisionData(),
                         path: "\(appRoot)/PlugIns/Share.appex/embedded.mobileprovision",
                         to: archive
                     )
@@ -153,10 +154,13 @@ enum IPAArchiveFixture {
         }
     }
 
-    /// 供 SignedIPAIdentityReader 测试使用的最小描述文件数据。
+    /// 供 SignedIPAIdentityReader / SignedArtifactProfileReader 测试使用的最小描述文件数据。
     /// DeveloperCertificates 使用真实 DER X.509 证书，确保 ProvisioningProfileReader
     /// 能通过 SecCertificateCreateWithData 解析出证书序列号与指纹。
-    static func makeMinimalMobileProvisionData() -> Data {
+    static func makeMinimalMobileProvisionData(
+        uuid: String = "FIXTURE-PROFILE-UUID",
+        bundleIdentifier: String = "com.example.seal"
+    ) -> Data {
         let certificateEntries = [
             "<data>\(TestDeveloperCertificate.certificateBDER.base64EncodedString())</data>"
         ].joined()
@@ -166,7 +170,7 @@ enum IPAArchiveFixture {
         <plist version="1.0">
         <dict>
             <key>UUID</key>
-            <string>FIXTURE-PROFILE-UUID</string>
+            <string>\(uuid)</string>
             <key>Name</key>
             <string>Fixture Profile</string>
             <key>CreationDate</key>
@@ -178,7 +182,7 @@ enum IPAArchiveFixture {
             <key>Entitlements</key>
             <dict>
                 <key>application-identifier</key>
-                <string>T3432ZHJUF9.com.example.seal</string>
+                <string>T3432ZHJUF9.\(bundleIdentifier)</string>
             </dict>
             <key>DeveloperCertificates</key>
             <array>\(certificateEntries)</array>

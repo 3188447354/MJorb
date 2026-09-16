@@ -310,18 +310,21 @@ struct AppSigningSheet: View {
 
     /// 证书序列号专用行：完整序列号在标题右侧放不下会被截断，
     /// 因此值独占一行、等宽灰色、可长按选中（与详情页 / 进度页 / 操作面板同一套呈现）。
+    /// 证书序列号行：标题左、值右，同一行展示；超长中间省略（保留头尾便于核对）。
     private func summarySerialRow(title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text(title)
                 .font(.system(size: 14, weight: .regular))
                 .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(1)
+            Spacer(minLength: 12)
             Text(value)
                 .font(.system(size: 12, weight: .regular, design: .monospaced))
                 .foregroundColor(Color.sealTextSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
+                .truncationMode(.middle)
                 .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .frame(minHeight: 42)
         .padding(.vertical, 4)

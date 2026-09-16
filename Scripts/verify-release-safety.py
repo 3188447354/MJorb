@@ -123,6 +123,45 @@ def violations(load=read):
     check("return UIControl().sendAction" not in signing_progress_view,
           "R07: UIControl.sendAction returns Void, not Bool — cannot be returned")
 
+    # R08: 设备端旧描述文件清理必须覆盖扩展，且必须「有明确记录才删」（2026-09-16）。
+    # 真机现象（StikDebug 的 App Expiry 页）：Seal 自己累积 17 份 profile，
+    # LiveContainer 的 ShareExtension 一天内累积 6 份。两个原因：
+    #   1. 安装后的清理只按**主** Bundle ID 匹配，扩展的 profile 从头到尾没人管；
+    #   2. 清理只在安装成功那一刻触发，维护作业里根本没有这一步，所以历史堆积清不掉。
+    # 反面约束同样重要：删错 profile 会让已安装的 App 立刻无法启动（iOS 启动时校验
+    # profile 是否还在设备上），所以「拿不到可信的保留 UUID」时必须整条跳过，
+    # 绝不能猜「保留最新那份」。
+    profile_reader = load("Seal/Infrastructure/Installation/SignedArtifactProfileReader.swift")
+    check("static func embeddedProfiles" in profile_reader
+          and "isInstalledAppProvision(entry.path)" in profile_reader,
+          "R08: cleanup must know every installed profile, including extensions")
+    cleaner_source = load("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift")
+    check("skipped-no-managed-bundle-ids" in cleaner_source,
+          "R08: an empty keep-map must delete nothing")
+    sweep_body = section(
+        cleaner_source,
+        "private static func removeProfiles(",
+        "extension DeviceProfileCleaner: StaleProfileSweeping"
+    )
+    # 用 find 而不是 index：变异把 guard 换掉时，这里要报「检查失败」而不是抛异常。
+    lookup_at = sweep_body.find("guard let keepingUUID = keepingByBundleID[")
+    remove_at = sweep_body.find("try Provision.removeProvisioningProfile(id: profileUUID)")
+    check(lookup_at != -1 and remove_at != -1 and lookup_at < remove_at,
+          "R08: a profile may only be deleted after its managed bundle-id lookup succeeded")
+    coordinator_source = load("Seal/Core/Signing/SigningCoordinator.swift")
+    check("SignedArtifactProfileReader.embeddedProfiles(in: signedData)" in coordinator_source,
+          "R08: post-install cleanup must use the whole embedded profile set")
+    maintenance_source = load("Seal/Core/Maintenance/AppMaintenanceJob.swift")
+    check("profileSweeper" in maintenance_source and "profileKeepMap" in maintenance_source,
+          "R08: idle maintenance must sweep stale device profiles")
+    check("guard let uuid = record.provisioningProfileUUID" in maintenance_source,
+          "R08: records without a profile UUID must be skipped, never guessed")
+    # 扩展记录是「乐观值」：applySigningResult 在签名阶段就写它，不等安装校验。
+    # 签名成功但安装失败时，扩展记录指向一份设备上不存在的 profile ——
+    # 拿它当保留集合会删掉真正在用的那一份，扩展当场失效。
+    check("guard record.signedArtifactStatus == .installed else { continue }" in maintenance_source,
+          "R08: extension profile ids are optimistic — only trust them after a verified install")
+
     # R04: Portal 三个服务的回调一律经 ContinuationBox 转发。裸 continuation 第二次 resume
     # 不是可捕获错误，而是 SWIFT TASK CONTINUATION MISUSE 致命崩溃（进程直接终止）。
     # AltSign 存在两条重复回调路径：「先报错、随后迟到地报成功」与「超时先到、回调才到」。
@@ -220,9 +259,11 @@ def violations(load=read):
           "C: every background write-back must be guarded by the load generation")
 
     job = load("Seal/Core/Maintenance/AppMaintenanceJob.swift")
-    check("guard gate.shouldAbort(token) == false else" in job,
+    # 现在有**两处**删除步骤（孤儿文件清理、设备端旧描述文件清理），各自都要有租约复查。
+    # 只写 `in job` 的话，删掉其中一处仍会被另一处掩盖 —— 守卫会变成「永远全绿」。
+    check(job.count("guard gate.shouldAbort(token) == false else") >= 2,
           "C: the sweep must re-check the lease before deleting anything")
-    check(job.count("gate.shouldAbort(token)") >= 3,
+    check(job.count("gate.shouldAbort(token)") >= 4,
           "C: every maintenance stage must have an abort checkpoint")
     check("fetchAll()" in section(job, "3. 孤儿文件清理", "private static func unexpectedFailure"),
           "C: valid app ids must be re-read from the DB right before deleting")
@@ -917,6 +958,22 @@ def main():
          "        UIControl().sendAction(selector, to: app, for: nil)\n    }",
          "        return UIControl().sendAction(selector, to: app, for: nil)\n    }",
          "R07: UIControl.sendAction returns Void"),
+        ("Seal/Infrastructure/Installation/SignedArtifactProfileReader.swift",
+         "for entry in archive where isInstalledAppProvision(entry.path) {",
+         "for entry in archive where isMainProvision(entry.path) {",
+         "R08: cleanup must know every installed profile"),
+        ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
+         "guard let keepingUUID = keepingByBundleID[profileBundleID.lowercased()] else {\n                continue\n            }",
+         "let keepingUUID = keepingByBundleID[profileBundleID.lowercased()] ?? \"\"",
+         "R08: a profile may only be deleted after its managed bundle-id lookup succeeded"),
+        ("Seal/Core/Maintenance/AppMaintenanceJob.swift",
+         "guard let uuid = record.provisioningProfileUUID,",
+         "let uuid = record.provisioningProfileUUID ?? \"\",",
+         "R08: records without a profile UUID must be skipped"),
+        ("Seal/Core/Maintenance/AppMaintenanceJob.swift",
+         "guard record.signedArtifactStatus == .installed else { continue }",
+         "guard true else { continue }",
+         "R08: extension profile ids are optimistic"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

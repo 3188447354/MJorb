@@ -67,17 +67,21 @@ struct InstalledAppActionSheet: View {
 
     /// 长标识（证书序列号 / 描述文件 UUID）专用行：值独占一行、灰色等宽、可长按选中。
     /// 与「应用详情」页同一套呈现，避免同一信息在不同页面一个被截断、一个能看全。
+    /// 长值行（证书序列号 / 描述文件 UUID）：标题左、值右，同一行展示。
+    /// 超长时**中间省略**，保留头尾 —— 完整值仍可长按选中复制。
     private func metadataValueRow(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text(title)
                 .foregroundStyle(.primary)
                 .lineLimit(1)
+            Spacer(minLength: 12)
             Text(value)
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(Color.sealTextSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
+                .truncationMode(.middle)
                 .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.vertical, 12)
     }

@@ -44,19 +44,32 @@ struct SignedArtifactProfileReaderTests {
     func ignoresFrameworkProvisions() throws {
         // Frameworks 下的 embedded.mobileprovision 不会被 installd 装成设备 profile。
         // 把它算进保留集合，等于给这个 Bundle ID 发了一张「永远不许清理」的免死金牌。
+        // 两种位置都要排除：主 App 下的，以及扩展（.appex）下的。
         let url = try IPAArchiveFixture.make(
             apps: [makeSealApp()],
+            includeShareExtension: true,
             includeMobileProvision: true,
-            extraEntries: [(
-                path: "Payload/Seal.app/Frameworks/Foo.framework/embedded.mobileprovision",
-                data: IPAArchiveFixture.makeMinimalMobileProvisionData(
-                    uuid: "FRAMEWORK-PROFILE-UUID",
-                    bundleIdentifier: "com.example.seal.framework"
-                )
-            )]
+            extraEntries: [
+                (
+                    path: "Payload/Seal.app/Frameworks/Foo.framework/embedded.mobileprovision",
+                    data: IPAArchiveFixture.makeMinimalMobileProvisionData(
+                        uuid: "MAIN-FRAMEWORK-PROFILE-UUID",
+                        bundleIdentifier: "com.example.seal.framework"
+                    )
+                ),
+                (
+                    path: "Payload/Seal.app/PlugIns/Share.appex/Frameworks/Bar.framework/embedded.mobileprovision",
+                    data: IPAArchiveFixture.makeMinimalMobileProvisionData(
+                        uuid: "EXTENSION-FRAMEWORK-PROFILE-UUID",
+                        bundleIdentifier: "com.example.seal.share.framework"
+                    )
+                ),
+            ]
         )
         let profiles = SignedArtifactProfileReader.embeddedProfiles(in: try Data(contentsOf: url))
 
+        // 只剩主 App 与扩展两份（两者共用同一个 UUID ⇒ 去重后 1 份）
+        #expect(profiles.count == 1)
         #expect(profiles.map(\.uuid) == ["FIXTURE-PROFILE-UUID"])
     }
 

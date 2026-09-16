@@ -59,8 +59,13 @@ enum SignedArtifactProfileReader {
         return profiles
     }
 
-    /// iOS 实际会安装为独立 profile 的位置：Payload 下任意 `.app` 根目录的
-    /// embedded.mobileprovision（主 App、PlugIns/*.appex、AppClips、Watch 等）。
+    /// iOS 实际会安装为独立 profile 的位置：Payload 下任意**应用包**根目录的
+    /// embedded.mobileprovision。
+    ///
+    /// 容器后缀必须同时认 `.app`（主 App、AppClips、Watch）与 `.appex`
+    /// （PlugIns 下的扩展 —— 本仓 `SigningWorkspace` / `AppBundleSigningIdentityReader`
+    /// / `ApplePortalSigningService` 都用 `pathExtension == "appex"` 识别扩展）。
+    /// **只认 `.app` 会静默漏掉全部扩展**，等于扩展清理根本没生效。
     ///
     /// 刻意排除 `Frameworks/*.framework/embedded.mobileprovision`：framework 的 profile
     /// 不会被 installd 装成设备 profile，把它算进保留集合会让真正的旧 profile 被误判为在用。
@@ -69,6 +74,7 @@ enum SignedArtifactProfileReader {
         guard segments.count >= mainProvisionSegmentCount,
               segments[0] == "Payload",
               segments[segments.count - 1] == "embedded.mobileprovision" else { return false }
-        return segments[segments.count - 2].hasSuffix(".app")
+        let container = segments[segments.count - 2]
+        return container.hasSuffix(".app") || container.hasSuffix(".appex")
     }
 }

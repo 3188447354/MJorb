@@ -236,6 +236,11 @@ def violations(load=read):
     check("static func embeddedProfiles" in profile_reader
           and "isInstalledAppProvision(entry.path)" in profile_reader,
           "R08: cleanup must know every installed profile, including extensions")
+    # 扩展包后缀是 .appex（本仓 SigningWorkspace / AppBundleSigningIdentityReader /
+    # ApplePortalSigningService 都用 pathExtension == "appex"）。只认 .app 会静默漏掉
+    # 全部扩展 —— 守卫全绿但扩展清理根本没生效，是「绿着坏掉」的典型。
+    check('container.hasSuffix(".app") || container.hasSuffix(".appex")' in profile_reader,
+          "R08: extensions are .appex — matching only .app silently disables extension cleanup")
     cleaner_source = load("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift")
     check("skipped-no-managed-bundle-ids" in cleaner_source,
           "R08: an empty keep-map must delete nothing")
@@ -1108,6 +1113,10 @@ def main():
          "for entry in archive where isInstalledAppProvision(entry.path) {",
          "for entry in archive where isMainProvision(entry.path) {",
          "R08: cleanup must know every installed profile"),
+        ("Seal/Infrastructure/Installation/SignedArtifactProfileReader.swift",
+         'return container.hasSuffix(".app") || container.hasSuffix(".appex")',
+         'return container.hasSuffix(".app")',
+         "R08: extensions are .appex"),
         ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
          "guard let keepingUUID = keepingByBundleID[profileBundleID.lowercased()] else {\n                continue\n            }",
          "let keepingUUID = keepingByBundleID[profileBundleID.lowercased()] ?? \"\"",

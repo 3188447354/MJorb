@@ -6,6 +6,9 @@ struct SigningProgressView: View {
     let onFinish: (SigningCompletionMode) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var selfReplacementSpin = false
+    /// Seal 自续签进入安装阶段后置 true：界面先做一次可感知的淡出转场并改文案，
+    /// 再由 Seal 触发系统级回主屏，避免「静止数秒后瞬间消失」被误读成闪退。
+    @State private var isReturningHome = false
 
     var body: some View {
         SealDrawer(title: title, showsFooter: !isRunning) {
@@ -27,10 +30,15 @@ struct SigningProgressView: View {
         .interactiveDismissDisabled(isRunning)
         // Seal 自续签=覆盖安装运行中的自己：进入 .installing（上传完成）后自动切到后台，
         // 让 iOS 用新版替换旧进程，无需人手按 Home；安装续由重新打开的新进程对账确认。
+        // 先用 withAnimation 把「正在退回主屏幕」这一帧渲染出来，再触发系统转场，
+        // 用户看到的是有交代的退场，而不是界面凭空消失。
         .onChange(of: viewModel.signingSession?.status) { _, newStatus in
             if case .running(.installing)? = newStatus,
                viewModel.signingSession?.app.isSeal == true {
-                SelfInstallAutoBackground.backgroundAfterSealUpload()
+                withAnimation(.easeInOut(duration: 0.45)) {
+                    isReturningHome = true
+                }
+                SelfInstallAutoBackground.returnToHomeAfterSealUpload()
             }
         }
     }
@@ -80,10 +88,11 @@ struct SigningProgressView: View {
             }
 
             if isRenewal {
-                Text(sealRenewal ? AppSigningPresentationHelpers.sealReplacementTip
-                    : AppSigningPresentationHelpers.keepSealOpenTip)
+                Text(renewalTipText)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.sealAccent)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .opacity(isReturningHome ? 0.72 : 1)
             }
 
             stageProgressSection(stage)
@@ -290,7 +299,7 @@ struct SigningProgressView: View {
         VStack(spacing: 0) {
             runtimeRow("签名账户", viewModel.fullEmail(for: session.account))
             Divider().padding(.leading, 14)
-            runtimeRow("Apple ID 证书", certificateDisplayName(session))
+            runtimeSerialRow("证书序列号", certificateDisplayName(session))
             Divider().padding(.leading, 14)
             runtimeRow("Bundle ID", runtimeBundleIdentifier(session))
         }
@@ -323,15 +332,46 @@ struct SigningProgressView: View {
         .frame(minHeight: 42)
     }
 
+    /// 证书序列号专用行：完整序列号（40 位十六进制）在标题右侧放不下会被截断，
+    /// 因此值独占一行、等宽、灰色、可长按选中，保证「序列号显示全面」。
+    private func runtimeSerialRow(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+            Text(value)
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .foregroundStyle(Color.sealTextSecondary)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(minHeight: 42)
+        .padding(.vertical, 4)
+    }
+
+    /// 续签提示：Seal 自续签与普通 App 同文案；进入安装阶段后换成「正在退回主屏幕」，
+    /// 让自动切后台有预期，不再要求用户手按 Home。
+    private var renewalTipText: String {
+        if sealRenewal, case .running(.installing)? = session?.status {
+            return AppSigningPresentationHelpers.sealReturningHomeTip
+        }
+        return AppSigningPresentationHelpers.keepSealOpenTip
+    }
+
     private func certificateDisplayName(_ session: SigningSession) -> String {
         // 与详情页 AppDetailView.certificateName 共用同一个 helper，用会话真实的
         // selectedCertificateSerialNumber（签名时由 onCertificateResolved 回写）作序列号，
         // 使签名进度页与详情页展示完全同步；证书尚未确定时保持“未准备”。
+        // 展示值只有序列号本身（不再带「序列号 · 」前缀），且完整不截断。
         guard let serial = session.selectedCertificateSerialNumber ?? session.account.certificateSerialNumber,
               serial.isEmpty == false else {
             return "未准备"
         }
-        return AppSigningPresentationHelpers.certificateName(serial: serial)
+        return AppSigningPresentationHelpers.certificateSerialText(serial: serial)
     }
 
     private func runtimeBundleIdentifier(_ session: SigningSession) -> String {
@@ -563,17 +603,45 @@ private struct CurrentSegmentFill: View {
     private var clampedFraction: CGFloat { max(0, min(1, fraction)) }
 }
 
+/// Seal 自续签的「回主屏幕」动作。
+///
+/// Seal 自续签 = 覆盖安装正在运行的自己：iOS 只有在旧进程退出前台后才会用新版完成替换。
+/// 旧实现是「静止等 2 秒 → `perform("suspend")`」，一旦 `suspend` 在某个系统版本上不再
+/// 响应就会静默什么都不做，最后由 installd 直接杀进程 —— 用户看到的就是「闪退」。
+/// 现在：
+///   1. UI 先渲染「正在退回主屏幕」（由 SigningProgressView 的 withAnimation 负责）；
+///   2. 触发与「按 Home」等价的系统级转场，交给系统播放退场动画；
+///   3. 只有转场完全不可用时才用 `exit(0)` 兜底（系统同样会播放退场动画），
+///      保证进程一定结束，iOS 才能完成替换。
+/// 本类型只做「切后台 / 退出」，不碰签名、证书、自替换事务：安装结果仍由重新打开的
+/// 新进程 `SelfReplacementCoordinator` 对账确认。
 enum SelfInstallAutoBackground {
+    /// 转场前的可感知停顿：既让 UI 的「正在退回主屏幕」渲染出来，也给 Rust 暂存落盘留余量。
+    private static let transitionBeatNanoseconds: UInt64 = 1_200_000_000
+
     @MainActor
-    static func backgroundAfterSealUpload() {
+    static func returnToHomeAfterSealUpload() {
         Task { @MainActor in
-            // 给 Rust 一点暂存落盘/下发 installd 的余量再切后台，避免打断暂存
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(nanoseconds: transitionBeatNanoseconds)
             let app = UIApplication.shared
+            // 用户已经自己切走了：不重复触发，避免和用户操作打架。
             guard app.applicationState == .active else { return }
-            let selector = NSSelectorFromString("suspend")
-            guard app.responds(to: selector) else { return }
-            _ = app.perform(selector)
+            if triggerHomeTransition(app) { return }
+            exit(0)
         }
+    }
+
+    /// 触发与「按 Home」等价的系统转场。`suspend` 是私有 selector：
+    /// 先直接 perform，不响应时再用「借 UIControl 发消息」的经典写法兜底。
+    /// 返回 false 表示两条路径都没能把消息送出去，由调用方走 `exit(0)`。
+    @MainActor
+    private static func triggerHomeTransition(_ app: UIApplication) -> Bool {
+        let selector = NSSelectorFromString("suspend")
+        if app.responds(to: selector) {
+            _ = app.perform(selector)
+            return true
+        }
+        // `sendAction(_:to:for:)` 在目标不响应时返回 false，正好用作「转场是否触发」的判据。
+        return UIControl().sendAction(selector, to: app, for: nil)
     }
 }

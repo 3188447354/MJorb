@@ -7,8 +7,17 @@ actor MinimuxerInstallChannel: InstallChannel {
     private let onDemandActivator: any VPNOnDemandActivating
     private var cachedDeviceIdentifier: String?
     private var lastSuccessfulStart: Date?
+    /// 正在进行的整段隧道诊断。签名链路与 ViewModel 现在会**并发**请求启动通道
+    /// （ViewModel 在签名开始就并行发起、SigningCoordinator 安装前再 ensure 一次），
+    /// 没有它就会各自跑一遍完整诊断（reset + 18s RSD 握手 + 36×500ms 轮询），
+    /// 既重复又让「正在连接设备」耗时翻倍。并发调用一律合并到同一次启动。
+    private var inFlightStart: Task<String, Error>?
     /// 最近一次“拿不到设备标识”的底层错误文本（Rust IdeviceError Debug），用于精准分类，不再黑盒。
     private var lastDiscoveryDetail: String?
+    /// 失败熔断：最近一次诊断失败的时间与错误。
+    /// 用途是让批量续签在通道不可用时**只付一次**诊断代价，而不是 N×75s。
+    private var lastFailureAt: Date?
+    private var lastFailure: Error?
 
     private static let startHardTimeoutSeconds: Double = 75
     private static let blockingCallTimeoutSeconds: Double = 5.0
@@ -18,6 +27,20 @@ actor MinimuxerInstallChannel: InstallChannel {
     /// 于是每个 App 都在「连接设备」卡一下。窗口放宽到整场会话，
     /// 命中仍要求 isReady() 为真，设备真的断开不会用到陈腐缓存。
     private static let cacheWindowSeconds: Double = 900
+    /// 诊断失败后的熔断窗口（秒）。
+    ///
+    /// 批量续签若把前置的「通道可用性判定」拿掉，通道不可用时 N 个 App 会各自
+    /// 重跑一遍完整诊断（每个最长 75s）。有了这段窗口，第一个 App 付掉诊断代价，
+    /// 后续 App 在窗口内直接拿到同一个错误快速失败。
+    ///
+    /// 取值 60 秒：需要覆盖「一轮批量里从第一个 App 失败到最后一个 App 尝试」的跨度 ——
+    /// 每个 App 失败前还会走一遍申请证书/描述文件，间隔可能到几十秒，窗口太短会在
+    /// 中途过期，导致又有一个 App 重跑 75s 诊断。
+    ///
+    /// 这不会挡住用户的手动重试：用户发起的签名/续签会话（`runSigning` /
+    /// `startBatchRefresh` / `refreshSigningChannel`）都会在开始时显式调用
+    /// `clearFailureCooldown()`，只有**同一轮批量内部**的连续调用才吃熔断。
+    private static let failureCooldownSeconds: TimeInterval = 60
 
     init(
         pairingStore: PairingStore,
@@ -38,10 +61,42 @@ actor MinimuxerInstallChannel: InstallChannel {
            await isReady() {
             return cached
         }
-        // 整体硬超时：最多两轮诊断，避免永久停在"准备环境"。
-        return try await withHardTimeout(seconds: Self.startHardTimeoutSeconds) {
-            try await self.startOnce()
+        // 失败熔断：刚诊断失败过就不再来一遍，直接把同一个错误还回去。
+        // 这是批量续签能安全去掉前置等待的前提 —— 否则 N 个 App 各跑一遍 75s 诊断。
+        if let lastFailureAt,
+           let lastFailure,
+           Date().timeIntervalSince(lastFailureAt) < Self.failureCooldownSeconds {
+            throw lastFailure
         }
+        // 单飞：已有诊断在跑就加入它，不再另起一轮。
+        if let inFlightStart {
+            return try await inFlightStart.value
+        }
+        let task = Task { () -> String in
+            // 整体硬超时：最多两轮诊断，避免永久停在"准备环境"。
+            try await withHardTimeout(seconds: Self.startHardTimeoutSeconds) {
+                try await self.startOnce()
+            }
+        }
+        inFlightStart = task
+        defer { inFlightStart = nil }
+        do {
+            let deviceIdentifier = try await task.value
+            lastFailureAt = nil
+            lastFailure = nil
+            return deviceIdentifier
+        } catch {
+            lastFailureAt = Date()
+            lastFailure = error
+            throw error
+        }
+    }
+
+    /// 用户主动刷新时清除熔断，让下一次 `start()` 真正重跑诊断。
+    /// 见 `InstallChannel.clearFailureCooldown()` 的说明。
+    func clearFailureCooldown() async {
+        lastFailureAt = nil
+        lastFailure = nil
     }
 
     /// 一次完整的隧道诊断流程；作为 actor 隔离方法，可直接读写自身缓存状态。

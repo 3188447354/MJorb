@@ -387,9 +387,22 @@ actor SigningCoordinator {
             guard installAfterSigning else { return app }
 
             // 签名期间已在后台平行拉起隧道（channelStart）。进入安装前 await 它，
-            // 让安装直接用已就绪的通道；即使这里失败，installSignedIPA 还会再 ensure 一次。
+            // 让安装直接用已就绪的通道。平行启动失败 ≠ 现在一定不可用（可能只是那一次
+            // 诊断抖动），所以只有通道确实没就绪才把底层诊断错误（SEAL-VPN-* /
+            // SEAL-PAIR-*）升级为用户可见的失败，而不是留一个笼统的 channelNotReady；
+            // installSignedIPA 内的 ensure 仍作兜底，覆盖缓存 / 纯安装路径。
             if let channelStart {
-                _ = try? await channelStart.value
+                do {
+                    _ = try await channelStart.value
+                } catch {
+                    if try await !installChannel.isReady() {
+                        throw (error as? ImportFailure) ?? Self.failure(
+                            reason: "签名完成后仍无法连接设备完成安装。",
+                            recovery: "确认 LocalDevVPN 已连接、开发者模式已开启后重试",
+                            code: "SEAL-VPN-001"
+                        )
+                    }
+                }
             }
 
             try? await logStore?.append(
@@ -1488,6 +1501,9 @@ actor SigningCoordinator {
         if code.hasPrefix("SEAL-CERT-") { return "证书处理失败" }
         if code.hasPrefix("SEAL-APPID-") { return "应用标识被拒" }
         if code.hasPrefix("SEAL-BUNDLE-") { return "Bundle ID 冲突" }
+        // 通道/隧道类失败（含 SEAL-VPN-001）必须有自己的标题，否则会落到「无法完成签名」，
+        // 让用户以为是签名本身出错，而真正要做的是恢复设备连接。
+        if code.hasPrefix("SEAL-VPN-") { return "无法连接设备" }
         return "无法完成签名"
     }
 

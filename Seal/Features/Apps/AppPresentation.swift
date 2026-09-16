@@ -126,19 +126,54 @@ enum ProfileDisplayStatus: Equatable, Sendable {
 
 enum AppSigningPresentationHelpers {
     static let renewNowAction = "立即续签"
+    /// 签名 / 续签进行中的统一提示：**Seal 自续签与普通 App 同文案**。
+    /// 整条链路由 Seal 自己申请后台保活，用户只要不锁屏、不切走即可；
+    /// Seal 自续签的「退回主屏幕」由 Seal 自己完成，不再要求用户手按 Home。
     static let keepSealOpenTip = "请保持 Seal 打开，不要锁屏或切换 App。"
-    /// Seal 自续签=覆盖安装正在运行的自己：iOS 只有等旧进程退到后台才会用新版完成替换。
-    /// 所以这阶段不是「保持前台干等」，而是「进度走完后按 Home 回主屏幕触发替换，再重新打开」。
-    static let sealReplacementTip = "进度走完后请按 Home 键回到主屏幕，iOS 会用新版替换 Seal；替换完成后再重新打开即可。"
+    /// Seal 自续签进入安装阶段（上传完成）后的提示。此时 Seal 会自动触发系统级
+    /// 回主屏转场，让 iOS 用新版替换旧进程。文案提前说清楚，避免界面瞬间消失被误读成闪退。
+    static let sealReturningHomeTip = "正在退回主屏幕，iOS 会用新版替换 Seal；替换完成后重新打开即可。"
 
-    static func certificateName(serial: String?) -> String {
+    /// 证书序列号展示值：完整序列号（只留十六进制、转大写、不截断）。
+    /// 行标题固定为「证书序列号」，因此这里不再重复「序列号 · 」前缀。
+    static func certificateSerialText(serial: String?) -> String {
         guard let serial, serial.isEmpty == false else { return "签名时创建" }
-        return "序列号 · \(fullSerial(serial))"
+        return fullSerial(serial)
     }
 
     static func fullSerial(_ value: String) -> String {
         let normalized = value.filter(\.isHexDigit).uppercased()
         return normalized.isEmpty ? value : normalized
+    }
+
+    /// 该应用**实际使用**的描述文件 UUID（独立于状态文案，供「描述文件」行独占一行展示）。
+    /// 优先取顶层记录（安装确认后回写的真实 profile），顶层缺失时回退到签名 target，
+    /// 主 target 优先于扩展 target —— 与「描述文件」行语义一致：这是主应用的 profile。
+    static func profileUUIDText(for app: AppRecord) -> String {
+        if let uuid = app.provisioningProfileUUID, uuid.isEmpty == false {
+            return uuid
+        }
+        let targets = app.signingTargets
+        let main = targets.first { target in
+            guard let mapped = app.mappedBundleIdentifier else { return false }
+            return target.bundleIdentifier.caseInsensitiveCompare(mapped) == .orderedSame
+        }
+        if let uuid = (main ?? targets.first)?.profileUUID, uuid.isEmpty == false {
+            return uuid
+        }
+        return "未记录"
+    }
+
+    /// 描述文件创建时间：证明「这次续签真的换了一份本轮新生成的 profile」，
+    /// 而不是沿用了旧文件（同版本续签只靠有效期看不出来，见 R07）。
+    static func profileCreationDate(for app: AppRecord) -> Date? {
+        if let date = app.provisioningProfileCreationDate { return date }
+        let targets = app.signingTargets
+        let main = targets.first { target in
+            guard let mapped = app.mappedBundleIdentifier else { return false }
+            return target.bundleIdentifier.caseInsensitiveCompare(mapped) == .orderedSame
+        }
+        return (main ?? targets.first)?.profileCreationDate
     }
 
     static func profileStatus(for app: AppRecord, now: Date = Date()) -> ProfileDisplayStatus {

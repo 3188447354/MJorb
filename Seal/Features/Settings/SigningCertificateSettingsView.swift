@@ -524,7 +524,9 @@ struct SigningCertificateSettingsView: View {
 
     @ViewBuilder
     private func installedAppsSection(account: AppleAccountRecord) -> some View {
-        let installedApps = CertificateRevocationImpact.affectedApps(
+        // 与上方「本机已安装 App 在用」行标签同源判定（顶层序列号 + 每个签名 target 的序列号），
+        // 否则会出现「标签说在用、清单说暂无」的矛盾，Seal 自身也会被漏掉。
+        let installedApps = CertificateRevocationImpact.installedAppsAssociated(
             serialNumber: account.certificateSerialNumber ?? "",
             apps: relatedApps
         )

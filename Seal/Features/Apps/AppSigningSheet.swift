@@ -242,7 +242,7 @@ struct AppSigningSheet: View {
             }
             Divider().padding(.leading, 14)
 
-            summaryRow(title: "Apple ID 证书", value: certificateSummary, scaleToFit: true)
+            summarySerialRow(title: "证书序列号", value: certificateSummary)
             Divider().padding(.leading, 14)
             summaryRow(title: "扩展", value: extensionSummary)
         }
@@ -306,6 +306,25 @@ struct AppSigningSheet: View {
         }
         .frame(minHeight: 42)
         .contentShape(Rectangle())
+    }
+
+    /// 证书序列号专用行：完整序列号在标题右侧放不下会被截断，
+    /// 因此值独占一行、等宽灰色、可长按选中（与详情页 / 进度页 / 操作面板同一套呈现）。
+    private func summarySerialRow(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(value)
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .foregroundColor(Color.sealTextSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(minHeight: 42)
+        .padding(.vertical, 4)
     }
 
     @ViewBuilder
@@ -430,7 +449,7 @@ struct AppSigningSheet: View {
             account: selectedAccount
         )
         guard let serial, serial.isEmpty == false else { return "签名时创建" }
-        return AppSigningPresentationHelpers.certificateName(serial: serial)
+        return AppSigningPresentationHelpers.certificateSerialText(serial: serial)
     }
 
     private var statusText: String {

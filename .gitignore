@@ -1,4 +1,6 @@
 .worktrees/
+# 本地 AI 助手的工作数据（记忆、缓存）。属于本机环境，不进仓库。
+.workbuddy-ai/
 .DS_Store
 DerivedData/
 build/

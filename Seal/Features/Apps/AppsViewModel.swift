@@ -315,6 +315,9 @@ final class AppsViewModel: ObservableObject {
             signingChannelStatus = .unavailable
             return false
         }
+        // 用户主动刷新（VPN 恢复重试、设置页刷新）：先清熔断，保证这次真实重跑诊断，
+        // 而不是把 60 秒前的失败原样还回去。
+        await installChannel.clearFailureCooldown()
 
         signingChannelStatus = .connecting
         let task = Task {
@@ -330,6 +333,34 @@ final class AppsViewModel: ObservableObject {
         channelTask = nil
         signingChannelStatus = ready ? .ready : .unavailable
         return ready
+    }
+
+    /// 非阻塞版通道启动：把隧道诊断（reset + RSD 握手 + 轮询，冷启动最长 75s）**丢到后台并行**，
+    /// 立刻返回让签名链路先跑起来。
+    ///
+    /// 旧行为是在签名前 `await refreshSigningChannel()`，于是整段隧道诊断都压在
+    /// 「正在连接设备」这一个阶段上 —— 这正是「签名/续签卡在正在连接很久」的根因。
+    /// 签名本身（申请证书 / AppID / 描述文件 / codesign）与连设备互不依赖，且安装前
+    /// `SigningCoordinator` 会自己 `await installChannel.start()`（900s 缓存命中即返回，
+    /// 并由通道层单飞合并并发启动），所以这里不必等。
+    func beginSigningChannel() {
+        guard channelTask == nil, let installChannel else { return }
+        signingChannelStatus = .connecting
+        let task = Task { [weak self] () -> Bool in
+            let ready: Bool
+            do {
+                _ = try await installChannel.start()
+                ready = true
+            } catch {
+                ready = false
+            }
+            await MainActor.run {
+                self?.signingChannelStatus = ready ? .ready : .unavailable
+                self?.channelTask = nil
+            }
+            return ready
+        }
+        channelTask = task
     }
 
     /// 加载应用列表。**只读**：不写 DB、不动文件。
@@ -1313,11 +1344,19 @@ final class AppsViewModel: ObservableObject {
         batchRefreshSession = BatchRefreshSession()
         batchRefreshTask = Task { [weak self] in
             guard let self else { return }
-            guard await self.refreshSigningChannel() else {
-                self.batchRefreshTask = nil
-                self.batchRefreshSession?.status = .failed(Self.connectionRecoveryFailure)
-                return
-            }
+            // 不再前置 `await refreshSigningChannel()`：整段隧道诊断（reset + 18s RSD 握手 +
+            // 36×500ms 轮询，硬超时 75s）压在「正在连接设备」上，是「点续签后卡很久」的
+            // 第二个入口（第一个是单签，见 runSigning）。
+            //
+            // 改为并行预热：先清熔断（这是用户发起的新会话），再让通道在后台开始诊断，
+            // 同时立刻进入续签循环 —— 第一个 App 的证书/描述文件申请与隧道诊断重叠，
+            // 安装前 SigningCoordinator 会 await 同一条通道（通道层单飞合并，只诊断一次）。
+            //
+            // 通道真不可用时不会退化成 N×75s：通道层有失败熔断（60 秒窗口），
+            // 第一个 App 付掉诊断代价并写入熔断，后续 App 在窗口内快速失败，
+            // 逐个给出可操作文案，而不是整批卡死在一个阶段上。
+            await self.installChannel?.clearFailureCooldown()
+            self.beginSigningChannel()
             await self.runBatchRefresh(appIDs: appIDs)
         }
     }
@@ -1467,7 +1506,7 @@ final class AppsViewModel: ObservableObject {
                 // 与单签 SigningProgressView 行为一致。Seal 自续签必然替换运行中的自己，
                 // 进程会被新包终止，其后排队的续签项会一并中断（与手按 Home 相同）。
                 if stage == .installing {
-                    SelfInstallAutoBackground.backgroundAfterSealUpload()
+                    SelfInstallAutoBackground.returnToHomeAfterSealUpload()
                 }
             } else {
                 batchRefreshSession?.status = .running
@@ -1729,9 +1768,15 @@ final class AppsViewModel: ObservableObject {
         do {
             updateSigningStage(.waitingForChannel)
             if completionMode == .signAndInstall {
-                guard await refreshSigningChannel() else {
-                    throw Self.connectionRecoveryFailure
-                }
+                // 隧道诊断丢到后台并行，签名不再干等整段「正在连接设备」。
+                // 安装前 SigningCoordinator 会 await 同一条通道（通道层单飞合并，
+                // 不会重复跑诊断）；通道真失败时由安装阶段的诊断错误给出可操作指引。
+                //
+                // 先清熔断：这是用户发起的新会话，必须真实重跑诊断，
+                // 不能复用上一轮批量续签残留的失败 —— 否则用户修好 VPN 再点一次
+                // 也会被瞬间拒绝，看起来像 Seal 坏了。
+                await installChannel?.clearFailureCooldown()
+                beginSigningChannel()
             }
             let completed = try await signingCoordinator.signAndInstall(
                 appID: app.id,
@@ -2097,13 +2142,6 @@ final class AppsViewModel: ObservableObject {
     }
 
     private static let connectionRecoveryReason = "请确认已连接 Wi-Fi 并开启 LocalDevVPN。若长时间无响应，请在设置中确认 LocalDevVPN 已连接后重试。"
-
-    private static let connectionRecoveryFailure = ImportFailure(
-        title: "需要恢复连接",
-        reason: connectionRecoveryReason,
-        recovery: "重新检查",
-        code: "SEAL-VPN-001"
-    )
 }
 
 

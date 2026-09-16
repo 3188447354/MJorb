@@ -60,6 +60,59 @@ def violations(load=read):
     check("HardTimeout.run" in timeout_fn and "withThrowingTaskGroup" not in timeout_fn,
           "R04: withAppleTimeout must use HardTimeout, not withThrowingTaskGroup")
 
+    # R05: Apple 免费账号的请求节流 + 1100 退避重试（2026-09-16）。
+    # 抖音这类「主 App + 8 个扩展」的 IPA 需要在 App ID 阶段连续注册 9 个号
+    #（每个还要 updateFeatures），再连续申请 9 个描述文件 —— 短时间二十余次连发请求
+    # 会触发 Apple 侧掐断会话，返回 1100 "Your session has expired. Please log in."。
+    #
+    # 判定它是限流而非真过期的依据：用户日志里每一次 AUTH-107 报错前 1–3 秒都有一条
+    # 「证书决策」成功。证书申请能成功说明 session 在 Apple 服务端仍然有效，
+    # 所以让用户「去重新验证 Apple ID」是死循环（重新登录后密集请求再次触发限流）——
+    # 这正是用户反馈的「无论怎样在验证 Apple ID 就报错失效」。
+    check("actor AppleRequestThrottle" in portal and "minimumInterval" in portal,
+          "R05: Apple requests must be throttled to avoid rate-limit session drops")
+    check("await AppleRequestThrottle.shared.wait()" in timeout_fn,
+          "R05: every Apple request must pass through the throttle (single entry point)")
+    recovery_fn = section(portal, "private func withSessionRecovery", "func sign(")
+    check("sessionRecoveryBackoffNanoseconds" in recovery_fn
+          and "Self.isSessionExpiredError(error)" in recovery_fn,
+          "R05: 1100 must back off and retry instead of failing immediately")
+    check("static func isSessionExpiredError" in portal,
+          "R05: session expiry classification must stay testable")
+    # 逐行检查并跳过注释：文件里刻意留了「为什么不用 contains("1100")」的说明注释，
+    # 直接对整段文本做 `not in` 会被自己的注释触发（2026-09-16 实际踩到）。
+    substring_matches = [
+        line for line in portal.splitlines()
+        if 'contains("1100")' in line and not line.strip().startswith("//")
+    ]
+    check(not substring_matches,
+          "R05: 1100 must be matched by error code/message, never by substring")
+
+    # R06: 安装通道的失败熔断 + 批量续签不再前置阻塞（2026-09-16）。
+    # 批量续签原先在进入循环前 `await refreshSigningChannel()`，把整段隧道诊断
+    #（reset + 18s RSD 握手 + 36×500ms 轮询，硬超时 75s）压在「正在连接设备」上，
+    # 这是「点续签后卡很久」的第二个入口。去掉前置等待的前提是通道层有熔断，
+    # 否则通道不可用时 N 个 App 会各自重跑一遍 75s 诊断（N×75s）。
+    renewal_view_model = load("Seal/Features/Apps/AppsViewModel.swift")
+    batch_start = section(renewal_view_model, "private func startBatchRefresh(", "private func runBatchRefresh(")
+    check("beginSigningChannel()" in batch_start,
+          "R06: batch renewal must warm the channel in parallel")
+    check("await self.refreshSigningChannel()" not in batch_start,
+          "R06: batch renewal must not block on the tunnel diagnosis up front")
+    install_channel_source = load("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift")
+    check("failureCooldownSeconds" in install_channel_source
+          and "lastFailureAt" in install_channel_source,
+          "R06: install channel must fuse repeated tunnel diagnosis failures")
+    check("clearFailureCooldown()" in renewal_view_model,
+          "R06: user-initiated sessions must clear the fuse")
+    # 熔断方法必须留在 protocol 主体里：只写在 extension 的话，`any InstallChannel`
+    # 会静态派发到默认空实现，MinimuxerInstallChannel 的覆写永远不会被调用 ——
+    # 表现是「用户手动重试也一直被拒」，且守卫全绿（同类坑见 install(onProgress:)）。
+    protocol_source = load("Seal/Core/Installation/InstallChannel.swift")
+    protocol_body = section(protocol_source, "protocol InstallChannel: Actor {", "\n}")
+    check("func clearFailureCooldown() async" in protocol_body,
+          "R06: clearFailureCooldown must be a protocol requirement (dynamic dispatch)")
+
     # R04: Portal 三个服务的回调一律经 ContinuationBox 转发。裸 continuation 第二次 resume
     # 不是可捕获错误，而是 SWIFT TASK CONTINUATION MISUSE 致命崩溃（进程直接终止）。
     # AltSign 存在两条重复回调路径：「先报错、随后迟到地报成功」与「超时先到、回调才到」。
@@ -293,13 +346,21 @@ def violations(load=read):
 
     # 证书页必须能回答「这张证书关联了哪些 App」：不能只展示截断 machineName，
     # 也不能只看顶层 serial（扩展 target 可能才有真实序列号）。
+    # 「本机已安装 App」清单必须与行标签**同源**（installedAppsAssociated → associatedApps）：
+    # 旧实现直接用口径更严的 affectedApps（只看顶层 serial 且要求 state == .installed），
+    # 于是同一张证书会出现「行标签说本机已安装 App 在用、下面清单却说暂无」的自相矛盾，
+    # Seal 自身（belongsInInstalledList 恒为真）也会被漏掉。撤销影响评估仍必须走 affectedApps。
     cert_impact = load("Seal/Core/Signing/CertificateRevocationImpact.swift")
     cert_view = load("Seal/Features/Settings/SigningCertificateSettingsView.swift")
     check("static func associatedApps(" in cert_impact
           and "app.signingTargets.contains" in cert_impact,
           "Certificates: association lookup must include extension targets")
+    check("static func affectedApps(" in cert_impact
+          and "static func installedAppsAssociated(" in cert_impact
+          and "associatedApps(serialNumber: serialNumber, apps: apps)" in cert_impact,
+          "Certificates: the installed-app list must reuse the association rule, not the stricter revocation-impact rule")
     check("installedAppsSection(account: account)" in cert_view
-          and "CertificateRevocationImpact.affectedApps(" in cert_view
+          and "CertificateRevocationImpact.installedAppsAssociated(" in cert_view
           and "本机已安装 App" in cert_view
           and "fullSerialText(certificate.serialNumber)" in cert_view,
           "Certificates: UI must show full identity and associated apps")
@@ -753,9 +814,13 @@ def main():
          "return false // extension association removed",
          "Certificates: association lookup must include extension targets"),
         ("Seal/Features/Settings/SigningCertificateSettingsView.swift",
-         "CertificateRevocationImpact.affectedApps(",
-         "CertificateRevocationImpact.affectedAppsUnused(",
+         "CertificateRevocationImpact.installedAppsAssociated(",
+         "CertificateRevocationImpact.installedAppsAssociatedUnused(",
          "Certificates: UI must show full identity and associated apps"),
+        ("Seal/Core/Signing/CertificateRevocationImpact.swift",
+         "associatedApps(serialNumber: serialNumber, apps: apps)",
+         "apps.filter { _ in false }",
+         "Certificates: the installed-app list must reuse the association rule"),
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "if team.type == .free, certificates.isEmpty == false {",
          "if false {",
@@ -823,6 +888,21 @@ def main():
         ("Seal/Features/Settings/SettingsViewModel.swift",
          "preservingSigningMaterial(from:", "discardingSigningMaterial(from:",
          "reauthentication must retain historical P12 material"),
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "    await AppleRequestThrottle.shared.wait()\n", "",
+         "R05: every Apple request must pass through the throttle"),
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "guard Self.isSessionExpiredError(error) else { throw error }",
+         "guard false else { throw error }",
+         "R05: 1100 must back off and retry"),
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "            await self.installChannel?.clearFailureCooldown()\n            self.beginSigningChannel()\n            await self.runBatchRefresh(appIDs: appIDs)",
+         "            guard await self.refreshSigningChannel() else { return }\n            await self.runBatchRefresh(appIDs: appIDs)",
+         "R06: batch renewal must not block"),
+        ("Seal/Core/Installation/InstallChannel.swift",
+         "    func clearFailureCooldown() async\n    func pushIpa",
+         "    func pushIpa",
+         "R06: clearFailureCooldown must be a protocol requirement"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

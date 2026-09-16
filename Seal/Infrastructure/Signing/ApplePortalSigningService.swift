@@ -38,7 +38,10 @@ enum ApplePortalSigningFailure {
         let details: (title: String, reason: String, recovery: String, code: String)
         switch stage {
         case .account:
-            if nsError.code == 1100 || diagnostic.contains("session has expired") || diagnostic.contains("1100") {
+            // 统一走 isSessionExpiredError，不再用 `diagnostic.contains("1100")` 这类子串匹配 ——
+            // 形如 `com.example.app1100` 的 Bundle ID 报错会被误判成会话过期，
+            // 把「Bundle ID 不可用」错报成「登录过期」，引导用户去做无用功。
+            if ApplePortalSigningService.isSessionExpiredError(error) {
                 details = (
                     "登录过期了",
                     "这个 Apple ID 的登录过期了，需要重新验证一次才能继续签名或续签。",
@@ -102,11 +105,19 @@ enum ApplePortalSigningFailure {
         // Apple 会话过期（1100）在 App ID 创建阶段也会出现（如抖音签名时），
         // 必须与账户阶段一致归为 SEAL-AUTH-107，否则会落进下方「App ID 创建失败」
         // 分支被误报成网络/标注问题。
-        if nsError.code == 1100 || normalized.contains("session has expired") || diagnostic.contains("1100") {
+        //
+        // 但**同一个 1100 在两个阶段的含义不同**，文案不能共用：
+        // 走到这里时本次签名刚申请完证书且已成功，说明 session 在 Apple 服务端仍然有效，
+        // 所以这通常不是真的登录过期，而是「多扩展 App 连续建号」触发了 Apple 的短时限流
+        //（抖音 = 主 App + 8 扩展，需连发 9 次 addAppID）。
+        // 若沿用账户阶段那句「去重新验证」，用户会陷入
+        //「重新验证 → 再签 → 又被限流 → 再被要求验证」的死循环（用户反馈的
+        //「无论怎样在验证 Apple ID 就报错失效」）。因此这里必须先给出「稍后重试」。
+        if ApplePortalSigningService.isSessionExpiredError(error) {
             return ImportFailure(
-                title: "登录过期了",
-                reason: "这个 Apple ID 的登录过期了，需要重新验证一次才能继续签名或续签。",
-                recovery: "去「我的」重新验证",
+                title: "Apple 暂时拒绝了请求",
+                reason: "Apple 在注册 App ID 时返回了「会话已过期」。本次签名的证书申请刚刚成功，说明登录状态其实还在 —— 更常见的原因是该 App 的扩展较多（每个扩展都要单独注册一个 App ID），短时间内连续请求触发了 Apple 的限制。\n\n请先等几分钟再重试；如果多次重试仍然失败，再到「我的」页面重新验证这个 Apple ID。",
+                recovery: "等几分钟后重试",
                 code: "SEAL-AUTH-107"
             )
         }
@@ -217,10 +228,50 @@ enum ApplePortalSigningFailure {
 /// 不返回，子任务就永远不结束，超时错误便永远抛不出来 —— 等于没有超时，UI 无限等待。
 /// 本仓 `HardTimeout` 就是为修掉这个写法而写的（同类实现见 `AppleAccountClient.withTimeout`、
 /// `MinimuxerInstallChannel.withHardTimeout`）。此处此前仍是 task group 写法，2026-09-14 修正。
+/// Apple 开发者服务请求节流器。
+///
+/// **为什么需要它**：Apple 对免费账号（Personal Team）的开发者服务请求有频率限制。
+/// 抖音这类「主 App + 8 个扩展」的 IPA 需要在 Phase 1 连续创建 9 个 App ID
+///（每个还要 updateFeatures）、Phase 2 再连续申请 9 个描述文件 —— 短时间二十余次
+/// 连发请求会触发 Apple 侧掐断会话，返回 1100 "Your session has expired. Please log in."。
+///
+/// **为什么可以判定是限流而不是真过期**（2026-09-16 用户日志）：每一次 AUTH-107 报错前
+/// 1–3 秒都有一条「证书决策」成功日志。证书申请能成功，说明 session 在 Apple 服务端
+/// 仍然有效；紧接着 App ID 阶段就报 1100，只可能是请求过密。这也解释了用户反馈的
+/// 「无论怎样重新验证 Apple ID 都会报错失效」—— 重新登录拿到新 session，密集请求
+/// 再次触发限流，形成死循环。
+///
+/// **为什么放在 `withAppleTimeout` 里**：它是所有 Apple 请求的唯一入口，
+/// 一处覆盖全部调用点，不必逐个包装（也不会漏掉将来新增的调用）。
+/// 节流器只在「相邻请求间隔小于下限」时才等待，因此对本来就慢的操作
+///（如 `waitForCreatedCertificate` 的 500ms 轮询）零影响。
+actor AppleRequestThrottle {
+    static let shared = AppleRequestThrottle()
+
+    /// 相邻 Apple 请求的最小间隔。取值依据：把二十余次连发拉长到数秒量级，
+    /// 足以避开免费账号的短时频率限制，同时不让正常单 App 签名明显变慢。
+    private static let minimumInterval: TimeInterval = 0.4
+
+    private var lastRequestAt: Date?
+
+    func wait() async {
+        if let lastRequestAt {
+            let elapsed = Date().timeIntervalSince(lastRequestAt)
+            let remaining = Self.minimumInterval - elapsed
+            if remaining > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+            }
+        }
+        lastRequestAt = Date()
+    }
+}
+
 func withAppleTimeout<T: Sendable>(
     _ seconds: UInt64 = 20,
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
+    // 先过全局节流，再发请求：这是所有 Apple 请求的必经之路。
+    await AppleRequestThrottle.shared.wait()
     do {
         return try await HardTimeout.run(seconds: TimeInterval(seconds), operation)
     } catch is HardTimeout.TimeoutError {
@@ -259,6 +310,64 @@ actor ApplePortalSigningService {
     private static func diagnosticDate(_ date: Date?) -> String {
         guard let date else { return "缺失" }
         return ISO8601DateFormatter().string(from: date)
+    }
+
+    /// 命中 1100「会话已过期」后的退避间隔。
+    ///
+    /// 见 `AppleRequestThrottle` 的说明：多扩展 App（抖音 = 主 App + 8 扩展）在 App ID
+    /// 阶段密集请求会被 Apple 限流，返回的 1100 是「被掐断」而非「真过期」。
+    /// 同一 session 往往仍然可用，退避后重试即可成功；重试耗尽才向上抛。
+    ///
+    /// 累计额外等待 1.5 + 4 + 8 = 13.5 秒。对「本来就会失败」的调用只增加一次
+    /// 十几秒的等待，换来的是不必让用户白跑一趟「重新验证 Apple ID」。
+    private static let sessionRecoveryBackoffNanoseconds: [UInt64] = [
+        1_500_000_000,
+        4_000_000_000,
+        8_000_000_000
+    ]
+
+    /// 是否为 Apple 的「会话已过期」错误（错误码 1100）。
+    ///
+    /// 只认错误码与官方英文文案，**不做** `diagnostic.contains("1100")` 这类宽泛匹配 ——
+    /// 那会把恰好含 "1100" 的其他错误（如某些 UUID/数字串）误判成会话问题。
+    ///
+    /// 访问级别是 internal 而非 private：这条边界直接决定「哪些错误值得退避重试」，
+    /// 必须能被单测锁住（`withSessionRecovery` 本身含十几秒退避，不适合单测）。
+    static func isSessionExpiredError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.code == 1100 { return true }
+        return nsError.localizedDescription.lowercased().contains("session has expired")
+    }
+
+    /// 对单个 Apple 请求做「遇 1100 退避重试」。
+    ///
+    /// 只重试会话过期这一种错误：网络超时、Bundle ID 冲突、名额上限等都必须立即抛出，
+    /// 否则会把本该快速失败的场景拖成十几秒的假等待。
+    private func withSessionRecovery<T>(
+        _ label: String,
+        operation: () async throws -> T
+    ) async throws -> T {
+        var lastError: Error?
+        let delays: [UInt64] = [0] + Self.sessionRecoveryBackoffNanoseconds
+        for (attempt, delay) in delays.enumerated() {
+            if delay > 0 {
+                try Task.checkCancellation()
+                await diagnostic(
+                    "Apple 会话疑似被限流，退避 \(delay / 1_000_000_000) 秒后重试 \(label)（第 \(attempt) 次重试）"
+                )
+                try await Task.sleep(nanoseconds: delay)
+            }
+            do {
+                return try await operation()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                guard Self.isSessionExpiredError(error) else { throw error }
+                lastError = error
+            }
+        }
+        if let lastError { throw lastError }
+        throw ALTAppleAPIError.unknown()
     }
 
 
@@ -1329,7 +1438,10 @@ actor ApplePortalSigningService {
                     appID = found
                 } else {
                     do {
+                        // 多扩展 App（如抖音）在 App ID 阶段密集建号，Apple 会掐断会话返回 1100。
+                        // 退避重试后仍失败才向上抛，避免把限流误报成「登录过期」让用户白跑一趟重新验证。
                         let createdBox: LegacyBox<ALTAppID> =
+                            try await withSessionRecovery("创建 App ID \(mappedBundleID)") {
                             try await withAppleTimeout {
                                 try await withCheckedThrowingContinuation { continuation in
                                 let callback = ContinuationBox(continuation)
@@ -1346,6 +1458,7 @@ actor ApplePortalSigningService {
                                     }
                                 }
                             }
+                        }
                         appID = createdBox.value
                     } catch ALTAppleAPIError.bundleIdentifierUnavailable {
                         let refreshed = try await fetchAppIDs(team: team, session: session)
@@ -1436,11 +1549,14 @@ actor ApplePortalSigningService {
         for preparedAppID in preparedAppIDs {
             do {
                 try Task.checkCancellation()
-                let profile = try await fetchProvisioningProfile(
-                    for: preparedAppID.appID,
-                    team: team,
-                    session: session
-                )
+                // 同上：9 个 bundle ID 连续申请描述文件同样会触发限流。
+                let profile = try await withSessionRecovery("申请描述文件 \(preparedAppID.mapped)") {
+                    try await fetchProvisioningProfile(
+                        for: preparedAppID.appID,
+                        team: team,
+                        session: session
+                    )
+                }
                 profiles.append(profile)
             } catch is CancellationError {
                 throw CancellationError()

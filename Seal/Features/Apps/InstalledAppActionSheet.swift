@@ -52,9 +52,9 @@ struct InstalledAppActionSheet: View {
         VStack(spacing: 0) {
             accountPickerRow
             Divider().padding(.leading, 14)
-            metadataRow("Apple ID 证书", certificateSummary)
+            metadataValueRow("证书序列号", certificateSerialSummary)
             Divider().padding(.leading, 14)
-            metadataRow("描述文件", profileStatus.title, valueColor: profileStatusColor)
+            metadataValueRow("描述文件", AppSigningPresentationHelpers.profileUUIDText(for: app))
             Divider().padding(.leading, 14)
             metadataRow("有效期至", expirySummary, valueColor: expiryColor)
             Divider().padding(.leading, 14)
@@ -63,6 +63,23 @@ struct InstalledAppActionSheet: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
         .glassSurface(cornerRadius: 18)
+    }
+
+    /// 长标识（证书序列号 / 描述文件 UUID）专用行：值独占一行、灰色等宽、可长按选中。
+    /// 与「应用详情」页同一套呈现，避免同一信息在不同页面一个被截断、一个能看全。
+    private func metadataValueRow(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Text(value)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(Color.sealTextSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 12)
     }
 
     private func metadataRow(
@@ -166,14 +183,15 @@ struct InstalledAppActionSheet: View {
         return .secondary
     }
 
-    private var certificateSummary: String {
+    /// 完整证书序列号（不再用「可用」占位）：与详情页 / 签名进度页同源同 helper。
+    private var certificateSerialSummary: String {
         if let serial = app.certificateSerialNumber, serial.isEmpty == false {
-            return "可用"
+            return AppSigningPresentationHelpers.certificateSerialText(serial: serial)
         }
-        if app.signingTargets
+        if let serial = app.signingTargets
             .flatMap(\.certificateSerialNumbers)
-            .contains(where: { $0.isEmpty == false }) {
-            return "可用"
+            .first(where: { $0.isEmpty == false }) {
+            return AppSigningPresentationHelpers.certificateSerialText(serial: serial)
         }
         return "未准备"
     }
@@ -184,15 +202,6 @@ struct InstalledAppActionSheet: View {
 
     private var profileStatus: ProfileDisplayStatus {
         AppSigningPresentationHelpers.profileStatus(for: app)
-    }
-
-    private var profileStatusColor: Color {
-        switch profileStatus.tone {
-        case .danger:
-            Color.sealDanger
-        case .success, .warning, .neutral:
-            Color.sealTextSecondary
-        }
     }
 
     private var expirySummary: String {

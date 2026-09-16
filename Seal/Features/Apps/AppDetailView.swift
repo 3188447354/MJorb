@@ -80,7 +80,7 @@ struct AppDetailView: View {
             Divider()
             detailRow("签名账户", accountName(app))
             Divider()
-            serialDetailRow("Apple ID 证书", certificateName(app))
+            serialDetailRow("证书序列号", certificateName(app))
             Divider()
             detailRow("Team ID", app.signingTeamID ?? "未记录")
             Divider()
@@ -88,7 +88,9 @@ struct AppDetailView: View {
             Divider()
             identifierDetailRow("原始 Bundle ID", app.originalBundleIdentifier, highlightSeal: false)
             Divider()
-            detailRow("描述文件", profileStatus(app).title, valueColor: profileColor(app))
+            profileDetailRow(app)
+            Divider()
+            detailRow("描述文件创建时间", profileCreationDateText(app))
             Divider()
             detailRow("描述文件有效期至", expiryDateText(app), valueColor: profileColor(app))
             Divider()
@@ -157,20 +159,46 @@ struct AppDetailView: View {
         .padding(.vertical, 15)
     }
 
+    /// 证书序列号行：标题与其它行一样是左侧黑色主文字，值独占一行、灰色等宽、可长按选中。
+    /// 40 位十六进制序列号放在标题右侧一定会被截断，独占一行才能「显示全面」。
     private func serialDetailRow(_ title: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 14) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(title)
                 .foregroundStyle(.primary)
                 .lineLimit(1)
-            Spacer(minLength: 12)
             Text(value)
                 .font(.system(.subheadline, design: .monospaced))
                 .foregroundStyle(Color.sealTextSecondary)
-                .multilineTextAlignment(.trailing)
-                .lineLimit(1)
-                .minimumScaleFactor(0.4)
+                .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
-                .layoutPriority(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 15)
+    }
+
+    /// 描述文件行：不再用「可用」占位，改为展示**该应用实际使用的描述文件 UUID**
+    /// （独占一行、灰色等宽、可选中），便于直接核对设备上装的到底是不是刚签出的那一份。
+    /// 只有真正需要用户处理的异常状态（临期 / 已过期 / 不匹配 / 待校验 / 未记录）才保留
+    /// 状态标签——「可用」这一档由「描述文件有效期至」的颜色承载，信息不丢。
+    private func profileDetailRow(_ app: AppRecord) -> some View {
+        let status = profileStatus(app)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 14) {
+                Text("描述文件")
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 12)
+                if status != .available {
+                    Text(status.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(profileColor(app))
+                }
+            }
+            Text(AppSigningPresentationHelpers.profileUUIDText(for: app))
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(Color.sealTextSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 15)
     }
@@ -230,12 +258,12 @@ struct AppDetailView: View {
 
     private func certificateName(_ app: AppRecord) -> String {
         if let serial = app.certificateSerialNumber, serial.isEmpty == false {
-            return AppSigningPresentationHelpers.certificateName(serial: serial)
+            return AppSigningPresentationHelpers.certificateSerialText(serial: serial)
         }
         if let serial = app.signingTargets
             .flatMap(\.certificateSerialNumbers)
             .first(where: { $0.isEmpty == false }) {
-            return AppSigningPresentationHelpers.certificateName(serial: serial)
+            return AppSigningPresentationHelpers.certificateSerialText(serial: serial)
         }
         return app.belongsInInstalledList ? "未记录" : "签名时创建"
     }
@@ -261,6 +289,13 @@ struct AppDetailView: View {
 
     private func expiryDateText(_ app: AppRecord) -> String {
         guard let date = AppSigningPresentationHelpers.profileExpirationDate(for: app) else { return "未记录" }
+        return SealSettingsDateFormatter.string(from: date)
+    }
+
+    /// 描述文件创建时间：续签后这里应当是「刚刚」，用来核验这次拿到的确实是本轮新生成的
+    /// 完整 7 天描述文件，而不是沿用的旧文件（同版本续签只有创建时间/有效期会变）。
+    private func profileCreationDateText(_ app: AppRecord) -> String {
+        guard let date = AppSigningPresentationHelpers.profileCreationDate(for: app) else { return "未记录" }
         return SealSettingsDateFormatter.string(from: date)
     }
 

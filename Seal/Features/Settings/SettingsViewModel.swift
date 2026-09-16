@@ -1258,7 +1258,12 @@ final class SettingsViewModel: ObservableObject {
             saveCertificateInventoryCache(merged)
             try? await logStore?.append(
                 category: .account,
-                message: "Apple App ID 已同步：\(merged.usedBundleIDCount) 个可用 App ID"
+                // `usedBundleIDCount` 是**已注册存活**的 App ID 数量，不是剩余名额。
+                // 旧文案写成「N 个可用 App ID」语义正好相反：用户看到「10 个可用」会以为
+                // 还剩 10 个名额，实际是已经用满 10 个（免费账号上限）。
+                // 这直接导致「id 有足够的名额」的误判，进而把多扩展 App 的失败原因找错方向。
+                // 与 CertificatesRootView 的「已签名 N / 10」保持同一口径。
+                message: "Apple App ID 已同步：已注册 \(merged.usedBundleIDCount) / 10 个 App ID"
             )
         } catch is CancellationError {
             // 任务取消不是错误：不污染失败标记，静默返回。

@@ -42,6 +42,19 @@ enum CertificateRevocationImpact {
         }
     }
 
+    /// 证书卡片「本机已安装 App」清单展示用：与行标签（`associatedApps`）**同一套关联判定**
+    /// ——顶层序列号或任一签名 target 的序列号命中即算关联——再只保留本机视为已安装的记录。
+    ///
+    /// 为什么不能直接用 `affectedApps`：那个判定只看顶层 `certificateSerialNumber` 且要求
+    /// `state == .installed`，与行标签用的 `associatedApps` 不同源，于是同一张证书会出现
+    /// 「标签说本机已安装 App 在用、下面的清单却说暂无」的自相矛盾；Seal 自身
+    /// （`belongsInInstalledList` 恒为真）尤其容易被漏掉。
+    /// 撤销影响评估仍走 `affectedApps`（口径更严，只算真正会失效的已装应用），两者不要合并。
+    static func installedAppsAssociated(serialNumber: String, apps: [AppRecord]) -> [AppRecord] {
+        associatedApps(serialNumber: serialNumber, apps: apps)
+            .filter(\.belongsInInstalledList)
+    }
+
     /// 该证书是否就是当前运行 Seal 的真实 CMS 签名者。
     /// 真实签名者被撤，Seal 立即「不再可用」；任何撤销入口都必须先挡住它。
     /// 返回 false 只表示「无法证明是 A」，绝不表示「可以放心撤」——签名者未知时

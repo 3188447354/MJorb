@@ -174,4 +174,75 @@ struct CertificateRevocationImpactTests {
             ) == false
         )
     }
+
+    // MARK: - 证书卡片「本机已安装 App」清单
+
+    private func makeTargetOnlyApp(
+        name: String,
+        serial: String,
+        state: AppState,
+        isSeal: Bool = false
+    ) -> AppRecord {
+        let target = SigningTargetRecord(
+            bundleIdentifier: "com.example.\(name).widget",
+            profileUUID: "PROFILE-\(name)",
+            profileName: "Widget",
+            profileCreationDate: nil,
+            profileExpirationDate: Date(timeIntervalSince1970: 2_000_000_000),
+            teamIdentifier: "TEAM123456",
+            certificateSerialNumbers: [serial],
+            deviceIdentifiers: [],
+            entitlementKeys: []
+        )
+        return AppRecord(
+            originalBundleIdentifier: "com.example.\(name)",
+            name: name,
+            version: "1.0",
+            buildNumber: "1",
+            size: 1024,
+            state: state,
+            signingTargets: [target],
+            ipaRelativePath: "\(name).ipa",
+            isSeal: isSeal,
+            importedAt: Date(timeIntervalSince1970: 0)
+        )
+    }
+
+    /// 清单必须与行标签（associatedApps）同源：只在签名 target 上记录证书的 App 也要出现。
+    /// 同时确认撤销影响评估 affectedApps 的口径没被改动（仍只看顶层序列号）。
+    @Test
+    func installedAppsAssociatedFollowsTheSameRuleAsTheRowLabel() {
+        let app = makeTargetOnlyApp(name: "Alpha", serial: "0AA11", state: .installed)
+        #expect(
+            CertificateRevocationImpact.associatedApps(serialNumber: "AA11", apps: [app])
+                .map(\.name) == ["Alpha"]
+        )
+        #expect(
+            CertificateRevocationImpact.installedAppsAssociated(serialNumber: "AA11", apps: [app])
+                .map(\.name) == ["Alpha"]
+        )
+        #expect(CertificateRevocationImpact.affectedApps(serialNumber: "AA11", apps: [app]).isEmpty)
+    }
+
+    /// Seal 自身的 state 可能不是 .installed（belongsInInstalledList 恒为真）。
+    /// 旧实现直接用 affectedApps，于是续签后「此证书已安装 App」里看不到 Seal。
+    @Test
+    func installedAppsAssociatedAlwaysIncludesSeal() {
+        let seal = makeTargetOnlyApp(name: "Seal", serial: "AA11", state: .signed, isSeal: true)
+        #expect(CertificateRevocationImpact.affectedApps(serialNumber: "AA11", apps: [seal]).isEmpty)
+        #expect(
+            CertificateRevocationImpact.installedAppsAssociated(serialNumber: "AA11", apps: [seal])
+                .map(\.name) == ["Seal"]
+        )
+    }
+
+    /// 清单只展示「本机已安装」的记录：未安装的普通 App 不进清单，也不进撤销影响。
+    @Test
+    func installedAppsAssociatedExcludesAppsThatAreNotInstalled() {
+        let apps = [
+            makeApp(name: "Alpha", serial: "AA11", state: .imported),
+            makeApp(name: "Beta", serial: "AA11", state: .signed)
+        ]
+        #expect(CertificateRevocationImpact.installedAppsAssociated(serialNumber: "AA11", apps: apps).isEmpty)
+    }
 }

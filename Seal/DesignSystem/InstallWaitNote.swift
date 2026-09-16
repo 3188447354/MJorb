@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 /// 安装阶段的等待说明（单签进度页与批量续签抽屉共用）。

@@ -2,9 +2,15 @@
 //  DeviceProfileCleaner.swift
 //  Seal
 //
-//  安装成功后清理设备端「同一 Bundle ID」下的旧描述文件（保留刚装的那份），
-//  避免免费账号 7 天续签 / 反复重签导致设备端 provisioning profile 无限累积。
+//  清理设备端旧描述文件，避免免费账号 7 天续签 / 反复重签导致 profile 无限累积。
+//  两个触发点：
+//    1. 安装成功后 —— 保留本次装进设备的那一组（主 App + 各扩展）；
+//    2. 空闲维护 —— 按记录里「当前在用的是哪一份」回收历史堆积。
 //  底层能力复用 Minimuxer 已有的 misagent copy_all / remove，Rust 零新增。
+//
+//  ⚠️ 删除方向必须是保守的：删错一份会让对应 App **立刻无法启动**（iOS 启动时校验
+//  profile 是否还在设备上）。所以只处理「调用方明确给出保留 UUID」的 Bundle ID，
+//  key 之外的一律不碰。
 //
 
 import Foundation

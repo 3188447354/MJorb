@@ -22,10 +22,38 @@
 - **Apple 免费账号的 `1100 session expired` 多数是「限流被掐断」，不是真过期**。抖音（主 App + 8 扩展 = 9 个 bundle ID）在 App ID 阶段连发 9 次 `addAppID` + 9 次 `updateFeatures`、再连发 9 次描述文件申请，二十余次密集请求会触发 Apple 掐断会话。**判据：报错前 1–3 秒若有「证书决策」成功，说明 session 服务端仍有效**（同一账号几分钟前刚成功签过别的 App 也是同一证据）。此时引导用户「重新验证 Apple ID」是死循环 —— 重新登录后密集请求再次触发限流。对策是请求节流 + 对 1100 退避重试，且 **App ID 阶段的 1100 文案必须与 account 阶段分开**（前者给「稍后重试」，后者才给「去重新验证」）。
 - **错误分类禁用子串匹配**。`diagnostic.contains("1100")` 会把形如 `com.example.app1100` 的 Bundle ID 报错误判成「会话过期」，把「Bundle ID 不可用」错报成「登录过期」。只认错误码 + 官方英文文案。
 - **统计字段的文案要跟字段语义对齐**。`usedBundleIDCount` 是「已注册存活数量」，却被渲染成「N 个可用 App ID」——日志里 `10 个可用 App ID` 的真实含义是**已用满 10 个**。这直接导致用户「id 有足够的名额」的误判，把排查方向带偏。同一字段在别处（`已签名 n / 10`）写法是对的，**两处口径不一致时以字段定义为准，并统一**。
+- **查「某字段有没有被写入」必须同时搜 `字段:` 与 `字段 = ` 两种形式**。只搜 `provisioningProfileUUID:`（构造器标签）会得出「扩展 UUID 从未落库」的错误结论，而真实写入是 `app.extensions[index].provisioningProfileUUID = binding.profileUUID`。**结论依赖 grep 完备性时，先确认搜索模式覆盖了赋值 / 解构 / 下标三条路径**，否则会基于假前提写错修复方案。
+- **设备端 profile 的清理范围要按「本次安装实际装上的那一组」算，不能按主 Bundle ID**。一次安装会为**每个扩展**各装一份 profile（抖音 8 扩展 = 9 份）。只按主 Bundle ID 匹配 ⇒ 扩展的旧 profile 从头到尾没人清理（真机：LiveContainer 的 ShareExtension 一天堆 6 份）。反过来也不能把 `Frameworks/*.framework/embedded.mobileprovision` 算进保留集合 —— 它不会被 installd 装成设备 profile，算进去等于给那个 Bundle ID 发免死金牌。
+- **删错一份设备 profile = 对应 App 立刻无法启动**（iOS 启动时会校验 profile 是否还在设备上）。所以「拿不到可信的『该保留哪一份』」时**必须整组跳过**，绝不能猜「保留最新那份」——宁可留着旧 profile 占地方。同理，以记录为删除依据时要注意**乐观值与已安装值的边界**：`SigningCoordinator.applySigningResult` 在**签名阶段**就写扩展的 UUID（顶层 `provisioningProfileUUID` 反而等安装校验通过才推进，见 R08），所以「签名成功但安装失败」时扩展记录指向一份设备上不存在的 profile，拿它当保留集合会删掉真正在用的那一份。
+- **守卫用 `"片段" in 源码` 断言时，同一模式出现多次就会失去约束力**。删除步骤从 1 处变成 2 处后，`check("guard gate.shouldAbort(token) == false else" in job)` 在删掉其中一处的变异下仍然通过（被另一处掩盖）—— 守卫变成「永远全绿」，比直接失败更危险。**同一模式出现多次时改为按出现次数断言**（`job.count(...) >= 2`）。这次是变异测试自己把问题暴露出来的。
+- **字段存在不等于语义可信**。`AppExtensionRecord.provisioningProfileUUID` 有值，但它的写入时机（签名阶段）比顶层字段（安装校验后）早，两者**可信度不同**。任何「以记录为删除/撤销/覆盖依据」的逻辑，都要先问「这个字段是在哪个时点写的、那时设备上真的换了吗」。
 
 ---
 
 ## 历史记录
+
+### 2026-09-16 · 设备端描述文件只增不减（Seal 自己 17 份）+ 序列号/UUID 版式统一
+
+- **现象（用户报 6 条，第 6 条被截断）**：①续签到安装卡在 93% 无反应；②续签抽屉卡在「传输」无反应；③证书序列号要左右一行、超长中间省略；④描述文件 UUID 同样左右一行；⑤描述文件每次申请旧新并存，Seal 已有 16 个 UUID 对应的文件；⑥「签名、续签」（未写完）。
+- **证据来源**：用户随后发的两张截图是 **StikDebug** 的「App Expiry」页（不是 Seal 界面 —— Seal 只有 Apps / Settings 两个 Tab，截图里是三个；`App Expiry`/`Other Profiles` 等字符串在 Seal 代码里搜不到）。但它经 misagent 读的是设备真实 profile 库，数据可信：
+  - `com.mjorb.seal.CT8QZ7352B` → **17 份**（1 最新 + 16 旧，界面写「Show 16 older profiles」）
+  - `com.kdt.livecontainer.seal.3432ZHJUF9` → 3 份
+  - `com.kdt.livecontainer.seal666.ShareExtension` → ≥6 份，到期日全在 `2026-09-17`（有效期 7 天 ⇒ **创建于同一天 09-10，一天内重签 6 次以上**）
+- **根因（两条独立泄漏路径，清理代码本来就存在，但触发条件与匹配范围都有缺口）**：
+  1. **只按主 Bundle ID 匹配**：`SignedArtifactProfileReader` 只认恰好三段的 `Payload/<App>.app/embedded.mobileprovision`，而一次安装会为**每个扩展**各装一份 profile ⇒ 扩展的 profile 从来没被清理过。
+  2. **只在安装成功那一刻触发**：`AppMaintenanceJob`（空闲维护）三步里**完全没有**描述文件清理 ⇒ 历史堆积永远回收不了；Seal 自己的自更新走 `SelfReplacementCoordinator` 事务链而非 `installSignedIPA`，清理条件更严、更容易整批跳过。
+- **修复**：
+  1. `SignedArtifactProfileReader.embeddedProfiles`：枚举**全部**会被安装的位置（主 App + PlugIns/AppClips/Watch），**排除 `Frameworks/*.framework`**；Bundle ID 取自 profile 自身的 `application-identifier`（剥 TeamIdentifier 前缀），不从路径推断。
+  2. `DeviceProfileCleaner` 改为「Bundle ID → 保留 UUID」映射：**key 集合之外的一律不碰**（设备上还有 MDM / 企业证书 / 其它工具装的 App）。
+  3. `SigningCoordinator` 安装后按整组 profile 清理，扩展不再漏。
+  4. `AppMaintenanceJob` 新增**第 4 步**设备端描述文件清理 —— 这一步是清掉历史堆积的关键，它不依赖某一次安装成功。
+  5. 两条安全红线：**拿不到可信 UUID 就整条跳过**（宁可留着，删错会让 App 立刻无法启动）；**扩展记录仅在 `signedArtifactStatus == .installed` 时采信**（`applySigningResult` 在签名阶段就写扩展 UUID，安装失败时它是乐观值）。Seal 自己则以运行时读到的真实 profile 覆盖记录值。
+  6. 版式统一（问题 3/4）：`AppDetailView.serialDetailRow`/`profileDetailRow`、`InstalledAppActionSheet.metadataValueRow`、`AppSigningSheet.summarySerialRow`、`SigningProgressView.runtimeSerialRow` 五处改为 HStack 左右一行 + `.truncationMode(.middle)` + `.textSelection(.enabled)`。
+- **守卫与测试**：`Scripts/verify-release-safety.py` 新增 **R08**（5 条断言）+ **4 个变异锚点**；顺带修掉一处**被自己削弱**的既有断言（`C: the sweep must re-check the lease` 原本用 `in`，删除步骤变 2 处后被掩盖 ⇒ 改为按次数断言 `>= 2`）。新增 `AppMaintenanceJobTests` 4 条 + `SignedArtifactProfileReaderTests` 4 条。结果 **147 源码 + 64 变异 PASS**。
+- **涉及文件**：`Seal/Infrastructure/Installation/SignedArtifactProfileReader.swift`、`DeviceProfileCleaner.swift`、`Seal/Core/Signing/SigningCoordinator.swift`、`Seal/Core/Maintenance/AppMaintenanceJob.swift`、`Seal/Application/AppContainer.swift`、`Seal/Features/Apps/{AppsViewModel,AppDetailView,AppSigningSheet,InstalledAppActionSheet,SigningProgressView}.swift`、`SealTests/Import/Fixtures/IPAArchiveFixture.swift`、`SealTests/{Maintenance/AppMaintenanceJobTests,Signing/SignedArtifactProfileReaderTests}.swift`、`Scripts/verify-release-safety.py`。
+- **验证状态**：静态守卫 PASS。**待 macOS 编译 + 真机回归**：打开 Seal 静置触发空闲维护后，StikDebug 的 App Expiry 页里 Seal 应从 17 份降到 1 份，日志出现 `设备端旧描述文件清理：扫描 N，匹配 M，删除 K`（`SEAL-PROFILE-320`）；若出现 `stage=dump` 或 `skipped-record-read-failed` 说明隧道/misagent 通道没起来。
+- **仍未解决**：问题 1（93% = `.installing`，`installTimeout=600s`、`pushTimeout≈180+ipaMB×5`，可能长停 4.6–10 分钟）与问题 2（「传输」= `.pushing`；抽屉里 Seal 那项应显示「即将更新」，卡在「传输中」的大概率不是 Seal）**都需要卡住那一刻前后 1 分钟的 Seal 日志**；问题 6 待用户补完。
+- **详见**：`docs/qa/2026-09-16-profile-pileup-and-ui-row-layout.md`。
 
 ### 2026-09-16 · 抖音（8 扩展）签名必失败：Apple 限流被误报成「登录过期」；批量续签解阻塞
 

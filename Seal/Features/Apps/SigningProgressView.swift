@@ -11,7 +11,10 @@ struct SigningProgressView: View {
     @State private var isReturningHome = false
 
     var body: some View {
-        SealDrawer(title: title, showsFooter: !isRunning) {
+        // footer 常显：运行中要给出「取消」退出通道。旧实现运行中 footer 为空
+        // 且禁用了下滑关闭，用户被关在一个没有任何操作的弹窗里（2026-09-16 真机反馈
+        // 「卡在 93% 怎么都没反应」）。
+        SealDrawer(title: title, showsFooter: true) {
             VStack(spacing: 14) {
                 if let app = session?.app {
                     appIdentity(app)
@@ -93,6 +96,13 @@ struct SigningProgressView: View {
                     .foregroundStyle(Color.sealAccent)
                     .fixedSize(horizontal: false, vertical: true)
                     .opacity(isReturningHome ? 0.72 : 1)
+            }
+
+            // 上传完成 → installd 接管，进度环停在 93%（Seal 自替换显示「替换中」）。
+            // 这段时间安装通道不再回报任何数值，不给说明就会被读成「卡死」
+            //（2026-09-16 真机反馈）。计时让「还在走」变成可见事实。
+            if stage == .installing || stage == .verifying {
+                InstallWaitNote(startedAt: session?.installStartedAt)
             }
 
             stageProgressSection(stage)
@@ -266,7 +276,11 @@ struct SigningProgressView: View {
     private var actions: some View {
         switch session?.status {
         case .running:
-            EmptyView()
+            Button("取消") {
+                viewModel.cancelSigning()
+                dismiss()
+            }
+            .sealOutlineAction(cornerRadius: 14)
 
         case .succeeded:
             Button("完成") { finish() }
@@ -622,14 +636,34 @@ enum SelfInstallAutoBackground {
     /// 确保转场成功时进程早已被挂起、这段代码不会执行，不会打断动画。
     private static let exitFallbackNanoseconds: UInt64 = 3_000_000_000
 
+    /// 等待 `.inactive`（瞬时失焦）自行恢复为 `.active` 的重试间隔与次数。
+    /// 3 秒足够覆盖控制中心 / 通知横幅 / 来电浮层这类短暂遮挡。
+    private static let inactiveRetryNanoseconds: UInt64 = 500_000_000
+    private static let inactiveRetryLimit = 6
+
     @MainActor
     static func returnToHomeAfterSealUpload() {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: transitionBeatNanoseconds)
             let app = UIApplication.shared
-            // 用户已经自己切走了：不重复触发，避免和用户操作打架。
-            guard app.applicationState == .active else { return }
-            triggerHomeTransition(app)
+
+            // 只有 `.background` 才算「用户真的自己切走了」：此时进程已让出前台，
+            // iOS 能完成替换，不重复触发以免和用户操作打架。
+            //
+            // `.inactive` **不能**当作「用户离开」——它是瞬时失焦（控制中心、通知横幅、
+            // 来电、App 切换器预览、系统弹窗），进程仍在前台，iOS 不会完成替换。
+            // 旧实现在这里直接 `return`，连下面的 `exit(0)` 兜底也一并跳过，
+            // 于是安装永远等不到「旧进程让出前台」→ 界面永久停在 93%（2026-09-16 真机反馈）。
+            // 现在改为等它恢复；恢复不了就走兜底退出，保证 iOS 一定能完成替换。
+            var attempts = 0
+            while app.applicationState != .active, attempts < inactiveRetryLimit {
+                try? await Task.sleep(nanoseconds: inactiveRetryNanoseconds)
+                if app.applicationState == .background { return }
+                attempts += 1
+            }
+            if app.applicationState == .active {
+                triggerHomeTransition(app)
+            }
             // 兜底：3 秒后进程还活着，说明转场没生效（会永久停在进度页），此时才强制退出。
             // 转场成功的话进程已被挂起，这行不会执行 —— 所以不会打断退场动画。
             try? await Task.sleep(nanoseconds: exitFallbackNanoseconds)

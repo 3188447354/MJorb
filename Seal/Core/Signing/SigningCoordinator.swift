@@ -68,10 +68,14 @@ actor SigningCoordinator {
         onCertificateResolved: @Sendable @escaping (String) async -> Void = { _ in },
         // 安装阶段 IPC 传输进度（0-1），透传到 InstallChannel 的上传回调。
         onInstallProgress: @escaping @Sendable (Double) async -> Void = { _ in },
-        // 仅批量续签置 true：让 Seal 上传完成时补发一次 .installing 阶段给 progress 回调。
-        // 单签续签 Seal 靠 onInstallProgress 的 1.01 → SigningProgressView.onChange 触发回主页，
-        // 保持默认 false 则不在此补发，避免对同一事件重复触发。
-        broadcastInstallingForSelfReplacement: Bool = false
+        // 仅批量续签置 true：调用方的进度回调只承载 SigningStage，接不到安装通道的
+        // Double 哨兵，所以上传完成时必须由这里补发一次 `.installing`。
+        //
+        // 覆盖范围是**本轮全部应用**（不只 Seal）：普通 App 在批量里同样会在上传完成后
+        // 进入长达数分钟的 installd 安装期，不补发就整段停在「传输中」（2026-09-16 真机反馈）。
+        // 单签路径保持 false —— 它的 UI 自己订阅 1.01 哨兵（SigningProgressView.onChange
+        // 据此触发 Seal 回主页），保持单一来源，避免同一事件两条路径都切阶段。
+        broadcastsInstallStage: Bool = false
     ) async throws -> AppRecord {
         guard var app = try await appStore.fetchAll().first(where: { $0.id == appID }) else {
             throw Self.failure(
@@ -201,7 +205,8 @@ actor SigningCoordinator {
                 certificateSerialNumber: effectiveCertificateSerialNumber,
                 deviceIdentifier: deviceIdentifier,
                 progress: progress,
-                onInstallProgress: onInstallProgress
+                onInstallProgress: onInstallProgress,
+                broadcastsInstallStage: broadcastsInstallStage
             ) {
                 return cachedInstall
             }
@@ -420,7 +425,7 @@ actor SigningCoordinator {
                 expirationDate: portalResult.expirationDate,
                 progress: progress,
                 onInstallProgress: onInstallProgress,
-                broadcastInstallingForSelfReplacement: broadcastInstallingForSelfReplacement
+                broadcastsInstallStage: broadcastsInstallStage
             )
             if app.isSeal == false, rotationRevokedSerials.isEmpty == false {
                 await resignAppsAffectedByCertificateRotation(
@@ -1088,7 +1093,8 @@ actor SigningCoordinator {
         certificateSerialNumber: String?,
         deviceIdentifier: String,
         progress: @escaping @Sendable (SigningStage) async -> Void,
-        onInstallProgress: @escaping @Sendable (Double) async -> Void = { _ in }
+        onInstallProgress: @escaping @Sendable (Double) async -> Void = { _ in },
+        broadcastsInstallStage: Bool = false
     ) async throws -> AppRecord? {
         guard let signedPath = app.signedIPARelativePath,
               let expectedSHA256 = app.signedIPASHA256,
@@ -1137,7 +1143,8 @@ actor SigningCoordinator {
             bundleIdentifier: mappedBundleIdentifier,
             expirationDate: pendingExpiration,
             progress: progress,
-            onInstallProgress: onInstallProgress
+            onInstallProgress: onInstallProgress,
+            broadcastsInstallStage: broadcastsInstallStage
         )
     }
 
@@ -1148,7 +1155,7 @@ actor SigningCoordinator {
         expirationDate: Date,
         progress: @escaping @Sendable (SigningStage) async -> Void,
         onInstallProgress: @escaping @Sendable (Double) async -> Void = { _ in },
-        broadcastInstallingForSelfReplacement: Bool = false
+        broadcastsInstallStage: Bool = false
     ) async throws -> AppRecord {
         var updated = app
         // 安装期间申请后台保活，防止锁屏/切后台时 iOS 挂起网络连接
@@ -1237,17 +1244,11 @@ actor SigningCoordinator {
                 await progress(.pushing)
                 try await selfReplacement.submitPrepared(
                     transactionID: transaction.id,
-                    progress: { installProgress in
-                        // 仅批量续签（broadcastInstallingForSelfReplacement=true）在上传完成的
-                        // >1.0 哨兵补发 .installing：批量 progress 回调只透传 SigningStage、
-                        // 接不到 1.01，需补发才能驱动 consumeBatchEvent 的自动回主页。
-                        // 单签续签 Seal 靠 onInstallProgress 的 1.01 → SigningProgressView.onChange
-                        // 触发，保持默认 false 即不在此补发，避免对同一事件重复回主页。
-                        if broadcastInstallingForSelfReplacement, installProgress > 1.0 {
-                            await progress(.installing)
-                        }
-                        await onInstallProgress(installProgress)
-                    }
+                    progress: bridgedInstallProgress(
+                        broadcastsInstallStage: broadcastsInstallStage,
+                        progress: progress,
+                        onInstallProgress: onInstallProgress
+                    )
                 )
                 updated.signedArtifactStatus = .awaitingVerification
                 try await appStore.save(updated)
@@ -1274,7 +1275,11 @@ actor SigningCoordinator {
                 ipaData: signedData,
                 bundleID: effectiveBundleID,
                 isSelfReplacement: false,
-                onProgress: onInstallProgress
+                onProgress: bridgedInstallProgress(
+                    broadcastsInstallStage: broadcastsInstallStage,
+                    progress: progress,
+                    onInstallProgress: onInstallProgress
+                )
             )
 
             try await updateState(appID: app.id, stage: .verifying)
@@ -1314,6 +1319,32 @@ actor SigningCoordinator {
                 code: "SEAL-INSTALL-702b"
             )
             throw await installDiagnosticsAppended(base, signedPath: signedPath)
+        }
+    }
+
+    /// 把安装通道的上传进度回调包成「进度 + 阶段」双通道。
+    ///
+    /// 两个安装分支（Seal 自替换 / 普通安装）共用同一份包装，原因是这条规则**必须对称**：
+    /// 上传完成（>1.0 哨兵）之后 installd 才开始安装，而安装期间没有任何进度回报。
+    /// 批量续签的 `progress` 回调只承载 `SigningStage`，接不到 Double 哨兵 ——
+    /// 不补发 `.installing` 的话，普通 App 会从上传完成到装完整段停在「传输中」
+    ///（2026-09-16 真机反馈的「卡在传输那没反应」）；Seal 则会漏掉驱动自动回主页的信号。
+    ///
+    /// 单签路径 `broadcastsInstallStage == false`：UI 自己订阅 1.01 哨兵切阶段，
+    /// 这里不重复发，保持「谁负责切阶段」只有一个来源。
+    private func bridgedInstallProgress(
+        broadcastsInstallStage: Bool,
+        progress: @escaping @Sendable (SigningStage) async -> Void,
+        onInstallProgress: @escaping @Sendable (Double) async -> Void
+    ) -> @Sendable (Double) async -> Void {
+        { installProgress in
+            if InstallStageBridge.shouldEmitInstalling(
+                uploadProgress: installProgress,
+                enabled: broadcastsInstallStage
+            ) {
+                await progress(.installing)
+            }
+            await onInstallProgress(installProgress)
         }
     }
 

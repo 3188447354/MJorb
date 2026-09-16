@@ -28,11 +28,35 @@
 - **删错一份设备 profile = 对应 App 立刻无法启动**（iOS 启动时会校验 profile 是否还在设备上）。所以「拿不到可信的『该保留哪一份』」时**必须整组跳过**，绝不能猜「保留最新那份」——宁可留着旧 profile 占地方。同理，以记录为删除依据时要注意**乐观值与已安装值的边界**：`SigningCoordinator.applySigningResult` 在**签名阶段**就写扩展的 UUID（顶层 `provisioningProfileUUID` 反而等安装校验通过才推进，见 R08），所以「签名成功但安装失败」时扩展记录指向一份设备上不存在的 profile，拿它当保留集合会删掉真正在用的那一份。
 - **守卫用 `"片段" in 源码` 断言时，同一模式出现多次就会失去约束力**。删除步骤从 1 处变成 2 处后，`check("guard gate.shouldAbort(token) == false else" in job)` 在删掉其中一处的变异下仍然通过（被另一处掩盖）—— 守卫变成「永远全绿」，比直接失败更危险。**同一模式出现多次时改为按出现次数断言**（`job.count(...) >= 2`）。这次是变异测试自己把问题暴露出来的。
 - **字段存在不等于语义可信**。`AppExtensionRecord.provisioningProfileUUID` 有值，但它的写入时机（签名阶段）比顶层字段（安装校验后）早，两者**可信度不同**。任何「以记录为删除/撤销/覆盖依据」的逻辑，都要先问「这个字段是在哪个时点写的、那时设备上真的换了吗」。
-- **`build-package` 不编译测试 target，所以测试代码的编译错误会绕过它、只在 `swift-regression` 红**。本机无 Swift 工具链时，给 `SealTests/**` 加新调用（尤其是构造器）等于「盲写」，一轮 CI 白等 13 分钟。2026-09-16 实际踩到：`error: argument 'ipaRelativePath' must precede argument 'signedArtifactStatus'`（Swift 的 memberwise init **强制实参顺序与声明一致**，漏写中间的默认参数可以，但顺序不能颠倒）。**对策**：守卫 R09 用 Python 解析 `AppRecord` 声明的参数序列，逐个校验所有调用点的标签顺序；新增/改动其它大构造器时照此扩展。加新调用前**逐字段对照声明顺序**，别凭记忆。
+- **`build-package` 不编译测试 target，所以测试代码的编译错误会绕过它、只在 `swift-regression` 红**。本机无 Swift 工具链时，给 `SealTests/**` 加新调用（尤其是构造器）等于「盲写」，一轮 CI 白等 13 分钟。2026-09-16 实际踩到：`error: argument 'ipaRelativePath' must precede argument 'signedArtifactStatus'`（Swift 的 memberwise init **强制实参顺序与声明一致**，漏写中间的默认参数可以，但顺序不能颠倒）。**对策**：守卫 R09 用 Python 解析 `AppRecord` 声明的参数序列，逐个校验所有调用点的标签顺序；**同类坑当天咬了第二次**（给 `signAndInstall` 加 `onInstallProgress` 时写到了 `broadcastsInstallStage` 之后），现已把 R09 通用化为「声明文件 + 声明锚点 + 调用点正则 + 调用点数下限」的列表，覆盖 `AppRecord` / `signAndInstall` / `installSignedIPA` / `installCachedSignedIPAIfPossible`。加新调用前**逐字段对照声明顺序**，别凭记忆。
+- **「进度条停在 X% 不动」要先问「这个阶段到底有没有进度回调」**。iOS 安装阶段（installd 经 installation_proxy 安装）**完全不回报进度**：上传结束（1.01 哨兵）之后到安装完成之间，UI 拿不到任何数值。所以「停在 93%」「卡在传输中」往往不是进度 bug，而是**阶段推进缺失 + 缺少等待说明**。两个界面表现不同只是因为订阅的东西不同：单签订阅 Double 哨兵（能切到 `.installing` ⇒ 93%，然后静止），**批量只订阅 `SigningStage`、根本收不到哨兵**，于是整段停在「传输中」。判据：`SigningProgressView.overallProgress(.installing) == 0.93`、`BatchRefreshView.runningStageTitle(.pushing) == "传输中"`。
+- **`guard app.applicationState == .active else { return }` 出现在「自动切后台」流程里是危险的**。`.inactive` 是**瞬时**失焦（控制中心、通知横幅、来电、App 切换器预览、系统弹窗），进程仍在前台。Seal 自续签依赖「旧进程让出前台」才能被 iOS 完成替换，把 `.inactive` 当「用户已离开」直接 return，会连 `exit(0)` 兜底一起跳过 ⇒ 界面永久停在 93%。**只有 `.background` 才算用户真的切走了**；`.inactive` 要等它恢复，恢复不了就走兜底退出。
+- **运行中的模态抽屉必须有退出通道**。`showsFooter: !isRunning` 配合 `.interactiveDismissDisabled(isRunning)` = 运行中既没有按钮也不能下滑关闭。真卡住时用户被锁死在一个静止弹窗里，感受就是「怎么都没反应」——这跟进度显示是**两个独立**的体验缺口，修了进度也别把退出通道忘了。运行中至少留一个「取消」（**软取消**：立即关界面，已下发的安装由 installd 跑完，结果以列表刷新为准）。
+- **守卫里「扫到 0 个调用点」= 检查必然通过**。新写的实参顺序校验第一版正则用了 `(?<![A-Za-z0-9_.])signAndInstall\(`，而真实调用点全是 `coordinator.signAndInstall(`（前一个字符是 `.`），被反向断言全部排除 ⇒ 零调用点 ⇒ 零错误 ⇒ 绿。**凡是「遍历 + 断言」的守卫都必须一并断言「扫到了多少个」，并设下限**，否则改一个正则就能让它静默失效。
+- **变异检查的期望文案必须与真实断言文案对得上**。`any(item.startswith(expected))` 是按前缀匹配的：文案写错会报成 `Guard failed mutation check`，看起来像「变异没被抓到」，实际是断言已被触发但消息不匹配。看到这条失败先核对真实消息，再改锚点。
+- **守卫脚本自己也会慢到被超时杀掉**。`violations()` 在变异检查里要跑 70+ 遍，每遍都 `rglob` 目录 + `strip_comments` 全部 Swift 源码（约 2MB 的纯 Python 字符循环）⇒ 近 3 分钟，超过默认命令超时被 SIGTERM（表现为「无任何输出、exit 1」，很容易误判成脚本崩了）。**每遍内的 `load` 与 `strip_comments` 结果都要缓存**（缓存必须限定在单遍作用域内 —— 跨遍缓存会读到陈旧文本，让变异检查静默失效；另外重绑 `load = load_cached` 前要先把原始 loader 存到另一个名字，否则闭包递归到自己）。`rglob` 结果在进程内只算一次。优化后 48 秒。
 
 ---
 
 ## 历史记录
+
+### 2026-09-16（续）· 续签「卡在 93%」与「卡在传输」：安装阶段的反馈缺失 + 自替换的永久冻结
+
+- **现象（用户问题 1、2）**：①续签到安装步骤卡在 93%，「怎么都没反应」；②续签抽屉卡在「传输」那，一直没反应。
+- **根因（三个独立缺陷，恰好同时命中「安装阶段」）**：
+  1. **批量续签收不到「安装中」阶段**。`installSignedIPA` 的普通 App 分支只发 `.pushing`；上传完成后的 1.01 哨兵（Double）只有单签路径的 UI 订阅得到，而 `BatchRefreshEvent` 只承载 `SigningStage` ⇒ **普通 App 在批量里从上传完成到 installd 装完整段显示「传输中」**（可达数分钟）。这是问题 2 的直接根因。原 `broadcastInstallingForSelfReplacement` 标志只作用于 Seal 分支，名字也误导（它实际表达的是「调用方的进度回调看不到 Double 哨兵」）。
+  2. **安装阶段完全没有可见反馈**。installd 安装期间没有任何进度回报，单签只能给出一个静止的 93%，批量连百分比都没有（「传输中」是个没有分母的黑盒）。
+  3. **Seal 自续签的「回主页」可能永久不触发**。`SelfInstallAutoBackground.returnToHomeAfterSealUpload` 里 `guard app.applicationState == .active else { return }` 把**瞬时失焦** `.inactive`（控制中心/通知横幅/来电/系统弹窗）当成「用户已离开」，直接 return —— **连 `exit(0)` 兜底一起跳过**。而 iOS 只有在旧进程让出前台后才完成替换 ⇒ 界面永久停在 93%。这是问题 1 最可能的根因。
+- **修复**：
+  1. `InstallStageBridge.shouldEmitInstalling(uploadProgress:enabled:)` 抽出「上传完成哨兵 → 补发 `.installing`」的规则（`> 1.0` 而非 `>=`，1.0 只是「上传到 100%」）；`SigningCoordinator.bridgedInstallProgress` 让 **Seal 自替换与普通安装两个分支共用同一份包装**，标志改名为 `broadcastsInstallStage`（语义：调用方的进度回调是否只承载 `SigningStage`）。批量续签传 `true`。
+  2. 批量事件流新增 `BatchRefreshEvent.appInstallProgress(index:total:app:progress:)`，把安装通道 AFC 的真实上传百分比送进抽屉；`BatchRefreshSession.recordInstallProgress` / `advanceStage` 管好「只在 `.pushing` 采信」与「进入 `.installing` 记一次起点」。
+  3. 新增 `InstallWaitNote`（`TimelineView` 秒级计时）：安装阶段明说「此阶段没有进度回报」并给出「已等待 m:ss」，单签进度页与批量抽屉共用。**刻意不编造假百分比** —— 安装耗时与包大小/设备 IO 相关，任何线性假设都会在慢设备上「走完却还没装完」。
+  4. 两个抽屉的 footer 改为**常显**并各加一个取消按钮（`cancelSigning` / `cancelBatchRefresh`，软取消 + 日志 `SEAL-SIGN-012` / `SEAL-RENEW-011`），解决「被关在静止弹窗里、没有任何操作」。
+  5. `SelfInstallAutoBackground`：只有 `.background` 才算用户离开；`.inactive` 先等最多 3 秒等它恢复，恢复不了照样走 `exit(0)` 兜底，保证 iOS 一定能完成替换。
+- **守卫与测试**：新增 **R10**（安装阶段「看得见、退得出」共 11 条断言 + 6 个变异锚点）；**R09 通用化**为可复用的实参顺序校验（覆盖 4 个函数，含「调用点数下限」防绿着坏掉）；修掉守卫自身的性能问题（每遍缓存 `load`/`strip_comments`、`rglob` 只算一次：2m47s → 48s）。新增测试 `InstallStageBridgeTests`(2) / `BatchRefreshSessionTelemetryTests`(5) / `InstallWaitNoteTests`(2)。结果 **176 源码 + 75 变异 PASS**。
+- **涉及文件**：`Seal/Core/Signing/InstallStageBridge.swift`(新)、`SigningCoordinator.swift`、`SigningSession.swift`、`Seal/Core/Renewal/{RenewalCoordinator,BatchRefreshSession}.swift`、`Seal/DesignSystem/InstallWaitNote.swift`(新)、`Seal/Features/Apps/{AppsViewModel,BatchRefreshView,SigningProgressView}.swift`、`SealTests/{Signing/InstallStageBridgeTests,Renewal/BatchRefreshSessionTelemetryTests,DesignSystem/InstallWaitNoteTests}.swift`、`Scripts/verify-release-safety.py`。
+- **验证状态**：静态守卫 PASS。**待 macOS 编译 + 真机回归**：批量续签时抽屉应显示上传百分比、上传完成即切「安装中」并出现「已等待 m:ss」；单签进入安装阶段应出现同样的等待说明；运行中点「取消」能立即退出界面；Seal 自续签在失焦（下拉控制中心）后仍能完成替换而不是停在 93%。
+- **仍未闭环**：安装/上传超时预算偏长（`mergedTimeout = min(1800, 180+ipaMB×5) + 600`，20MB 包 ≈ 878 秒）——是否缩短需要用户拍板，缩短的代价是慢设备上的假超时（超时按确定性拒绝处理、不重试，但底层安装可能仍在跑，会留下「装上了却记为失败」）。另需用户补完问题 6。
 
 ### 2026-09-16 · 设备端描述文件只增不减（Seal 自己 17 份）+ 序列号/UUID 版式统一
 

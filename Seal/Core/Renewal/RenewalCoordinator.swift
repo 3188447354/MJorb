@@ -22,6 +22,12 @@ enum BatchRefreshEvent: Sendable {
     case prepared(apps: [AppRecord])
     case started(total: Int)
     case appProgress(index: Int, total: Int, app: AppRecord, stage: SigningStage)
+    /// 安装通道 AFC 上传的真实进度（0-1），仅 `.pushing` 阶段有值。
+    ///
+    /// 单独一个事件而不是塞进 `appProgress`：上传进度是**高频**回调（逐百分比），
+    /// 混进阶段事件会让「阶段变化」这个低频信号被淹没，消费端也难以区分
+    /// 「阶段推进了」和「同一个阶段里进度动了」。
+    case appInstallProgress(index: Int, total: Int, app: AppRecord, progress: Double)
     case appSucceeded(index: Int, total: Int, app: AppRecord)
     case appFailed(index: Int, total: Int, app: AppRecord, failure: ImportFailure)
 }
@@ -239,9 +245,28 @@ actor RenewalCoordinator {
                                 )
                             )
                         },
-                        // Seal 走 submitPrepared 上传完成时补发 .installing，
-                        // 驱动批量入口 consumeBatchEvent 的自动回主页逻辑。
-                        broadcastInstallingForSelfReplacement: true
+                        // 上传百分比单独走 appInstallProgress：抽屉要显示真实百分比，
+                        // 否则「传输中」就是一个没有分母的黑盒（2026-09-16 真机反馈）。
+                        onInstallProgress: { installProgress in
+                            await progress(
+                                .appInstallProgress(
+                                    index: offset + 1,
+                                    total: queue.count,
+                                    app: latestApp,
+                                    progress: installProgress
+                                )
+                            )
+                        },
+                        // 上传完成的 1.01 哨兵在这里被补发成 `.installing` 阶段事件
+                        // （批量 progress 回调只承载 SigningStage，看不到 Double 哨兵）。
+                        // 覆盖本轮全部应用：Seal 靠它触发自动回主页，普通 App 靠它把抽屉
+                        // 文案从「传输中」推进到「安装中」，不再整段静止。
+                        //
+                        // 实参顺序必须与 signAndInstall 的声明一致（onInstallProgress
+                        // 在 broadcastsInstallStage 之前）—— 写反了是编译错误，
+                        // 而本机没有 Swift 工具链、build-package 又不编译测试 target，
+                        // 只有守卫 R09 能提前拦住（2026-09-16 实际踩到一次）。
+                        broadcastsInstallStage: true
                     )
                     updatedRecord = updated
                     lastError = nil

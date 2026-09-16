@@ -123,6 +123,23 @@ def argument_labels(inner):
             labels.append(matched.group(1))
     return labels
 
+_SWIFT_SOURCES = None
+
+def swift_sources():
+    """Seal/ 与 SealTests/ 下的全部 Swift 文件（进程内只枚举一次）。
+
+    变异检查会把 `violations()` 跑 70+ 遍，每遍都 rglob 一次目录纯属浪费；
+    实测这一步和下面的 strip_comments 缓存一起把守卫从近 3 分钟压回 40 秒内。
+    """
+    global _SWIFT_SOURCES
+    if _SWIFT_SOURCES is None:
+        _SWIFT_SOURCES = sorted(
+            list((ROOT / "Seal").rglob("*.swift"))
+            + list((ROOT / "SealTests").rglob("*.swift"))
+        )
+    return _SWIFT_SOURCES
+
+
 def violations(load=read):
     failures = []
     checks = 0
@@ -131,6 +148,27 @@ def violations(load=read):
         checks += 1
         if not ok:
             failures.append(message)
+
+    # 每遍（= 每个变异）内的读取与去注释结果都只算一次。
+    # 注意缓存必须在**单遍**作用域内：变异检查每遍喂进来的 load 都指向被改写过的内容，
+    # 跨遍缓存会读到陈旧文本，让变异检查静默失效。
+    _raw_cache = {}
+    _stripped_cache = {}
+    # 必须先把原始 loader 绑到另一个名字再重绑 `load`：闭包里引用 `load` 会指向
+    # 重绑后的自己，直接 RecursionError（实测踩到）。
+    original_load = load
+
+    def load_cached(path):
+        if path not in _raw_cache:
+            _raw_cache[path] = original_load(path)
+        return _raw_cache[path]
+
+    def strip_cached(path):
+        if path not in _stripped_cache:
+            _stripped_cache[path] = strip_comments(load_cached(path))
+        return _stripped_cache[path]
+
+    load = load_cached
 
     rust = load("Vendor/Minimuxer/RustBridge/src/idevice_support/install.rs")
     install = section(rust, "pub(crate) async fn run_install_chain", "fn is_missing_package_path")
@@ -273,28 +311,40 @@ def violations(load=read):
     # 所以测试里 `AppRecord(...)` 的参数顺序写错会顺利通过 build-package，
     # 只在 `swift-regression` 红（exit 65），一轮 CI 白等 13 分钟。
     # 实际报错：error: argument 'ipaRelativePath' must precede argument 'signedArtifactStatus'
-    app_record_source = load("Seal/Core/Apps/AppRecord.swift")
-    declaration_at = app_record_source.find("    init(")
-    declared_labels = []
-    if declaration_at != -1:
-        open_at = app_record_source.index("(", declaration_at)
-        close_at = match_paren(app_record_source, open_at)
-        if close_at != -1:
-            declared_labels = argument_labels(app_record_source[open_at + 1:close_at])
-    check(len(declared_labels) >= 30,
-          "R09: AppRecord memberwise init must stay parseable by the guard")
-    order_errors = []
-    if declared_labels:
-        sources = sorted(
-            list((ROOT / "Seal").rglob("*.swift"))
-            + list((ROOT / "SealTests").rglob("*.swift"))
-        )
-        for source_path in sources:
+    def declared_argument_labels(path, marker):
+        """从 `marker` 之后的第一个 `(` 解析出参数标签序列（marker 必须包含到 `(`）。"""
+        source = strip_comments(load(path))
+        at = source.find(marker)
+        if at == -1:
+            return []
+        open_at = source.index("(", at + len(marker) - 1)
+        close_at = match_paren(source, open_at)
+        if close_at == -1:
+            return []
+        return argument_labels(source[open_at + 1:close_at])
+
+    def call_order_errors(declared_labels, call_pattern, skip_paths=()):
+        """校验 Seal/ 与 SealTests/ 下每个调用点的实参标签顺序与声明一致。
+
+        返回 (错误列表, 实际扫到的调用点数)。**调用点数必须一并返回并断言下限**：
+        本轮第一版把正则写成 `(?<![A-Za-z0-9_.])signAndInstall\\(`，而真实调用点全是
+        `coordinator.signAndInstall(` —— 前一个字符是 `.`，被反向断言全部排除，
+        于是「零调用点 ⇒ 零错误 ⇒ 检查通过」。守卫全绿但完全没在守卫任何东西，
+        正是这个脚本注释里反复警告的「绿着坏掉」。
+        """
+        errors = []
+        scanned = 0
+        if not declared_labels:
+            return errors, scanned
+        for source_path in swift_sources():
             relative = source_path.relative_to(ROOT).as_posix()
-            if relative == "Seal/Core/Apps/AppRecord.swift":
+            if relative in skip_paths:
                 continue
-            source = strip_comments(load(relative))
-            for match in re.finditer(r"(?<![A-Za-z0-9_.])AppRecord\(", source):
+            source = strip_cached(relative)
+            for match in re.finditer(call_pattern, source):
+                # 声明本身（`func name(`）不是调用点；否则会把参数默认值当成实参。
+                if source[max(0, match.start() - 5):match.start()] == "func ":
+                    continue
                 call_open = match.end() - 1
                 call_close = match_paren(source, call_open)
                 if call_close == -1:
@@ -302,16 +352,123 @@ def violations(load=read):
                 labels = argument_labels(source[call_open + 1:call_close])
                 if not labels:
                     continue
+                scanned += 1
                 indices = [
                     declared_labels.index(label)
                     for label in labels
                     if label in declared_labels
                 ]
                 if len(indices) != len(labels) or indices != sorted(indices):
-                    order_errors.append(relative + " -> " + ", ".join(labels))
-    check(not order_errors,
-          "R09: AppRecord call-site labels must follow the declaration order ("
-          + " | ".join(order_errors) + ")")
+                    errors.append(relative + " -> " + ", ".join(labels))
+        return errors, scanned
+
+    # 同一类坑在 2026-09-16 一天内咬了两次：AppRecord（测试里）与 signAndInstall（本轮自己
+    # 给批量续签加 onInstallProgress 时，把它写到了 broadcastsInstallStage 之后）。
+    # 这类函数的特点：参数多、绝大多数带默认值、调用点几乎全是「省略中间几个」，
+    # 于是把靠后的标签写到前面去看起来毫无违和感 —— 但 Swift 要求实参标签顺序与声明
+    # 一致，直接 exit 65。校验的代价是几行 Python，收益是省掉一轮 13 分钟的 CI。
+    # 每项：(名字, 声明文件, 声明锚点, 声明标签数下限, 调用点正则, 跳过文件, 调用点数下限)
+    order_targets = (
+        ("AppRecord", "Seal/Core/Apps/AppRecord.swift", "    init(", 30,
+         r"(?<![A-Za-z0-9_.])AppRecord\(", ("Seal/Core/Apps/AppRecord.swift",), 10),
+        ("signAndInstall", "Seal/Core/Signing/SigningCoordinator.swift",
+         "func signAndInstall(", 10, r"(?<![A-Za-z0-9_])signAndInstall\(", (), 2),
+        ("installSignedIPA", "Seal/Core/Signing/SigningCoordinator.swift",
+         "private func installSignedIPA(", 7, r"(?<![A-Za-z0-9_])installSignedIPA\(", (), 2),
+        ("installCachedSignedIPAIfPossible", "Seal/Core/Signing/SigningCoordinator.swift",
+         "private func installCachedSignedIPAIfPossible(", 8,
+         r"(?<![A-Za-z0-9_])installCachedSignedIPAIfPossible\(", (), 1),
+    )
+    for name, path, marker, min_declared, pattern, skips, min_sites in order_targets:
+        declared_labels = declared_argument_labels(path, marker)
+        check(len(declared_labels) >= min_declared,
+              "R09: " + name + " must stay parseable by the guard")
+        errors, sites = call_order_errors(declared_labels, pattern, skip_paths=skips)
+        # 调用点数下限是防「绿着坏掉」的：正则写歪会扫到 0 个调用点，
+        # 而 0 个调用点必然 0 个错误 —— 检查通过但什么都没守住（本轮实际踩到）。
+        check(sites >= min_sites,
+              "R09: " + name + " call sites must stay discoverable by the guard (found "
+              + str(sites) + ")")
+        check(not errors,
+              "R09: " + name + " call-site labels must follow the declaration order ("
+              + " | ".join(errors) + ")")
+
+    # R10: 安装阶段必须「看得见、退得出」（2026-09-16 真机反馈）。
+    # 现象一：单签停在 93%（= `.installing`，见 SigningProgressView.overallProgress）。
+    # 现象二：批量续签抽屉停在「传输中」。
+    # 两者是同一件事：上传完成（安装通道的 >1.0 哨兵）之后 installd 才真正开始安装，
+    # 而安装期间**没有任何进度回报**；同时 UI 既没有说明也没有退出通道 ——
+    # 抽屉在运行中隐藏了整个 footer 并禁用了下滑关闭，用户被关在一个静止弹窗里，
+    # 感受就是「怎么都没反应」。
+    #
+    # 这些约束有个共同特征：改回旧写法**不会编译失败、也不会跑挂单测**，
+    # 只会让真机重新「卡住」。所以必须由静态守卫钉住。
+    bridge_source = load("Seal/Core/Signing/InstallStageBridge.swift")
+    # 1.0 是「上传到 100%」，不是「开始安装」：用 >= 会让 UI 在设备还没动手时谎报安装中。
+    check("uploadProgress > uploadCompletionSentinel" in bridge_source,
+          "R10: 1.0 means 'upload finished', not 'installing' — the sentinel must be exclusive")
+    install_signed_body = section(
+        load("Seal/Core/Signing/SigningCoordinator.swift"),
+        "private func installSignedIPA(",
+        "private func bridgedInstallProgress("
+    )
+    # 两个安装分支必须对称地走同一个包装：Seal 自替换漏了会丢掉「回主页」信号，
+    # 普通安装漏了则从上传完成到装完整段停在「传输中」。
+    check(install_signed_body.count("bridgedInstallProgress(") >= 2,
+          "R10: both install branches must bridge the upload sentinel (batch callbacks see stages only)")
+    check("isSelfReplacement: false" in install_signed_body
+          and "bridgedInstallProgress(" in install_signed_body.split("isSelfReplacement: false", 1)[1],
+          "R10: the ordinary-app install path is the one that used to stall on '传输中'")
+    bridge_helper = section(
+        load("Seal/Core/Signing/SigningCoordinator.swift"),
+        "private func bridgedInstallProgress(",
+        "private func removeStaleProfiles("
+    )
+    check("InstallStageBridge.shouldEmitInstalling(" in bridge_helper
+          and "await progress(.installing)" in bridge_helper,
+          "R10: the bridge must actually emit .installing, not just forward the percentage")
+    renewal_process = section(
+        load("Seal/Core/Renewal/RenewalCoordinator.swift"),
+        "private func process(",
+        "static let requiresActionCode"
+    )
+    check("broadcastsInstallStage: true" in renewal_process,
+          "R10: batch renewal must ask for the install-stage broadcast")
+    check("onInstallProgress: { installProgress in" in renewal_process,
+          "R10: batch renewal must subscribe to the upload percentage")
+    check(".appInstallProgress(" in renewal_process,
+          "R10: batch renewal must forward the real upload percentage to the drawer")
+    batch_view = strip_comments(load("Seal/Features/Apps/BatchRefreshView.swift"))
+    check("InstallWaitNote(startedAt:" in batch_view,
+          "R10: the batch drawer must explain the install wait instead of standing still")
+    check("currentInstallProgress" in batch_view,
+          "R10: the batch drawer must show the real upload percentage")
+    check("cancelBatchRefresh()" in batch_view,
+          "R10: a running batch must expose a cancel path")
+    progress_view = strip_comments(load("Seal/Features/Apps/SigningProgressView.swift"))
+    check("InstallWaitNote(startedAt: session?.installStartedAt)" in progress_view,
+          "R10: the single-signing sheet must explain the 93% install wait")
+    check("cancelSigning()" in progress_view,
+          "R10: a running signing session must expose a cancel path")
+    # 运行中隐藏 footer + 禁用下滑关闭 = 弹窗内没有任何操作，用户被锁死。
+    check("showsFooter: !isRunning" not in batch_view
+          and "showsFooter: !isRunning" not in progress_view,
+          "R10: hiding the footer while running removes the only way out of a stuck run")
+    # Seal 自续签的「回主页」是 93% 的唯一出口：iOS 只有在旧进程让出前台后才完成替换。
+    return_home = strip_comments(section(
+        load("Seal/Features/Apps/SigningProgressView.swift"),
+        "static func returnToHomeAfterSealUpload()",
+        "private static func triggerHomeTransition"
+    ))
+    # `.inactive` 是瞬时失焦（控制中心/通知横幅/来电/系统弹窗），进程仍在前台。
+    # 旧实现把它当成「用户已离开」直接 return，连 exit(0) 兜底一起跳过 ——
+    # iOS 永远等不到旧进程让出前台，界面永久停在 93%（2026-09-16 真机反馈）。
+    check("guard app.applicationState == .active else { return }" not in return_home,
+          "R10: .inactive is a transient blur — returning early strands the install at 93%")
+    check("app.applicationState == .background" in return_home,
+          "R10: only a real background transition means the user left")
+    check("exit(0)" in return_home,
+          "R10: the exit fallback must stay reachable on every non-background path")
 
     # R04: Portal 三个服务的回调一律经 ContinuationBox 转发。裸 continuation 第二次 resume
     # 不是可捕获错误，而是 SWIFT TASK CONTINUATION MISUSE 致命崩溃（进程直接终止）。
@@ -1133,6 +1290,43 @@ def main():
          "            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",\n            signedArtifactStatus: signedArtifactStatus,",
          "            signedArtifactStatus: signedArtifactStatus,\n            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",",
          "R09: AppRecord call-site labels must follow the declaration order"),
+        ("Seal/Core/Renewal/RenewalCoordinator.swift",
+         "                        selectedCertificateSerialNumber: nil,\n                        forceResign: true,",
+         "                        forceResign: true,\n                        selectedCertificateSerialNumber: nil,",
+         "R09: signAndInstall call-site labels must follow the declaration order"),
+        ("Seal/Core/Signing/InstallStageBridge.swift",
+         "uploadProgress > uploadCompletionSentinel",
+         "uploadProgress >= uploadCompletionSentinel",
+         "R10: 1.0 means 'upload finished', not 'installing'"),
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "                onProgress: bridgedInstallProgress(\n                    broadcastsInstallStage: broadcastsInstallStage,\n                    progress: progress,\n                    onInstallProgress: onInstallProgress\n                )",
+         "                onProgress: onInstallProgress",
+         "R10: the ordinary-app install path is the one that used to stall"),
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "                await progress(.installing)\n            }\n            await onInstallProgress(installProgress)",
+         "                _ = progress\n            }\n            await onInstallProgress(installProgress)",
+         "R10: the bridge must actually emit .installing"),
+        ("Seal/Core/Renewal/RenewalCoordinator.swift",
+         "                        onInstallProgress: { installProgress in",
+         "                        onInstallProgressUnused: { installProgress in",
+         "R10: batch renewal must subscribe to the upload percentage"),
+        # 把新事件「收编」回旧事件：编译通过、事件流还在，但抽屉重新变成没有分母的黑盒。
+        ("Seal/Core/Renewal/RenewalCoordinator.swift",
+         "                                .appInstallProgress(\n                                    index: offset + 1,\n                                    total: queue.count,\n                                    app: latestApp,\n                                    progress: installProgress\n                                )",
+         "                                .appProgress(\n                                    index: offset + 1,\n                                    total: queue.count,\n                                    app: latestApp,\n                                    stage: .pushing\n                                )",
+         "R10: batch renewal must forward the real upload percentage"),
+        ("Seal/Features/Apps/BatchRefreshView.swift",
+         "        SealDrawer(title: drawerTitle, showsFooter: true) {",
+         "        SealDrawer(title: drawerTitle, showsFooter: !isRunning) {",
+         "R10: hiding the footer while running removes the only way out of a stuck run"),
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         "        SealDrawer(title: title, showsFooter: true) {",
+         "        SealDrawer(title: title, showsFooter: !isRunning) {",
+         "R10: hiding the footer while running removes the only way out of a stuck run"),
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         "            if app.applicationState == .background { return }",
+         "            if app.applicationState != .active { return }",
+         "R10: only a real background transition means the user left"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

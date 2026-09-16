@@ -1089,10 +1089,24 @@ final class AppsViewModel: ObservableObject {
     }
 
 
+    /// 取消当前签名 / 续签（运行中抽屉的「取消」）。软取消，语义同 `cancelBatchRefresh`：
+    /// 界面立即关闭、后续步骤停止，但**已经下发到设备的那次安装不会被中断**，
+    /// 它会由 installd 自己跑完并按安装校验结果落库。
     func cancelSigning() {
+        let appName = signingSession?.app.displayName
         signingTask?.cancel()
         signingSession = nil
         selectedOperationApp = nil
+        guard let appName else { return }
+        Task { [weak self] in
+            try? await self?.logStore?.append(
+                category: .signing,
+                level: .warning,
+                message: "用户取消签名/续签：\(appName)，正在进行的安装会由设备自行完成",
+                code: "SEAL-SIGN-012"
+            )
+            await self?.load(force: true)
+        }
     }
 
     func dismissSigningResult() {
@@ -1326,10 +1340,31 @@ final class AppsViewModel: ObservableObject {
         startBatchRefresh(appIDs: failedIDs)
     }
 
+    /// 取消本轮批量续签（运行中抽屉的「取消续签」）。
+    ///
+    /// 语义是**软取消**：立即关掉界面并停止后续项，但**已经开始的那一次安装不会被中断** ——
+    /// `Minimuxer.stageAndInstall` 是同步阻塞 FFI，没有取消机制，强行丢弃只会留下
+    /// 「包传了一半」的状态。所以：
+    ///   - 取消发生在签名/申请证书阶段 → 协程在下一个 `Task.checkCancellation()` 退出，
+    ///     队列项被标回 `pending`，下次续签会重新处理；
+    ///   - 取消发生在安装阶段 → 本次安装由 installd 自己跑完，应用会正常装上，
+    ///     记录在安装校验通过后照常落库（列表刷新即为准）。
+    ///
+    /// 不做「假装已停止」的假象：日志里明确记一笔，用户与开发者都能对上账。
     func cancelBatchRefresh() {
+        let processed = batchRefreshSession?.currentIndex ?? 0
+        let total = batchRefreshSession?.total ?? 0
         batchRefreshTask?.cancel()
         batchRefreshSession = nil
-        Task { await load(force: true) }
+        Task { [weak self] in
+            try? await self?.logStore?.append(
+                category: .renewal,
+                level: .warning,
+                message: "用户取消批量续签：已处理 \(processed)/\(total)，正在进行的安装会由设备自行完成",
+                code: "SEAL-RENEW-011"
+            )
+            await self?.load(force: true)
+        }
     }
 
     func dismissBatchRefresh() {
@@ -1500,11 +1535,18 @@ final class AppsViewModel: ObservableObject {
         case .started(let total):
             batchRefreshSession?.total = total
             batchRefreshSession?.status = .running
+        case .appInstallProgress(let index, let total, let app, let progress):
+            batchRefreshSession?.currentIndex = index
+            batchRefreshSession?.total = total
+            batchRefreshSession?.currentAppName = app.displayName
+            batchRefreshSession?.recordInstallProgress(progress)
         case .appProgress(let index, let total, let app, let stage):
             batchRefreshSession?.currentIndex = index
             batchRefreshSession?.total = total
             batchRefreshSession?.currentAppName = app.displayName
-            batchRefreshSession?.currentStage = stage
+            // 阶段推进集中走 advanceStage：它同时负责安装起点计时与上传进度的清理，
+            // 避免「上一项的 87% / 已等待」泄漏到下一项。
+            batchRefreshSession?.advanceStage(stage)
             let itemState: BatchRefreshSession.Item.State = app.isSeal && (stage == .pushing || stage == .installing) ? .preparingSealUpdate : .running
             if app.isSeal && (stage == .pushing || stage == .installing) {
                 batchRefreshSession?.status = .preparingSealUpdate
@@ -1523,6 +1565,8 @@ final class AppsViewModel: ObservableObject {
             batchRefreshSession?.currentIndex = index
             batchRefreshSession?.total = total
             batchRefreshSession?.currentAppName = app.displayName
+            batchRefreshSession?.currentInstallProgress = nil
+            batchRefreshSession?.installStartedAt = nil
             batchRefreshSession?.succeeded += 1
             updateBatchItem(appID: app.id, name: app.displayName, isSeal: app.isSeal, state: .completed)
             Task { [weak self] in
@@ -1539,6 +1583,8 @@ final class AppsViewModel: ObservableObject {
             batchRefreshSession?.currentIndex = index
             batchRefreshSession?.total = total
             batchRefreshSession?.currentAppName = app.displayName
+            batchRefreshSession?.currentInstallProgress = nil
+            batchRefreshSession?.installStartedAt = nil
             // 「本轮未执行」不是失败：它根本没被尝试过，下一步动作也不同（去补前置条件，
             // 不是重试）。复用失败事件只是为了让它在列表里可见，计数与状态都必须分开，
             // 否则用户会以为「重试就能好」，而真实原因是缺账号。
@@ -1877,6 +1923,17 @@ final class AppsViewModel: ObservableObject {
 
     private func updateSigningStage(_ stage: SigningStage) {
         guard signingSession != nil else { return }
+        if stage == .installing {
+            // 只在**首次**进入安装阶段时记起点：同一阶段会被重复推送
+            //（Seal 自替换的 1.01 哨兵 + 签名侧补发），每次都重置会让「已等待」永远归零。
+            if case .running(.installing) = signingSession?.status {
+                // 已经在安装阶段：保留起点
+            } else {
+                signingSession?.installStartedAt = Date()
+            }
+        } else {
+            signingSession?.installStartedAt = nil
+        }
         signingSession?.status = .running(stage)
     }
 
@@ -1890,6 +1947,7 @@ final class AppsViewModel: ObservableObject {
             signingSession?.installProgress = 1.0
             if case .running(let stage) = signingSession?.status, stage == .pushing {
                 signingSession?.status = .running(.installing)
+                signingSession?.installStartedAt = Date()
             }
             return
         }

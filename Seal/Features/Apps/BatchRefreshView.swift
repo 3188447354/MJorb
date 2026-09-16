@@ -5,7 +5,8 @@ struct BatchRefreshView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        SealDrawer(title: drawerTitle, showsFooter: !isRunning) {
+        // footer 常显：运行中要给出「取消续签」退出通道，不能因为「没有主操作」就整段隐藏。
+        SealDrawer(title: drawerTitle, showsFooter: true) {
             VStack(alignment: .leading, spacing: 16) {
                 headlineBlock
                 if showsQueue { queueBlock }
@@ -59,6 +60,8 @@ struct BatchRefreshView: View {
                 Text(viewModel.batchRefreshSession?.currentAppName ?? "当前 App")
                     .font(.system(size: 18, weight: .semibold))
                     .lineLimit(1)
+                uploadProgressBlock
+                installWaitBlock
             }
             .padding(16)
             .glassSurface(cornerRadius: 18)
@@ -94,6 +97,44 @@ struct BatchRefreshView: View {
             }
             .padding(16)
             .glassSurface(cornerRadius: 18)
+        }
+    }
+
+    /// 上传阶段显示真实百分比。
+    ///
+    /// 旧实现只有一句「传输中」：一个大包（几十到几百 MB）经隧道上传要几分钟，
+    /// 期间没有任何数字，用户无从判断是在传还是断了（2026-09-16 真机反馈
+    /// 「续签抽屉卡在传输那没反应」）。进度来自安装通道 AFC 回调，是真实值。
+    @ViewBuilder
+    private var uploadProgressBlock: some View {
+        if let progress = viewModel.batchRefreshSession?.currentInstallProgress,
+           viewModel.batchRefreshSession?.currentStage == .pushing {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("正在传输到设备")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.sealTextSecondary)
+                    Spacer()
+                    Text("\(Int(progress * 100))%")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.sealAccent)
+                        .monospacedDigit()
+                }
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
+                    .tint(Color.sealAccent)
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    /// 安装阶段（installd 不回进度）用计时说明替代空白。
+    @ViewBuilder
+    private var installWaitBlock: some View {
+        if viewModel.batchRefreshSession?.currentStage == .installing
+            || viewModel.batchRefreshSession?.currentStage == .verifying {
+            InstallWaitNote(startedAt: viewModel.batchRefreshSession?.installStartedAt)
+                .padding(.top, 2)
         }
     }
 
@@ -162,7 +203,13 @@ struct BatchRefreshView: View {
                     .sealOutlineAction(cornerRadius: 14)
             }
         case .preparing, .running, .preparingSealUpdate:
-            EmptyView()
+            // 运行中必须有退出通道。旧实现把 footer 整段隐藏（`showsFooter` 直接绑到
+            // `!isRunning`）且禁用了下滑关闭，于是「卡住」时用户被关在一个没有任何
+            // 操作的弹窗里 —— 这正是真机反馈「怎么都没反应」里最难受的一半（2026-09-16）。
+            // 取消是**软取消**：立即关闭界面，正在进行的安装会让 installd 自己跑完，
+            // 结果以下一次列表刷新为准（见 cancelBatchRefresh 的说明）。
+            Button("取消续签") { viewModel.cancelBatchRefresh(); dismiss() }
+                .sealOutlineAction(cornerRadius: 14)
         case nil:
             EmptyView()
         }

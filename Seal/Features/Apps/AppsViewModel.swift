@@ -1371,7 +1371,9 @@ final class AppsViewModel: ObservableObject {
         defer { releaseOperation(operationLease) }
         // 批量续签只使用已保存会话；会话过期会快速失败，并统一引导到「我的」页重新验证。
         do {
-            let progress: @escaping @Sendable (BatchRefreshEvent) async -> Void = { [weak self] event in
+            // 局部闭包变量默认逃逸，可直接传给 @escaping 参数的 refreshAll/refreshFailedItems；
+            // 声明处不能写 @escaping（仅函数参数位合法）。
+            let progress: @Sendable (BatchRefreshEvent) async -> Void = { [weak self] event in
                 await self?.consumeBatchEvent(event)
             }
             let result: BatchRefreshResult

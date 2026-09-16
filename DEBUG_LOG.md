@@ -27,6 +27,7 @@
 - **删错一份设备 profile = 对应 App 立刻无法启动**（iOS 启动时会校验 profile 是否还在设备上）。所以「拿不到可信的『该保留哪一份』」时**必须整组跳过**，绝不能猜「保留最新那份」——宁可留着旧 profile 占地方。同理，以记录为删除依据时要注意**乐观值与已安装值的边界**：`SigningCoordinator.applySigningResult` 在**签名阶段**就写扩展的 UUID（顶层 `provisioningProfileUUID` 反而等安装校验通过才推进，见 R08），所以「签名成功但安装失败」时扩展记录指向一份设备上不存在的 profile，拿它当保留集合会删掉真正在用的那一份。
 - **守卫用 `"片段" in 源码` 断言时，同一模式出现多次就会失去约束力**。删除步骤从 1 处变成 2 处后，`check("guard gate.shouldAbort(token) == false else" in job)` 在删掉其中一处的变异下仍然通过（被另一处掩盖）—— 守卫变成「永远全绿」，比直接失败更危险。**同一模式出现多次时改为按出现次数断言**（`job.count(...) >= 2`）。这次是变异测试自己把问题暴露出来的。
 - **字段存在不等于语义可信**。`AppExtensionRecord.provisioningProfileUUID` 有值，但它的写入时机（签名阶段）比顶层字段（安装校验后）早，两者**可信度不同**。任何「以记录为删除/撤销/覆盖依据」的逻辑，都要先问「这个字段是在哪个时点写的、那时设备上真的换了吗」。
+- **`build-package` 不编译测试 target，所以测试代码的编译错误会绕过它、只在 `swift-regression` 红**。本机无 Swift 工具链时，给 `SealTests/**` 加新调用（尤其是构造器）等于「盲写」，一轮 CI 白等 13 分钟。2026-09-16 实际踩到：`error: argument 'ipaRelativePath' must precede argument 'signedArtifactStatus'`（Swift 的 memberwise init **强制实参顺序与声明一致**，漏写中间的默认参数可以，但顺序不能颠倒）。**对策**：守卫 R09 用 Python 解析 `AppRecord` 声明的参数序列，逐个校验所有调用点的标签顺序；新增/改动其它大构造器时照此扩展。加新调用前**逐字段对照声明顺序**，别凭记忆。
 
 ---
 

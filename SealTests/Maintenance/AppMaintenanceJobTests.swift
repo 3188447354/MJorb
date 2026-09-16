@@ -381,8 +381,8 @@ struct AppMaintenanceJobTests {
             size: 1024,
             state: .imported,
             provisioningProfileUUID: provisioningProfileUUID,
-            signedArtifactStatus: signedArtifactStatus,
             ipaRelativePath: "Apps/\(appID.uuidString)/Original.ipa",
+            signedArtifactStatus: signedArtifactStatus,
             isSeal: isSeal,
             importedAt: Date(),
             extensions: extensions

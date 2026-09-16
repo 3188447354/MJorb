@@ -22,6 +22,107 @@ def section(text, start, end):
         raise AssertionError("section end marker not found after " + start + ": " + end)
     return tail.split(end, 1)[0]
 
+def strip_comments(text):
+    """去掉 // 与 /* */ 注释，保留字符串字面量原样（字符串里的 // 不是注释）。"""
+    out = []
+    i = 0
+    in_string = False
+    while i < len(text):
+        ch = text[i]
+        if in_string:
+            out.append(ch)
+            if ch == "\\" and i + 1 < len(text):
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < len(text) and text[i + 1] == "/":
+            while i < len(text) and text[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and i + 1 < len(text) and text[i + 1] == "*":
+            i += 2
+            while i + 1 < len(text) and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+def match_paren(text, open_index):
+    """返回与 text[open_index] == '(' 配对的 ')' 下标；找不到返回 -1。"""
+    depth = 0
+    i = open_index
+    in_string = False
+    while i < len(text):
+        ch = text[i]
+        if in_string:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+def split_top_level(text):
+    """按深度 0 的逗号切分（括号 / 方括号 / 花括号都算深度）。"""
+    parts = []
+    depth = 0
+    in_string = False
+    start = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if in_string:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+        i += 1
+    parts.append(text[start:])
+    return parts
+
+def argument_labels(inner):
+    """从参数列表文本里取出标签序列（`label: value` 形式）。"""
+    labels = []
+    for part in split_top_level(inner):
+        matched = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*:", part.strip())
+        if matched:
+            labels.append(matched.group(1))
+    return labels
+
 def violations(load=read):
     failures = []
     checks = 0
@@ -161,6 +262,51 @@ def violations(load=read):
     # 拿它当保留集合会删掉真正在用的那一份，扩展当场失效。
     check("guard record.signedArtifactStatus == .installed else { continue }" in maintenance_source,
           "R08: extension profile ids are optimistic — only trust them after a verified install")
+
+    # R09: 构造器实参顺序必须与声明顺序一致（2026-09-16 被 CI 拦下一次）。
+    # 本机（Windows）没有 Swift 工具链，而 `build-package` **不编译测试 target** ——
+    # 所以测试里 `AppRecord(...)` 的参数顺序写错会顺利通过 build-package，
+    # 只在 `swift-regression` 红（exit 65），一轮 CI 白等 13 分钟。
+    # 实际报错：error: argument 'ipaRelativePath' must precede argument 'signedArtifactStatus'
+    app_record_source = load("Seal/Core/Apps/AppRecord.swift")
+    declaration_at = app_record_source.find("    init(")
+    declared_labels = []
+    if declaration_at != -1:
+        open_at = app_record_source.index("(", declaration_at)
+        close_at = match_paren(app_record_source, open_at)
+        if close_at != -1:
+            declared_labels = argument_labels(app_record_source[open_at + 1:close_at])
+    check(len(declared_labels) >= 30,
+          "R09: AppRecord memberwise init must stay parseable by the guard")
+    order_errors = []
+    if declared_labels:
+        sources = sorted(
+            list((ROOT / "Seal").rglob("*.swift"))
+            + list((ROOT / "SealTests").rglob("*.swift"))
+        )
+        for source_path in sources:
+            relative = source_path.relative_to(ROOT).as_posix()
+            if relative == "Seal/Core/Apps/AppRecord.swift":
+                continue
+            source = strip_comments(load(relative))
+            for match in re.finditer(r"(?<![A-Za-z0-9_.])AppRecord\(", source):
+                call_open = match.end() - 1
+                call_close = match_paren(source, call_open)
+                if call_close == -1:
+                    continue
+                labels = argument_labels(source[call_open + 1:call_close])
+                if not labels:
+                    continue
+                indices = [
+                    declared_labels.index(label)
+                    for label in labels
+                    if label in declared_labels
+                ]
+                if len(indices) != len(labels) or indices != sorted(indices):
+                    order_errors.append(relative + " -> " + ", ".join(labels))
+    check(not order_errors,
+          "R09: AppRecord call-site labels must follow the declaration order ("
+          + " | ".join(order_errors) + ")")
 
     # R04: Portal 三个服务的回调一律经 ContinuationBox 转发。裸 continuation 第二次 resume
     # 不是可捕获错误，而是 SWIFT TASK CONTINUATION MISUSE 致命崩溃（进程直接终止）。
@@ -974,6 +1120,10 @@ def main():
          "guard record.signedArtifactStatus == .installed else { continue }",
          "guard true else { continue }",
          "R08: extension profile ids are optimistic"),
+        ("SealTests/Maintenance/AppMaintenanceJobTests.swift",
+         "            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",\n            signedArtifactStatus: signedArtifactStatus,",
+         "            signedArtifactStatus: signedArtifactStatus,\n            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",",
+         "R09: AppRecord call-site labels must follow the declaration order"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

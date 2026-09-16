@@ -13,11 +13,23 @@ struct BundleIDMapper: Sendable {
         teamID: String,
         requested: String? = nil
     ) -> String {
+        // 对齐 AltStore/SideStore 官方格式（原始+teamID），同时保留 Seal 标识：原始.seal.teamID。
+        // 恒定不变：同一个应用 + 同一个 team 永远是同一个 Bundle ID，不随机。
+        //
+        // 关键：无论 requested 从哪来（UI 默认推荐值 / 旧的 preferredBundleIdentifier /
+        // 用户手动输入），最终签名用的 Bundle ID 必须带「当前团队后缀」。
+        // 若不强制附加，同一个 Bundle ID 会被不同 Apple ID（不同 team）的多个设备注册，
+        // 一旦被某设备注册过，其他设备就无法再注册使用——这正是「bundle id 被占用后
+        // 其他设备不能用」的根因。带 team 后缀后不同账号签名的是不同字符串，天然隔离。
         if let requested, requested.isEmpty == false {
-            return requested
+            let trimmed = requested.trimmingCharacters(in: .whitespacesAndNewlines)
+            // 已经是「当前 team 的后缀」则原样复用（续签复用已安装 / UI 默认推荐值）
+            if trimmed.lowercased().hasSuffix(".seal.\(teamID.lowercased())") {
+                return trimmed
+            }
+            // 否则统一换算成当前团队的推荐 ID（会自动剥离多余 .seal 中间缀）
+            return BundleIDPolicy.recommendedBundleIdentifier(for: trimmed, teamID: teamID)
         }
-        // 对齐 AltStore 官方格式（原始+teamID），同时保留 Seal 标识：原始.seal.teamID
-        // 恒定不变，同一个应用+同一个 team 永远是同一个 Bundle ID，不随机
         return BundleIDPolicy.recommendedBundleIdentifier(for: original, teamID: teamID)
     }
 

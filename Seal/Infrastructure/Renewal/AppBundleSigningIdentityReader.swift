@@ -29,24 +29,32 @@ struct AppBundleSigningIdentityReader: Sendable {
 
     private static func inspectWithRorkSign(_ executableURL: URL) throws -> ExecutableSignerEvidence {
         let reports = try RorkSigner.checkMachOCodeSignatures(at: executableURL)
-        guard reports.isEmpty == false,
-              let serial = reports.first?.signingCertificate?.serialNumberHex else {
+        // 上游对齐：只把「能读出一致签名证书」作为识别身份的依据。
+        // 第三方工具（Sideloadly 的 bundle mangle、爱思的非标准结构）会让严格的全量
+        // CodeDirectory 哈希校验失败，但 CMS 密码学校验与签名证书仍可正常解析。
+        // 若这里仍要求 codeDirectoryHashesValid，Seal 就永远读不出第三方引导后的身份，
+        // 触发 SEAL-CERT-232 中断轮换。因此降级：不再把哈希失败判成识别失败，
+        // 仅依赖「可读出的签名证书 serial」，并把 CMS/哈希校验状态如实记录到 evidence 供诊断。
+        // 防误撤销自身证书的原始目的只需要 signer serial；serial 仍受 readTarget 的
+        // profile 授权校验（signerNotAuthorizedByProfile）保护，不受本次放宽影响。
+        let certificateReports = reports.compactMap { $0.signingCertificate }
+        guard let first = certificateReports.first else {
             throw IdentityReadFailure.signerMissing
         }
-        let normalized = SigningCertificateSelectionPolicy.normalizedSerialNumber(serial)
-        guard reports.allSatisfy({
-            $0.cmsSignatureValid
-                && $0.codeDirectoryHashesValid
-                && SigningCertificateSelectionPolicy.normalizedSerialNumber(
-                    $0.signingCertificate?.serialNumberHex ?? ""
-                ) == normalized
-        }) else {
+        let normalized = SigningCertificateSelectionPolicy.normalizedSerialNumber(first.serialNumberHex)
+        guard normalized.isEmpty == false,
+              certificateReports.allSatisfy({
+                  SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumberHex) == normalized
+              }) else {
             throw IdentityReadFailure.inconsistentArchitectures
         }
+        let signedReports = reports.filter(\.hasCMS)
+        let cmsValid = signedReports.isEmpty == false && signedReports.allSatisfy(\.cmsSignatureValid)
+        let codeDirectoryValid = signedReports.allSatisfy(\.codeDirectoryHashesValid)
         return ExecutableSignerEvidence(
             serialNumber: normalized,
-            cmsValid: true,
-            codeDirectoryValid: true
+            cmsValid: cmsValid,
+            codeDirectoryValid: codeDirectoryValid
         )
     }
 

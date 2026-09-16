@@ -3,11 +3,11 @@ import Testing
 @testable import Seal
 
 struct CertificateTakeoverPolicyTests {
-    /// 远端只有 Seal 真实签名者 A 一张、槽位未满：直接创建本机身份，不动 A。
+    /// 单槽位空槽（远端无远程证书，|remote| 0 < max 1）：直接创建本机身份 B。
     @Test
-    func singleRemoteCertificateWithFreeSlotCreatesLocal() {
+    func emptySlotCreatesLocalIdentity() {
         let decision = CertificateTakeoverPolicy.decide(
-            remoteSerialNumbers: ["A"],
+            remoteSerialNumbers: [],
             localUsableSerialNumbers: [],
             actualSealSignerSerialNumber: "A",
             identityComplete: true

@@ -33,14 +33,32 @@ struct BundleIDMapperTests {
     }
 
     @Test
-    func requestedMainBundleIdentifierWins() {
+    func requestedMainBundleIdentifierHonoredWithinTeamSuffix() {
         let mapper = BundleIDMapper()
+        // requested 不带当前 team 后缀 → 统一换算成当前团队的推荐 ID（自动补 .seal.<teamID>），
+        // 避免同一个 Bundle ID 被不同 team 的多个设备注册占用
         #expect(
             mapper.mainBundleID(
                 original: "com.example.demo",
                 teamID: "TEAM1",
                 requested: "com.example.demo.custom"
-            ) == "com.example.demo.custom"
+            ) == "com.example.demo.custom.seal.TEAM1"
+        )
+        // requested 已带当前 team 后缀 → 原样复用（续签复用已安装 / UI 默认推荐值）
+        #expect(
+            mapper.mainBundleID(
+                original: "com.example.demo",
+                teamID: "TEAM1",
+                requested: "com.example.demo.custom.seal.TEAM1"
+            ) == "com.example.demo.custom.seal.TEAM1"
+        )
+        // team 后缀匹配大小写不敏感
+        #expect(
+            mapper.mainBundleID(
+                original: "com.example.demo",
+                teamID: "team1",
+                requested: "com.example.demo.custom.seal.TEAM1"
+            ) == "com.example.demo.custom.seal.TEAM1"
         )
     }
 

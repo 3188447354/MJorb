@@ -37,6 +37,20 @@ struct InstalledIdentity: Codable, Equatable, Sendable {
         readErrors.isEmpty && mainTarget != nil && targets.allSatisfy(\.isComplete)
     }
 
+    /// 身份读取失败时的可读诊断摘要（每个非 complete 目标的状态 + readErrors），
+    /// 用于日志与错误文案定位「主程序还是扩展、描述文件问题还是 CMS 签名问题」。
+    var readFailureSummary: String {
+        var parts: [String] = []
+        for target in targets where !target.isComplete {
+            let label = target.kind == .mainApp
+                ? "主程序(\(target.bundleIdentifier))"
+                : "扩展(\(target.bundleIdentifier))"
+            parts.append("\(label)=\(target.status.rawValue)")
+        }
+        parts.append(contentsOf: readErrors)
+        return parts.isEmpty ? "未知" : parts.joined(separator: " | ")
+    }
+
     static func unknown(bundleIdentifier: String) -> Self {
         Self(
             bundleURL: URL(fileURLWithPath: "/unknown/\(bundleIdentifier).app"),

@@ -788,6 +788,10 @@ actor ApplePortalSigningService {
             sealSignerConfirmed = true
         } else {
             sealActualSignerSerials = []
+            if isSeal {
+                let summary = runningIdentity?.readFailureSummary ?? "installedIdentity 读取失败"
+                await diagnostic("证书轮换前身份诊断：\(summary)", level: .warning)
+            }
             // 只有签名/续签 Seal 本身才要求先确认运行中签名者；普通 App 不涉及 Seal 身份，
             // 不能因为读不到 Seal 的真实证书就禁止普通 App 的证书轮换。
             sealSignerConfirmed = isSeal == false

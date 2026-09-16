@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 enum SelfReplacementFailure: Error, Equatable, Sendable {
-    case runningIdentityUnknown
+    case runningIdentityUnknown([String])
     case bundleShapeChanged
     case localSigningIdentityUnavailable
     case candidateChanged
@@ -94,7 +94,9 @@ actor SelfReplacementCoordinator: SelfReplacing {
         signedIPARelativePath: String
     ) async throws -> SelfReplacementTransaction {
         let running = try readRunningIdentity()
-        guard running.isComplete else { throw SelfReplacementFailure.runningIdentityUnknown }
+        guard running.isComplete else {
+            throw SelfReplacementFailure.runningIdentityUnknown(running.readErrors)
+        }
         let ipaData = try await fileStore.read(relativePath: signedIPARelativePath)
         let id = UUID()
         let candidate = try ipaIdentityReader.read(ipaData: ipaData, transactionID: id)

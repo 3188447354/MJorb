@@ -583,6 +583,12 @@ actor SigningCoordinator {
         let runningIdentity = await MainActor.run { SelfAppMetadata.current()?.installedIdentity }
         guard runningIdentity?.isComplete == true,
               let sealActualSigner = runningIdentity?.mainTarget?.signerSerialNumber else {
+            let summary = runningIdentity?.readFailureSummary ?? "installedIdentity 读取失败"
+            try? await logStore?.append(
+                category: .signing,
+                level: .warning,
+                message: "一键全撤跳过：无法确认 Seal 真实签名身份（\(summary)）"
+            )
             throw Self.failure(
                 reason: "无法确认当前 Seal 的真实签名证书，为保护 Seal 已停止撤销。",
                 recovery: "重启 Seal 后重试",
@@ -700,9 +706,10 @@ actor SigningCoordinator {
         let runningIdentity = await MainActor.run { SelfAppMetadata.current()?.installedIdentity }
         guard runningIdentity?.isComplete == true,
               let sealActualSigner = runningIdentity?.mainTarget?.signerSerialNumber else {
+            let summary = runningIdentity?.readFailureSummary ?? "installedIdentity 读取失败"
             try? await logStore?.append(
                 category: .signing,
-                message: "证书自动清理跳过：无法确认当前 Seal 的真实签名证书，保留现有证书"
+                message: "证书自动清理跳过：无法确认当前 Seal 的真实签名证书（\(summary)），保留现有证书"
             )
             return .unavailable
         }
@@ -1471,10 +1478,13 @@ actor SigningCoordinator {
     /// 笼统的 SEAL-SIGN-500，掩盖真实原因；这里转成带明确错误码与可操作引导的 ImportFailure。
     private static func selfReplacementFailure(_ failure: SelfReplacementFailure) -> ImportFailure {
         switch failure {
-        case .runningIdentityUnknown:
+        case .runningIdentityUnknown(let readErrors):
+            let detail = readErrors.isEmpty
+                ? "主程序或网络扩展的签名身份读取不完整"
+                : readErrors.joined(separator: " | ")
             return ImportFailure(
                 title: "无法确认当前 Seal 的签名身份",
-                reason: "安装前无法确认正在运行的 Seal 由哪个证书签名（主程序或网络扩展的签名身份读取不完整），为避免装上后打不开，已停止本次自更新。",
+                reason: "安装前无法确认正在运行的 Seal 由哪个证书签名（\(detail)），为避免装上后打不开，已停止本次自更新。",
                 recovery: "先用当前 Apple ID 在 Seal 里完整签名并安装一次 Seal（而不是续签），之后就能正常续签了",
                 code: "SEAL-SELF-105"
             )

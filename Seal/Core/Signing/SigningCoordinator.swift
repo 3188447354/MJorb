@@ -62,7 +62,7 @@ actor SigningCoordinator {
         installAfterSigning: Bool = true,
         forceResign: Bool = false,
         bypassFreeAccountDeviceLimit: Bool = false,
-        progress: @Sendable (SigningStage) async -> Void,
+        progress: @escaping @Sendable (SigningStage) async -> Void,
         // 证书序列号一旦确定（复用缓存或新申请）即回传，供 UI 显示真实证书，
         // 避免只持有“签名开始时快照”而在失败回看时误显示“证书未准备”。
         onCertificateResolved: @Sendable @escaping (String) async -> Void = { _ in },
@@ -771,7 +771,7 @@ actor SigningCoordinator {
 
     func installSignedArtifact(
         appID: UUID,
-        progress: @Sendable (SigningStage) async -> Void
+        progress: @escaping @Sendable (SigningStage) async -> Void
     ) async throws -> AppRecord {
         guard var app = try await appStore.fetchAll().first(where: { $0.id == appID }),
               let signedPath = app.signedIPARelativePath,
@@ -1074,7 +1074,7 @@ actor SigningCoordinator {
         targetBundleIdentifier: String,
         certificateSerialNumber: String?,
         deviceIdentifier: String,
-        progress: @Sendable (SigningStage) async -> Void,
+        progress: @escaping @Sendable (SigningStage) async -> Void,
         onInstallProgress: @escaping @Sendable (Double) async -> Void = { _ in }
     ) async throws -> AppRecord? {
         guard let signedPath = app.signedIPARelativePath,

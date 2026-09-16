@@ -275,7 +275,7 @@ actor ApplePortalSigningService {
         allowDroppingExtensions: Bool,
         persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void,
         persistRevokedSigningMaterial: @escaping @Sendable (AccountSecret, [String]) async throws -> Void,
-        progress: @Sendable (SigningStage) async -> Void
+        progress: @escaping @Sendable (SigningStage) async -> Void
     ) async throws -> PortalSigningResult {
         let secretState = SigningSecretState(secret)
         let persistence: @Sendable (AccountSecret, String) async throws -> Void = {
@@ -388,7 +388,7 @@ actor ApplePortalSigningService {
         allowDroppingExtensions: Bool,
         persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void,
         persistRevokedSigningMaterial: @escaping @Sendable (AccountSecret, [String]) async throws -> Void,
-        progress: @Sendable (SigningStage) async -> Void
+        progress: @escaping @Sendable (SigningStage) async -> Void
     ) async throws -> PortalSigningResult {
         var stage: ApplePortalSigningStage = .account
         do {
@@ -1287,7 +1287,7 @@ actor ApplePortalSigningService {
         allowDroppingExtensions: Bool,
         team: ALTTeam,
         session: ALTAppleAPISession,
-        progress: @Sendable (SigningStage) async -> Void
+        progress: @escaping @Sendable (SigningStage) async -> Void
     ) async throws -> ProfilePreparation {
         guard let mainApplication = ALTApplication(fileURL: appURL) else {
             throw Self.failure(

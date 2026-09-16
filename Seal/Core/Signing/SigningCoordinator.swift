@@ -1133,7 +1133,7 @@ actor SigningCoordinator {
         signedPath: String,
         bundleIdentifier: String,
         expirationDate: Date,
-        progress: @Sendable (SigningStage) async -> Void,
+        progress: @escaping @Sendable (SigningStage) async -> Void,
         onInstallProgress: @escaping @Sendable (Double) async -> Void = { _ in },
         broadcastInstallingForSelfReplacement: Bool = false
     ) async throws -> AppRecord {

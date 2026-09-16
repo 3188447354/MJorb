@@ -61,7 +61,7 @@ actor RenewalCoordinator {
     }
 
     func refreshAll(
-        progress: @Sendable (BatchRefreshEvent) async -> Void
+        progress: @escaping @Sendable (BatchRefreshEvent) async -> Void
     ) async throws -> BatchRefreshResult {
         let apps = try await appStore.fetchAll()
         let queue = try await makeQueue(apps: apps)
@@ -71,7 +71,7 @@ actor RenewalCoordinator {
     /// 只重试上一轮失败的应用，避免对已成功应用重复签名/上传/安装。
     func refreshFailedItems(
         appIDs: [UUID],
-        progress: @Sendable (BatchRefreshEvent) async -> Void
+        progress: @escaping @Sendable (BatchRefreshEvent) async -> Void
     ) async throws -> BatchRefreshResult {
         let apps = try await appStore.fetchAll()
         let failedIDs = Set(appIDs)
@@ -117,7 +117,7 @@ actor RenewalCoordinator {
 
     private func run(
         queue: [RefreshQueueItem],
-        progress: @Sendable (BatchRefreshEvent) async -> Void
+        progress: @escaping @Sendable (BatchRefreshEvent) async -> Void
     ) async throws -> BatchRefreshResult {
         let apps = try await appStore.fetchAll()
         let queuedApps = queue.compactMap { item in apps.first(where: { $0.id == item.appID }) }
@@ -152,7 +152,7 @@ actor RenewalCoordinator {
 
     private func process(
         queue: [RefreshQueueItem],
-        progress: @Sendable (BatchRefreshEvent) async -> Void
+        progress: @escaping @Sendable (BatchRefreshEvent) async -> Void
     ) async throws -> BatchRefreshResult {
         await progress(.started(total: queue.count))
         var succeeded = 0
@@ -332,7 +332,7 @@ actor RenewalCoordinator {
 
     /// 失败后重新读取一次最新应用记录并推送失败事件
     private func emitFailure(
-        progress: @Sendable (BatchRefreshEvent) async -> Void,
+        progress: @escaping @Sendable (BatchRefreshEvent) async -> Void,
         offset: Int,
         total: Int,
         item: RefreshQueueItem,

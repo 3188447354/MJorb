@@ -1371,7 +1371,7 @@ final class AppsViewModel: ObservableObject {
         defer { releaseOperation(operationLease) }
         // 批量续签只使用已保存会话；会话过期会快速失败，并统一引导到「我的」页重新验证。
         do {
-            let progress: @Sendable (BatchRefreshEvent) async -> Void = { [weak self] event in
+            let progress: @escaping @Sendable (BatchRefreshEvent) async -> Void = { [weak self] event in
                 await self?.consumeBatchEvent(event)
             }
             let result: BatchRefreshResult

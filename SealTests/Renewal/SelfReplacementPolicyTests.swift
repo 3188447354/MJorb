@@ -67,6 +67,41 @@ struct SelfReplacementPolicyTests {
         )
         #expect(action == .requireRecovery(reason: "当前 Seal 与安装前身份、候选身份都不一致"))
     }
+
+    @Test
+    func noExtensionShapeAllowsSelfReplacement() {
+        let running = InstalledIdentity(
+            bundleURL: URL(fileURLWithPath: "/Applications/Seal.app"),
+            version: "1.1.16",
+            buildNumber: "3",
+            targets: [.mainFixture],
+            readErrors: []
+        )
+        let candidate = CandidateIdentity(
+            transactionID: UUID(),
+            ipaSHA256: String(repeating: "B", count: 64),
+            version: "1.1.16",
+            buildNumber: "3",
+            targets: [.mainFixture]
+        )
+        #expect(SelfReplacementPolicy.shapeMismatch(running: running, candidate: candidate) == nil)
+    }
+
+    @Test
+    func extensionRemovalRequiresComputerInstallInsteadOfSelfReplacement() {
+        let running = InstalledIdentity.fixture // 旧版：主程序 + 内置扩展
+        let candidate = CandidateIdentity(
+            transactionID: UUID(),
+            ipaSHA256: String(repeating: "B", count: 64),
+            version: "1.1.16",
+            buildNumber: "3",
+            targets: [.mainFixture] // 新版：无扩展
+        )
+        #expect(
+            SelfReplacementPolicy.shapeMismatch(running: running, candidate: candidate)
+                == .extensionRemovalRequiresComputerInstall
+        )
+    }
 }
 
 private extension SelfReplacementTransaction {

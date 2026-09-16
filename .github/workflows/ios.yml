@@ -20,7 +20,6 @@ on:
       - "Seal/**"
       - "SealTests/**"
       - "SealUITests/**"
-      - "SealTunnel/**"
       - "Vendor/Minimuxer/**"
       - "project.yml"
       - "Config/**"
@@ -82,7 +81,7 @@ jobs:
           path: |
             ~/Library/Caches/org.swift.swiftpm
             build/DerivedData
-          key: xcode-release-${{ runner.os }}-${{ hashFiles('project.yml', 'Config/*.xcconfig', 'Seal/Resources/Info.plist', 'SealTunnel/Info.plist') }}
+          key: xcode-release-${{ runner.os }}-${{ hashFiles('project.yml', 'Config/*.xcconfig', 'Seal/Resources/Info.plist') }}
           restore-keys: |
             xcode-release-${{ runner.os }}-
 
@@ -126,16 +125,12 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      # 部署目标/设备族断言：每个 target 只跑一次 showBuildSettings，把结果落盘后
-      # 再提取多个字段，避免为每个字段各起一次 xcodebuild（固定开销，约各 20-40 秒）。
-      - name: Verify deployment targets and Packet Tunnel configuration
+      # 部署目标/设备族断言：showBuildSettings 只跑一次，落盘后再提取多个字段。
+      - name: Verify deployment targets
         run: |
           xcodebuild -project Seal.xcodeproj -target Seal \
             -configuration Debug -sdk iphonesimulator -showBuildSettings \
             > "$RUNNER_TEMP/seal-settings.txt"
-          xcodebuild -project Seal.xcodeproj -target SealTunnel \
-            -configuration Debug -sdk iphonesimulator -showBuildSettings \
-            > "$RUNNER_TEMP/tunnel-settings.txt"
 
           SEAL_TARGET="$(awk -F ' = ' '/^[[:space:]]*IPHONEOS_DEPLOYMENT_TARGET = / { print $2; exit }' "$RUNNER_TEMP/seal-settings.txt")"
           echo "Seal IPHONEOS_DEPLOYMENT_TARGET=$SEAL_TARGET"
@@ -144,14 +139,6 @@ jobs:
           SEAL_FAMILY="$(awk -F ' = ' '/^[[:space:]]*TARGETED_DEVICE_FAMILY = / { print $2; exit }' "$RUNNER_TEMP/seal-settings.txt")"
           echo "Seal TARGETED_DEVICE_FAMILY=$SEAL_FAMILY"
           test "$SEAL_FAMILY" = "1,2"
-
-          TUNNEL_TARGET="$(awk -F ' = ' '/^[[:space:]]*IPHONEOS_DEPLOYMENT_TARGET = / { print $2; exit }' "$RUNNER_TEMP/tunnel-settings.txt")"
-          echo "SealTunnel IPHONEOS_DEPLOYMENT_TARGET=$TUNNEL_TARGET"
-          test "$TUNNEL_TARGET" = "17.0"
-          POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' SealTunnel/Info.plist)"
-          test "$POINT" = "com.apple.networkextension.packet-tunnel"
-          grep -q "packet-tunnel-provider" SealTunnel/SealTunnel.entitlements
-          grep -q "packet-tunnel-provider" Seal/Resources/Seal.entitlements
 
       # 单元 + UI 回归已拆到独立的 swift-regression job（见下），此处只负责出包。
       - name: Build unsigned IPA
@@ -169,7 +156,6 @@ jobs:
             build/Seal_*.ipa
             build/Seal_*.ipa.sha256
             build/Seal-Info.plist
-            build/SealTunnel-Info.plist
           retention-days: 30
 
       - name: Upload build metadata
@@ -181,7 +167,6 @@ jobs:
           path: |
             build/Seal_*.ipa.sha256
             build/Seal-Info.plist
-            build/SealTunnel-Info.plist
           retention-days: 14
 
   # 单元 + UI 回归门。从 build-package 里拆出来独立成 job，与它**并行**跑：
@@ -364,6 +349,5 @@ jobs:
           gh release create "$TAG" "${ARGS[@]}" --repo sunuannian1/Seal-Releases \
             release/Seal_*.ipa \
             release/Seal_*.ipa.sha256 \
-            release/Seal-Info.plist \
-            release/SealTunnel-Info.plist
+            release/Seal-Info.plist
           echo "published $TAG"

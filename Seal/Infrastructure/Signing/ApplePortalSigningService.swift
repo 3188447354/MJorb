@@ -1405,8 +1405,8 @@ actor ApplePortalSigningService {
                 guard mappedBundleID != mappedMainBundleID else { throw error }
                 guard allowDroppingExtensions else {
                     // 扩展 App ID 创建失败时，先识别是否 App ID 7 天限额（1009/3013）：
-                    // 限额是全局的，「移除扩展」也救不了（且 Seal 自身必须保留 SealTunnel 扩展），
-                    // 应透传准确原因，而不是包成误导性的「移除扩展后重试」。
+                    // 限额是全局的，「移除扩展」也救不了，应透传准确原因，
+                    // 而不是包成误导性的「移除扩展后重试」。
                     if ApplePortalSigningFailure.isAppIDRegistrationLimit(error, normalized: (error as NSError).localizedDescription.lowercased()) {
                         let ns = error as NSError
                         throw ApplePortalSigningFailure.appIDFailure(

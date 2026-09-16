@@ -573,8 +573,8 @@ def violations(load=read):
           + " | ".join(manual_revoke_copy) + ")")
 
     versions = re.findall(r"MARKETING_VERSION:\s*(\S+)", load("project.yml"))
-    check(len(versions) == 2 and len(set(versions)) == 1,
-          "Release: Seal and SealTunnel versions must match")
+    check(len(versions) == 1,
+          "Release: Seal must declare a single MARKETING_VERSION (no extension target)")
     for workflow in ("ios.yml", "ios-release.yml"):
         text = load(".github/workflows/" + workflow)
         check("inputs.publish_release == true" in text

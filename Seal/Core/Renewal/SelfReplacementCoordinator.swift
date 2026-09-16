@@ -4,6 +4,7 @@ import Foundation
 enum SelfReplacementFailure: Error, Equatable, Sendable {
     case runningIdentityUnknown([String])
     case bundleShapeChanged
+    case extensionRemovalRequiresComputerInstall
     case localSigningIdentityUnavailable
     case candidateChanged
 }
@@ -100,9 +101,11 @@ actor SelfReplacementCoordinator: SelfReplacing {
         let ipaData = try await fileStore.read(relativePath: signedIPARelativePath)
         let id = UUID()
         let candidate = try ipaIdentityReader.read(ipaData: ipaData, transactionID: id)
-        guard candidate.targets.map(\.bundleIdentifier).sorted()
-                == running.targets.map(\.bundleIdentifier).sorted() else {
-            throw SelfReplacementFailure.bundleShapeChanged
+        if let mismatch = SelfReplacementPolicy.shapeMismatch(
+            running: running,
+            candidate: candidate
+        ) {
+            throw mismatch
         }
         guard let secret = try await keychain.load(accountID: accountID),
               let signerSerial = candidate.targets.first?.signerSerialNumber,

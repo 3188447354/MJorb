@@ -58,7 +58,7 @@ jobs:
         with:
           path: build/DerivedData
           # 同上：Swift 源码变化时刷新缓存，让 Xcode 跨运行增量编译
-          key: deriveddata-${{ runner.os }}-${{ hashFiles('project.yml', 'Seal/**/*.swift', 'SealTunnel/**/*.swift', 'Vendor/Minimuxer/Sources/**/*.swift', 'Vendor/Minimuxer/RustBridge/MinimuxerBridge*.swift') }}
+          key: deriveddata-${{ runner.os }}-${{ hashFiles('project.yml', 'Seal/**/*.swift', 'Vendor/Minimuxer/Sources/**/*.swift', 'Vendor/Minimuxer/RustBridge/MinimuxerBridge*.swift') }}
           restore-keys: |
             deriveddata-${{ runner.os }}-
 
@@ -108,21 +108,6 @@ jobs:
           echo "Seal IPHONEOS_DEPLOYMENT_TARGET=$TARGET"
           test "$TARGET" = "17.0"
 
-      - name: Verify SealTunnel target and Packet Tunnel configuration
-        run: |
-          TARGET="$(xcodebuild \
-            -project Seal.xcodeproj \
-            -target SealTunnel \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -showBuildSettings | awk -F ' = ' '/^[[:space:]]*IPHONEOS_DEPLOYMENT_TARGET = / { print $2; exit }')"
-          echo "SealTunnel IPHONEOS_DEPLOYMENT_TARGET=$TARGET"
-          test "$TARGET" = "17.0"
-          POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' SealTunnel/Info.plist)"
-          test "$POINT" = "com.apple.networkextension.packet-tunnel"
-          grep -q "packet-tunnel-provider" SealTunnel/SealTunnel.entitlements
-          grep -q "packet-tunnel-provider" Seal/Resources/Seal.entitlements
-
       - name: Refresh local SPM binary artifacts (避免缓存旧版 RustBridge 静态库)
         run: |
           # 只清源码 checkouts，保留 artifacts/（OpenSSL.xcframework 等二进制包）。
@@ -148,5 +133,4 @@ jobs:
             build/Seal_*.ipa
             build/Seal_*.ipa.sha256
             build/Seal-Info.plist
-            build/SealTunnel-Info.plist
           retention-days: 14

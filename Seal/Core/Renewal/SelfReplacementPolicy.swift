@@ -39,4 +39,23 @@ enum SelfReplacementPolicy {
         if running == transaction.installedBefore { return .closeAsNotInstalled }
         return .requireRecovery(reason: "当前 Seal 与安装前身份、候选身份都不一致")
     }
+
+    /// 比较「正在运行的 Seal」与「刚签名出的候选 Seal」的 bundle 组成是否一致。
+    /// 一致返回 nil（可继续自续签）；不一致返回具体失败原因：
+    /// - 旧版含内置扩展（如 TunnelProv）→ 新版无扩展 属迁移形态，必须电脑安装助手覆盖；
+    /// - 其余组合仍是通用 bundleShapeChanged。
+    static func shapeMismatch(
+        running: InstalledIdentity,
+        candidate: CandidateIdentity
+    ) -> SelfReplacementFailure? {
+        let runningIDs = running.targets.map(\.bundleIdentifier).sorted()
+        let candidateIDs = candidate.targets.map(\.bundleIdentifier).sorted()
+        guard runningIDs != candidateIDs else { return nil }
+        let runningHasExtension = running.targets.contains { $0.kind == .appExtension }
+        let candidateHasExtension = candidate.targets.contains { $0.kind == .appExtension }
+        if runningHasExtension && !candidateHasExtension {
+            return .extensionRemovalRequiresComputerInstall
+        }
+        return .bundleShapeChanged
+    }
 }

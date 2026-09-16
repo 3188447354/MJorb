@@ -1492,8 +1492,15 @@ actor SigningCoordinator {
             return ImportFailure(
                 title: "Seal 自更新包结构不一致",
                 reason: "签名后的 Seal 包里的主程序/扩展组合与当前运行的 Seal 不一致，已停止安装以保证更新后仍能正常使用。",
-                recovery: "重新获取完整 Seal IPA（含网络扩展）后再续签",
+                recovery: "重新获取完整的新版 Seal IPA 后再续签",
                 code: "SEAL-SELF-106"
+            )
+        case .extensionRemovalRequiresComputerInstall:
+            return ImportFailure(
+                title: "Seal 已更新为无扩展版",
+                reason: "当前安装的 Seal 仍包含内置网络扩展（旧版），新版 Seal 已移除内置扩展、改依赖外部 LocalDevVPN。两版包结构不同，无法在 Seal 内直接覆盖更新。",
+                recovery: "请用电脑安装助手安装一次新版 Seal",
+                code: "SEAL-SELF-110"
             )
         case .localSigningIdentityUnavailable:
             return ImportFailure(

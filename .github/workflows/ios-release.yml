@@ -124,7 +124,6 @@ jobs:
             build/Seal_*.ipa
             build/Seal_*.ipa.sha256
             build/Seal-Info.plist
-            build/SealTunnel-Info.plist
           retention-days: 30
 
   publish-release:
@@ -166,6 +165,5 @@ jobs:
           gh release create "$TAG" "${ARGS[@]}" --repo sunuannian1/Seal-Releases \
             release/Seal_*.ipa \
             release/Seal_*.ipa.sha256 \
-            release/Seal-Info.plist \
-            release/SealTunnel-Info.plist
+            release/Seal-Info.plist
           echo "published $TAG"

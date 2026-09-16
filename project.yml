@@ -50,9 +50,6 @@ targets:
       - package: Crypto
         product: CryptoExtras
       - target: DeviceSupport
-      - target: SealTunnel
-        embed: true
-        codeSign: false
     info:
       path: Seal/Resources/Info.plist
       properties:
@@ -105,37 +102,6 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Seal/Resources/Seal.entitlements
         # Xcode 16+ Debug 构建默认把代码拆进 <Name>.debug.dylib（预览调试用）。
         # 侧载分发场景第三方签名工具常漏签根目录 dylib → 白图标+秒闪退。关闭之。
-        ENABLE_DEBUG_DYLIB: NO
-  SealTunnel:
-    type: app-extension
-    platform: iOS
-    deploymentTarget: "17.0"
-    sources:
-      - path: SealTunnel
-        excludes:
-          - Info.plist
-          - SealTunnel.entitlements
-    info:
-      path: SealTunnel/Info.plist
-      properties:
-        CFBundleDisplayName: Seal Tunnel
-        CFBundleShortVersionString: $(MARKETING_VERSION)
-        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        NSExtension:
-          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
-          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.mjorb.seal.TunnelProv
-        PRODUCT_NAME: SealTunnel
-        TARGETED_DEVICE_FAMILY: "1,2"
-        MARKETING_VERSION: 1.1.16
-        CURRENT_PROJECT_VERSION: 3
-        GENERATE_INFOPLIST_FILE: NO
-        CODE_SIGN_STYLE: Automatic
-        CODE_SIGN_ENTITLEMENTS: SealTunnel/SealTunnel.entitlements
-        APPLICATION_EXTENSION_API_ONLY: YES
-        SKIP_INSTALL: YES
         ENABLE_DEBUG_DYLIB: NO
   DeviceSupport:
     type: library.static

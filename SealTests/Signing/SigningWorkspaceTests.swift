@@ -38,6 +38,27 @@ struct SigningWorkspaceTests {
         #expect(parsed.extensions.first?.originalBundleIdentifier ==
             prepared.bundleIDMappings["com.example.demo.share"])
     }
+
+    @Test
+    func noExtensionIPAProvisionsOnlyMainAppID() throws {
+        let source = try IPAArchiveFixture.make()
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let root = FileManager.default.temporaryDirectory.appending(
+            path: "SealNoExtensionTests-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let prepared = try SigningWorkspace().prepare(
+            ipaURL: source,
+            workspaceRoot: root.appending(path: "Work"),
+            originalBundleID: "com.example.demo",
+            teamID: "TEAMID"
+        )
+
+        #expect(prepared.bundleIDMappings == ["com.example.demo": prepared.mappedMainBundleID])
+    }
+
     @Test
     func appliesCustomDisplayNameAndPrimaryIconToPackagedApp() throws {
         let source = try IPAArchiveFixture.make()

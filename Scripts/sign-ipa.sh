@@ -1,20 +1,18 @@
 #!/usr/bin/env bash
-# 构建后签名脚本：用指定 P12 + 描述文件签名 Seal.app（含 SealTunnel 扩展）
-# 用法: bash Scripts/sign-ipa.sh <unsigned.ipa> <p12> <main.mobileprovision> <output.ipa> [extension.mobileprovision]
+# 构建后签名脚本：用指定 P12 + 描述文件签名 Seal.app（无扩展版）
+# 用法: bash Scripts/sign-ipa.sh <unsigned.ipa> <p12> <main.mobileprovision> <output.ipa>
 set -euo pipefail
 
-UNSIGNED_IPA="${1:?usage: sign-ipa.sh unsigned.ipa p12 main.mobileprovision output.ipa [ext.mobileprovision]}"
+UNSIGNED_IPA="${1:?usage: sign-ipa.sh unsigned.ipa p12 main.mobileprovision output.ipa}"
 P12="${2:?p12 required}"
 MOBILEPROVISION="${3:?main mobileprovision required}"
 OUTPUT_IPA="${4:?output required}"
-EXT_MOBILEPROVISION="${5:-}"
 
 # 转绝对路径（脚本内会 cd 到临时目录，相对路径会失效）
 UNSIGNED_IPA="$(cd "$(dirname "$UNSIGNED_IPA")" && pwd)/$(basename "$UNSIGNED_IPA")"
 P12="$(cd "$(dirname "$P12")" && pwd)/$(basename "$P12")"
 MOBILEPROVISION="$(cd "$(dirname "$MOBILEPROVISION")" && pwd)/$(basename "$MOBILEPROVISION")"
 OUTPUT_IPA="$(cd "$(dirname "$OUTPUT_IPA")" && pwd)/$(basename "$OUTPUT_IPA")"
-[ -n "$EXT_MOBILEPROVISION" ] && EXT_MOBILEPROVISION="$(cd "$(dirname "$EXT_MOBILEPROVISION")" && pwd)/$(basename "$EXT_MOBILEPROVISION")"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -41,8 +39,7 @@ MAIN_PLIST="$WORK/main.plist"
 extract_plist "$MOBILEPROVISION" "$MAIN_PLIST"
 BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$MAIN_PLIST" | cut -d. -f2-)
 TEAM_ID=$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$MAIN_PLIST")
-EXT_BUNDLE_ID="${BUNDLE_ID}.TunnelProv"
-echo "[sign] main bundle=$BUNDLE_ID ext bundle=$EXT_BUNDLE_ID team=$TEAM_ID"
+echo "[sign] main bundle=$BUNDLE_ID team=$TEAM_ID"
 
 # 3. 提取主 app entitlements
 MAIN_ENT="$WORK/main-entitlements.plist"
@@ -53,32 +50,7 @@ echo "[sign] setting main CFBundleIdentifier=$BUNDLE_ID..."
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP/Info.plist"
 cp "$MOBILEPROVISION" "$APP/embedded.mobileprovision"
 
-# 5. 处理 SealTunnel 扩展
-EXT_APP="$APP/PlugIns/SealTunnel.appex"
-if [ -d "$EXT_APP" ]; then
-  echo "[sign] found SealTunnel extension"
-  if [ -z "$EXT_MOBILEPROVISION" ]; then
-    echo "error: SealTunnel extension found but no extension provisioning profile provided."
-    echo "       Pass extension profile as 5th argument. Bundle ID must be $EXT_BUNDLE_ID"
-    exit 1
-  fi
-  EXT_PLIST="$WORK/ext.plist"
-  extract_plist "$EXT_MOBILEPROVISION" "$EXT_PLIST"
-  EXT_PROFILE_BUNDLE=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$EXT_PLIST" | cut -d. -f2-)
-  if [ "$EXT_PROFILE_BUNDLE" != "$EXT_BUNDLE_ID" ]; then
-    echo "error: extension profile bundle ID mismatch: profile=$EXT_PROFILE_BUNDLE expected=$EXT_BUNDLE_ID"
-    exit 1
-  fi
-  EXT_ENT="$WORK/ext-entitlements.plist"
-  /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' "$EXT_PLIST" > "$EXT_ENT"
-  echo "[sign] setting ext CFBundleIdentifier=$EXT_BUNDLE_ID..."
-  /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $EXT_BUNDLE_ID" "$EXT_APP/Info.plist"
-  cp "$EXT_MOBILEPROVISION" "$EXT_APP/embedded.mobileprovision"
-else
-  echo "[sign] no SealTunnel extension found, skipping"
-fi
-
-# 6. 创建临时钥匙串并导入证书
+# 5. 创建临时钥匙串并导入证书
 KEYCHAIN="$WORK/sign.keychain-db"
 KEYCHAIN_PASS="seal-temp-$$"
 echo "[sign] creating temporary keychain..."
@@ -99,31 +71,22 @@ SIGN_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep -o '
 echo "[sign] signing identity: $SIGN_IDENTITY"
 test -n "$SIGN_IDENTITY" || { echo "error: no codesigning identity found"; exit 1; }
 
-# 7. 签名顺序：框架 → 扩展 → 主 app
+# 6. 签名：框架 → 主 app
 echo "[sign] signing frameworks..."
 find "$APP/Frameworks" -name "*.framework" -type d 2>/dev/null | while read -r fw; do
   echo "  framework: $(basename "$fw")"
   codesign --force --sign "$SIGN_IDENTITY" --keychain "$KEYCHAIN" --timestamp=none "$fw"
 done
 
-if [ -d "$EXT_APP" ]; then
-  echo "[sign] signing SealTunnel extension..."
-  codesign --force --sign "$SIGN_IDENTITY" --keychain "$KEYCHAIN" \
-    --entitlements "$EXT_ENT" --timestamp=none "$EXT_APP"
-fi
-
 echo "[sign] signing Seal.app..."
 codesign --force --sign "$SIGN_IDENTITY" --keychain "$KEYCHAIN" \
   --entitlements "$MAIN_ENT" --timestamp=none "$APP"
 
-# 8. 验证
+# 7. 验证
 echo "[sign] verifying..."
 codesign --verify --deep --strict "$APP"
-if [ -d "$EXT_APP" ]; then
-  codesign --verify --deep --strict "$EXT_APP"
-fi
 
-# 9. 打包
+# 8. 打包
 echo "[sign] packaging $OUTPUT_IPA..."
 rm -f "$OUTPUT_IPA"
 (cd "$WORK/extracted" && zip -qry "$OUTPUT_IPA" Payload)

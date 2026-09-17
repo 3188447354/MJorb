@@ -45,6 +45,8 @@
 - **同一个 Bundle ID 上不能有两个并发 installd 命令（R05）**。真机日志 Seal-log(8) 里 91 秒内提交了两笔自替换安装，而第一笔从未返回 —— 用户「怎么都没反应」之后重试，就在同一 Bundle ID 上叠了第二个安装命令。同步 FFI 取消不掉，所以只能**在入口用闸门拒绝第二笔**；而且**超时不解锁**（底下那次很可能还在跑），并且这类拒绝要按终态处理 —— 重试路径里的 `Minimuxer.reset()` / `Install.resetProvider()` 会把可能仍在跑的安装连接拆掉，比不重试更糟。
 - **把重复实现合并成一份时，记得同步更新按「出现次数」断言的守卫**。安装通道的无进度重载改为转发到带进度的实现后，`count("if Self.isTimeoutInstallError(error) {") == 2` 这条断言立刻失效（变成 1）。这是**预期内的失败**，改断言而不是把实现写回去。同理，给某个常量/片段加断言前先确认它在文件里出现几次 —— `logStore: logStore` 在 `AppContainer` 里同时出现在安装通道与签名协调器两处，全局匹配会让「只改安装通道那一处」的变异检不出来（本轮实际踩到，改用 `section()` 限定构造段）。
 - **`#if !targetEnvironment(simulator)` 的边界要按「模拟器切片编不编译」来划，别按「读起来像不像真机代码」**。同一类错误在 2026-09-16 一天内咬了两次（`diagnostic`、`isTimeoutInstallError`）：符号定义在 `#if !targetEnvironment(simulator)` **之内**，却被 `#if` **之外**的代码引用 ⇒ **`build-package` 全绿（只编设备切片）、只有 `swift-regression` 红**，一轮白等 13–16 分钟。**判据：写完一段与平台无关的辅助逻辑（错误归类、诊断文本、超时判定）时，先问「谁会调它」** —— 调用方在 `#if` 外，定义就必须在 `#if` 外。现在守卫有一条通用检查（`Simulator: device-only members ...`）：把「模拟器不编译」的行整段抹掉，再看有没有**只**在被抹掉部分里定义的顶层类型成员出现在抹后文本中。注意判定条件必须同时覆盖 `#if !targetEnvironment(simulator)` 的**整个分支**与 `#if targetEnvironment(simulator)` 的 **`#else` 分支** —— 只认前者会把 `bindTunnelConfiguration`（定义在 `!simulator` 里、调用点在同文件的 `#else` 里）误报成缺符号。
+- **`#expect(...)` 里不能出现 `mutating` 方法调用**。swift-testing 的 `#expect` 是**宏**：它把表达式重写成闭包、把子表达式绑成 `$0`/`$1`…，于是 `mutating` 成员作用在捕获值上编译不过 —— `error: cannot use mutating member on immutable value: '$0' is immutable`。修法是先把结果取到局部变量再断言：`let ok = gate.acquire(); #expect(ok)`。**这个错误同样只在 `swift-regression` 出现**（`build-package` 不编译测试 target），2026-09-16 紧随上一条之后踩到（`#expect(gate.acquire())`，95 条报错全是同一个宏展开）。守卫已加通用检查（`#expect must not call a mutating method ...`），mutating 方法名从 `Seal/` 里现取、不写死。
+- **守卫的耗时波动本身就是故障源**。变异检查每一遍都会把所有源文件重新读一遍（200+ 文件 × 90 多遍 ≈ 2 万次磁盘读），而本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 同一份代码整轮耗时实测在 **61–117 秒**之间波动，已经贴到命令默认 120 秒超时（超时会被 SIGTERM，且**没有任何输出**，极易误判成脚本崩了）。对策：在 `main()` 里按路径缓存**基准内容**（每遍只有**一个**文件被替换成变异版本，所以不会读到陈旧文本），耗时降到 53 秒。⚠️ **不要**顺手把 `strip_comments` 的结果也跨遍缓存 —— 那会让被替换的那个文件读到基准版的去注释结果，变异检查静默失效（守卫全绿但什么都没检查）。
 
 ---
 
@@ -64,9 +66,37 @@
   - **只认缩进恰好 4 空格的声明**（顶层类型成员）。函数体内的局部变量缩进更深，`let ipaMB` / `let detail` 这类名字在设备专属分支与模拟器分支里各有一份，按「名字出现在抹后文本里」判定会把它们全部误报。
   - 未知条件（`#if DEBUG` / `#if os(iOS)`）按「两片都编译」处理：取值不取决于目标平台，这样既不漏真问题也不制造误报。
   - 循环里先用**未去注释的原文**做一次廉价子串判断再决定是否 `strip_comments`：这个循环要跑遍 200+ 文件、而 `violations()` 总共要跑 90 多遍。
-- **结果**：守卫 **204 源码 + 90 变异 PASS**（本轮之前 203 + 89），耗时约 61 秒。
+- **结果**：守卫 **204 源码 + 90 变异 PASS**（本轮之前 203 + 89）。
 - **涉及文件**：`Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`、`Scripts/verify-release-safety.py`。
-- **验证状态**：守卫本地 PASS；`swift-regression` 转绿待 CI；真机回归项不变（见 QA 文档）。
+- **验证状态**：推送 `aa13af1..d1a67b6`，CI run `35169418800` —— `build-package` ✓、`rork-sign-tests` ✓、**`swift-regression` 仍 ✗**，但换了一个错误：见下条。
+
+### 2026-09-16（续 6）· 修掉 `#expect` 里的 mutating 调用；顺手把守卫从 117 秒压回 53 秒
+
+- **现象**：run `35169418800` 的 `swift-regression` 报了 **95 条**同一个错误 ——
+  `cannot use mutating member on immutable value: '$0' is immutable`，
+  全部落在 `SealTests/Installation/SelfReplacementInstallGateTests.swift` 的 `#expect` 宏展开里。
+- **根因**：测试写成了 `#expect(gate.acquire())`，而 `acquire()` 是 `mutating` 方法。
+  swift-testing 的 `#expect` 是**宏**，会把表达式重写成闭包、把子表达式绑成 `$0`/`$1`…，
+  mutating 成员作用在捕获值上编译不过。**与上一条同一个性质**：只在 `swift-regression` 红，
+  `build-package` 不编译测试 target。
+- **修复**：
+  1. 把 mutating 调用提到 `#expect` 外面：`let first = gate.acquire(); #expect(first)`，
+     并在测试文件顶部写明「为什么不能挪回去」（否则下一个人「顺手简化」就复现）。
+  2. **守卫加第二条通用检查**（`#expect must not call a mutating method ...`）：
+     mutating 方法名从 `Seal/` 里**现取**（全仓只有 7 个，名字都很独特），
+     不写死；再扫 `SealTests/**` 的 `#expect(...)` 实参里有没有 `<something>.<name>(`。
+     同时断言「取到的 mutating 名字不少于 5 个」，防止正则漂移后变成空集 ⇒ 永远绿。
+  3. 配变异锚点：把 `#expect(first)` 改回 `#expect(gate.acquire())`，守卫必须报红。
+- **顺手修掉的守卫性能问题**：加了新检查后整轮耗时从 61 秒涨到 **117 秒**，
+  已经贴到命令默认 120 秒超时。剖析发现单遍只有 0.73 秒（× 91 遍 ≈ 66 秒），
+  多出来的时间全在**磁盘读**上 —— 变异检查每遍都把 200+ 文件重新读一遍（≈ 2 万次），
+  而本仓在 OneDrive 同步目录里，延迟不稳定。对策：`main()` 里按路径缓存**基准内容**
+  （每遍只有一个文件被替换成变异版本，走闭包里的 `changed`，不会读到缓存）⇒ **53 秒**。
+  ⚠️ **不要**顺手把 `strip_comments` 也跨遍缓存 —— 那会让被替换的那个文件读到基准版的
+  去注释结果，变异检查静默失效（守卫全绿但什么都没检查）。
+- **结果**：守卫 **206 源码 + 91 变异 PASS**，耗时 53 秒。
+- **涉及文件**：`SealTests/Installation/SelfReplacementInstallGateTests.swift`、`Scripts/verify-release-safety.py`。
+- **验证状态**：守卫本地 PASS；`swift-regression` 转绿待 CI；真机回归项不变（见 QA 文档 §5）。
 
 ### 2026-09-16（续 4）· 用真机日志坐实「卡在 93%」：自替换安装调用从未返回，而这段一行日志都没有
 

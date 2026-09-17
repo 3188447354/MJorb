@@ -669,10 +669,9 @@ def violations(load=read):
     simulator_leaks = []
     for source_path in swift_sources():
         relative = source_path.relative_to(ROOT).as_posix()
-        # 先在**未去注释**的原文上做一次廉价子串判断再决定是否去注释：
-        # 这个循环要跑遍 200+ 个文件、而守卫总共要把 `violations()` 跑 90 多遍，
-        # 对每个文件都做一遍去注释会让守卫慢 5 秒（实测）。全仓只有个别文件
-        # 与目标平台条件编译有关。
+        # 先在**未去注释**的原文上做一次廉价子串判断再决定是否去注释：这个循环要
+        # 跑遍 200+ 个文件、而守卫总共要把 `violations()` 跑 90 多遍，全仓只有个别
+        # 文件与目标平台条件编译有关，没必要为其余文件付出去注释的代价。
         if "targetEnvironment" not in load_cached(relative):
             continue
         source = strip_cached(relative)
@@ -697,6 +696,56 @@ def violations(load=read):
     check(not simulator_leaks,
           "Simulator: device-only members must not be referenced by simulator code ("
           + " | ".join(simulator_leaks) + ")")
+
+    # `#expect(...)` 里不能出现 mutating 方法调用（2026-09-16，紧随上一条之后踩到）。
+    #
+    # swift-testing 的 `#expect` 是**宏**：它把表达式重写成闭包、把子表达式绑成
+    # `$0`/`$1`…，于是 mutating 成员作用在捕获值上编译不过 ——
+    # `error: cannot use mutating member on immutable value: '$0' is immutable`。
+    # 修法是把调用提到 `#expect` 外面（`let ok = gate.acquire(); #expect(ok)`）。
+    #
+    # 与上一条同样的坑：**这个错误只在 `swift-regression` 出现**（`build-package`
+    # 不编译测试 target），一轮 CI 白等 13 分钟。所以必须由守卫拦。
+    #
+    # mutating 方法名从 `Seal/` 里现取，不写死：全仓只有个位数（`acquire` / `release` /
+    # `advanceStage` / `recordInstallProgress` / 证书材料那几个），名字都很独特，
+    # 按「`.名字(`」匹配不会误伤。
+    mutating_names = set()
+    for source_path in swift_sources():
+        relative = source_path.relative_to(ROOT).as_posix()
+        if not relative.startswith("Seal/"):
+            continue
+        if "mutating" not in load_cached(relative):
+            continue
+        mutating_names.update(
+            re.findall(r"mutating\s+func\s+([A-Za-z_][A-Za-z0-9_]*)", strip_cached(relative))
+        )
+    check(len(mutating_names) >= 5,
+          "Testing: mutating-member scan found too few names — the pattern drifted")
+    mutating_call = re.compile(
+        r"\.(?:" + "|".join(re.escape(name) for name in sorted(mutating_names)) + r")\s*\("
+    ) if mutating_names else None
+    expect_mutations = []
+    for source_path in swift_sources():
+        relative = source_path.relative_to(ROOT).as_posix()
+        if not relative.startswith("SealTests/"):
+            continue
+        # 先看原文里有没有「#expect(」+ 某个 mutating 调用，再决定是否去注释。
+        raw = load_cached(relative)
+        if "#expect(" not in raw or mutating_call is None or mutating_call.search(raw) is None:
+            continue
+        source = strip_cached(relative)
+        for match in re.finditer(r"#expect\(", source):
+            close = match_paren(source, match.end() - 1)
+            if close == -1:
+                continue
+            inner = source[match.end():close]
+            for name in sorted(mutating_names):
+                if re.search(r"\." + re.escape(name) + r"\s*\(", inner):
+                    expect_mutations.append(relative + " -> " + name)
+    check(not expect_mutations,
+          "#expect must not call a mutating method — it is rewritten into a closure ("
+          + " | ".join(expect_mutations) + ")")
 
     # R04: Portal 三个服务的回调一律经 ContinuationBox 转发。裸 continuation 第二次 resume
     # 不是可捕获错误，而是 SWIFT TASK CONTINUATION MISUSE 致命崩溃（进程直接终止）。
@@ -1266,7 +1315,16 @@ def violations(load=read):
     return checks, failures
 
 def main():
-    count, failures = violations()
+    # 基准内容缓存：见下面变异循环处的说明。整轮里源文件不会变，只有被替换的那个
+    # 走闭包里的 `changed`，所以这个缓存不会让变异检查读到陈旧文本。
+    base_cache = {}
+
+    def base_read(path):
+        if path not in base_cache:
+            base_cache[path] = read(path)
+        return base_cache[path]
+
+    count, failures = violations(base_read)
     # Mutation checks prove the key deletion guards actually reject their old patterns.
     mutations = [
         ("Vendor/Minimuxer/RustBridge/src/idevice_support/install.rs",
@@ -1662,14 +1720,25 @@ def main():
          "    }\n"
          "    #endif",
          "Simulator: device-only members"),
+        # 把 mutating 调用挪回 `#expect(...)` 里 = 原样重演 2026-09-16 的
+        # `cannot use mutating member on immutable value: '$0' is immutable`
+        # （同样只在 `swift-regression` 红）。
+        ("SealTests/Installation/SelfReplacementInstallGateTests.swift",
+         "        #expect(first)",
+         "        #expect(gate.acquire())",
+         "#expect must not call a mutating method"),
     ]
+    # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
+    # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在
+    # 61–117 秒之间波动，已经贴到命令默认 120 秒超时（超时会被 SIGTERM，且**没有任何
+    # 输出**，很容易误判成脚本崩了）。`base_read` 就是上面那个按路径缓存的读取器。
     for path, old, new, expected in mutations:
-        original = read(path)
+        original = base_read(path)
         if old not in original:
             failures.append("Mutation anchor missing: " + path)
             continue
         changed = original.replace(old, new, 1)
-        _, mutated_failures = violations(lambda p: changed if p == path else read(p))
+        _, mutated_failures = violations(lambda p: changed if p == path else base_read(p))
         if not any(item.startswith(expected) for item in mutated_failures):
             failures.append("Guard failed mutation check: " + expected)
     print("Source regression checks: " + str(count))

@@ -288,6 +288,30 @@ MinimuxerInstallChannel.swift:480:56: error: type 'Self' has no member 'isTimeou
 
 配套变异锚点：把 `isTimeoutInstallError` 的定义包回 `#if !targetEnvironment(simulator)`，守卫必须报红 —— 这条同时证明检查不是空转。
 
+### 3.9 `#expect` 里的 mutating 调用；以及守卫的耗时波动（本轮补修，CI 反馈驱动）
+
+§3.8 推送后 CI run `35169418800`：`build-package` ✓、`rork-sign-tests` ✓、**`swift-regression` ✗**，但换了一个错误 —— **95 条**同一个：
+
+```
+cannot use mutating member on immutable value: '$0' is immutable
+```
+
+全部落在 `SealTests/Installation/SelfReplacementInstallGateTests.swift` 的 `#expect` 宏展开里。
+
+**根因**：测试写成了 `#expect(gate.acquire())`，而 `acquire()` 是 `mutating` 方法。swift-testing 的 `#expect` 是**宏**，会把表达式重写成闭包、把子表达式绑成 `$0`/`$1`…，mutating 成员作用在捕获值上编译不过。**与 §3.8 同一性质**：只在 `swift-regression` 红，`build-package` 不编译测试 target。
+
+**修复**：
+
+1. 把 mutating 调用提到 `#expect` 外面：`let first = gate.acquire(); #expect(first)`，并在测试文件顶部写明「为什么不能挪回去」—— 否则下一个人「顺手简化」就会复现。
+2. 守卫加第二条通用检查 `#expect must not call a mutating method ...`：mutating 方法名从 `Seal/` 里**现取**（全仓只有 7 个：`acquire` / `release` / `advanceStage` / `recordInstallProgress` / 证书材料 3 个），不写死；再扫 `SealTests/**` 的 `#expect(...)` 实参里有没有 `<something>.<name>(`。同时断言「取到的 mutating 名字不少于 5 个」，防止正则漂移后变成空集 ⇒ 永远绿。
+3. 变异锚点：把 `#expect(first)` 改回 `#expect(gate.acquire())`，守卫必须报红。
+
+**顺手修掉的守卫性能问题**：加了新检查后整轮耗时从 61 秒涨到 **117 秒**，已经贴到命令默认 120 秒超时（超时会被 SIGTERM，且**没有任何输出**，极易误判成脚本崩了）。剖析结果：单遍只有 0.73 秒（× 91 遍 ≈ 66 秒），多出来的时间全在**磁盘读**上 —— 变异检查每遍都把 200+ 文件重新读一遍（≈ 2 万次），而本仓在 OneDrive 同步目录里，延迟不稳定。
+
+对策：`main()` 里按路径缓存**基准内容**（每遍只有一个文件被替换成变异版本，走闭包里的 `changed`，不会读到缓存）⇒ **53 秒**。
+
+⚠️ **不要**顺手把 `strip_comments` 的结果也跨遍缓存 —— 那会让被替换的那个文件读到基准版的去注释结果，变异检查静默失效（守卫全绿但什么都没检查）。这是脚本里反复警告的「绿着坏掉」。
+
 ---
 
 ## 4. 守卫与测试
@@ -310,6 +334,7 @@ MinimuxerInstallChannel.swift:480:56: error: type 'Self' has no member 'isTimeou
   - 自替换安装必须写「开始 / 已返回」日志，等待期间必须有心跳；
   - 两个新单测文件里的**关键断言确实存在** —— 源码断言守「形状」，单测守「行为」，测试被删空不能仍然全绿。
 - **新增通用检查 `Simulator: device-only members must not be referenced by simulator code`**（见 §3.8）：把「模拟器切片不编译」的行整段抹成等长空白，再找出**只**在被抹掉部分里定义的顶层类型成员、却出现在抹后文本中的那些。
+- **新增通用检查 `#expect must not call a mutating method ...`**（见 §3.9）：mutating 方法名从 `Seal/` 里现取，再扫 `SealTests/**` 的 `#expect(...)` 实参。
 - **R09 通用化**：把「实参标签顺序必须与声明一致」做成可复用校验，覆盖 `AppRecord` / `signAndInstall` / `installSignedIPA` / `installCachedSignedIPAIfPossible`，并**断言扫到的调用点数下限** —— 本轮第一版正则把真实调用点（`coordinator.signAndInstall(`，前一个字符是 `.`）全部排除，变成「零调用点 ⇒ 零错误 ⇒ 绿」。
 - 新增 `squash()`：把多行代码压成一行式断言，不再在守卫里拼换行符 + 数缩进空格（缩进一改守卫就会莫名其妙地红）。
 - 修掉守卫自身的性能问题：每遍（= 每个变异）内缓存 `load` / `strip_comments`，`rglob` 结果进程内只算一次。**2 分 47 秒 → 48 秒**（此前已慢到被默认命令超时 SIGTERM，表现为「无输出、exit 1」）。
@@ -324,7 +349,7 @@ MinimuxerInstallChannel.swift:480:56: error: type 'Self' has no member 'isTimeou
 - `SealTests/Installation/SelfReplacementInstallGateTests.swift`（4 条）：已有安装在进行时第二笔必须被拒、安装结束后解锁、**超时不解锁**、连续超时永不重开。
 - `SealTests/Concurrency/HardTimeoutTests.swift` 补 1 条：`cancelsWorkOnTimeout: false` 时**工作所在任务**的 `Task.isCancelled` 仍为 `false`（断言必须打在 `HardTimeout` 自己创建的那个任务上 —— 在闭包里再套一层 `Task.detached` 就会测到新任务，测试会退化成永远通过）。
 
-结果：**204 源码断言 + 90 变异 PASS**，耗时约 61 秒。（旧断言 `count("if Self.isTimeoutInstallError(error) {") == 2` 因两个 `install` 重载合并成一份而降为 `1`，已同步改为「唯一的重试循环必须把超时当终态」。）
+结果：**206 源码断言 + 91 变异 PASS**，耗时 53 秒。（旧断言 `count("if Self.isTimeoutInstallError(error) {") == 2` 因两个 `install` 重载合并成一份而降为 `1`，已同步改为「唯一的重试循环必须把超时当终态」。）
 
 ---
 

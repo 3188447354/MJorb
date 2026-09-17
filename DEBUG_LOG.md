@@ -225,7 +225,7 @@ LiveContainer **装着**（13:24:30 刚装完，记录 `.installed`）。主 App
 
 **🔁 补记：run#96 挂在测试 target 的编译错上（第 265 条断言 / 第 132 个锚点由此而来）**
 
-`build-package` 绿、`rork-self-tests` 绿、`swift-regression` 红，21 条 `error:` 全是同一处：
+`build-package` 绿、`rork-sign-tests` 绿、`swift-regression` 红，21 条 `error:` 全是同一处：
 
 ```
 AppMaintenanceJobTests.swift:262:52: error: cannot convert value of type '[Any]' to

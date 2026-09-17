@@ -166,11 +166,28 @@ static func decision(probe: InstallProbe, positiveControlPassed: Bool) -> Decisi
 **改动**：`ProfileReclaimPolicy`（新增）、`DeviceProfileCleaner`（阶段 A 本地筛候选 /
 阶段 B 设备端核验）、`AppMaintenanceJob` 与 `SigningCoordinator` 两处显式开启、
 `ProfileCleanupSummary` 新增四个计数 + `reclaimAborted`。
-守卫 **228→244 源码断言、107→116 变异**（8 个新锚点专打这条边界）。
-提交 `647bde3`（CI **run#93**）。
+守卫 **228→246 源码断言、107→118 变异**（11 个新锚点专打这条边界）。
+提交 `647bde3`（CI **run#93**，`swift-regression` 红一次，见下）→ 修复后为 run#94。
 
 **流程教训**：本仓在 OneDrive 里，这一轮又出现两次「Edit 报成功、内容没落盘」。
 改完立刻回读校验，别等测试或提交才发现。
+
+**CI 当场抓到一个漏洞（run#93 `swift-regression` 红，`build-package` 绿）**：
+
+`currentBundleIdentifierIsNeverACandidate` 挂了 —— 那条单测传了**混合大小写**的
+keep-map key（`com.kdt.livecontainer.seal.KYRJV2U7WS`），而 `isReclaimableOrphan`
+只做精确查表 `keepingByBundleID[lowered]` ⇒ 没命中 ⇒ 把「正在用的那个」
+判成了**可回收**。失败方向正是删掉活着的 profile。
+
+- 调用方（`removeStaleProfiles`）确实会把 key 归一化成小写，所以生产路径本来不会触发。
+  但**这条判断的错法方向是删数据，不能靠「调用方一定记得转小写」这种约定来保证安全**
+  ⇒ 改成大小写不敏感比对（`keys.contains { $0.lowercased() == lowered }`）。
+- **更值得记的是守卫为什么没提前拦住**：源码断言只能证明「实现里写了 `lowercased()`」，
+  证明不了「单测真的用了一个大小写不一致的 key」。把测试里的 key 改成小写，
+  实现与断言双双绿着，行为已经没人守了。⇒ 补了一条**切出那个测试函数体**、
+  断言里面确实是混合大小写 key 的检查，并配了对应的变异锚点。
+  **「源码断言守形状、单测守行为」还不够，得再补一层「单测里的关键输入形态」** ——
+  否则「把测试改宽」这种退化没有任何检查能发现。
 
 ### 2026-09-17 · 日志无法定版：让表头带上构建号（= CI run number）
 

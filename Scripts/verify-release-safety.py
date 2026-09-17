@@ -466,6 +466,15 @@ def violations(load=read):
     #    没有这个中缀 ⇒ 天然不会碰别人的 App。
     check('static let sealGeneratedMarker = ".seal."' in reclaim_source,
           "R11: the orphan marker must stay the dotted form — '.seal' would also match xseal.y")
+    # ①b keep-map 的命中判断必须**大小写不敏感**。
+    #    写成 `keepingByBundleID[lowered] == nil` 这种精确查表时，只要 key 的大小写
+    #    与设备端不一致，就会把「正在用的那个」判成可回收 ⇒ 删掉活着的 profile。
+    #    调用方目前确实会把 key 归一化成小写，但**这条判断的错法方向是删数据**，
+    #    不能靠调用方约定来保证安全 —— 2026-09-17 就是被单测当场证伪的。
+    check("keepingByBundleID.keys.contains(where: { $0.lowercased() == lowered })"
+          in reclaim_source,
+          "R11: the keep-map membership test must be case-insensitive — a case mismatch "
+          "would classify a live profile as reclaimable")
     # ② 决策函数是**唯一**的安全边界，三个分支缺一不可。
     #    `.notInstalled` 必须**问过阳性对照**才可能返回 `.reclaim` —— 这是最容易被
     #    「简化」掉的一句：直接 `return .reclaim` 之后，形态判据与单测全都还在，
@@ -529,6 +538,16 @@ def violations(load=read):
           and "func failedPositiveControlAbortsTheWholePass()" in reclaim_tests
           and "func noCandidateIsEverReclaimedWhenPositiveControlFails()" in reclaim_tests,
           "R11: every branch of the reclaim decision needs a real unit test")
+    # 大小写不敏感那条必须有**用混合大小写 key** 的单测。把 key 改成小写就能让
+    # 上面那条源码断言（断言实现里写了 `lowercased()` 比较）继续绿着 ——
+    # 所以这里要单独钉住「测试用的确实是混合大小写的 key」。
+    case_test = section(
+        reclaim_tests,
+        "func currentBundleIdentifierIsNeverACandidate()",
+        "func matchingIsCaseInsensitive()"
+    )
+    check('"com.kdt.livecontainer.seal.KYRJV2U7WS": "LIVE-UUID"' in case_test,
+          "R11: the keep-map case-insensitivity needs a real unit test with a mixed-case key")
     check("func reclaimAbortIsVisibleWithoutClaimingTheWholeRunFailed()" in profile_cleaner_tests,
           "R11: the reclaim summary needs a real unit test")
     # 「开关漏传」是这条功能最典型的静默失效：`reclaimSealOrphans` 是个 Bool，
@@ -1968,6 +1987,20 @@ def main():
          "        if let reclaimAborted {\n",
          "        if false, let reclaimAborted {\n",
          "R11: an aborted reclaim must be visible"),
+        # 把 keep-map 命中判断退回「精确查表」：key 大小写不一致时会把「正在用的那个」
+        # 判成可回收 ⇒ 删掉活着的 profile。（2026-09-17 真的这样挂过一次 CI。）
+        ("Seal/Core/Maintenance/ProfileReclaimPolicy.swift",
+         "guard keepingByBundleID.keys.contains(where: { $0.lowercased() == lowered }) == false else {",
+         "guard keepingByBundleID[lowered] == nil else {",
+         "R11: the keep-map membership test must be case-insensitive"),
+        # 把那条「混合大小写 key」的单测改成小写：源码断言（实现里写了 lowercased() 比较）
+        # 仍然全绿，但测试已经守不住这个行为了。
+        ("SealTests/Maintenance/ProfileReclaimPolicyTests.swift",
+         "    func currentBundleIdentifierIsNeverACandidate() {\n"
+         '        let keep = ["com.kdt.livecontainer.seal.KYRJV2U7WS": "LIVE-UUID"]',
+         "    func currentBundleIdentifierIsNeverACandidate() {\n"
+         '        let keep = ["com.kdt.livecontainer.seal.kyrjv2u7ws": "LIVE-UUID"]',
+         "R11: the keep-map case-insensitivity needs a real unit test with a mixed-case key"),
         # 把决策分支的单测删掉：源码断言证明不了「每个分支真的被测过」。
         ("SealTests/Maintenance/ProfileReclaimPolicyTests.swift",
          "    func unavailableNeverReclaims() {",

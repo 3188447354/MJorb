@@ -47,7 +47,7 @@ enum ProfileReclaimPolicy {
     ///
     /// - Parameters:
     ///   - bundleID: 设备端 profile 里的 Bundle ID（大小写不敏感）。
-    ///   - keepingByBundleID: 当前在用的保留集合（key 需已小写）。
+    ///   - keepingByBundleID: 当前在用的保留集合。**key 的大小写不敏感** —— 见下。
     static func isReclaimableOrphan(
         bundleID: String,
         keepingByBundleID: [String: String]
@@ -57,7 +57,16 @@ enum ProfileReclaimPolicy {
             .lowercased()
         guard lowered.isEmpty == false else { return false }
         // 当前在用的由 keep-map 决定保留哪一份，不走这条路径。
-        guard keepingByBundleID[lowered] == nil else { return false }
+        //
+        // ⚠️ 这里**必须**按大小写不敏感比对，不能写成 `keepingByBundleID[lowered] == nil`。
+        // 调用方（`DeviceProfileCleaner.removeStaleProfiles`）确实会把 key 归一化成小写，
+        // 但这条判断的错法方向是**删掉正在用的 profile**（对应 App 立刻无法启动），
+        // 不能靠「调用方一定记得转小写」这种约定来保证安全。
+        // 2026-09-17 被单测当场证伪：`currentBundleIdentifierIsNeverACandidate` 传了
+        // 混合大小写的 key，精确查表没命中 ⇒ 把「正在用的那个」判成了可回收。
+        guard keepingByBundleID.keys.contains(where: { $0.lowercased() == lowered }) == false else {
+            return false
+        }
         // 标记前后都必须有内容：`com.foo.seal.` 本身不是一个 Bundle ID。
         guard let range = lowered.range(of: sealGeneratedMarker) else { return false }
         return range.lowerBound > lowered.startIndex

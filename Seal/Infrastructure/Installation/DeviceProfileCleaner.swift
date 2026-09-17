@@ -39,8 +39,12 @@ struct ProfileCleanupSummary: Sendable, Equatable {
     var reclaimed = 0
     /// 因为「设备上确实装着对应 App」而**保留**的份数。
     ///
-    /// 这个数 > 0 是**正常且必须的**：同一个 App 可以用两个 Team 各装一份
-    /// （`AppRecord.swift:275`），那份 profile 不能删。
+    /// 只在一种情况下出现：某个 Bundle ID 形态上像 Seal 生成的、**但不在保留集合里**，
+    /// 而设备上确实装着 —— 主要是「App 还在设备上、却已从 Seal 列表里删掉」
+    /// （或记录里没有可信的 profile UUID）。`> 0` 是**保护生效**，不是漏删；`= 0` 也正常。
+    ///
+    /// ⚠️ 「同一个 App 用两个 Team 各装一份」**不**走这条路径：两个 ID 都在 keep-map 里，
+    /// 由保留集合内去重（路径 1）处理。别把这两个场景混起来。
     var reclaimKeptInstalled = 0
     /// 因为「查不出是否安装」而保守跳过的份数。
     ///

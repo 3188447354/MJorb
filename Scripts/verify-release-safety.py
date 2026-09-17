@@ -936,6 +936,40 @@ def violations(load=read):
           and "func dateShapeDetectorRejectsPhoneLikeNumbers()" in redactor_tests,
           "R15: relaxing the date rule must not leak phone numbers — both sides need a test")
 
+    # R16: 缓存设备会话的活性探测（2026-09-17 加，**只取证不改变行为**）。
+    #
+    # 安装复用 `connect_to_rsd_services` 的缓存隧道会话，而这条链路上**没有任何一处**
+    # 验证会话还活着：`start()` 的 900 秒缓存只查 `Minimuxer.ready()` 标志位，
+    # `installSignedIPA` 的唯一漏斗 `if !isReady() { start() }` 同样只查标志位
+    # ⇒ 标志为真时连 `start()` 都不调。而本仓注释**三处**都记着「死连接」这个失败模式。
+    # 死会话上跑同步 FFI 会阻塞到 OS 放弃 —— 真机实测普通安装静默 9 分多钟。
+    check("private func probeCachedSessionIfStale() async {" in install_source,
+          "R16: the cached RSD session needs a liveness probe before an install")
+    check("if attempt == 1 { await probeCachedSessionIfStale() }" in install_source,
+          "R16: the probe must run before the FIRST attempt — that is the attempt that "
+          "reuses whatever cached session happens to exist")
+    # ⚠️ 探测**自己也不能卡住**：它要验证的正是「死连接会阻塞」。
+    check("private static let cachedSessionProbeTimeoutSeconds: Double = 5" in install_source,
+          "R16: the probe must be bounded (5s) — an unbounded probe on a dead session "
+          "reproduces the very hang it is meant to diagnose")
+    check("offThread(seconds: Self.cachedSessionProbeTimeoutSeconds)" in install_source,
+          "R16: the probe must go through the bounded wrapper, not call the FFI directly")
+    # ⚠️ 这一步**只记日志**：真正的补救是重建连接，而它会拆掉可能仍在跑的上一笔安装
+    # 连接（R05）。没有直接证据之前不许动行为 —— 探测就是为了拿到那条证据。
+    probe_body = squash(section_or_empty(
+        install_source,
+        "private func probeCachedSessionIfStale() async {",
+        "\n    init(\n        pairingStore: PairingStore,"
+    ))
+    check(probe_body != ""
+          and "Minimuxer.reset()" not in probe_body
+          and "resetProvider()" not in probe_body,
+          "R16: the probe must stay observation-only — resetting here would tear down a "
+          "possibly still-running install (R05) before we even know the session is dead")
+    check("fetchUDIDDetailed()" in probe_body,
+          "R16: the probe must use a real round-trip that throws — a cached/flag-based "
+          "check cannot tell a dead session from a live one")
+
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
     # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
@@ -2621,6 +2655,35 @@ def main():
          "    func keepsISOTimestampsIntact() {",
          "    func keepsISOTimestampsIntactRenamed() {",
          "R15: keeping ISO timestamps intact needs a real unit test"),
+        # ── R16：缓存设备会话的活性探测（2026-09-17 加）──
+        # 去掉调用点：探测留着但从不执行，代码看着「有保护」。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "                if attempt == 1 { await probeCachedSessionIfStale() }",
+         "                // probe removed",
+         "R16: the probe must run before the FIRST attempt"),
+        # 把探测的上限放到 600 秒：它自己就变成了那个「会卡住的东西」。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "private static let cachedSessionProbeTimeoutSeconds: Double = 5",
+         "private static let cachedSessionProbeTimeoutSeconds: Double = 600",
+         "R16: the probe must be bounded"),
+        # 把探测换成标志位检查：正是「分不出死活」的那个判据。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "            try Minimuxer.fetchUDIDDetailed()",
+         "            Minimuxer.ready()",
+         "R16: the probe must use a real round-trip that throws"),
+        # 在探测里顺手重建连接（最像「好心」的改法）：会拆掉可能仍在跑的上一笔安装
+        # 连接（R05），而我们连「会话是不是死的」都还不知道。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "        guard let lastStart = lastSuccessfulStart,\n"
+         "              Date().timeIntervalSince(lastStart) > Self.cachedSessionProbeThresholdSeconds else {\n"
+         "            return\n"
+         "        }",
+         "        Minimuxer.reset()\n"
+         "        guard let lastStart = lastSuccessfulStart,\n"
+         "              Date().timeIntervalSince(lastStart) > Self.cachedSessionProbeThresholdSeconds else {\n"
+         "            return\n"
+         "        }",
+         "R16: the probe must stay observation-only"),
         ("SealTests/Maintenance/AppMaintenanceJobTests.swift",
          "            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",\n            signedArtifactStatus: signedArtifactStatus,",
          "            signedArtifactStatus: signedArtifactStatus,\n            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",",

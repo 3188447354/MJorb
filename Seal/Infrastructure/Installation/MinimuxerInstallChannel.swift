@@ -113,6 +113,68 @@ actor MinimuxerInstallChannel: InstallChannel {
         }
     }
 
+    /// 复用缓存通道前，超过这个时长就做一次**有界**的活性探测。
+    ///
+    /// 60 秒是「批量续签里相邻两个 App 的间隔」量级：比它短的复用**完全跳过**探测，
+    /// 保住 `start()` 那 900 秒缓存的意义（不为每个 App 都多问一次设备）。
+    private static let cachedSessionProbeThresholdSeconds: TimeInterval = 60
+
+    /// 活性探测的硬上限。探测**自己也不能卡住** —— 它要验证的正是「死连接会阻塞」。
+    private static let cachedSessionProbeTimeoutSeconds: Double = 5
+
+    /// **只取证、不改变行为**的缓存会话活性探测（2026-09-17）。
+    ///
+    /// ## 为什么需要它
+    ///
+    /// 安装复用 `connect_to_rsd_services` 的**缓存隧道会话**，而这条链路上**没有任何
+    /// 一处验证会话在链路上还活着**：
+    /// - `start()` 的 900 秒缓存只查 `Minimuxer.ready()` 这个**标志位**；
+    /// - `installSignedIPA` 的唯一漏斗 `if !isReady() { start() }` 同样只查标志位
+    ///   ⇒ 标志为真时**连 `start()` 都不会调**，更不会重建连接。
+    ///
+    /// 而本仓自己的注释**三处**都记着这个失败模式：
+    /// 「推送大文件后 RSD 连接可能超时断开，**isReady() 只检查 TCP 不检查 RSD 服务**」、
+    /// 「RSD 缓存连接可能已随隧道断开；不复位会让重试一直复用死连接」、
+    /// 「验证前重置连接，避免用死连接查询」。
+    ///
+    /// 死会话上跑同步 FFI 不会立刻报错，而是**阻塞到操作系统放弃** ——
+    /// 2026-09-17 真机：普通安装静默 **9 分多钟**（等待上限 804 秒），日志里一行都没有，
+    /// 而同一次会话里前一次安装只用了 10.7 秒（那次会话是刚建立的）。
+    ///
+    /// ## 为什么现在**只记日志**
+    ///
+    /// 真正的补救是重建连接（`Minimuxer.reset()` 内部的
+    /// `RustIdevice.invalidateConnection()`；注意 `Install.resetProvider()` **只清
+    /// Swift 侧对象、清不掉 Rust 的会话缓存**，所以那个不是杠杆）。
+    /// 但 `Minimuxer.reset()` 会拆掉**可能仍在跑**的上一笔安装连接（R05）——
+    /// 在拿到「会话确实是死的」这条直接证据之前不动行为。
+    /// 这次探测就是为了拿到它：下一次再卡住，日志里会**先**出现这一条。
+    private func probeCachedSessionIfStale() async {
+        guard let lastStart = lastSuccessfulStart,
+              Date().timeIntervalSince(lastStart) > Self.cachedSessionProbeThresholdSeconds else {
+            return
+        }
+        let age = Int(Date().timeIntervalSince(lastStart))
+        let outcome = await offThread(seconds: Self.cachedSessionProbeTimeoutSeconds) {
+            try Minimuxer.fetchUDIDDetailed()
+        }
+        // 成功路径**不写日志**：每次安装都多一行会把真实信号淹掉（本仓已有一次
+        // 「临时脚手架占了 30% 日志」的教训）。
+        if case .none = outcome {
+            await log(
+                "安装前探测：复用已启动 \(age) 秒的缓存会话，"
+                + "\(Int(Self.cachedSessionProbeTimeoutSeconds)) 秒无响应（疑似死连接）",
+                level: .warning
+            )
+        } else if case .some(.failure(let error)) = outcome {
+            await log(
+                "安装前探测：复用已启动 \(age) 秒的缓存会话，查询报错（疑似死连接）—— "
+                + Self.diagnostic(error),
+                level: .warning
+            )
+        }
+    }
+
     init(
         pairingStore: PairingStore,
         logDirectory: URL,
@@ -716,6 +778,9 @@ actor MinimuxerInstallChannel: InstallChannel {
         var lastError: Error?
         for attempt in 1...maxAttempts {
             do {
+                // 第一次尝试前做一次**有界**的缓存会话活性探测。
+                // 只记日志、不改行为 —— 理由见 `probeCachedSessionIfStale()` 的说明。
+                if attempt == 1 { await probeCachedSessionIfStale() }
                 let syncProgress: @Sendable (Double) -> Void = { [onProgress] p in
                     // 上传进度 0→100% 逐值透传；到达 100%（p == 1.0）即视为上传结束、立即
                     // 发 1.01 把阶段切到「正在安装」，而不是等 Rust 在预检（连 instproxy +

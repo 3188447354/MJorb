@@ -21,6 +21,7 @@
 - **只在 extension 里给方法默认实现 = `any Protocol` 静态派发到空实现**。`clearFailureCooldown()` 若只写在 extension，`any InstallChannel` 会调用默认空实现，具体实现的覆写永远不执行，表现是「用户手动重试一直被拒」而守卫全绿。**凡是需要动态派发的行为都必须声明为 protocol requirement**（本仓 `install(onProgress:)` 已踩过一次，现已加守卫断言锁住）。
 - **Apple 免费账号的 `1100 session expired` 多数是「限流被掐断」，不是真过期**。抖音（主 App + 8 扩展 = 9 个 bundle ID）在 App ID 阶段连发 9 次 `addAppID` + 9 次 `updateFeatures`、再连发 9 次描述文件申请，二十余次密集请求会触发 Apple 掐断会话。**判据：报错前 1–3 秒若有「证书决策」成功，说明 session 服务端仍有效**（同一账号几分钟前刚成功签过别的 App 也是同一证据）。此时引导用户「重新验证 Apple ID」是死循环 —— 重新登录后密集请求再次触发限流。对策是请求节流 + 对 1100 退避重试，且 **App ID 阶段的 1100 文案必须与 account 阶段分开**（前者给「稍后重试」，后者才给「去重新验证」）。
 - **错误分类禁用子串匹配**。`diagnostic.contains("1100")` 会把形如 `com.example.app1100` 的 Bundle ID 报错误判成「会话过期」，把「Bundle ID 不可用」错报成「登录过期」。只认错误码 + 官方英文文案。
+- **错误映射入口有多条，判据与文案必须共用一份实现、共用同一个优先级顺序**。Apple 返回 `3018 / requires signing in with two-factor authentication` 时（**密码没问题，只是要输验证码**），界面给的是「重试；如持续失败请核对 Apple ID 与密码」—— 把用户引向一个正确的密码。`AppleAccountClient` 有**三个**映射入口（`make` / `validate` / `failure(from:)`），当时都没有这个分支。**「只在其中一条链路上加」是这类修复最容易犯的错**：不崩、不编译失败，只在真机上重新给出错误引导。判据先认**错误码**（稳定），描述只做兜底（会随语言与措辞变）。顺序也要统一：**最具体的诊断排最前**（双重认证 → 限流 → 网络 → 泛化），两处顺序不一致时同一个错误会给出不同提示。守卫按「每个函数体内两个调用的相对位置」断言，不是「文件里有没有这两个字符串」。
 - **统计字段的文案要跟字段语义对齐**。`usedBundleIDCount` 是「已注册存活数量」，却被渲染成「N 个可用 App ID」——日志里 `10 个可用 App ID` 的真实含义是**已用满 10 个**。这直接导致用户「id 有足够的名额」的误判，把排查方向带偏。同一字段在别处（`已签名 n / 10`）写法是对的，**两处口径不一致时以字段定义为准，并统一**。
 - **查「某字段有没有被写入」必须同时搜 `字段:` 与 `字段 = ` 两种形式**。只搜 `provisioningProfileUUID:`（构造器标签）会得出「扩展 UUID 从未落库」的错误结论，而真实写入是 `app.extensions[index].provisioningProfileUUID = binding.profileUUID`。**结论依赖 grep 完备性时，先确认搜索模式覆盖了赋值 / 解构 / 下标三条路径**，否则会基于假前提写错修复方案。
 - **设备端 profile 的清理范围要按「本次安装实际装上的那一组」算，不能按主 Bundle ID**。一次安装会为**每个扩展**各装一份 profile（抖音 8 扩展 = 9 份）。只按主 Bundle ID 匹配 ⇒ 扩展的旧 profile 从头到尾没人清理（真机：LiveContainer 的 ShareExtension 一天堆 6 份）。反过来也不能把 `Frameworks/*.framework/embedded.mobileprovision` 算进保留集合 —— 它不会被 installd 装成设备 profile，算进去等于给那个 Bundle ID 发免死金牌。
@@ -130,6 +131,79 @@
 ---
 
 ## 历史记录
+
+### 2026-09-17 · 新账号报「3018 / 需要双重认证」，界面却叫用户去核对密码
+
+**现象**（真机日志，构建 95）
+
+```
+[SEAL-AUTH-107a] Apple ID 验证失败。
+类型：ALTAppleAPIError
+Domain：AltStore.AppleDeveloperError
+Code：3018
+描述：This account requires signing in with two-factor authentication.
+```
+
+界面给的恢复建议是「**重试；如持续失败请核对 Apple ID 与密码**」。
+
+**根因**：**密码完全没问题** —— Apple 已经接受了密码，只是要求走第二步（输入验证码）。
+`AppleAccountClient` 只 catch 了 `incorrectVerificationCode` / `incorrectCredentials` /
+`invalidAnisetteData`，**没有 requiresTwoFactor 分支** ⇒ 3018 落进泛化的
+「Apple ID 验证失败」，恢复建议指向一个正确的密码。用户会在正确的密码上反复试，
+甚至跑去重置密码。
+
+**修复**：新增 `AppleAuthenticationDiagnosis`（判据与文案放在一起，全纯函数）：
+
+```swift
+static let twoFactorRequiredCode = 3018          // 先认码
+static func isTwoFactorRequired(_ error: Error) -> Bool   // 描述只做兜底
+static func twoFactorFailure(for error: Error) -> ImportFailure   // code: SEAL-AUTH-101a
+```
+
+提示改成「**Apple ID 需要双重认证** / 重新添加账号，在弹出的「输入验证码」里填
+Apple 发来的六位数字；若始终收不到验证码，先到系统「设置 → 你的名字」用这个 Apple ID
+登录一次，再回来重试」。
+
+**为什么判据先认错误码、描述只做兜底**：描述会随 Apple 的措辞与语言变，错误码不会。
+兜底的收益是「万一 Apple 换了码，提示至少还是对的」；代价只是可能把别的错误显示成
+双重认证提示 —— 这条判据**只影响文案**，不影响任何破坏性行为，所以宁可宽松。
+
+**三个映射入口都要改，顺序也要一致**：
+
+| 入口 | 场景 |
+|---|---|
+| `AppleAuthenticationFailure.make(stage:error:)` | 新账号登录 |
+| `AppleAccountClient.validate(account:secret:)` | 已存 session 重新验证 |
+| `AppleAccountClient.failure(from:)` | Anisette 前置失败后的通用兜底 |
+
+后两条理论上不会看到 3018（一个用 session、一个是兜底），但**「只在其中一条链路上加」
+是这类修复最容易犯的错**：不崩、不编译失败，只在真机上重新给出错误引导。
+`validate` 那条尤其隐蔽 —— 它走已存 session，正常不会要求双重认证，但 session 失效时确实会。
+
+顺序统一为「**双重认证 → 限流 → 网络 → 泛化**」：双重认证是最具体的诊断。
+两处顺序不一致时，同一个错误在两条路径上会给出不同提示。
+
+**顺带消掉一份重复实现**：`make` 与 `failure(from:)` 各抄了一份完全相同的
+「类型/Domain/Code/描述/调试/嵌套」构造 ⇒ 抽成 `AppleAuthenticationDiagnosis.detail(for:)`，
+全仓只此一处。这种重复在本仓库反复漂移成「修了一条、漏了另一条」。
+
+**错误码选 `SEAL-AUTH-101a` 而不是新号段**：`SEAL-AUTH-101` 是「验证码被 Apple 拒绝」，
+本条是「验证码这一步没走完」—— 同一族，按前缀扫能一次看全。它**不能**落进
+`AppleServiceFailurePolicy.verificationFailureReason` 里 `SEAL-AUTH-102` / `-105` / `-106`
+那几组：那几组会把账号标记成「凭据失效」，而这里账号和密码都是好的。
+
+**守卫与测试**
+
+- **265→279 源码断言、132→138 变异**（R13 段 14 条断言 / 6 个变异锚点）。
+- 六个变异锚点各自对应一种「绿着坏掉」的改法：换掉 3018、只按描述判断、
+  只在一条链路上做分类、把顺序换到限流之后、分支留着但手写泛化提示、
+  把「绝不能叫用户去核对密码」的单测改名。
+- 新增 `AppleAuthenticationDiagnosisTests`（8 条），其中最重要的是
+  `twoFactorFailureNeverTellsTheUserToCheckThePassword` 与
+  `makeRoutes3018ToTheTwoFactorFailure` —— 只测分类函数的话，把 `make` 里的分支删掉不会红。
+- 顺序断言用 `section()` 取**每个函数体**再比相对位置，不是「文件里有没有这两个字符串」。
+
+---
 
 ### 2026-09-17 · 真机日志（构建 95）验证：回收生效 209 份，同时抓到一个**会删数据**的新缺口
 

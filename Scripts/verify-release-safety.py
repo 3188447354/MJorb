@@ -700,6 +700,90 @@ def violations(load=read):
           "R12: the restore poll path must stay silent on the normal path — only "
           "'pending data exists but the restore was skipped' deserves a log line")
 
+    # R13: 「Apple 要求双重认证」必须走专门的分类与提示（2026-09-17 真机取证，构建 95）。
+    #
+    # 加这条之前，Apple 返回 `Code：3018 / requires signing in with two-factor
+    # authentication` 时界面给的是「Apple ID 验证失败 / 重试；如持续失败请核对
+    # Apple ID 与密码」—— 而**密码完全没问题**：Apple 已经接受了密码，只是要求走第二步。
+    # 用户会在一个正确的密码上反复试，甚至跑去重置密码。
+    # 这类错法不崩、不编译失败，只在真机上把用户引错方向 ⇒ 判据与文案抽成纯函数
+    # （`AppleAuthenticationDiagnosis`）+ 单测 + 守卫。
+    diagnosis_source = strip_comments(
+        load("Seal/Infrastructure/Accounts/AppleAuthenticationDiagnosis.swift")
+    )
+    check("static let twoFactorRequiredCode = 3018" in diagnosis_source,
+          "R13: the two-factor error code must stay 3018 — it is the only stable "
+          "identifier Apple gives (the description is localised and gets reworded)")
+    # 判据必须**先认错误码**：描述会随 Apple 的措辞与语言变，错误码不会。
+    # 描述只做兜底（万一 Apple 换码），不能成为唯一依据。
+    check("if nsError.code == twoFactorRequiredCode { return true }" in diagnosis_source,
+          "R13: the code check must come first and stand on its own — matching only on "
+          "the description breaks the moment Apple rewords or localises it")
+    # 这是整条功能的**全部意义**：提示里不能把用户引向一个正确的密码。
+    # 源码断言只能证明「有这么个工厂」，证明不了它的文案 ⇒ 真正的护栏是单测（见下），
+    # 这里额外钉住那个工厂没有去复用泛化文案。
+    check("核对 Apple ID 与密码" not in diagnosis_source,
+          "R13: the two-factor prompt must not reuse the generic 'check your Apple ID "
+          "and password' advice — the password is exactly what is NOT the problem")
+    check('code: "SEAL-AUTH-101a"' in diagnosis_source,
+          "R13: the two-factor failure needs its own code so it is greppable in logs")
+
+    # 三个映射入口：`make`（新账号登录）、`validate`（已存 session 重新验证）、
+    # `failure(from:)`（Anisette 前置失败后的通用兜底）。
+    # 「只在其中一条链路上加」是这类修复最容易犯的错，而且不崩、不编译失败。
+    client_source = strip_comments(load("Seal/Infrastructure/Accounts/AppleAccountClient.swift"))
+    check(client_source.count("AppleAuthenticationDiagnosis.isTwoFactorRequired(error)") == 3,
+          "R13: every error-mapping entry point must route the two-factor error — "
+          "covering only one path silently re-introduces the wrong advice elsewhere")
+    check(client_source.count("AppleAuthenticationDiagnosis.twoFactorFailure(for: error)") == 3,
+          "R13: every entry point must use the shared factory, not a hand-written prompt — "
+          "two copies drift and only one of them gets fixed")
+
+    # 顺序也是设计：双重认证是最具体的诊断（Apple 已接受密码），必须排在限流/网络之前。
+    # 两个入口顺序不一致时，同一个错误在两条路径上会给出不同提示。
+    # 断言的是**每个函数体内的相对位置**，不是「文件里有没有这两个字符串」。
+    for entry_name, start_marker, end_marker in (
+        ("AppleAuthenticationFailure.make",
+         "static func make(stage: AppleAuthenticationStage, error: Error) -> ImportFailure {",
+         "case .teamLookup:"),
+        ("AppleAccountClient.validate",
+         "func validate(",
+         "nonisolated static func mask(_ appleID: String) -> String {"),
+        ("AppleAccountClient.failure(from:)",
+         "private nonisolated static func failure(from error: Error) -> ImportFailure {",
+         "private struct AuthObjects"),
+    ):
+        entry_body = section(client_source, start_marker, end_marker)
+        two_factor_at = entry_body.find("isTwoFactorRequired(error)")
+        rate_limit_at = entry_body.find("isRateLimited(error)")
+        check(two_factor_at != -1 and rate_limit_at != -1 and two_factor_at < rate_limit_at,
+              f"R13: {entry_name} must check two-factor before rate-limit/network — "
+              "the more specific diagnosis has to win")
+
+    # 新错误码**不能**落进「凭据失效」那一组：那会把账号标成需要重新验证，
+    # 而这里账号和密码都是好的，只是第二步没走完。
+    policy_source = strip_comments(
+        load("Seal/Core/Accounts/AppleServiceFailurePolicy.swift")
+    )
+    check("SEAL-AUTH-101a" not in policy_source,
+          "R13: the two-factor failure must not be classified as credentials-rejected — "
+          "the password is fine, marking the account as needing re-verification is wrong")
+
+    # 源码断言只能守「形状」，守不住「文案真的没把用户引错」。所以那几条必须由单测承担，
+    # 守卫反过来钉住「这些单测确实存在」—— 防止测试被删空后仍然全绿。
+    diagnosis_tests = load("SealTests/Accounts/AppleAuthenticationDiagnosisTests.swift")
+    check("func code3018IsRecognisedAsTwoFactorRequired()" in diagnosis_tests
+          and "func descriptionMarkerIsTheFallbackWhenTheCodeDiffers()" in diagnosis_tests,
+          "R13: the two-factor classification needs a real unit test")
+    check("func twoFactorFailureNeverTellsTheUserToCheckThePassword()" in diagnosis_tests,
+          "R13: the 'never send the user to check the password' rule is the whole point "
+          "of this fix — it must be pinned by a unit test, not just by prose")
+    check("func makeRoutes3018ToTheTwoFactorFailure()" in diagnosis_tests,
+          "R13: testing the classifier alone would not catch a removed branch in `make` — "
+          "the routing itself needs an end-to-end assertion")
+    check("func twoFactorFailureIsNotClassifiedAsCredentialsRejected()" in diagnosis_tests,
+          "R13: the 'not credentials-rejected' boundary needs a unit test")
+
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
     # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
@@ -2266,6 +2350,58 @@ def main():
          "        let pendingPayload = loadPendingBatchResultPayload()",
          "        let pendingPayload = loadPendingBatchResultPayload()\n        Task { try? await logStore?.append(category: .renewal, level: .info, message: \"[BatchDebug] restore poll\", code: \"SEAL-BATCH-DEBUG-9\") }",
          "R12: the temporary [BatchDebug] scaffolding must stay removed"),
+        # ── R13：「Apple 要求双重认证」的专门分类与提示（2026-09-17 真机取证）──
+        # 换掉错误码：Apple 只会用它这个稳定的数字，描述文案会随语言与措辞变。
+        ("Seal/Infrastructure/Accounts/AppleAuthenticationDiagnosis.swift",
+         "static let twoFactorRequiredCode = 3018",
+         "static let twoFactorRequiredCode = 9999",
+         "R13: the two-factor error code must stay 3018"),
+        # 只按描述判断：文案一改就再也认不出来，而「认不出来」的后果是把用户
+        # 引去「核对 Apple ID 与密码」——一个完全正确的密码。
+        ("Seal/Infrastructure/Accounts/AppleAuthenticationDiagnosis.swift",
+         "if nsError.code == twoFactorRequiredCode { return true }",
+         "if false { return true }",
+         "R13: the code check must come first"),
+        # 只在其中一条链路上做分类（这里删的是 `validate` 那条）：
+        # 编译不失败、其它单测也不红，只是那条路径重新给出错误引导。
+        ("Seal/Infrastructure/Accounts/AppleAccountClient.swift",
+         "            if AppleAuthenticationDiagnosis.isTwoFactorRequired(error) {\n"
+         "                throw AppleAuthenticationDiagnosis.twoFactorFailure(for: error)\n"
+         "            }\n",
+         "",
+         "R13: every error-mapping entry point must route"),
+        # 分支还在、顺序被换到限流之后：同一个错误在两条路径上给出不同提示。
+        # 这是「顺序也是设计」那条断言唯一能抓到它的地方。
+        ("Seal/Infrastructure/Accounts/AppleAccountClient.swift",
+         "            if AppleAuthenticationDiagnosis.isTwoFactorRequired(error) {\n"
+         "                throw AppleAuthenticationDiagnosis.twoFactorFailure(for: error)\n"
+         "            }\n"
+         "            if AppleServiceFailurePolicy.isRateLimited(error) {\n"
+         "                throw AppleServiceFailurePolicy.rateLimitedFailure(underlying: error)\n"
+         "            }\n",
+         "            if AppleServiceFailurePolicy.isRateLimited(error) {\n"
+         "                throw AppleServiceFailurePolicy.rateLimitedFailure(underlying: error)\n"
+         "            }\n"
+         "            if AppleAuthenticationDiagnosis.isTwoFactorRequired(error) {\n"
+         "                throw AppleAuthenticationDiagnosis.twoFactorFailure(for: error)\n"
+         "            }\n",
+         "R13: AppleAccountClient.validate must check two-factor before"),
+        # 分支留着、但自己手写一份泛化提示（`make` 那条）：
+        # 看起来「有分支」，实际又回到了「核对 Apple ID 与密码」。
+        ("Seal/Infrastructure/Accounts/AppleAccountClient.swift",
+         "        if AppleAuthenticationDiagnosis.isTwoFactorRequired(error) {\n"
+         "            return AppleAuthenticationDiagnosis.twoFactorFailure(for: error)\n"
+         "        }\n",
+         '        if AppleAuthenticationDiagnosis.isTwoFactorRequired(error) {\n'
+         '            return ImportFailure(title: "无法添加账号", reason: "Apple ID 验证失败。", recovery: "重试；如持续失败请核对 Apple ID 与密码", code: "SEAL-AUTH-107a")\n'
+         "        }\n",
+         "R13: every entry point must use the shared factory"),
+        # 把那条「绝不能叫用户去核对密码」的单测改名：
+        # 证明「单测文件里有这几个字」的断言真的会红，而不是永远绿着。
+        ("SealTests/Accounts/AppleAuthenticationDiagnosisTests.swift",
+         "    func twoFactorFailureNeverTellsTheUserToCheckThePassword() {",
+         "    func twoFactorFailureNeverTellsTheUserToCheckThePasswordRenamed() {",
+         "R13: the 'never send the user to check the password' rule"),
         ("SealTests/Maintenance/AppMaintenanceJobTests.swift",
          "            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",\n            signedArtifactStatus: signedArtifactStatus,",
          "            signedArtifactStatus: signedArtifactStatus,\n            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",",

@@ -8,6 +8,12 @@ enum AppleAuthenticationStage: Sendable {
 
 enum AppleAuthenticationFailure {
     static func make(stage: AppleAuthenticationStage, error: Error) -> ImportFailure {
+        // 双重认证要排在**最前**：它是最具体的诊断（Apple 已经接受了密码，只是要求第二步），
+        // 而 3018 既不是限流也不是网络错误 ⇒ 放在后面只会被泛化文案吃掉，
+        // 真机上就是这样把用户引去「核对 Apple ID 与密码」的。
+        if AppleAuthenticationDiagnosis.isTwoFactorRequired(error) {
+            return AppleAuthenticationDiagnosis.twoFactorFailure(for: error)
+        }
         if AppleServiceFailurePolicy.isRateLimited(error) {
             return AppleServiceFailurePolicy.rateLimitedFailure(underlying: error)
         }
@@ -19,22 +25,9 @@ enum AppleAuthenticationFailure {
         }
         switch stage {
         case .signIn:
-            let nsError = error as NSError
-            var parts: [String] = []
-            parts.append("类型：\(String(describing: type(of: error)))")
-            parts.append("Domain：\(nsError.domain)")
-            parts.append("Code：\(nsError.code)")
-            parts.append("描述：\(nsError.localizedDescription)")
-            if let debugDesc = nsError.userInfo["NSDebugDescription"] as? String {
-                parts.append("调试：\(debugDesc)")
-            }
-            if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
-                parts.append("嵌套：\(underlying.domain)/\(underlying.code) \(underlying.localizedDescription)")
-            }
-            let detail = parts.joined(separator: "\n")
             return ImportFailure(
                 title: "无法添加账号",
-                reason: "Apple ID 验证失败。\n\(detail)",
+                reason: "Apple ID 验证失败。\n\(AppleAuthenticationDiagnosis.detail(for: error))",
                 recovery: "重试",
                 code: "SEAL-AUTH-107a"
             )
@@ -297,6 +290,13 @@ final class AppleAccountClient {
         } catch let failure as ImportFailure {
             throw failure
         } catch {
+            // 第三个映射入口。本函数走的是**已存 session**（不重新用密码登录），
+            // 正常情况下 Apple 不会在这里要求双重认证 —— 但 session 失效时确实可能。
+            // 三个入口用同一个工厂、同一个优先级顺序：这条规则一旦在某条链路上漏掉，
+            // 不崩、不编译失败，只在真机上把用户引向「反复重试」。
+            if AppleAuthenticationDiagnosis.isTwoFactorRequired(error) {
+                throw AppleAuthenticationDiagnosis.twoFactorFailure(for: error)
+            }
             if AppleServiceFailurePolicy.isRateLimited(error) {
                 throw AppleServiceFailurePolicy.rateLimitedFailure(underlying: error)
             }
@@ -535,6 +535,13 @@ final class AppleAccountClient {
                 code: code
             )
         }
+        // 双重认证必须排在**限流/网络之前**，与 `AppleAuthenticationFailure.make` 的
+        // 顺序保持一致（两处顺序不同 = 同一个错误在两条路径上给出不同提示，
+        // 而这类漂移不崩、不编译失败）。`isRateLimited` 只看 503 文案，理论上不会吞掉
+        // 3018，但「靠另一个判据恰好不命中」不是设计，顺序本身就是设计。
+        if AppleAuthenticationDiagnosis.isTwoFactorRequired(error) {
+            return AppleAuthenticationDiagnosis.twoFactorFailure(for: error)
+        }
         if AppleServiceFailurePolicy.isRateLimited(error) {
             return AppleServiceFailurePolicy.rateLimitedFailure(underlying: error)
         }
@@ -547,18 +554,7 @@ final class AppleAccountClient {
         let nsError = error as NSError
         let isVerificationFailure = nsError.localizedDescription
             .localizedCaseInsensitiveContains("verification")
-        var detailParts: [String] = []
-        detailParts.append("类型：\(String(describing: type(of: error)))")
-        detailParts.append("Domain：\(nsError.domain)")
-        detailParts.append("Code：\(nsError.code)")
-        detailParts.append("描述：\(nsError.localizedDescription)")
-        if let debugDesc = nsError.userInfo["NSDebugDescription"] as? String {
-            detailParts.append("调试：\(debugDesc)")
-        }
-        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
-            detailParts.append("嵌套：\(underlying.domain)/\(underlying.code) \(underlying.localizedDescription)")
-        }
-        let detail = detailParts.joined(separator: "\n")
+        let detail = AppleAuthenticationDiagnosis.detail(for: error)
         let baseReason = isVerificationFailure ? "Apple 拒绝了当前验证码（验证码无效或已过期）" : "Apple ID 验证失败"
         return ImportFailure(
             title: "无法添加账号",

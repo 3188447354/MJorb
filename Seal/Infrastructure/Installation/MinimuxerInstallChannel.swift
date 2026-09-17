@@ -1172,10 +1172,27 @@ actor MinimuxerInstallChannel: InstallChannel {
         code: "SEAL-INSTALL-706t"
     )
 
+    /// 安装等待超时的用户提示。
+    ///
+    /// ## ⚠️ 文案必须与**实际行为**一致
+    ///
+    /// 2026-09-17 发现这里写着「**系统已自动重试**」，而超时路径其实是
+    /// **原样抛出、不重试**的（`isTimeoutInstallError` 在重试循环里直接 `throw`，
+    /// 理由见 R05：底下那次安装很可能还在跑，重试会在同一个 Bundle ID 上
+    /// 造出第二个 installd 命令）。用户读到「已自动重试」会**继续等一个并不存在的重试**。
+    ///
+    /// 「超过 10 分钟」也是错的：等待上限按包大小算
+    /// （`mergedInstallBudgetSeconds` = 上传预算 + 600，小包约 804 秒、大包可到 2400 秒）。
+    ///
+    /// 这类「文案把用户引向错误预期」的错法与 3018 那次同族：不崩、不编译失败，
+    /// 只在真机上让人做出错误判断。
     private static let installTimeoutFailure = ImportFailure(
         title: "安装超时",
-        reason: "向设备传输并安装应用超过 10 分钟仍未完成，系统已自动重试。若多次出现，请检查 LocalDevVPN 连接是否稳定后再试（免费账号需使用外部 LocalDevVPN 软件）。",
-        recovery: "重试",
+        reason: "向设备传输并安装应用超过等待上限仍未完成，已停止等待。"
+            + "底层安装调用不会被取消（同步调用没有取消机制），也不会自动重试 —— "
+            + "所以它可能在你看到这条提示之后仍然完成安装。"
+            + "若多次出现，请检查 LocalDevVPN 连接是否稳定后再试（免费账号需使用外部 LocalDevVPN 软件）。",
+        recovery: "先等 1–2 分钟，回列表确认这个 App 是否其实已经装上；确认没装上再重试",
         code: "SEAL-INSTALL-702t"
     )
 

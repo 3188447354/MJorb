@@ -22,6 +22,25 @@ def section(text, start, end):
         raise AssertionError("section end marker not found after " + start + ": " + end)
     return tail.split(end, 1)[0]
 
+def section_or_empty(text, start, end):
+    """`section()` 的**断言专用**变体：标记找不到时返回空串。
+
+    为什么需要它（2026-09-17 实际踩到）：变异检查会对**每一个**变异重跑
+    `violations()`。如果某个变异恰好删掉了某条 `section()` 的标记，`section()`
+    就会 `raise` ⇒ **整轮守卫崩掉**，一条失败都报不出来，而真实原因是
+    「那个变异确实破坏了被断言的结构」。
+
+    返回**空串**（而不是整段）是关键：调用处一律写成 `"片段" in body` 的形式，
+    空串会让断言**失败**。所以它既不会静默通过、也不会把整轮守卫带崩。
+
+    ⚠️ 不要用它替换 `section()` 本身：`section()` 在「读源码做判断」的场合
+    必须响亮失败，静默返回整段会让断言假通过。
+    """
+    try:
+        return section(text, start, end)
+    except AssertionError:
+        return ""
+
 def squash(text):
     """把连续空白（含换行与缩进）压成单个空格。
 
@@ -855,6 +874,28 @@ def violations(load=read):
     check('，受保护 \\(protectedCount)' in cleaner_source,
           "R14: the protected-set size must be in the log — without it, 'many candidates' "
           "cannot be told apart from 'the records were not read'")
+
+    # ③ 安装超时的**文案必须与实现一致**（2026-09-17 发现）。
+    #    超时是原样抛出、**不重试**的（R05：底下那次安装很可能还在跑），
+    #    而文案当时写着「系统已自动重试」—— 用户会继续等一个并不存在的重试。
+    #    「超过 10 分钟」也是错的：等待上限按包大小算（小包约 804 秒、大包可到 2400 秒）。
+    check("系统已自动重试" not in install_source,
+          "R14: the timeout message must not claim a retry — the timeout path re-throws "
+          "without retrying, so the claim makes the user wait for nothing")
+    check("也不会自动重试" in install_source,
+          "R14: the timeout message must say the call is neither cancelled nor retried — "
+          "otherwise the user cannot tell whether the app may still get installed")
+    # 用 `section_or_empty`：变异锚点 `if Self.isTimeoutInstallError(error) {` → `if false {`
+    # 会**删掉这个标记**，用 `section()` 会让整轮守卫崩掉而不是报一条失败。
+    timeout_branch = squash(section_or_empty(
+        install_source,
+        "if Self.isTimeoutInstallError(error) {",
+        "if Self.isSelfReplacementBusyError(error) {"
+    ))
+    check("throw error" in timeout_branch,
+          "R14: a timed-out install must be re-thrown, not retried (R05) — the underlying "
+          "FFI may still be running, and a retry would put a second installd command on "
+          "the same bundle id")
 
     # 两个新的归因计数必须有单测：源码断言证明不了「值真的被算出来了」。
     extension_tests = load("SealTests/Maintenance/ProfileReclaimPolicyTests.swift")
@@ -2525,6 +2566,12 @@ def main():
          "    func protectedSetSizeIsReported() {",
          "    func protectedSetSizeIsReportedRenamed() {",
          "R14: the new attribution counters need real unit tests"),
+        # 把超时文案改回「系统已自动重试」：用户会继续等一个并不存在的重试，
+        # 而超时路径其实是原样抛出、不重试的（R05）。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         '            + "底层安装调用不会被取消（同步调用没有取消机制），也不会自动重试 —— "',
+         '            + "系统已自动重试。"',
+         "R14: the timeout message must not claim a retry"),
         ("SealTests/Maintenance/AppMaintenanceJobTests.swift",
          "            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",\n            signedArtifactStatus: signedArtifactStatus,",
          "            signedArtifactStatus: signedArtifactStatus,\n            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",",
@@ -2727,7 +2774,19 @@ def main():
             failures.append("Mutation anchor missing: " + path)
             continue
         changed = original.replace(old, new, 1)
-        _, mutated_failures = violations(lambda p: changed if p == path else base_read(p))
+        try:
+            _, mutated_failures = violations(lambda p: changed if p == path else base_read(p))
+        except AssertionError as error:
+            # 变异把某条 `section()` 的标记删掉了 ⇒ 守卫崩掉，一条失败都报不出来。
+            # 这**本身就是**「变异破坏了被断言的结构」，按失败报出来 ——
+            # 别让调用者看到一段 Python 栈，误以为守卫自己坏了（2026-09-17 实际踩到）。
+            # 修法是那一处改用 `section_or_empty()`。
+            failures.append(
+                "Guard crashed while checking a mutation (a section() marker was removed "
+                "by the mutation — that call site should use section_or_empty()): "
+                + str(error)
+            )
+            continue
         if not any(item.startswith(expected) for item in mutated_failures):
             failures.append("Guard failed mutation check: " + expected)
     print("Source regression checks: " + str(count))

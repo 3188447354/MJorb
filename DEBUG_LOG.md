@@ -167,10 +167,21 @@ static func decision(probe: InstallProbe, positiveControlPassed: Bool) -> Decisi
 阶段 B 设备端核验）、`AppMaintenanceJob` 与 `SigningCoordinator` 两处显式开启、
 `ProfileCleanupSummary` 新增四个计数 + `reclaimAborted`。
 守卫 **228→246 源码断言、107→118 变异**（11 个新锚点专打这条边界）。
-提交 `647bde3`（CI **run#93**，`swift-regression` 红一次，见下）→ 修复后为 run#94。
+提交 `647bde3`（CI **run#93**，`swift-regression` 红一次，见下）→ 修复后 `2c31b46`
+（CI **run#95** 全绿）。
 
 **流程教训**：本仓在 OneDrive 里，这一轮又出现两次「Edit 报成功、内容没落盘」。
 改完立刻回读校验，别等测试或提交才发现。
+
+**⚠️ 同一天还踩到一次更严重的：误删远端分支。** 推送脚本里
+`NEW=$(git commit-tree "$TREE" -p "$REMOTE" ...)` 因为父对象 `f165ec5`
+**瞬时读不到**（`fatal: not a valid object name`，OneDrive 又回滚了 `.git`）而失败
+⇒ `$NEW` 为空 ⇒ `git push origin "$NEW:refs/heads/codex/certificate-handoff"`
+被 git 解释成**删除请求**，输出 `- [deleted] codex/certificate-handoff` 且 **exit 0**。
+`f165ec5` 本地对象其实还在，用 `git push origin f165ec5:refs/heads/<branch>` 立即恢复。
+⇒ 推送脚本必须加 `git cat-file -e "$REMOTE" || exit 1` 与
+`[ -n "$NEW" ] || exit 1`。事故的样子是 **stderr 的 `fatal:` 与 stdout 的
+`[deleted]` 同时出现** —— 只看 stdout 会误判成推送成功。
 
 **CI 当场抓到一个漏洞（run#93 `swift-regression` 红，`build-package` 绿）**：
 

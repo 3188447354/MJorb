@@ -79,6 +79,25 @@ actor ApplePortalCertificateService {
             }
         } catch {
             if let failure = CertificateRequestFailurePolicy.requestFailure(error: error, limitCode: "SEAL-CERT-204") { throw failure }
+            // ⚠️ 1100（会话被掐断）此前会**原样上抛**，最终落到调用方的通用 catch，
+            // 变成「无法完成证书处理 … **没有返回明确失败原因**」+「重新同步证书后确认当前状态」——
+            // 既没说清这是限流（不是登录真的失效），也没说清**旧证书已经撤销、
+            // 这个账号现在可能没有可用证书**（本仓 R21 / R23 修过同一族的文案问题）。
+            //
+            // 文案刻意**不假设「一定发生了撤销」**：`createLocalCertificate` 也被设置页的
+            // 「创建证书」按钮直接调用，那时没有任何撤销。所以用「若你刚才是在…」表述。
+            if ApplePortalSigningService.isSessionExpiredError(error) {
+                throw Self.failure(
+                    title: "新证书没有创建成功",
+                    reason: "Apple 拒绝了本次创建证书的请求（返回「会话已过期」）。"
+                        + "这通常是短时间内请求过密触发的限制，不代表登录真的失效 —— "
+                        + "退避重试已经试过几次才放弃。\n"
+                        + "⚠️ 若你刚才是在「撤销并创建新证书」或证书清理，请注意撤销**已经生效**："
+                        + "这个账号现在可能没有可用证书，已装 App 需要重新签名才能续期。",
+                    recovery: "先等几分钟再重试创建；若仍失败，到「我的」重新验证这个 Apple ID 后再创建一张证书",
+                    code: "SEAL-CERT-233"
+                )
+            }
             throw error
         }
         do {

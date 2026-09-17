@@ -1367,9 +1367,40 @@ def violations(load=read):
           "创建失败会让账号变成 0 张证书，用它签过的 App 全部打不开")
     # 判据与间隔必须**共用**签名服务那一份，不能在新链路里抄一份（抄一份迟早漂移成
     # 「同一个 1100 在一条链路上重试、在另一条上直接失败」）。
-    check("ApplePortalSigningService.isSessionExpiredError(error)" in cert_service_source
-          and "ApplePortalSigningService.sessionRecoveryBackoffNanoseconds" in cert_service_source,
+    # ⚠️ 断言必须**限定在重试循环体内**：R30 新加的文案分支里也出现了
+    # `ApplePortalSigningService.isSessionExpiredError(error)`，用整文件的 `in`
+    # 会让变异（把循环里的判据换成 `code == 1100`）**抓不到** —— 另一处出现把它兜住了。
+    # 这是技能规矩 4 的实例：「片段在同一文件里出现多次时，`in` 断言就失去约束力」。
+    cert_recovery_body = section_or_empty(
+        cert_service_source,
+        "private func withSessionRecovery<T>(",
+        "private static func certificateMachineName("
+    )
+    check("ApplePortalSigningService.isSessionExpiredError(error)" in cert_recovery_body
+          and "ApplePortalSigningService.sessionRecoveryBackoffNanoseconds" in cert_recovery_body,
           "R29: 退避重试的判据与间隔必须共用 ApplePortalSigningService 那一份")
+
+    # R30: 证书创建被限流而失败时，文案必须说清两件事（2026-09-17）。
+    #
+    # 1100 原先**原样上抛**，落到调用方的通用 catch，变成
+    # 「无法完成证书处理 … **没有返回明确失败原因**」+「重新同步证书后确认当前状态」——
+    # 既没说清这是限流（不是登录真的失效），也没说清**旧证书已经撤销、
+    # 这个账号现在可能没有可用证书**（本仓 R21 / R23 修过同一族的文案问题）。
+    # 而这条链路的两个调用方（`revokeCertificateAndCreateLocal` / `executeCertificateCleanup`）
+    # 都是**先撤销、再创建** ⇒ 创建失败 = 账号可能 0 张可用证书、已装 App 需要重新签名。
+    # ⚠️ 只查文案不够：变异可以把条件改成 `if false` 而**文案原封不动** ——
+    # 那样断言仍然全绿，而分支永远走不到。所以必须**同时断言分支条件**。
+    # `if ApplePortalSigningService.isSessionExpiredError(error) {` 在文件里唯一
+    # （重试循环里那处是 `guard ... else { throw error }`，形状不同）。
+    check('code: "SEAL-CERT-233"' in cert_service_source
+          and "这个账号现在可能没有可用证书" in cert_service_source
+          and "if ApplePortalSigningService.isSessionExpiredError(error) {" in cert_service_source,
+          "R30: 证书创建遇 1100 的文案必须写明「撤销已生效、账号可能没有可用证书」—— "
+          "否则用户只看到「没有返回明确失败原因」，不知道要立刻重新创建一张")
+    # ⚠️ 文案不能假设「一定发生了撤销」：设置页的「创建证书」按钮走的是同一个函数，
+    # 那时没有任何撤销，说「撤销已生效」就是新的误导。
+    check("若你刚才是在" in cert_service_source,
+          "R30: 该文案不能假设「一定发生了撤销」—— 设置页的「创建证书」按钮也走同一个函数")
 
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
@@ -3401,6 +3432,16 @@ def main():
          "                guard ApplePortalSigningService.isSessionExpiredError(error) else { throw error }",
          "                guard (error as NSError).code == 1100 else { throw error }",
          "R29: 退避重试的判据与间隔必须共用 ApplePortalSigningService 那一份"),
+        # 去掉 1100 的专门文案：又落回「没有返回明确失败原因」，
+        # 用户不知道账号可能已经被清空、需要立刻重新创建一张证书。
+        ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",
+         "            if ApplePortalSigningService.isSessionExpiredError(error) {\n"
+         "                throw Self.failure(\n"
+         "                    title: \"新证书没有创建成功\",",
+         "            if false {\n"
+         "                throw Self.failure(\n"
+         "                    title: \"新证书没有创建成功\",",
+         "R30: 证书创建遇 1100 的文案必须写明"),
         # 把结算单测改名：证明「单测文件里有这几个字」的断言真的会红。
         ("SealTests/Renewal/RefreshQueueStoreTests.swift",
          "    func recoverInterruptedSettlesItemsThatAlreadyHaveAResult() async throws {",

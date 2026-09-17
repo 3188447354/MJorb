@@ -908,7 +908,15 @@ actor MinimuxerInstallChannel: InstallChannel {
         // 验证前重置连接，避免用死连接查询
         Install.resetProvider()
         for _ in 0..<8 {
-            if Minimuxer.lookupApp(bundleId: bundleID) != nil { return }
+            // ⚠️ **必须有界**（2026-09-17 补）：`lookupApp` 是同步阻塞 FFI，
+            // 在一条已死的会话上**不报错、只阻塞到操作系统放弃** ——
+            // 与安装路径同一个失败模式，而这里还是**循环里的 8 次**。
+            // 超时/报错一律按「这次没查到」处理：循环本身会重试，
+            // 8 次都没查到就按「验证失败」抛错（与原先语义一致，只是变成有界）。
+            let probe = await offThread(seconds: BlockingCall.queryTimeoutSeconds) {
+                Minimuxer.lookupApp(bundleId: bundleID) != nil
+            }
+            if case .some(.success(true)) = probe { return }
             try? await Task.sleep(for: .milliseconds(650))
         }
         throw ImportFailure(

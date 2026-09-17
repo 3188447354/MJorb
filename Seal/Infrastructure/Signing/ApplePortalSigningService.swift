@@ -19,6 +19,31 @@ enum ApplePortalAppIDResolver {
     ) -> Bool {
         existingBundleIdentifier.caseInsensitiveCompare(requestedBundleIdentifier) == .orderedSame
     }
+
+    /// 创建 App ID 的**顺序**：主 App 必须排在最前。
+    ///
+    /// ⚠️ 顺序就是安全本身（2026-09-17）。免费账号「7 天内最多注册 10 个 App ID」是**共享**名额，
+    /// 而多扩展 App（抖音 = 主 App + 8 扩展）一次签名要连发 9 次 `addAppID`。名额不够时：
+    /// **扩展创建失败会被「丢弃降级」继续签名，主 App 创建失败则整个签名抛错**。
+    /// 原实现按 Bundle ID 字母序创建 ⇒ 只要有一个扩展的 Bundle ID 排在主 App 之前，
+    /// 它就会先把有限名额吃掉，轮到主 App 时名额已空 ⇒ **整个签名失败，而名额已经白花**。
+    /// 主 App 优先之后最坏只是「部分扩展被丢弃」（界面本来就会列出被丢弃的扩展），
+    /// 而不是「这个 App 签不上」。
+    ///
+    /// 抽成纯函数是为了能写单测 —— 它的错法只在真机上可见：名额充足时两种顺序结果完全一样。
+    static func preparationOrder(
+        mappings: [String: String],
+        mappedMainBundleID: String
+    ) -> [(original: String, mapped: String)] {
+        mappings
+            .map { (original: $0.key, mapped: $0.value) }
+            .sorted { lhs, rhs in
+                let lhsIsMain = lhs.mapped == mappedMainBundleID
+                let rhsIsMain = rhs.mapped == mappedMainBundleID
+                if lhsIsMain != rhsIsMain { return lhsIsMain }
+                return lhs.original < rhs.original
+            }
+    }
 }
 
 enum ApplePortalSigningFailure {
@@ -1474,6 +1499,26 @@ actor ApplePortalSigningService {
 
         var existing = try await fetchAppIDs(team: team, session: session)
 
+        // 无条件写一条「App ID 名额」诊断（2026-09-17）。用户报「只有抖音签不上、重新加 ID 也不行」时，
+        // 这条日志是唯一能把两种成因分开的东西 ——
+        // ①名额不够（`需新注册` 大于账号剩余名额）；②请求过密被限流（名额够、却仍报 1100）。
+        // 缺了它，两种成因在导出的日志里长得一模一样（都是 App ID 阶段报会话失效），
+        // 于是「用户把日志发给我，我能看出它失败了吗」的答案是「不能」。
+        let extensionAppIDCount = mappings.values.filter { $0 != mappedMainBundleID }.count
+        let reusableAppIDCount = mappings.values.filter { mapped in
+            existing.contains {
+                ApplePortalAppIDResolver.matches(
+                    existingBundleIdentifier: $0.bundleIdentifier,
+                    requestedBundleIdentifier: mapped
+                )
+            }
+        }.count
+        await diagnostic(
+            "App ID 名额：本次需 \(mappings.count) 个（主 App 1 + 扩展 \(extensionAppIDCount)），"
+                + "账号上已有 \(existing.count) 个、其中可复用 \(reusableAppIDCount) 个，"
+                + "需新注册 \(mappings.count - reusableAppIDCount) 个"
+        )
+
         // 不做「existing.count >= 10 就硬拦」的本地预检（原 SEAL-APPID-305）：
         // Apple 的真实上限是「7 天内最多注册 10 个 App ID」（滑动窗口），不是「当前存活 App ID ≤ 10」。
         // 7 天窗口滚动后，老 App ID 仍在存活列表、却已不算进当周窗口，账号可合法攒到 >10 个，
@@ -1486,7 +1531,12 @@ actor ApplePortalSigningService {
         var droppedExtensionBundleIdentifiers: [String] = []
 
         // Phase 1: only read/create/update App IDs. No provisioning profile is fetched here.
-        for (originalBundleID, mappedBundleID) in mappings.sorted(by: { $0.key < $1.key }) {
+        // 顺序：**主 App 优先**（见 `ApplePortalAppIDResolver.preparationOrder`）——
+        // 名额不足时让扩展去「丢弃降级」，而不是让主 App 拿不到名额、整个签名失败。
+        for (originalBundleID, mappedBundleID) in ApplePortalAppIDResolver.preparationOrder(
+            mappings: mappings,
+            mappedMainBundleID: mappedMainBundleID
+        ) {
             do {
                 try Task.checkCancellation()
                 var appID: ALTAppID

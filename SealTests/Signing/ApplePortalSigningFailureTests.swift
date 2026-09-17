@@ -77,4 +77,49 @@ struct ApplePortalSigningFailureTests {
         #expect(failure.reason.contains("NSURLErrorDomain") == false)
         #expect(failure.reason.contains("-1001") == false)
     }
+
+    /// 创建 App ID 的顺序：**主 App 必须排在最前**（2026-09-17）。
+    ///
+    /// 这条只在真机上才看得出后果，所以必须由单测钉住：
+    /// 免费账号「7 天内最多注册 10 个 App ID」是主 App 与扩展**共享**的名额，
+    /// 而扩展创建失败会「丢弃降级」继续签名、**主 App 创建失败则整个签名抛错**。
+    /// 若按 Bundle ID 字母序（原实现）先建扩展，扩展会把名额吃光，
+    /// 轮到主 App 时名额已空 ⇒ 整个 App 签不上，而名额已经白花。
+    @Test
+    func ordersAppIDCreationWithTheMainAppFirst() {
+        let main = "com.example.demo"
+
+        // ⚠️ 刻意构造「扩展的字母序排在主 App 前面」的形态：
+        // `-` 的码位（0x2D）小于 `.` 的码位（0x2E），所以 `com.example.demo-ext` < `com.example.demo`。
+        // 这正是字母序会把主 App 排到扩展后面的那种输入。
+        let order = ApplePortalAppIDResolver.preparationOrder(
+            mappings: [
+                "com.example.demo-ext": "com.example.demo-ext",
+                "com.example.demo": main,
+                "com.example.demo.zzz": "com.example.demo.zzz",
+            ],
+            mappedMainBundleID: main
+        )
+
+        #expect(order.count == 3)
+        #expect(order.first?.mapped == main)
+        // 主 App 之外仍按字母序：同一份输入必须产生**稳定**输出，
+        // 否则重试时顺序会抖，排查日志时对不上。
+        #expect(
+            order.map { $0.mapped }
+                == ["com.example.demo", "com.example.demo-ext", "com.example.demo.zzz"]
+        )
+    }
+
+    /// `mappings` 里没有主 App 时不能崩、也不能漏项，退化为纯字母序。
+    @Test
+    func keepsAlphabeticalOrderWhenMainBundleIDIsNotInMappings() {
+        let order = ApplePortalAppIDResolver.preparationOrder(
+            mappings: ["com.example.b": "com.example.b", "com.example.a": "com.example.a"],
+            mappedMainBundleID: "com.example.missing"
+        )
+
+        #expect(order.count == 2)
+        #expect(order.map { $0.original } == ["com.example.a", "com.example.b"])
+    }
 }

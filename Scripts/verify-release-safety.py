@@ -1270,6 +1270,49 @@ def violations(load=read):
     check("await BlockingCall.bounded(seconds: seconds, work)" in install_source
           and "OffThreadOutcome" not in install_source,
           "R25: 安装通道的 offThread 必须委托给共用实现，不要保留第二份")
+    # 安装后验证里的 `lookupApp` 也是同步阻塞 FFI，而且**在循环里跑 8 次**。
+    check("let probe = await offThread(seconds: BlockingCall.queryTimeoutSeconds) {"
+          in install_source
+          and "Minimuxer.lookupApp(bundleId: bundleID) != nil" in install_source,
+          "R25: 安装后验证里的 lookupApp 也必须是有界查询 —— 死会话上它会在 8 次循环里一直卡住")
+
+    # R26: 创建 App ID 的顺序 —— 主 App 必须优先（2026-09-17）。
+    #
+    # 用户报「只有抖音签不上、重新加 Apple ID 也不行」。抖音 = 主 App + 8 扩展，
+    # 一次签名要连发 9 次 `addAppID`，而免费账号的 App ID 名额是主 App 与扩展**共享**的：
+    # 扩展创建失败会「丢弃降级」继续签名，**主 App 创建失败则整个签名抛错**。
+    # 原实现按 Bundle ID 字母序创建 ⇒ 只要有扩展的字母序排在主 App 之前
+    #（`com.x.app-ext` < `com.x.app`，因为 `-` 的码位小于 `.`），
+    # 它就会先把名额吃掉，轮到主 App 时名额已空 ⇒ 整个 App 签不上，而名额已经白花。
+    #
+    # 顺序抽成纯函数 `ApplePortalAppIDResolver.preparationOrder` 以便单测 ——
+    # 源码断言只能证明函数存在，证明不了它真的把主 App 排在前面（名额充足时两种顺序结果一样，
+    # 只有单测能钉住「主 App 在最前」这个**行为**）。
+    check("static func preparationOrder(" in portal_source
+          and "ApplePortalAppIDResolver.preparationOrder(" in portal_source,
+          "R26: 创建 App ID 的顺序必须抽成 ApplePortalAppIDResolver.preparationOrder 并真的被调用")
+    check("mappings.sorted(by: { $0.key < $1.key })" not in portal_source,
+          "R26: 不能退回「按 Bundle ID 字母序创建 App ID」—— 扩展会先吃掉共享名额，主 App 反而签不上")
+    # 只用于断言：某个变异可能恰好删掉标记，用 section() 会让整轮守卫带栈崩掉。
+    app_id_order_body = section_or_empty(
+        portal_source,
+        "static func preparationOrder(",
+        "\n}"
+    )
+    check("let lhsIsMain = lhs.mapped == mappedMainBundleID" in app_id_order_body
+          and "if lhsIsMain != rhsIsMain { return lhsIsMain }" in app_id_order_body,
+          "R26: preparationOrder 必须真的把主 App 排到最前（不是只留个名字）")
+    check("return lhs.original < rhs.original" in app_id_order_body,
+          "R26: 主 App 之外的条目仍要按原序稳定排序，否则同一份输入的顺序会抖、日志对不上")
+    # 名额诊断必须**无条件**写：缺了它，「名额不够」与「请求过密被限流」在导出的日志里
+    # 长得一模一样（都是 App ID 阶段报会话失效），于是「用户把日志发给我能看出失败原因吗」= 不能。
+    check(r'"App ID 名额：本次需 \(mappings.count) 个（主 App 1 + 扩展 \(extensionAppIDCount)），"'
+          in portal_source,
+          "R26: 必须无条件写一条「App ID 名额」诊断 —— 否则两种成因在日志里无法区分")
+    app_id_order_tests = load("SealTests/Signing/ApplePortalSigningFailureTests.swift")
+    check("func ordersAppIDCreationWithTheMainAppFirst()" in app_id_order_tests
+          and "#expect(order.first?.mapped == main)" in app_id_order_tests,
+          "R26: 主 App 优先的顺序必须由单测钉住（源码断言证明不了它真的排到最前）")
 
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
@@ -3197,6 +3240,42 @@ def main():
          "        await BlockingCall.bounded(seconds: seconds, work)",
          "        return Result { try await work() }",
          "R25: 安装通道的 offThread 必须委托给共用实现"),
+        # 安装后验证退回无界查询：死会话上会在 8 次循环里一直卡住。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "            let probe = await offThread(seconds: BlockingCall.queryTimeoutSeconds) {\n"
+         "                Minimuxer.lookupApp(bundleId: bundleID) != nil\n"
+         "            }",
+         "            let probe: Result<Bool, Error>? = .some(.success(Minimuxer.lookupApp(bundleId: bundleID) != nil))",
+         "R25: 安装后验证里的 lookupApp 也必须是有界查询"),
+        # ── R26：创建 App ID 的顺序 —— 主 App 必须优先（2026-09-17）──
+        # 让「主 App 优先」失效：退回纯字母序 ⇒ 扩展先吃掉共享名额，主 App 反而签不上。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "                if lhsIsMain != rhsIsMain { return lhsIsMain }",
+         "                if lhsIsMain && rhsIsMain { return lhsIsMain }",
+         "R26: preparationOrder 必须真的把主 App 排到最前"),
+        # 把稳定排序反过来：同一份输入的顺序会抖，真机现象与日志对不上。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "                return lhs.original < rhs.original",
+         "                return lhs.original > rhs.original",
+         "R26: 主 App 之外的条目仍要按原序稳定排序"),
+        # 退回字母序调用（同时丢掉 preparationOrder 的调用点）。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "        for (originalBundleID, mappedBundleID) in ApplePortalAppIDResolver.preparationOrder(\n"
+         "            mappings: mappings,\n"
+         "            mappedMainBundleID: mappedMainBundleID\n"
+         "        ) {",
+         "        for (originalBundleID, mappedBundleID) in mappings.sorted(by: { $0.key < $1.key }) {",
+         "R26: 不能退回「按 Bundle ID 字母序创建 App ID」"),
+        # 去掉名额诊断：两种成因在日志里又变得无法区分。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         r'            "App ID 名额：本次需 \(mappings.count) 个（主 App 1 + 扩展 \(extensionAppIDCount)），"',
+         r'            "本次需要注册 \(mappings.count) 个 App ID",',
+         "R26: 必须无条件写一条「App ID 名额」诊断"),
+        # 把单测改宽：只断言「非空」，主 App 是否在最前就不管了。
+        ("SealTests/Signing/ApplePortalSigningFailureTests.swift",
+         "        #expect(order.first?.mapped == main)",
+         "        #expect(order.isEmpty == false)",
+         "R26: 主 App 优先的顺序必须由单测钉住"),
         # 把结算单测改名：证明「单测文件里有这几个字」的断言真的会红。
         ("SealTests/Renewal/RefreshQueueStoreTests.swift",
          "    func recoverInterruptedSettlesItemsThatAlreadyHaveAResult() async throws {",

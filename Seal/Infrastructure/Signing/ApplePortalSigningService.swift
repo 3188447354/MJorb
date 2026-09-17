@@ -503,7 +503,22 @@ actor ApplePortalSigningService {
         do {
             try Task.checkCancellation()
             await progress(.preparingAccount)
+            // ⚠️ **把这段静默括起来**（2026-09-17 真机，构建 105）。
+            //
+            // 真机日志实测：`证书检查` 之后直接跳到 2 分钟后的失败，**中间一行都没有** ——
+            // 而这一步恰好是最可能慢的一步（`anisetteProvider.fetch()` 要本地签名内核生成
+            // 设备环境，代码在 `SEAL-AUTH-107t` 的文案里就写明「本地签名内核生成设备环境时
+            // 卡住」）。没有这两行，「等了 2 分钟」无法归因到具体步骤。
+            //
+            // 与安装心跳同一条纪律：**长等待必须留下可判读的时间线**。
+            // 成功路径也写（耗时是判断「是不是这步慢」的唯一依据），但不写心跳
+            // —— 这一步正常是秒级，不需要周期性打点。
+            let anisetteStartedAt = Date()
+            await diagnostic("签名：正在准备设备环境（anisette）")
             let anisette = try await anisetteProvider.fetch()
+            await diagnostic(
+                "签名：设备环境已就绪，耗时 \(Int(Date().timeIntervalSince(anisetteStartedAt))) 秒"
+            )
             let session = ALTAppleAPISession(
                 dsid: secret.dsid,
                 authToken: secret.authToken,

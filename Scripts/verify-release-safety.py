@@ -1108,6 +1108,30 @@ def violations(load=read):
           and "func sealCanonicalBareIdentifierIsNotAPrefixMatch()" in policy_tests,
           "R19: 三个方向都要有单测 —— 认得出、受 keep-map 保护、且不前缀匹配")
 
+    # R20: 把 anisette 准备这段静默括起来（2026-09-17 真机，构建 105）。
+    #
+    # 真机日志实测：`证书检查` 之后**直接跳到 2 分钟后的失败**，中间一行都没有 ——
+    # 而这一步恰好最可能慢（`anisetteProvider.fetch()` 要本地签名内核生成设备环境，
+    # 代码在 `SEAL-AUTH-107t` 的文案里就写明「本地签名内核生成设备环境时卡住」）。
+    # 与安装心跳同一条纪律：**长等待必须留下可判读的时间线**。
+    portal_source = strip_comments(
+        load("Seal/Infrastructure/Signing/ApplePortalSigningService.swift")
+    )
+    sign_once_body = squash(section_or_empty(
+        portal_source,
+        "private func signOnce(",
+        "let session = ALTAppleAPISession("
+    ))
+    before_at = sign_once_body.find('"签名：正在准备设备环境（anisette）"')
+    fetch_at = sign_once_body.find("anisetteProvider.fetch()")
+    after_at = sign_once_body.find('"签名：设备环境已就绪，耗时')
+    check(before_at != -1 and fetch_at != -1 and after_at != -1
+          and before_at < fetch_at < after_at,
+          "R20: the anisette step must be bracketed — 日志里「证书检查」到失败之间曾空白 2 分钟，"
+          "而这一步是最可能慢的那一步；没有这两行就无法归因")
+    check("Int(Date().timeIntervalSince(anisetteStartedAt))" in sign_once_body,
+          "R20: 完成那条必须带耗时 —— 「是不是这步慢」只能靠它判断")
+
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
     # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
@@ -2913,6 +2937,25 @@ def main():
          "    func sealCanonicalBareIdentifierIsACandidate() {",
          "    func sealCanonicalBareIdentifierIsACandidateRenamed() {",
          "R19: 三个方向都要有单测"),
+        # ── R20：把 anisette 准备这段静默括起来（2026-09-17 加）──
+        # 去掉「开始」那条：那段静默又变成无法归因的空白。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         '            await diagnostic("签名：正在准备设备环境（anisette）")\n',
+         "",
+         "R20: the anisette step must be bracketed"),
+        # **顺序反了**：留痕放到 `fetch()` 之后 ⇒ 「正在准备」在慢步骤结束时才写，
+        # 时间线上看不出它是从哪一刻开始的。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         '            await diagnostic("签名：正在准备设备环境（anisette）")\n'
+         "            let anisette = try await anisetteProvider.fetch()",
+         "            let anisette = try await anisetteProvider.fetch()\n"
+         '            await diagnostic("签名：正在准备设备环境（anisette）")',
+         "R20: the anisette step must be bracketed"),
+        # 去掉耗时：无法判断「是不是这步慢」。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         '                "签名：设备环境已就绪，耗时 \\(Int(Date().timeIntervalSince(anisetteStartedAt))) 秒"',
+         '                "签名：设备环境已就绪"',
+         "R20: 完成那条必须带耗时"),
         # 把结算单测改名：证明「单测文件里有这几个字」的断言真的会红。
         ("SealTests/Renewal/RefreshQueueStoreTests.swift",
          "    func recoverInterruptedSettlesItemsThatAlreadyHaveAResult() async throws {",

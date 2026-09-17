@@ -1207,6 +1207,26 @@ def violations(load=read):
           "R22: 「已移除」表里的码又回到源码里了（要么删掉该行、要么它其实没被移除）："
           + "、".join(resurrected[:6]))
 
+    # R23: 证书阶段的「认证状态无效」不许只给「去重新验证」一条路（2026-09-17 用户反馈）。
+    #
+    # 同一个「认证状态无效」有两种成因：①登录真失效；②**短时间请求过密被 Apple 限流**
+    # （多扩展 App 的典型症状：抖音 = 主 App + 8 扩展，一次签名连发 9 次 `addAppID`）。
+    # 只给 ① 会把用户推进死循环：「重新验证 → 再签 → 又被限流 → 又被要求验证」——
+    # 这正是用户反馈的原话（「无论怎样在验证 Apple ID 就报错失效」）。
+    # `appIDFailure` 里早就为同一个 1100 修过，但**证书阶段漏了**。
+    cert_failure = squash(section_or_empty(
+        portal_source,
+        "private static func certificateFailure(",
+        "title: \"证书准备失败\""
+    ))
+    check("被 Apple 限流" in cert_failure,
+          "R23: 证书阶段必须点明「可能是限流」—— 只写「登录失效」会让用户去反复重新验证，"
+          "而限流情况下重新验证根本没用")
+    check("先等几分钟重试" in cert_failure,
+          "R23: recovery 必须先给「等几分钟」—— 顺序反了就是那个死循环")
+    check('recovery: "前往「我的」页面重新登录该 Apple ID"' not in cert_failure,
+          "R23: 不能退回「只让用户去重新验证」这一条路（那正是死循环的成因）")
+
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
     # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
@@ -3071,6 +3091,19 @@ def main():
          "## 已从源码移除（旧日志里还会看到，**别当成现在还在报**）",
          "## 历史码",
          "R22: 日志码索引必须有「已从源码移除」一节"),
+        # ── R23：证书阶段不许只给「去重新验证」一条路（2026-09-17 用户反馈）──
+        # 退回旧文案：用户会陷入「重新验证 → 再签 → 又被限流 → 又被要求验证」的死循环。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         '                recovery: "先等几分钟重试；若多次重试仍失败，再到「我的」页面重新验证这个 Apple ID，"\n'
+         '                    + "或改用其它 Apple ID 签名",',
+         '                recovery: "前往「我的」页面重新登录该 Apple ID",',
+         "R23: 不能退回「只让用户去重新验证」这一条路"),
+        # 去掉「限流」这个成因：只剩「登录失效」一种解释，用户就会去反复重新验证。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         '                    + "这个错误有两种常见成因：登录真的失效，或者短时间内请求过密被 Apple 限流"\n'
+         '                    + "（扩展较多的 App 一次签名要连续注册多个 App ID，最容易触发）。\\n"',
+         '                    + "这个错误的成因是登录失效。\\n"',
+         "R23: 证书阶段必须点明「可能是限流」"),
         # 把结算单测改名：证明「单测文件里有这几个字」的断言真的会红。
         ("SealTests/Renewal/RefreshQueueStoreTests.swift",
          "    func recoverInterruptedSettlesItemsThatAlreadyHaveAResult() async throws {",

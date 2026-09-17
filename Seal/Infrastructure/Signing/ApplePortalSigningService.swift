@@ -201,10 +201,28 @@ enum ApplePortalSigningFailure {
             || normalized.contains("authentication")
             || normalized.contains("session")
             || normalized.contains("forbidden") {
+            // ⚠️ **不能只说「去重新验证」**（2026-09-17 用户反馈）。
+            //
+            // 同一个「认证状态无效」有两种完全不同的成因：
+            //   ① 登录真的失效了 ⇒ 该重新验证；
+            //   ② **短时间内请求过密被 Apple 限流**（多扩展 App 的典型症状：
+            //      抖音 = 主 App + 8 扩展，一次签名要连发 9 次 `addAppID`）
+            //      ⇒ 登录其实还在，重新验证**没有用**，等几分钟就好。
+            //
+            // 只给 ① 会把用户推进死循环：「重新验证 → 再签 → 又被限流 → 又被要求验证」——
+            // 这正是用户反馈的原话（「无论怎样在验证 Apple ID 就报错失效」）。
+            // `appIDFailure` 里早就为同一个 1100 修过这个问题，但**证书阶段漏了**。
+            //
+            // ⇒ 与 App ID 阶段保持同一套顺序：**先等、再验证**；并给出「换个账号」这条出路
+            // （新账号没有被限流的历史，是用户手上最有效的一招）。
             return ImportFailure(
-                title: "账号需要重新验证",
-                reason: "Apple 返回：认证状态无效",
-                recovery: "前往「我的」页面重新登录该 Apple ID",
+                title: "Apple 拒绝了证书请求",
+                reason: "Apple 返回：认证状态无效。\n"
+                    + "这个错误有两种常见成因：登录真的失效，或者短时间内请求过密被 Apple 限流"
+                    + "（扩展较多的 App 一次签名要连续注册多个 App ID，最容易触发）。\n"
+                    + "如果同一个 Apple ID 签其它应用是正常的，那更可能是后者 —— 登录状态其实还在。",
+                recovery: "先等几分钟重试；若多次重试仍失败，再到「我的」页面重新验证这个 Apple ID，"
+                    + "或改用其它 Apple ID 签名",
                 code: "SEAL-AUTH-102c"
             )
         }

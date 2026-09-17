@@ -26,11 +26,37 @@ enum LogPrivacyRedactor {
         }
     }
 
+    /// 手机号 / 长数字串脱敏。
+    ///
+    /// ## ⚠️ 不能把 ISO 日期一起吃掉（2026-09-17 从真机日志发现）
+    ///
+    /// 数字与连字符都在字符类里，于是 `2026-09-17T06:38:18Z` 会被整段当成手机号，
+    /// 而 `AppleAccountClient.mask` 对 6 / 8 位数字分别给出 `20****09` / `202****917`
+    /// ⇒ **日志里所有 ISO 时间戳的年月都没了**。
+    ///
+    /// 后果不只是难看：证书的 `notBefore` / `notAfter` 相差整整一年，脱敏后几乎一模一样
+    /// （只差 1 秒），看上去像「到期早于生效」，排查时差点被当成 bug 报上去。
+    /// **日志是唯一的排障通道，时间戳被毁的代价很大。**
+    ///
+    /// 两道防线：
+    /// ① 匹配**不能停在日期中间**（结尾多排除 `-` 与 `:`，否则会匹配出 `2026-09-17 14`）；
+    /// ② 形状像「19xx/20xx + 合法月份（+ 合法日）」的片段一律原样返回。
     private static func redactPhoneNumbers(in value: String) -> String {
-        let pattern = #"(?<![A-Za-z0-9])\+?[0-9][0-9 \-()]{5,}[0-9](?![A-Za-z0-9])"#
+        let pattern = #"(?<![A-Za-z0-9])\+?[0-9][0-9 \-()]{5,}[0-9](?![A-Za-z0-9\-:])"#
         return replaceMatches(in: value, pattern: pattern) { match in
-            AppleAccountClient.mask(match)
+            guard looksLikeDateFragment(match) == false else { return match }
+            return AppleAccountClient.mask(match)
         }
+    }
+
+    /// 该片段是否其实是 ISO 日期的一部分（`2026-09` / `2026-09-17`）。
+    ///
+    /// 收紧到「19xx/20xx + 合法月份 + 可选合法日」：真手机号几乎不可能同时满足
+    /// 「4 位年份、连字符、合法月份」，所以这条**不会**放过真手机号
+    /// （`1234-5678` / `1234-56` / `020-12345678` 都不算日期，照旧脱敏）。
+    private static func looksLikeDateFragment(_ match: String) -> Bool {
+        let pattern = #"^(?:19|20)\d{2}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?$"#
+        return match.range(of: pattern, options: .regularExpression) != nil
     }
 
     private static func redactJWTs(in value: String) -> String {

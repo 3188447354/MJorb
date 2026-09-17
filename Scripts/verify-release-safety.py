@@ -909,6 +909,33 @@ def violations(load=read):
           and "func extensionKeptCountIsReportedSeparately()" in cleaner_tests,
           "R14: the new attribution counters need real unit tests")
 
+    # R15: 脱敏不得吃掉 ISO 时间戳（2026-09-17 从真机日志发现）。
+    #
+    # 手机号模式的字符类里有数字与连字符，于是 `2026-09-17T06:38:18Z` 被整段当成号码，
+    # `AppleAccountClient.mask` 对 6 / 8 位数字给出 `20****09` / `202****917`
+    # ⇒ **日志里所有 ISO 时间戳的年月都没了**。日志是唯一的排障通道，时间戳被毁代价很大：
+    # 证书的 notBefore / notAfter 相差一年，脱敏后几乎一模一样（只差 1 秒），
+    # 看上去像「到期早于生效」，排查时差点被当成 bug 报上去。
+    redactor_source = strip_comments(load("Seal/Infrastructure/Diagnostics/LogPrivacyRedactor.swift"))
+    check('(?![A-Za-z0-9\\-:])' in redactor_source,
+          "R15: the phone pattern must not stop inside a date — without excluding `-` and "
+          "`:` from the trailing lookahead it matches `2026-09-17 14` and mangles timestamps")
+    check("static func looksLikeDateFragment(" in redactor_source
+          and '^(?:19|20)\\d{2}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\\d|3[01]))?$' in redactor_source,
+          "R15: a date-shaped match must be left alone — tightened to a real year + month so "
+          "it cannot become a hole for phone numbers (1234-5678 / 2026-13 are not dates)")
+    check("guard looksLikeDateFragment(match) == false else { return match }" in redactor_source,
+          "R15: the phone redactor must actually consult the date guard")
+    # 单测必须钉住「时间戳原样保留」与「真手机号照旧脱敏」两侧 ——
+    # 只钉一侧时，把日期识别器放宽到吃掉手机号也不会红。
+    redactor_tests = load("SealTests/Diagnostics/LogPrivacyRedactorTests.swift")
+    check("func keepsISOTimestampsIntact()" in redactor_tests
+          and "func certificateValidityPeriodStaysReadable()" in redactor_tests,
+          "R15: keeping ISO timestamps intact needs a real unit test")
+    check("func stillRedactsRealPhoneNumberShapes()" in redactor_tests
+          and "func dateShapeDetectorRejectsPhoneLikeNumbers()" in redactor_tests,
+          "R15: relaxing the date rule must not leak phone numbers — both sides need a test")
+
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
     # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
@@ -2572,6 +2599,28 @@ def main():
          '            + "底层安装调用不会被取消（同步调用没有取消机制），也不会自动重试 —— "',
          '            + "系统已自动重试。"',
          "R14: the timeout message must not claim a retry"),
+        # ── R15：脱敏不得吃掉 ISO 时间戳（2026-09-17 真机日志发现）──
+        # 退回原来的结尾断言：匹配又能停在日期中间，`2026-09` 被当成手机号吃掉。
+        ("Seal/Infrastructure/Diagnostics/LogPrivacyRedactor.swift",
+         '(?![A-Za-z0-9\\-:])',
+         '(?![A-Za-z0-9])',
+         "R15: the phone pattern must not stop inside a date"),
+        # 日期形状判据留着但不调用：代码看着「有保护」，实际时间戳照样被毁。
+        ("Seal/Infrastructure/Diagnostics/LogPrivacyRedactor.swift",
+         "guard looksLikeDateFragment(match) == false else { return match }",
+         "// date guard removed",
+         "R15: the phone redactor must actually consult the date guard"),
+        # 把日期形状判据放宽到只认「4 位数字-2 位数字」：`1234-56` 这类手机号会被放过去，
+        # 脱敏出现口子（这是**放宽**的方向，比多脱敏危险）。
+        ("Seal/Infrastructure/Diagnostics/LogPrivacyRedactor.swift",
+         '^(?:19|20)\\d{2}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\\d|3[01]))?$',
+         '^\\d{4}-\\d{2}$',
+         "R15: a date-shaped match must be left alone"),
+        # 把「时间戳原样保留」那条单测改名：证明「单测文件里有这几个字」的断言真的会红。
+        ("SealTests/Diagnostics/LogPrivacyRedactorTests.swift",
+         "    func keepsISOTimestampsIntact() {",
+         "    func keepsISOTimestampsIntactRenamed() {",
+         "R15: keeping ISO timestamps intact needs a real unit test"),
         ("SealTests/Maintenance/AppMaintenanceJobTests.swift",
          "            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",\n            signedArtifactStatus: signedArtifactStatus,",
          "            signedArtifactStatus: signedArtifactStatus,\n            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",",

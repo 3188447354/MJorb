@@ -112,4 +112,60 @@ struct LogPrivacyRedactorTests {
         let line = "---------- 分隔 ----------"
         #expect(LogPrivacyRedactor.redact(line) == line)
     }
+
+    // MARK: - 不得过度脱敏：ISO 时间戳（2026-09-17 从真机日志发现）
+
+    /// 手机号模式 `[0-9][0-9 \-()]{5,}[0-9]` 会把 `2026-09` 整段当成号码，
+    /// 于是**日志里所有 ISO 时间戳的年月都没了**（`2026-09-17T06:38:18Z`
+    /// → `20****09-17T06:38:18Z`）。日志是唯一的排障通道，时间戳被毁代价很大。
+    @Test
+    func keepsISOTimestampsIntact() {
+        let stamp = "生效=2026-09-17T06:38:18Z"
+        #expect(LogPrivacyRedactor.redact(stamp) == stamp)
+
+        let expiry = "主描述文件到期 2026-09-24T06:53:50Z"
+        #expect(LogPrivacyRedactor.redact(expiry) == expiry)
+
+        let stamped = "2026-09-17 14:54:02  信息  安装  开始安装"
+        #expect(LogPrivacyRedactor.redact(stamped) == stamped)
+    }
+
+    /// **这条是原始动机**：证书的 `notBefore` / `notAfter` 相差整整一年，
+    /// 脱敏后几乎一模一样（只差 1 秒），看上去像「到期早于生效」——
+    /// 排查时差点被当成 bug 报上去。
+    @Test
+    func certificateValidityPeriodStaysReadable() {
+        let notBefore = "生效=2026-09-17T06:38:18Z"
+        let notAfter = "到期=2027-09-17T06:38:17Z"
+        #expect(LogPrivacyRedactor.redact(notBefore) == notBefore)
+        #expect(LogPrivacyRedactor.redact(notAfter) == notAfter)
+    }
+
+    /// 光有「不匹配日期中间」还不够：`2026-09-17 14:54:02` 里的 `2026-09-17 14`
+    /// 也能被那个字符类吞掉。所以形状判据要独立成立。
+    @Test
+    func keepsBareDatesFollowedByTimeIntact() {
+        let line = "上次续签 2026-09-17 14:54:02 成功"
+        #expect(LogPrivacyRedactor.redact(line) == line)
+    }
+
+    /// **放宽日期识别不能变成泄露手机号**。真手机号的形态（国家码、区号、8 位固话、
+    /// 4-4 分段）都不满足「19xx/20xx + 合法月份」，必须照旧脱敏。
+    @Test
+    func stillRedactsRealPhoneNumberShapes() {
+        assertNoSecret("+86 138 1234 5678", ["13812345678", "1234 5678"])
+        assertNoSecret("13812345678", ["13812345678"])
+        assertNoSecret("电话 138-1234-5678 结束", ["13812345678"])
+        assertNoSecret("固话 020-12345678", ["02012345678"])
+        assertNoSecret("分机 1234-5678", ["12345678"])
+    }
+
+    /// 反例也要钉住：`1234-56` / `2026-13` / `2026-09-32` 都**不是**合法日期形状，
+    /// 不能被当成日期放过去（否则日期识别器就成了绕过脱敏的口子）。
+    @Test
+    func dateShapeDetectorRejectsPhoneLikeNumbers() {
+        assertNoSecret("编号 1234-56", ["123456"])
+        assertNoSecret("编号 2026-13", ["202613"])
+        assertNoSecret("编号 2026-09-32", ["20260932"])
+    }
 }

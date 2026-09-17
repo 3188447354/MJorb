@@ -1255,13 +1255,16 @@ def violations(load=read):
          "漏掉它会让限流被误报成「账号需要重新验证」"),
         ('withSessionRecovery("分配 App Group \\(mappedBundleID)")',
          "分配 App Group（付费账号才走，但同一条规则不该只落在免费路径上）"),
+        ('withSessionRecovery("读取 App ID 列表")',
+         "读取 App ID 列表（Phase 1 的**第一个**请求；2026-09-18 真机：它撞上 1100 时"
+         "会直接让整轮签名失败，而失败点排在名额诊断之前 ⇒ 日志里连走到哪一步都看不出）"),
     ):
         check(label in portal_source, "R24: " + why + " 必须过退避重试")
     # 注意：定义写的是 `withSessionRecovery<T>(`，不带 `<` 的计数只数得到**调用点**。
-    check(portal_source.count("withSessionRecovery(") == 5,
-          "R24: 退避重试的调用点数量变了（应为 5 个 per-bundle-ID 的 portal 写入："
-          "创建 App ID / 更新应用能力 / 申请描述文件 / 创建证书 / 分配 App Group）—— "
-          "新增或删除 portal 写入时请同步这里，别只改这个数字、先确认新写入是不是也在循环里")
+    check(portal_source.count("withSessionRecovery(") == 6,
+          "R24: 退避重试的调用点数量变了（应为 6 个：创建 App ID / 更新应用能力 / 申请描述文件 / "
+          "创建证书 / 分配 App Group / 读取 App ID 列表）—— "
+          "新增或删除 portal 调用时请同步这里，别只改这个数字、先确认新调用是不是也在热路径上")
 
     # R25: 同步阻塞 FFI 的**每一处**等待都要有界（2026-09-17 审计出来的）。
     #
@@ -1401,6 +1404,31 @@ def violations(load=read):
     # 那时没有任何撤销，说「撤销已生效」就是新的误导。
     check("若你刚才是在" in cert_service_source,
           "R30: 该文案不能假设「一定发生了撤销」—— 设置页的「创建证书」按钮也走同一个函数")
+
+    # R31: 2026-09-18 真机（构建 118）——「只有抖音签不上」的真实失败链与三处修复。
+    #
+    # 日志证据（`Seal-log(14).txt`，构建 118，抖音两次尝试）：
+    #   · **`退避` 零命中** ⇒ 退避重试一次都没触发（这些错误不是 `isSessionExpiredError`）；
+    #   · 抖音两次**都没有** `App ID 名额` 那行 ⇒ 它根本没走到「建号」——
+    #     失败在 Phase 1 的**第一个**请求 `fetchAppIDs`，而它原先既没退避重试、
+    #     又排在名额诊断**之前** ⇒ 日志里连「走到哪一步」都看不出；
+    #   · `appIDFailure` 给出的正确文案（「本次证书申请刚成功 ⇒ 更可能是限流，先等几分钟重试 /
+    #     换账号」）被 `sign()` 的 catch **无差别替换**成「Apple ID 会话已过期 / 去「我的」重新验证」
+    #     ⇒ 用户真的去重新加 Apple ID（原话：「重新添加 3188447354 后我去签另一个应用是签名成功，
+    #     我卸载后又签抖音 还是失败」）⇒ **死循环** —— 正是 `appIDFailure` 那段注释要避免的那个；
+    #   · 证书列表拉取失败被 `try?` **吞掉错误**，日志只有「暂不可用」，分不出限流/超时/网络；
+    #     这段静默在真机上长达 **112 秒**（06:48:46→06:50:38、06:54:37→06:56:29）。
+    check("title: failure.title," in portal_source
+          and "该 Apple ID 的登录状态已过期。签名过程中无法重新认证" not in portal_source,
+          "R31: `sign()` 不能把 SEAL-AUTH-107 无差别替换成「去重新验证」—— "
+          "那会覆盖 `appIDFailure` 特意写过的「先等几分钟 / 换账号」，把用户推回死循环")
+    check("App ID 阶段开始：本次需" in portal_source,
+          "R31: Phase 1 的入口必须先留痕 —— 完整的名额诊断排在 `fetchAppIDs` 之后，"
+          "那个请求一失败，日志里就完全看不出「走到了哪一步」")
+    check("证书列表拉取失败：耗时" in portal_source
+          and "Self.isSessionExpiredError(failure)" in portal_source,
+          "R31: 证书列表拉取失败必须记下**原因与耗时** —— 原先 `try?` 把错误吞了，"
+          "日志只有「暂不可用」，分不出是限流、超时还是网络")
 
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
@@ -3432,6 +3460,24 @@ def main():
          "                guard ApplePortalSigningService.isSessionExpiredError(error) else { throw error }",
          "                guard (error as NSError).code == 1100 else { throw error }",
          "R29: 退避重试的判据与间隔必须共用 ApplePortalSigningService 那一份"),
+        # ── R31：2026-09-18 真机（构建 118）的三处修复 ──
+        # 把 catch 退回「无差别替换」：`appIDFailure` 的正确文案又被覆盖，用户重回死循环。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "                title: failure.title,",
+         "                title: \"Apple ID 会话已过期\",",
+         "R31: `sign()` 不能把 SEAL-AUTH-107 无差别替换成「去重新验证」"),
+        # 去掉 Phase 1 的入口留痕：`fetchAppIDs` 一失败，日志里就看不出走到哪一步。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "        await diagnostic(\n"
+         "            \"App ID 阶段开始：本次需 \\(mappings.count) 个 App ID（主 App 1 + 扩展 \\(extensionAppIDCount)），准备读取账号已有列表\"\n"
+         "        )\n",
+         "",
+         "R31: Phase 1 的入口必须先留痕"),
+        # 去掉证书列表失败的原因与耗时：又只剩「暂不可用」，查不出是限流还是超时。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "                await diagnostic(\"证书列表拉取失败：耗时 \\(fetchSeconds) 秒；\\(fetchReason)\")",
+         "                _ = fetchReason",
+         "R31: 证书列表拉取失败必须记下**原因与耗时**"),
         # 去掉 1100 的专门文案：又落回「没有返回明确失败原因」，
         # 用户不知道账号可能已经被清空、需要立刻重新创建一张证书。
         ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",

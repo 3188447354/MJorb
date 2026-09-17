@@ -461,14 +461,29 @@ actor ApplePortalSigningService {
                 progress: progress
             )
         } catch let failure as ImportFailure where failure.code == "SEAL-AUTH-107" {
-            // Apple 会话过期（1100）：签名/续签时是 LocalDevVPN 环境，
-            // 自动重登需要访问 Apple 认证服务器，网络不匹配必败。
-            // 直接提示用户去「我的」页面重新验证（那里用户会自己挂梯子），不标记 ID 失效。
-            throw Self.failure(
-                title: "Apple ID 会话已过期",
-                reason: "该 Apple ID 的登录状态已过期。签名过程中无法重新认证（网络环境不匹配），请前往「我的」页面重新验证该 Apple ID 后再签名。",
-                recovery: "去「我的」页面重新验证 Apple ID",
-                code: "SEAL-AUTH-107"
+            // ⚠️ **不能无差别替换文案**（2026-09-18 真机：用户因此陷入死循环）。
+            //
+            // 这条 catch 的原意是「签名时是 LocalDevVPN 环境，自动重登要访问 Apple 认证服务器、
+            // 网络不匹配必败 ⇒ 让用户去「我的」页面重新验证」。但它会把**所有** SEAL-AUTH-107
+            // 都换成同一句话 —— 包括 `appIDFailure` 那条**特意按阶段区分过**的
+            // 「Apple 暂时拒绝了请求 —— 本次证书申请刚成功，说明登录还在，更可能是限流，
+            // 请先等几分钟再重试；仍失败再重新验证、或改用其它 Apple ID」。
+            //
+            // 覆盖的后果（用户 2026-09-18 实测原话：「重新添加 3188447354 后我去签另一个应用
+            // 是签名成功，我卸载后又签抖音 还是失败」）：用户读到「去重新验证」→ 真的去重新加
+            // Apple ID → 再签 → 又被限流 → 又被要求验证。**这正是 appIDFailure 那段注释
+            // 花了很大力气要避免的死循环，却被这里一句话推回去了。**
+            //
+            // ⇒ 保留原 failure 的 title / reason / recovery（它们已经按阶段区分好、且可执行），
+            // 只**追加**一条「签名过程中无法替你重新登录」的环境说明。
+            // 不标记 ID 失效这一意图也保持不变（code 仍是 SEAL-AUTH-107）。
+            throw ImportFailure(
+                title: failure.title,
+                reason: failure.reason
+                    + "\n\n另外：签名过程中 Seal 无法替你重新登录这个 Apple ID"
+                    + "（此时网络要连着设备），需要重新验证的话请到「我的」页面操作。",
+                recovery: failure.recovery,
+                code: failure.code
             )
         } catch let failure as ImportFailure where Self.shouldRetryWithFreshSigningCertificate(failure) {
             var refreshedSecret = await secretState.value()
@@ -845,7 +860,21 @@ actor ApplePortalSigningService {
            let machineID = secret.certificateMachineIdentifier,
            machineID.isEmpty == false {
             local.machineIdentifier = machineID
-            if let certificates = try? await fetchCertificates(team: team, session: session) {
+            // ⚠️ **不能再 `try?` 吞掉错误**（2026-09-18 真机）。
+            // 原先这里写 `if let certificates = try? await fetchCertificates(...)`，错误被丢掉，
+            // 于是日志只说「Apple 证书列表暂不可用」，**分不出是限流（1100）、超时还是网络**。
+            // 而真机上这段静默可以长达 **112 秒**（抖音两次尝试都是：06:48:46→06:50:38、
+            // 06:54:37→06:56:29，中间一行日志都没有）—— 没有任何线索可查。
+            // ⇒ 记下**原因 + 耗时**，「暂不可用」才有判读价值。
+            let fetchStartedAt = Date()
+            var fetchedCertificates: [ALTX509Certificate]?
+            var certificateFetchFailure: Error?
+            do {
+                fetchedCertificates = try await fetchCertificates(team: team, session: session)
+            } catch {
+                certificateFetchFailure = error
+            }
+            if let certificates = fetchedCertificates {
                 // 在生效列表且剩余有效期覆盖 7 天 profile 寿命才可复用：只查列表/只看当下未过期，
                 // 会把「明天就到期的证书」签进新包，次日被 iOS 判「尚未验证」闪退。
                 if certificates.contains(where: {
@@ -862,6 +891,15 @@ actor ApplePortalSigningService {
                 }
                 // 证书已不在 Apple 生效列表、已过期或剩余寿命不足 7 天，落到慢速路径重新申请新证书
             } else {
+                // ⚠️ 把失败原因与耗时写进日志（见上）：原先只有一句「暂不可用」，查不出是什么。
+                let fetchSeconds = Int(Date().timeIntervalSince(fetchStartedAt))
+                var fetchReason = "原因未知"
+                if let failure = certificateFetchFailure {
+                    let ns = failure as NSError
+                    let kind = Self.isSessionExpiredError(failure) ? "疑似限流（1100 会话过期）" : "非会话类错误"
+                    fetchReason = "\(kind)；[\(ns.domain) \(ns.code)] \(ns.localizedDescription)"
+                }
+                await diagnostic("证书列表拉取失败：耗时 \(fetchSeconds) 秒；\(fetchReason)")
                 // 网络失败/限流：退回本地证书，保留提速效果。
                 // 但免费账号证书可能已过期或临近到期；复用会让 iOS 判定"尚未验证"导致闪退，
                 // 因此剩余寿命不足 7 天时必须落入慢速路径重新申请，不得复用。
@@ -1500,14 +1538,28 @@ actor ApplePortalSigningService {
             applications[appExtension.bundleIdentifier] = appExtension
         }
 
-        var existing = try await fetchAppIDs(team: team, session: session)
+        // ⚠️ **Phase 1 的入口也要先留痕**（2026-09-18 真机）。
+        // 下面那条完整的「名额」诊断要读 `existing`（账号已有列表），所以必须排在 `fetchAppIDs`
+        // 之后 —— 而 `fetchAppIDs` 是 Phase 1 的**第一个**请求，它一旦被限流（1100），整轮直接抛出、
+        // **那条诊断永远不会写**。真机后果：抖音两次尝试的日志里都**没有**名额诊断，
+        // 反而看不出「它根本没走到建号这一步」。
+        // ⇒ 先用一条不依赖 `existing` 的日志把入口钉住（只需要 N，不需要发请求）。
+        let extensionAppIDCount = mappings.values.filter { $0 != mappedMainBundleID }.count
+        await diagnostic(
+            "App ID 阶段开始：本次需 \(mappings.count) 个 App ID（主 App 1 + 扩展 \(extensionAppIDCount)），准备读取账号已有列表"
+        )
+        // ⚠️ **读列表也必须过退避重试**：它是 Phase 1 的第一个请求，撞上短时限流（1100）时
+        // 原先会**直接让整轮签名失败**（而不是像 addAppID / 描述文件那样先退避再试），
+        // 而且失败点排在名额诊断之前 ⇒ 日志里连「它走到哪一步」都看不出来。
+        var existing = try await withSessionRecovery("读取 App ID 列表") {
+            try await fetchAppIDs(team: team, session: session)
+        }
 
         // 无条件写一条「App ID 名额」诊断（2026-09-17）。用户报「只有抖音签不上、重新加 ID 也不行」时，
-        // 这条日志是唯一能把两种成因分开的东西 ——
-        // ①名额不够（`需新注册` 大于账号剩余名额）；②请求过密被限流（名额够、却仍报 1100）。
-        // 缺了它，两种成因在导出的日志里长得一模一样（都是 App ID 阶段报会话失效），
-        // 于是「用户把日志发给我，我能看出它失败了吗」的答案是「不能」。
-        let extensionAppIDCount = mappings.values.filter { $0 != mappedMainBundleID }.count
+        // 这条日志用来**排除假设**：`需新注册 K` 为 0 ⇒ 本次一个 App ID 都不用新建
+        // ⇒ 不可能是「建号突发被限流」。
+        // ⚠️ **不能用「账号存活 App ID 数」去算剩余名额** —— 上限是「7 天内注册数的滑动窗口」，
+        // 不是「存活数 ≤ 10」。判据是失败时的**日志码**：SEAL-APPID-304 = 名额满 / SEAL-AUTH-107 = 限流。
         let reusableAppIDCount = mappings.values.filter { mapped in
             existing.contains {
                 ApplePortalAppIDResolver.matches(

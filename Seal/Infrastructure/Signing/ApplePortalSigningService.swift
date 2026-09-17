@@ -363,7 +363,10 @@ actor ApplePortalSigningService {
     ///
     /// 累计额外等待 1.5 + 4 + 8 = 13.5 秒。对「本来就会失败」的调用只增加一次
     /// 十几秒的等待，换来的是不必让用户白跑一趟「重新验证 Apple ID」。
-    private static let sessionRecoveryBackoffNanoseconds: [UInt64] = [
+    /// ⚠️ **访问级别是 internal 而非 private**：`ApplePortalCertificateService`（证书轮换 / 清理路径）
+    /// 也要用**同一组**间隔 —— 「同一条规则两条链路各抄一份」在本仓已踩过 6 次，
+    /// 共用一份常量是防止两边漂移的唯一办法（守卫 R29 钉住这一点）。
+    static let sessionRecoveryBackoffNanoseconds: [UInt64] = [
         1_500_000_000,
         4_000_000_000,
         8_000_000_000

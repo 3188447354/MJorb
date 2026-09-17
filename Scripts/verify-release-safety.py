@@ -1350,6 +1350,27 @@ def violations(load=read):
           "R28: 切 tab 的 UI 测试必须用 tapStage —— 裸 tap 会撞上程序化翻页的动画尾部被吞掉，"
           "而这类抖动只在 CI 上间歇性暴露")
 
+    # R29: 证书轮换路径的「创建证书」也要过退避重试，且**共用**判据与间隔（2026-09-17）。
+    #
+    # `ApplePortalCertificateService`（证书轮换 / 孤儿证书清理）与
+    # `ApplePortalSigningService`（签名）是**两条链路**，而「遇 1100 就退避」原先只落在签名那条上
+    # —— 本仓第 6 次「规则只覆盖一条链路」。
+    #
+    # 为什么这条后果最严重：轮换的顺序是**先 revoke、再创建**。撤销成功而创建失败
+    # （1100 被当成真过期、直接抛）会让这个账号变成 **0 张证书** ⇒
+    # **用它签过的所有 App 立刻打不开**（不崩、不编译失败，只在真机上废掉一堆 App）。
+    cert_service_source = strip_comments(
+        load("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift")
+    )
+    check('withSessionRecovery("创建证书（证书轮换）")' in cert_service_source,
+          "R29: 证书轮换路径的「创建证书」也必须过退避重试 —— 它前面刚 revoke 过，"
+          "创建失败会让账号变成 0 张证书，用它签过的 App 全部打不开")
+    # 判据与间隔必须**共用**签名服务那一份，不能在新链路里抄一份（抄一份迟早漂移成
+    # 「同一个 1100 在一条链路上重试、在另一条上直接失败」）。
+    check("ApplePortalSigningService.isSessionExpiredError(error)" in cert_service_source
+          and "ApplePortalSigningService.sessionRecoveryBackoffNanoseconds" in cert_service_source,
+          "R29: 退避重试的判据与间隔必须共用 ApplePortalSigningService 那一份")
+
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
     # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
@@ -3358,6 +3379,28 @@ def main():
          "        app.buttons[\"已安装，0 个\"].tap()\n"
          "        XCTAssertTrue(app.staticTexts[\"已安装应用\"].waitForExistence(timeout: 5))",
          "R28: 切 tab 的 UI 测试必须用 tapStage"),
+        # ── R29：证书轮换路径的「创建证书」也要过退避重试（2026-09-17）──
+        # 退回「直接请求」：它前面刚 revoke 过，创建失败会让账号变成 0 张证书
+        # ⇒ 用它签过的所有 App 立刻打不开。
+        ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",
+         "            requested = try await withSessionRecovery(\"创建证书（证书轮换）\") {\n"
+         "                try await addCertificate(\n"
+         "                    team: context.team,\n"
+         "                    session: context.session,\n"
+         "                    deviceName: deviceName\n"
+         "                )\n"
+         "            }",
+         "            requested = try await addCertificate(\n"
+         "                team: context.team,\n"
+         "                session: context.session,\n"
+         "                deviceName: deviceName\n"
+         "            )",
+         "R29: 证书轮换路径的「创建证书」也必须过退避重试"),
+        # 在新链路里抄一份自己的判据：两边迟早漂移。
+        ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",
+         "                guard ApplePortalSigningService.isSessionExpiredError(error) else { throw error }",
+         "                guard (error as NSError).code == 1100 else { throw error }",
+         "R29: 退避重试的判据与间隔必须共用 ApplePortalSigningService 那一份"),
         # 把结算单测改名：证明「单测文件里有这几个字」的断言真的会红。
         ("SealTests/Renewal/RefreshQueueStoreTests.swift",
          "    func recoverInterruptedSettlesItemsThatAlreadyHaveAResult() async throws {",

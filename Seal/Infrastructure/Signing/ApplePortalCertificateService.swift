@@ -58,11 +58,25 @@ actor ApplePortalCertificateService {
 
         let requested: ALTCertificate
         do {
-            requested = try await addCertificate(
-                team: context.team,
-                session: context.session,
-                deviceName: deviceName
-            )
+            // ⚠️ **证书轮换路径的「创建证书」也必须过退避重试**（2026-09-17 补）。
+            //
+            // 它与 `ApplePortalSigningService` 的证书创建是**两条链路**，而「遇 1100 就退避」
+            // 这条规则原先只落在签名那条上（本仓第 6 次「规则只覆盖一条链路」）。
+            //
+            // 为什么这条后果最严重：轮换的顺序是**先 revoke、再创建** ——
+            // 撤销成功而创建失败（1100 被当成真过期、直接抛）会让这个账号变成 **0 张证书**，
+            // 于是**用它签过的所有 App 立刻打不开**（不崩、不编译失败，只在真机上废掉一堆 App）。
+            // 退避重试把「限流」和「真失败」分开：限流等几秒就好了。
+            //
+            // 判据与间隔**共用** `ApplePortalSigningService` 那一份（不在这里抄一遍）——
+            // 两边漂移的话，同一个 1100 会在一条链路上重试、在另一条上直接失败。
+            requested = try await withSessionRecovery("创建证书（证书轮换）") {
+                try await addCertificate(
+                    team: context.team,
+                    session: context.session,
+                    deviceName: deviceName
+                )
+            }
         } catch {
             if let failure = CertificateRequestFailurePolicy.requestFailure(error: error, limitCode: "SEAL-CERT-204") { throw failure }
             throw error
@@ -276,6 +290,42 @@ actor ApplePortalCertificateService {
                 }
             }
         }
+    }
+
+    /// 遇 Apple 1100（会话被掐断）时退避重试 —— 与 `ApplePortalSigningService` **共用判据与间隔**。
+    ///
+    /// 刻意只复用 `ApplePortalSigningService` 的两个成员，而**不是**把整段逻辑复制一份：
+    /// 复制的部分迟早漂移（「同一条规则两份实现」在本仓已踩过 6 次，见技能）。
+    /// 于是两边保证一致的是「**哪些错误值得重试**」（`isSessionExpiredError`）与
+    /// 「**退避多久**」（`sessionRecoveryBackoffNanoseconds`）—— 这两项才是会漂移的东西。
+    ///
+    /// ⚠️ **已知的可观测性缺口**：本服务没有 `logStore`，所以重试**不会写日志**。
+    /// 之所以还能接受：重试**成功**时结果本身可见（证书建出来了）；
+    /// 重试**耗尽**时错误照旧向上抛，会变成 `SEAL-CERT-227` 那条「证书轮换失败」提示
+    /// （已写明后果是「用这些证书签名的 App 现在无法启动」）⇒ 失败仍然看得出来。
+    /// 要补日志得给它注入 `SealLogStore`（三个构造点都拿得到），属另一轮改动。
+    private func withSessionRecovery<T>(
+        _ label: String,
+        operation: () async throws -> T
+    ) async throws -> T {
+        var lastError: Error?
+        let delays: [UInt64] = [0] + ApplePortalSigningService.sessionRecoveryBackoffNanoseconds
+        for delay in delays {
+            if delay > 0 {
+                try Task.checkCancellation()
+                try await Task.sleep(nanoseconds: delay)
+            }
+            do {
+                return try await operation()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                guard ApplePortalSigningService.isSessionExpiredError(error) else { throw error }
+                lastError = error
+            }
+        }
+        if let lastError { throw lastError }
+        throw ALTAppleAPIError.unknown()
     }
 
     private static func certificateMachineName(deviceName: String) -> String {

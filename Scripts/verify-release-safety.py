@@ -1132,6 +1132,26 @@ def violations(load=read):
     check("Int(Date().timeIntervalSince(anisetteStartedAt))" in sign_once_body,
           "R20: 完成那条必须带耗时 —— 「是不是这步慢」只能靠它判断")
 
+    # R21: 「证书轮换失败」必须说清**后果**（2026-09-17 真机）。
+    #
+    # 轮换循环是「先撤销、再创建」，而创建只在「3022 + 还有下一张」时才继续 ——
+    # **其它错误直接抛出，而证书已经撤销了**。所以走到这条失败时，
+    # **用那些证书签名的 App 已经无法启动**（真机实测：某个账号 `证书检查：远端 0 张`，
+    # 就是上一轮这么留下的）。旧文案只说「已释放 N 张」+「稍后重试」：
+    # ① 用户不会知道「为什么我的 App 突然打不开了」；
+    # ② 若失败原因是会话失效（`SEAL-AUTH-102c` 那条路径），「稍后重试」是**无效建议**。
+    rotation_failure = squash(section_or_empty(
+        portal_source,
+        'title: "证书轮换失败"',
+        'code: "SEAL-CERT-227"'
+    ))
+    check("用这些证书签名的 App 现在无法启动" in rotation_failure,
+          "R21: 「证书轮换失败」必须写明后果 —— 走到这里时用那些证书签的 App 已经打不开了，"
+          "不写用户只会看到「App 莫名启动不了」")
+    check("重新验证" in rotation_failure,
+          "R21: recovery 不能只说「稍后重试」 —— 失败原因常常是会话失效，"
+          "那种情况下重试无效，必须先重新验证账号")
+
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
     # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
@@ -2956,6 +2976,19 @@ def main():
          '                "签名：设备环境已就绪，耗时 \\(Int(Date().timeIntervalSince(anisetteStartedAt))) 秒"',
          '                "签名：设备环境已就绪"',
          "R20: 完成那条必须带耗时"),
+        # ── R21：「证书轮换失败」必须说清后果（2026-09-17 加）──
+        # 去掉「后果」那句：用户只会看到「App 莫名启动不了」。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         '            reason: "已释放 \\(revokedSerials.count) 张不可用证书，但 Apple 仍未允许创建新的本机签名身份。\\n"\n'
+         '                + "用这些证书签名的 App 现在无法启动 —— 需要先让这个 Apple ID 恢复可用，"\n'
+         '                + "再把那些 App 重新签一次才能恢复。",',
+         '            reason: "已释放 \\(revokedSerials.count) 张不可用证书，但 Apple 仍未允许创建新的本机签名身份。",',
+         "R21: 「证书轮换失败」必须写明后果"),
+        # 把 recovery 退回「稍后重试」：失败原因常常是会话失效，那种情况下重试无效。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         '            recovery: "先确认这个 Apple ID 的登录仍然有效（必要时到「我的」重新验证），再重试",',
+         '            recovery: "稍后重试",',
+         "R21: recovery 不能只说「稍后重试」"),
         # 把结算单测改名：证明「单测文件里有这几个字」的断言真的会红。
         ("SealTests/Renewal/RefreshQueueStoreTests.swift",
          "    func recoverInterruptedSettlesItemsThatAlreadyHaveAResult() async throws {",

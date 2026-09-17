@@ -1331,6 +1331,25 @@ def violations(load=read):
           and "#expect(order.first?.mapped == main)" in app_id_order_tests,
           "R26: 主 App 优先的顺序必须由单测钉住（源码断言证明不了它真的排到最前）")
 
+    # R28: 切 tab 的 UI 测试不能用「裸 tap + 一次等待」（2026-09-17）。
+    #
+    # 这条在 CI 上红过一次（`ImportFlowUITests.swift:45` 的 XCTAssertTrue 超时），
+    # 而**同一份代码重跑就绿** ⇒ 是抖动不是缺陷。机制：初始 mode 由
+    # `AppsRootView.resolveInitialModeIfNeeded()` **程序化翻页**决定，
+    # pager 动画未结束时 `tap()` 会被吞掉。该测试原有的注释只防住了
+    # 「切 mode 之前」那一次点击，没防住「点完之后目标页没出现」。
+    # ⇒ 改用 `tapStage`（点 → 等 → 没到就再点；它**不掩盖确定性缺陷** —— 真坏了重试 4 次照样红）。
+    #
+    # 为什么值得写进守卫：这类回归**只在 CI 上间歇性暴露**，本地（无 Swift 工具链）根本看不出来，
+    # 每次误判都要花掉一轮 15 分钟 + 一次人工排查（本次就是）。守卫能把它挡在推送前。
+    # `not in` 断言前必须 `strip_comments()` —— 注释里写反面示例是允许的（本文件注释就提到过裸 tap）。
+    ui_tests = strip_comments(load("SealUITests/ImportFlowUITests.swift"))
+    check("private func tapStage(" in ui_tests
+          and 'app.buttons["已安装，0 个"].tap()' not in ui_tests
+          and 'app.buttons["待签名，0 个"].tap()' not in ui_tests,
+          "R28: 切 tab 的 UI 测试必须用 tapStage —— 裸 tap 会撞上程序化翻页的动画尾部被吞掉，"
+          "而这类抖动只在 CI 上间歇性暴露")
+
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
     # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
@@ -3333,6 +3352,12 @@ def main():
          "        #expect(order.first?.mapped == main)",
          "        #expect(order.isEmpty == false)",
          "R26: 主 App 优先的顺序必须由单测钉住"),
+        # 把 tapStage 退回裸 tap：切 tab 的抖动又会回来（只在 CI 上间歇性暴露）。
+        ("SealUITests/ImportFlowUITests.swift",
+         "        tapStage(app.buttons[\"已安装，0 个\"], expecting: \"已安装应用\", in: app)",
+         "        app.buttons[\"已安装，0 个\"].tap()\n"
+         "        XCTAssertTrue(app.staticTexts[\"已安装应用\"].waitForExistence(timeout: 5))",
+         "R28: 切 tab 的 UI 测试必须用 tapStage"),
         # 把结算单测改名：证明「单测文件里有这几个字」的断言真的会红。
         ("SealTests/Renewal/RefreshQueueStoreTests.swift",
          "    func recoverInterruptedSettlesItemsThatAlreadyHaveAResult() async throws {",

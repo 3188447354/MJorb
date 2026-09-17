@@ -53,21 +53,24 @@ struct AppContainer {
                 fileURL: sealDirectory.appending(path: AppConfiguration.Paths.pairingFile)
             )
             let anisetteProvider = AnisetteV3Client()
+            // logStore 必须先于 installChannel 构造：安装链路（尤其自替换）现在会写日志。
+            // 在这之前它一行日志都没有 —— 真机卡住时只剩「签名产物核验通过」然后一片空白。
+            let logStore = SealLogStore(
+                fileURL: sealDirectory.appending(path: AppConfiguration.Paths.sealLogFile)
+            )
             let installChannel = MinimuxerInstallChannel(
                 pairingStore: pairingStore,
                 logDirectory: sealDirectory.appending(
                     path: AppConfiguration.Paths.minimuxerLogsSubdirectory,
                     directoryHint: .isDirectory
-                )
+                ),
+                logStore: logStore
             )
             let operationCoordinator = OperationCoordinator()
             let workflow = ImportWorkflow(
                 parser: IPAParserService(),
                 fileStore: fileStore,
                 appStore: appStore
-            )
-            let logStore = SealLogStore(
-                fileURL: sealDirectory.appending(path: AppConfiguration.Paths.sealLogFile)
             )
             // 启动即创建/更新 Documents/Seal-log.txt，让文件 App 中的 Seal 目录始终可见。
             // flush 会先加载已有日志，不会因本次镜像而清空历史。

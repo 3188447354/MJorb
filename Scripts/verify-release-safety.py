@@ -537,6 +537,66 @@ def violations(load=read):
           in timeline_tests,
           "R10: the shared install-start rule needs a real unit test")
 
+    # R10: 自替换安装（Seal 覆盖运行中的自己）不能「永久停在 93%」。
+    #
+    # 2026-09-16 真机日志给出的对照（Seal-log(7)）：
+    #   16:59:06 开始安装 LiveContainer → 16:59:13「签名并安装成功」   = 7 秒
+    #   16:53:57 签名产物核验通过（Seal 自替换）→ 93 秒后仍无任何安装结论，
+    #            进程还活着、还在打其它后台日志，Seal 也从未被替换
+    # 而旧实现的这段是裸的 `try await installation.value`：没有超时、没有日志，
+    # 所以卡住时既不会结束、也查不出卡在哪。
+    #
+    # 这些约束改回旧写法**不会编译失败、也不会跑挂单测**，只会让真机重新永久卡住。
+    #
+    # 1) 自替换的等待必须带超时，且超时**只停止等待、绝不取消**底层同步 FFI：
+    #    `offThread` 的默认 `cancelsWorkOnTimeout: true` 会把取消传给 Rust 侧，
+    #    可能撤销已下发的 installation_proxy 命令 —— 把「可能还在装」变成「确定装不上」。
+    self_replace = strip_comments(load("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift"))
+    check("cancelsWorkOnTimeout: false" in self_replace,
+          "R10: the self-replacement wait must stop waiting without cancelling the FFI")
+    # 2) 等待只允许有一处：在别处再裸等一遍 `installation.value` 等于重新引入无超时等待。
+    check(self_replace.count("try await installation.value") == 1,
+          "R10: installation.value may only be awaited inside the watchdog")
+    check(self_replace.count("Task.detached(priority: .userInitiated)") == 1,
+          "R10: the install task must be created in exactly one place (the watchdog)")
+    check(self_replace.count("runSelfReplacementInstall(") == 3,
+          "R10: both self-replacement branches must go through the guarded install")
+    # 3) 自替换必须单飞：真机日志里 91 秒内提交了两笔，而第一笔从未返回。
+    check("guard selfReplacementGate.acquire() else {" in self_replace,
+          "R10: a second concurrent self-replacement install must be refused")
+    check("selfReplacementGate.release(timedOut: Self.isTimeoutInstallError(error))"
+          in self_replace,
+          "R10: a timeout must keep the self-replacement gate closed (the FFI is still running)")
+    # 4) 安装链路必须留下日志：卡住时「一片空白」本身就是最大的障碍。
+    check("logStore: SealLogStore?" in self_replace
+          and "await logStore.append(" in self_replace,
+          "R10: the install path must log — silence is why the freeze was undiagnosable")
+    check('await log("开始自替换安装：' in self_replace
+          and 'await log("自替换安装调用已返回：' in self_replace,
+          "R10: a self-replacement install must log both start and return")
+    check("自替换安装仍在等待：" in self_replace
+          and "Self.selfReplacementHeartbeatNanoseconds" in self_replace,
+          "R10: the install wait needs a heartbeat — installd reports no progress")
+    # 5) 只声明可选依赖、容器不传 = 永远静默。
+    #    必须限定在 installChannel 的构造段里：`logStore: logStore` 在同一个文件里
+    #    也出现在 SigningCoordinator 的构造处，全局匹配会让「只改安装通道这一处」
+    #    的变异检不出来（本轮实际踩到）。
+    container_source = strip_comments(load("Seal/Application/AppContainer.swift"))
+    channel_init = section(
+        container_source,
+        "let installChannel = MinimuxerInstallChannel(",
+        "let operationCoordinator"
+    )
+    check("logStore: logStore" in channel_init,
+          "R10: AppContainer must hand the install channel a real log store")
+    # 6) 源码断言守「形状」，单测守「行为」：这两条新规则都容易写反，必须有单测。
+    gate_tests = load("SealTests/Installation/SelfReplacementInstallGateTests.swift")
+    check("func timeoutKeepsTheGateClosed()" in gate_tests,
+          "R10: 'a timeout must not reopen the gate' needs a real unit test")
+    hard_timeout_tests = load("SealTests/Concurrency/HardTimeoutTests.swift")
+    check("func nonCancellingTimeoutLeavesTheWorkRunning()" in hard_timeout_tests,
+          "R10: 'stop waiting without cancelling' needs a real unit test")
+
     # R04: Portal 三个服务的回调一律经 ContinuationBox 转发。裸 continuation 第二次 resume
     # 不是可捕获错误，而是 SWIFT TASK CONTINUATION MISUSE 致命崩溃（进程直接终止）。
     # AltSign 存在两条重复回调路径：「先报错、随后迟到地报成功」与「超时先到、回调才到」。
@@ -719,8 +779,18 @@ def violations(load=read):
     # 安装 FFI 是同步阻塞、无法取消：超时只代表上层不再等待，底下那次安装很可能还在跑。
     # 重试就会在同一个 Bundle ID 上出现两个并发 installd —— 即「第二次安装」。
     install_channel = load("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift")
-    check(install_channel.count("if Self.isTimeoutInstallError(error) {") == 2,
-          "B: both install retry loops must treat timeout as terminal")
+    install_channel_code = strip_comments(install_channel)
+    # 重试循环现在**只有一份**：无进度重载已改为转发到带进度的实现。
+    # 曾经是两份，规则各写一遍 —— 那正是「修了一个、漏了另一个」的来源。
+    check(install_channel_code.count("if Self.isTimeoutInstallError(error) {") == 1,
+          "B: the single install retry loop must treat timeout as terminal")
+    # 被自替换闸门拒绝同样必须按终态处理：重试只会被同一个闸门再拒一次，
+    # 而两条重试路径里的 Minimuxer.reset() / Install.resetProvider() 会把
+    # **可能仍在跑的安装连接**拆掉 —— 那比不重试更糟。
+    check(install_channel_code.count("if Self.isSelfReplacementBusyError(error) {") == 2,
+          "B: both retry paths must treat a refused self-replacement as terminal")
+    check("onProgress: { _ in }" in install_channel_code,
+          "B: the no-progress install overload must delegate, not keep a second copy")
     check("error is HardTimeout.TimeoutError" in install_channel,
           "B: timeout detection must not depend on error text")
 
@@ -1214,7 +1284,13 @@ def main():
         ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
          "if Self.isTimeoutInstallError(error) {",
          "if false {",
-         "B: both install retry loops must treat timeout as terminal"),
+         "B: the single install retry loop must treat timeout as terminal"),
+        # 去掉「被闸门拒绝 = 终态」：重试会 reset 掉可能仍在跑的安装连接，
+        # 把第一笔安装彻底弄坏（比不重试更糟）。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "                if Self.isSelfReplacementBusyError(error) {\n                    throw error\n                }\n",
+         "",
+         "B: both retry paths must treat a refused self-replacement as terminal"),
         ("Vendor/Minimuxer/RustBridge/src/idevice_support/rsd.rs",
          "ensure_cached_rsd_connection().await?;",
          "create_rppairing_rsd_connection().await?;",
@@ -1431,6 +1507,37 @@ def main():
          "        let tick = InstallStageTimeline.tick(entering: stage, currentStage: currentStage)",
          "        let tick = stage == .installing ? InstallStageTimeline.Tick.restart : InstallStageTimeline.Tick.clear",
          "R10: Seal/Core/Renewal/BatchRefreshSession.swift must use the shared install-start rule"),
+        # 自替换等待改用「超时就取消工作」：取消信号会传回 Rust 侧，
+        # 可能撤销已经下发的 installation_proxy 命令 —— 把「可能还在装」变成「确定装不上」。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "            _ = try await HardTimeout.run(seconds: budget, cancelsWorkOnTimeout: false) {",
+         "            _ = try await HardTimeout.run(seconds: budget, cancelsWorkOnTimeout: true) {",
+         "R10: the self-replacement wait must stop waiting without cancelling the FFI"),
+        # 在别处再裸等一遍 `installation.value` = 重新引入一条没有超时的等待路径。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "                try await installation.value\n                return true\n            }",
+         "                try await installation.value\n                return true\n            }\n            try await installation.value",
+         "R10: installation.value may only be awaited inside the watchdog"),
+        # 去掉单飞闸门：91 秒内两笔自替换安装会在同一 Bundle ID 上造出两个 installd。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "        guard selfReplacementGate.acquire() else {",
+         "        guard true else {",
+         "R10: a second concurrent self-replacement install must be refused"),
+        # 超时也解锁闸门：底层同步 FFI 很可能还在跑，第二笔就成了并发安装。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "            selfReplacementGate.release(timedOut: Self.isTimeoutInstallError(error))",
+         "            selfReplacementGate.release(timedOut: false)",
+         "R10: a timeout must keep the self-replacement gate closed (the FFI is still running)"),
+        # 去掉等待心跳：真机上重新变成「卡住时一片空白」，无法区分在装和死了。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         '                await self?.log("自替换安装仍在等待：已等待 \\(waited) 秒（installd 安装阶段不回报进度）")',
+         "                _ = waited",
+         "R10: the install wait needs a heartbeat — installd reports no progress"),
+        # 容器不再把日志出口交给安装通道 = 日志通道永远静默（只声明依赖不等于接上了）。
+        ("Seal/Application/AppContainer.swift",
+         "                logStore: logStore\n            )",
+         "                logStore: nil\n            )",
+         "R10: AppContainer must hand the install channel a real log store"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

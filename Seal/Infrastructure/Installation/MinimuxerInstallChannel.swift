@@ -1,10 +1,49 @@
 import Foundation
 @preconcurrency import Minimuxer
 
+/// 自替换安装的「单飞」闸门。
+///
+/// 2026-09-16 真机日志（Seal-log(8)）显示：`19:43:50` 提交了一笔自替换安装，
+/// `19:45:51` 又提交了一笔 —— 间隔只有 91 秒，而第一笔的 `stageAndInstall`
+/// **根本没有返回**。`Minimuxer.stageAndInstall` 是同步阻塞 FFI，没有取消机制，
+/// 于是同一个 Bundle ID 上会同时存在两个 installd 安装命令，正是 R05 要防的
+/// 「第二次安装」（表现为 `ApplicationVerificationFailed`、白图标、装到一半的应用）。
+///
+/// 抽成纯类型是为了能单测：**超时不得放行第二次安装**（底下那次很可能还在跑），
+/// 只有安装真的返回、或真的抛错（非超时）才解锁。
+struct SelfReplacementInstallGate {
+    private(set) var isInFlight = false
+
+    /// 取闸。返回 `false` 表示已有安装在进行中，调用方必须直接拒绝本次请求。
+    mutating func acquire() -> Bool {
+        guard isInFlight == false else { return false }
+        isInFlight = true
+        return true
+    }
+
+    /// 归还闸。`timedOut` 为真时**保持置位**：超时只代表上层不再等待，
+    /// 底层同步 FFI 很可能仍在设备端执行；此时放行第二次安装就是在制造并发安装。
+    mutating func release(timedOut: Bool) {
+        guard timedOut == false else { return }
+        isInFlight = false
+    }
+}
+
 actor MinimuxerInstallChannel: InstallChannel {
     private let pairingStore: PairingStore
     private let logDirectory: URL
     private let onDemandActivator: any VPNOnDemandActivating
+    /// 安装链路自己的日志出口（可选：测试桩与预览不传）。
+    ///
+    /// 2026-09-16 之前这条链路**一行日志都没有**：真机日志里 Seal 自替换在
+    /// 「签名产物核验通过」之后 93 秒完全空白，既没有「安装调用已返回」，
+    /// 也没有任何失败结论 —— 无法区分「还在装」和「已经死了」。
+    /// 对照同一天的普通 App 安装：`16:59:06` 开始 → `16:59:13` 就写出
+    /// 「签名并安装成功」，只有 7 秒。安装是整条链路里唯一会静默卡死的一段，
+    /// 它必须留下日志。
+    private let logStore: SealLogStore?
+    /// 自替换安装的单飞闸门，见 `SelfReplacementInstallGate`。
+    private var selfReplacementGate = SelfReplacementInstallGate()
     private var cachedDeviceIdentifier: String?
     private var lastSuccessfulStart: Date?
     /// 正在进行的整段隧道诊断。签名链路与 ViewModel 现在会**并发**请求启动通道
@@ -42,14 +81,23 @@ actor MinimuxerInstallChannel: InstallChannel {
     /// `clearFailureCooldown()`，只有**同一轮批量内部**的连续调用才吃熔断。
     private static let failureCooldownSeconds: TimeInterval = 60
 
+    /// 自替换等待的心跳间隔。
+    ///
+    /// 安装阶段 installd **不回报任何进度**，所以「等待中」和「已死」在日志上
+    /// 本来长得一模一样。心跳是这段唯一的活性信号（普通 App 安装实测 7 秒，
+    /// 心跳通常不会触发；真机 93 秒静默就是缺了它）。
+    private static let selfReplacementHeartbeatNanoseconds: UInt64 = 15_000_000_000
+
     init(
         pairingStore: PairingStore,
         logDirectory: URL,
-        onDemandActivator: any VPNOnDemandActivating = LocalDevVPNOnDemandActivator()
+        onDemandActivator: any VPNOnDemandActivating = LocalDevVPNOnDemandActivator(),
+        logStore: SealLogStore? = nil
     ) {
         self.pairingStore = pairingStore
         self.logDirectory = logDirectory
         self.onDemandActivator = onDemandActivator
+        self.logStore = logStore
     }
 
     func start() async throws -> String {
@@ -345,6 +393,151 @@ actor MinimuxerInstallChannel: InstallChannel {
         }
     }
 
+    // MARK: - 安装等待预算与日志
+
+    /// 纯上传预算：含同连接全量回读校验，总量约为单向上传的 2 倍（封顶 30 分钟）。
+    private static func uploadBudgetSeconds(ipaMB: Double) -> Double {
+        min(1800.0, 180.0 + ipaMB * 5.0)
+    }
+
+    /// 上传 + 安装的合并预算：上传预算 + 安装 600 秒。
+    private static func mergedInstallBudgetSeconds(ipaMB: Double) -> Double {
+        uploadBudgetSeconds(ipaMB: ipaMB) + 600.0
+    }
+
+    /// 安装链路日志：**最佳努力**，写不进去也绝不阻断安装。
+    ///
+    /// 每条都立刻 `flush()`：自替换的终点是**当前进程被新包替换掉**，
+    /// 还留在缓冲里的最后几行（恰好是「安装调用已返回」这种最关键的一行）
+    /// 会随进程一起消失，而用户导出的 `Documents/Seal-log.txt` 正是 `flush()` 镜像的。
+    private func log(
+        _ message: String,
+        level: SealLogEntry.Level = .info,
+        code: String? = nil
+    ) async {
+        guard let logStore else { return }
+        try? await logStore.append(
+            category: .installation,
+            level: level,
+            message: message,
+            code: code
+        )
+        await logStore.flush()
+    }
+
+    private static func megabyteText(_ ipaMB: Double) -> String {
+        String(format: "%.1f MB", ipaMB)
+    }
+
+    private static func elapsedText(since start: Date) -> String {
+        String(format: "%.1f 秒", Date().timeIntervalSince(start))
+    }
+
+    /// 底层错误 → 可读文本（Rust FFI 的 MinimuxerError 优先，其余退回 NSError 描述）。
+    ///
+    /// 刻意放在 `#if !targetEnvironment(simulator)` **之外**：自替换看门狗要在
+    /// 模拟器上也能编译（它只负责等待与写日志，不碰 Minimuxer 的安装 API），
+    /// 而它的「抛错」日志需要这段文本。`MinimuxerError` / `describeError` 来自
+    /// `Vendor/Minimuxer/Sources` 的纯 Swift 层，全平台可用。
+    private static func diagnostic(_ error: Error) -> String {
+        if let minimuxerError = error as? MinimuxerError {
+            return Minimuxer.describeError(minimuxerError)
+        }
+        let nsError = error as NSError
+        return "\(nsError.domain) (\(nsError.code)): \(nsError.localizedDescription)"
+    }
+
+    // MARK: - 自替换安装
+
+    /// 提交一笔自替换安装（Seal 覆盖运行中的自己）。**同一时刻只允许一笔**。
+    ///
+    /// 闸门见 `SelfReplacementInstallGate`；等待与日志见 `waitForSelfReplacement`。
+    private func runSelfReplacementInstall(
+        bundleID: String,
+        context: String,
+        budget: Double,
+        start: @Sendable @escaping () throws -> Void
+    ) async throws {
+        guard selfReplacementGate.acquire() else {
+            await log(
+                "自替换安装被拒绝：上一笔仍在进行中，本次未提交（避免同一 Bundle ID 上出现两次并发安装）",
+                level: .warning,
+                code: Self.selfReplacementAlreadyRunningFailure.code
+            )
+            throw Self.selfReplacementAlreadyRunningFailure
+        }
+        let installation = Task.detached(priority: .userInitiated) {
+            try start()
+        }
+        do {
+            try await waitForSelfReplacement(
+                bundleID: bundleID,
+                context: context,
+                budget: budget,
+                installation: installation
+            )
+        } catch {
+            selfReplacementGate.release(timedOut: Self.isTimeoutInstallError(error))
+            throw error
+        }
+        selfReplacementGate.release(timedOut: false)
+    }
+
+    /// 自替换安装的等待看门狗。
+    ///
+    /// 与 `offThread` 的差别是**要害**：`offThread` 走 `HardTimeout.run` 的默认
+    /// `cancelsWorkOnTimeout: true`，超时会把承载 `stageAndInstall` 的任务 cancel 掉。
+    /// 同步 FFI 本身响应不了取消，但 Rust 侧一旦把取消信号当作「调用方放弃」来清理，
+    /// 就会撤销已经下发的 installation_proxy 命令 —— 那是把「可能还在装」变成
+    /// 「确定装不上」。自替换只能**停止等待**，绝不能取消工作，所以这里显式传 `false`。
+    ///
+    /// 超时后**不重试**（R05）：底下那次安装很可能还在跑。
+    ///
+    /// 旧实现是裸的 `try await installation.value`，安装前后一行日志都没有 ——
+    /// 真机上卡住时日志里只剩「签名产物核验通过」，无法归因。现在等待期间每 15 秒心跳。
+    private func waitForSelfReplacement(
+        bundleID: String,
+        context: String,
+        budget: Double,
+        installation: Task<Void, Error>
+    ) async throws {
+        let startedAt = Date()
+        await log("开始自替换安装：\(bundleID)，\(context)，等待上限 \(Int(budget)) 秒")
+        let heartbeat = Task.detached(priority: .utility) { [weak self] in
+            while Task.isCancelled == false {
+                try? await Task.sleep(nanoseconds: Self.selfReplacementHeartbeatNanoseconds)
+                if Task.isCancelled { return }
+                let waited = Int(Date().timeIntervalSince(startedAt))
+                await self?.log("自替换安装仍在等待：已等待 \(waited) 秒（installd 安装阶段不回报进度）")
+            }
+        }
+        defer { heartbeat.cancel() }
+        do {
+            // 返回值刻意用 Bool 而不是 Void：`HardTimeout.run` 的 T 需要 Sendable，
+            // 写成 Void 会让「Void 是否满足 Sendable」变成编译期的不确定项。
+            _ = try await HardTimeout.run(seconds: budget, cancelsWorkOnTimeout: false) {
+                try await installation.value
+                return true
+            }
+        } catch is HardTimeout.TimeoutError {
+            await log(
+                "自替换安装等待超时：已等待 \(Int(budget)) 秒仍未返回，已停止等待。"
+                + "底层 installation_proxy 调用不会被取消（同步 FFI 无取消机制），也不会重试",
+                level: .warning,
+                code: Self.installTimeoutFailure.code
+            )
+            throw Self.installTimeoutFailure
+        } catch {
+            await log(
+                "自替换安装调用抛错：\(bundleID)，耗时 \(Self.elapsedText(since: startedAt))，"
+                + "原因：\(Self.diagnostic(error))",
+                level: .error
+            )
+            throw error
+        }
+        await log("自替换安装调用已返回：\(bundleID)，耗时 \(Self.elapsedText(since: startedAt))")
+    }
+
     /// 仅上传暂存（两阶段诊断路径；主链路走 install() 的合并调用）。
     /// 走缓存隧道会话，含同连接回读校验（大小不一致立即抛错，不把截断包留给 installd）。
     func pushIpa(ipaData: Data, bundleID: String) async throws {
@@ -352,7 +545,7 @@ actor MinimuxerInstallChannel: InstallChannel {
         guard await isReady() else { throw Self.channelNotReadyFailure }
         let ipaMB = Double(ipaData.count) / 1_000_000
         // 上传含全量回读校验，总量约为单向上传的 2 倍（封顶 30 分钟）
-        let pushTimeout = min(1800.0, 180.0 + ipaMB * 5.0)
+        let pushTimeout = Self.uploadBudgetSeconds(ipaMB: ipaMB)
         let maxAttempts = ipaMB > 100 ? 2 : 4
         var lastError: Error?
         for attempt in 1...maxAttempts {
@@ -399,10 +592,12 @@ actor MinimuxerInstallChannel: InstallChannel {
                 // 推送大文件后RSD连接可能超时断开，isReady()只检查TCP不检查RSD服务
                 Install.resetProvider()
                 if isSelfReplacement {
-                    let installation = Task.detached(priority: .userInitiated) {
-                        try Minimuxer.installIpa(bundleId: bundleID)
-                    }
-                    try await installation.value
+                    try await runSelfReplacementInstall(
+                        bundleID: bundleID,
+                        context: "使用已暂存包，第 \(attempt)/3 次",
+                        budget: installTimeout,
+                        start: { try Minimuxer.installIpa(bundleId: bundleID) }
+                    )
                 } else {
                     let installOutcome = await offThread(seconds: installTimeout) {
                         try Minimuxer.installIpa(bundleId: bundleID)
@@ -414,6 +609,11 @@ actor MinimuxerInstallChannel: InstallChannel {
             } catch {
                 lastError = error
                 guard attempt < 3 else { break }
+                // 自替换被闸门拒绝：重试只会被同一个闸门再拒一次，
+                // 且重试前的 reset 会把可能仍在跑的安装连接拆掉 —— 原样抛出。
+                if Self.isSelfReplacementBusyError(error) {
+                    throw error
+                }
                 // 重试前重置连接，避免用死连接重试
                 Install.resetProvider()
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -430,60 +630,18 @@ actor MinimuxerInstallChannel: InstallChannel {
     /// shim afcd 的暂存视图绑定隧道会话，上传与安装跨会话时暂存包对 installd
     /// 不可见 → MissingPackagePath。合并调用把窗口归零；若两段之间会话因
     /// socket 错误被重建，整体重跑（重新上传）即恢复，不做局部补丁。
+    ///
+    /// 无进度回调的版本**转发**到带进度的实现，不再各写一份：
+    /// 两个重载各自维护「自替换必须带看门狗、必须记日志、必须单飞」这套规则，
+    /// 迟早会漂移成「修了一个、漏了另一个」—— 本仓库反复踩过这个坑
+    ///（`InstallStageBridge` 的注释里也记着同一类教训）。
     func install(ipaData: Data, bundleID: String, isSelfReplacement: Bool) async throws {
-        #if !targetEnvironment(simulator)
-        guard await isReady() else { throw Self.channelNotReadyFailure }
-        let ipaMB = Double(ipaData.count) / 1_000_000
-        // 合并调用 = 上传（对齐原 push 预算，封顶 30 分钟）+ 安装（600 秒）
-        let mergedTimeout = min(1800.0, 180.0 + ipaMB * 5.0) + 600.0
-        let maxAttempts = 3
-        var lastError: Error?
-        for attempt in 1...maxAttempts {
-            do {
-                if isSelfReplacement {
-                    // 保持进程运行直至 installd 完成。主动调用 UIApplication.suspend 会冻结
-                    // 当前进程内的 installation_proxy 连接，安装永远到不了完成回调。
-                    let installation = Task.detached(priority: .userInitiated) {
-                        try Minimuxer.stageAndInstall(
-                            bundleId: bundleID,
-                            ipaBytes: ipaData
-                        )
-                    }
-                    try await installation.value
-                } else {
-                    let outcome = await offThread(seconds: mergedTimeout) {
-                        try Minimuxer.stageAndInstall(bundleId: bundleID, ipaBytes: ipaData)
-                    }
-                    if case .some(.failure(let installError)) = outcome { throw installError }
-                    guard outcome != nil else { throw Self.installTimeoutFailure }
-                }
-                return
-            } catch {
-                lastError = error
-                guard attempt < maxAttempts else { break }
-                // 超时必须按「确定性拒绝」处理 —— 立即终止，不再重传重试（R05）。
-                // 原因见 isTimeoutInstallError 的注释：底下那次安装很可能还在跑。
-                if Self.isTimeoutInstallError(error) {
-                    break
-                }
-                let detail = Self.errorDetail(error)
-                if Self.isTerminalInstallError(detail) {
-                    break
-                }
-                if detail.contains("MissingPackagePath") == false {
-                    // 非 MissingPackagePath（多为 socket/超时）：重建会话后重试
-                    Minimuxer.reset()
-                    await waitForNetworkRefresh(rounds: 2, delay: .milliseconds(600))
-                }
-                var readyWait = 0
-                while await isReady() == false && readyWait < 15 {
-                    try? await Task.sleep(nanoseconds: 500_000_000)
-                    readyWait += 1
-                }
-            }
-        }
-        throw Self.installationFailure(lastError!)
-        #endif
+        try await install(
+            ipaData: ipaData,
+            bundleID: bundleID,
+            isSelfReplacement: isSelfReplacement,
+            onProgress: { _ in }
+        )
     }
 
     /// 带 AFC 上传进度（0-1）的合并安装覆写。Rust 上传线程回传的百分比经
@@ -498,7 +656,8 @@ actor MinimuxerInstallChannel: InstallChannel {
         #if !targetEnvironment(simulator)
         guard await isReady() else { throw Self.channelNotReadyFailure }
         let ipaMB = Double(ipaData.count) / 1_000_000
-        let mergedTimeout = min(1800.0, 180.0 + ipaMB * 5.0) + 600.0
+        // 合并调用 = 上传（对齐原 push 预算，封顶 30 分钟）+ 安装（600 秒）
+        let mergedTimeout = Self.mergedInstallBudgetSeconds(ipaMB: ipaMB)
         let maxAttempts = 3
         var lastError: Error?
         for attempt in 1...maxAttempts {
@@ -519,20 +678,44 @@ actor MinimuxerInstallChannel: InstallChannel {
                 if isSelfReplacement {
                     // 自替换也必须让 installation_proxy 完整返回；iOS 成功替换应用时会自然
                     // 终止旧进程。提前 suspend 会冻结当前连接并留下旧 profile。
-                    let installation = Task.detached(priority: .userInitiated) {
-                        try Minimuxer.stageAndInstall(
-                            bundleId: bundleID,
-                            ipaBytes: ipaData,
-                            progress: syncProgress
-                        )
-                    }
-                    try await installation.value
+                    try await runSelfReplacementInstall(
+                        bundleID: bundleID,
+                        context: "包 \(Self.megabyteText(ipaMB))，第 \(attempt)/\(maxAttempts) 次",
+                        budget: mergedTimeout,
+                        start: {
+                            try Minimuxer.stageAndInstall(
+                                bundleId: bundleID,
+                                ipaBytes: ipaData,
+                                progress: syncProgress
+                            )
+                        }
+                    )
                 } else {
+                    await log(
+                        "开始安装：\(bundleID)，包 \(Self.megabyteText(ipaMB))，"
+                        + "第 \(attempt)/\(maxAttempts) 次，等待上限 \(Int(mergedTimeout)) 秒"
+                    )
+                    let startedAt = Date()
                     let outcome = await offThread(seconds: mergedTimeout) {
                         try Minimuxer.stageAndInstall(bundleId: bundleID, ipaBytes: ipaData, progress: syncProgress)
                     }
-                    if case .some(.failure(let installError)) = outcome { throw installError }
-                    guard outcome != nil else { throw Self.installTimeoutFailure }
+                    if case .some(.failure(let installError)) = outcome {
+                        await log(
+                            "安装调用抛错：\(bundleID)，耗时 \(Self.elapsedText(since: startedAt))，"
+                            + "原因：\(Self.diagnostic(installError))",
+                            level: .error
+                        )
+                        throw installError
+                    }
+                    guard outcome != nil else {
+                        await log(
+                            "安装等待超时：\(bundleID)，已等待 \(Int(mergedTimeout)) 秒",
+                            level: .warning,
+                            code: Self.installTimeoutFailure.code
+                        )
+                        throw Self.installTimeoutFailure
+                    }
+                    await log("安装调用已返回：\(bundleID)，耗时 \(Self.elapsedText(since: startedAt))")
                 }
                 return
             } catch {
@@ -540,8 +723,16 @@ actor MinimuxerInstallChannel: InstallChannel {
                 guard attempt < maxAttempts else { break }
                 // 超时必须按「确定性拒绝」处理 —— 立即终止，不再重传重试（R05）。
                 // 原因见 isTimeoutInstallError 的注释：底下那次安装很可能还在跑。
+                // 原样抛出而不是走末尾的 installationFailure 归类：超时文案本身就是
+                // 给用户看的解释（含「已停止等待、不会重试」），归类会把它改写成
+                // 泛泛的「安装失败」并丢掉恢复指引。
                 if Self.isTimeoutInstallError(error) {
-                    break
+                    throw error
+                }
+                // 自替换被闸门拒绝：重试只会被同一个闸门再拒一次，
+                // 而重试路径里的 Minimuxer.reset() 还会把可能仍在跑的安装连接拆掉。
+                if Self.isSelfReplacementBusyError(error) {
+                    throw error
                 }
                 let detail = Self.errorDetail(error)
                 if Self.isTerminalInstallError(detail) {
@@ -767,6 +958,18 @@ actor MinimuxerInstallChannel: InstallChannel {
         return false
     }
 
+    /// 自替换被「上一笔仍在进行中」拒绝（见 `SelfReplacementInstallGate`）。
+    ///
+    /// 与超时一样按终态处理：重试只会被同一个闸门再拒一次，而两条重试路径里的
+    /// `Minimuxer.reset()` / `Install.resetProvider()` 还会把**可能仍在跑的安装连接**
+    /// 拆掉 —— 那会让第一笔安装彻底失败，比不重试更糟。
+    ///
+    /// 判定同样不依赖错误文本，只看错误码。
+    private static func isSelfReplacementBusyError(_ error: Error) -> Bool {
+        guard let failure = error as? ImportFailure else { return false }
+        return failure.code == selfReplacementAlreadyRunningFailure.code
+    }
+
     private static func isTerminalInstallError(_ detail: String) -> Bool {
         let lower = detail.lowercased()
         if lower.contains("no space")
@@ -797,14 +1000,6 @@ actor MinimuxerInstallChannel: InstallChannel {
             || detail.contains("完整性")
             || detail.contains("上限")
             || detail.contains("已达")
-    }
-
-    private static func diagnostic(_ error: Error) -> String {
-        let nsError = error as NSError
-        if let minimuxerError = error as? MinimuxerError {
-            return Minimuxer.describeError(minimuxerError)
-        }
-        return "\(nsError.domain) (\(nsError.code)): \(nsError.localizedDescription)"
     }
 
     /// 从 Rust FFI NSError / ImportFailure 提取底层错误文本，用于设备错误分类。
@@ -952,5 +1147,18 @@ actor MinimuxerInstallChannel: InstallChannel {
         reason: "向设备传输并安装应用超过 10 分钟仍未完成，系统已自动重试。若多次出现，请检查 LocalDevVPN 连接是否稳定后再试（免费账号需使用外部 LocalDevVPN 软件）。",
         recovery: "重试",
         code: "SEAL-INSTALL-702t"
+    )
+
+    /// 上一笔自替换安装还没结束就来了第二笔。
+    ///
+    /// `Minimuxer.stageAndInstall` 是同步阻塞 FFI，没有取消机制：一旦卡住，
+    /// 上层既等不到它返回、也取消不掉它，于是同一 Bundle ID 上会同时存在两个
+    /// installd 安装命令（R05 要防的「第二次安装」）。真机日志里确实出现过
+    /// 91 秒内两次提交，所以这里宁可拒绝，也不制造并发安装。
+    private static let selfReplacementAlreadyRunningFailure = ImportFailure(
+        title: "上一次安装仍在进行中",
+        reason: "Seal 的自替换安装还在进行中，本次已跳过，以免同一个应用上出现两次并发安装（会导致安装失败或应用损坏）。同步安装调用没有取消机制，请完全退出并重新打开 Seal 后再试。",
+        recovery: "重新启动 Seal 后再试",
+        code: "SEAL-INSTALL-738"
     )
 }

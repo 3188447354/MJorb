@@ -78,6 +78,42 @@ SealDrawer(title: title, showsFooter: !isRunning) { ... }
 
 运行中 footer 整段隐藏（`actions` 对 `.running` 返回 `EmptyView`），同时禁用下滑关闭。真卡住时用户被锁死在一个静止弹窗里，**没有任何操作可做**。
 
+### 2.5 自替换的安装调用**从未返回**，而这段一行日志都没有（问题 1 已由真机日志坐实）
+
+上一轮的三个修复（批量收不到 `.installing`、安装期无反馈、`.inactive` 早退）落地后用户复测仍卡在 93%。这一轮直接从用户导出的日志里找到了确凿证据 —— 关键不是「卡住了」，而是**同一份日志里有一个 7 秒完成的对照**。
+
+`Seal-log(7).txt`（同一天、同一台设备、同一次会话）：
+
+| 时间 | 事件 | 说明 |
+| --- | --- | --- |
+| `16:53:57` | `安装 签名产物核验通过：证书 …F81192E2 …` | **Seal 自替换**的安装起点 |
+| `16:55:30` | `续签 [SEAL-BATCH-DEBUG-4] restore skipped…` | **93 秒空白**后出现的第一条日志，且与安装无关 |
+| `16:59:06` | `安装 签名产物核验通过：证书 …2DAE6F58 …` | 普通 App（LiveContainer，4 个 target）的安装起点 |
+| `16:59:13` | `签名 签名并安装成功` | **7 秒**完成 |
+
+补充证据：
+
+- `16:55`–`17:02` 进程一直活着、照常打后台日志（`BatchDebug restore skipped`、`LocalDevVPN 正常`、`Apple 侧证书状态已同步`）⇒ **Seal 从未被替换**（否则进程会被新包终止），也没有任何安装结论；
+- `Seal-log(8).txt`：`19:43:50` 与 `19:45:51` 各有一次 Seal 自替换安装起点，间隔 **91 秒**，两次都没有结论 —— 第二次是用户在「怎么都没反应」之后**重试**。
+
+根因（代码侧）：
+
+```swift
+// 旧实现：MinimuxerInstallChannel.install(ipaData:bundleID:isSelfReplacement:onProgress:)
+if isSelfReplacement {
+    let installation = Task.detached(priority: .userInitiated) {
+        try Minimuxer.stageAndInstall(bundleId: bundleID, ipaBytes: ipaData, progress: syncProgress)
+    }
+    try await installation.value          // ← 没有超时、没有任何日志
+} else {
+    let outcome = await offThread(seconds: mergedTimeout) { ... }   // 普通 App 有超时兜底
+}
+```
+
+`Minimuxer.stageAndInstall` 是**同步阻塞 FFI，没有取消机制**。它不返回 ⇒ 界面永久停在 93%、日志永久静默、用户无从判断「在装」还是「死了」。普通 App 分支有 `offThread(seconds: mergedTimeout)` 兜底，**这就是为什么只有 Seal 自续签会永久卡住**。
+
+同时，91 秒内两笔提交说明还存在第二个风险：**同一个 Bundle ID 上叠了两个 installd 安装命令**（R05 要防的「第二次安装」）。
+
 ---
 
 ## 3. 修复
@@ -185,6 +221,44 @@ if stage == .installing,
 
 守卫同时断言**界面里不得再出现** `SelfInstallAutoBackground.returnToHomeAfterSealUpload()` —— 两处都触发会排出两个系统转场和两个 `exit(0)` 兜底。
 
+### 3.7 自替换安装：看门狗（只停止等待、绝不取消）+ 日志 + 单飞闸门（本轮新增，见 §2.5）
+
+三件事，都针对「自替换的安装调用不返回」：
+
+**(1) 看门狗 —— 有界失败，且绝不取消底层 FFI**
+
+```swift
+// MinimuxerInstallChannel.waitForSelfReplacement
+_ = try await HardTimeout.run(seconds: budget, cancelsWorkOnTimeout: false) {
+    try await installation.value
+    return true
+}
+```
+
+`cancelsWorkOnTimeout: false` 是**要害**，不能复用 `offThread`：它走 `HardTimeout.run` 的默认 `true`，超时会把承载 `stageAndInstall` 的任务 `cancel()`。同步 FFI 响应不了取消，但 Rust 侧若把取消信号当「调用方放弃」来清理，就会**撤销已经下发的 installation_proxy 命令** —— 把「可能还在装」变成「确定装不上」。
+
+超时后**不重试**（R05：底下那次很可能还在跑），并把 `installTimeoutFailure` **原样抛出**，不再经 `installationFailure` 归类改写文案（否则用户看到的是泛泛的「安装失败」而不是「安装超时」）。
+
+**(2) 日志出口 —— 这段原先一行日志都没有**
+
+`MinimuxerInstallChannel` 注入可选 `SealLogStore`（`AppContainer` 把 logStore 的构造提前到安装通道之前），每次安装写「开始 / 已返回 / 抛错 / 等待超时」；自替换等待期间每 15 秒一条心跳（安装阶段 installd 不回报任何进度，心跳是唯一的活性信号）。**每条日志立刻 `flush()`**：自替换的终点是当前进程被替换掉，留在缓冲里的最后几行会随进程一起消失，而用户导出的 `Documents/Seal-log.txt` 正是 `flush()` 镜像的。
+
+**(3) 单飞闸门 —— 挡住并发的第二笔**
+
+```swift
+struct SelfReplacementInstallGate {
+    private(set) var isInFlight = false
+    mutating func acquire() -> Bool { ... }          // 已有安装在进行 → 拒绝
+    mutating func release(timedOut: Bool) { ... }    // 超时**不解锁**（底下那次很可能还在跑）
+}
+```
+
+两条重试路径（`install(...)` 与 `installPushedIpa`）都把「被闸门拒绝」按终态处理并原样抛出：重试只会被同一个闸门再拒一次，而重试路径里的 `Minimuxer.reset()` / `Install.resetProvider()` 还会把**可能仍在跑的安装连接**拆掉 —— 比不重试更糟。
+
+**(4) 顺带消掉一份重复实现**
+
+无进度的 `install(ipaData:bundleID:isSelfReplacement:)` 改为转发到带进度的实现（`onProgress: { _ in }`），不再各自维护一份「自替换必须带看门狗 / 必须记日志 / 必须单飞」的规则 —— 两份拷贝漂移时不会有任何编译或测试信号。
+
 ---
 
 ## 4. 守卫与测试
@@ -200,6 +274,12 @@ if stage == .installing,
   - `step(for:)` 必须是**可测纯函数**，`.inactive → .waitForForeground`、`.background → .standDown`、`@unknown default` 不放弃，且等待循环**真的走** `step()` 并真的 `sleep`（结构还在 ≠ 还在用）；
   - **「回主页」的触发点在状态层**（`AppsViewModel`，且用 `.restart` 闸门只触发一次），界面里**不得**再出现调用（两处都触发 = 两个转场 + 两个 `exit(0)` 兜底）；
   - 安装计时起点规则只有一份：`AppsViewModel` 与 `BatchRefreshSession` 都必须调 `InstallStageTimeline.tick`；
+  - **自替换的等待必须带超时且 `cancelsWorkOnTimeout: false`**（超时只停止等待、绝不取消 FFI）；
+  - `installation.value` **只允许在一处**被 await、`Task.detached(priority: .userInitiated)` **只允许出现一次** —— 在别处再裸等一遍等于重新引入无超时等待；
+  - 自替换必须走**单飞闸门**，且超时**不得**解锁（`release(timedOut: Self.isTimeoutInstallError(error))`）；
+  - 安装链路必须**真的接上**日志出口（`AppContainer` 的 `installChannel` 构造段里必须有 `logStore: logStore`；用 `section()` 限定范围 —— 该文件里 `logStore: logStore` 在签名协调器构造处也出现一次，全局匹配会让变异检不出来）；
+  - 自替换安装必须写「开始 / 已返回」日志，等待期间必须有心跳；
+  - 两个新单测文件里的**关键断言确实存在**。
   - 两个新单测文件里的**关键断言确实存在** —— 源码断言守「形状」，单测守「行为」，测试被删空不能仍然全绿。
 - **R09 通用化**：把「实参标签顺序必须与声明一致」做成可复用校验，覆盖 `AppRecord` / `signAndInstall` / `installSignedIPA` / `installCachedSignedIPAIfPossible`，并**断言扫到的调用点数下限** —— 本轮第一版正则把真实调用点（`coordinator.signAndInstall(`，前一个字符是 `.`）全部排除，变成「零调用点 ⇒ 零错误 ⇒ 绿」。
 - 新增 `squash()`：把多行代码压成一行式断言，不再在守卫里拼换行符 + 数缩进空格（缩进一改守卫就会莫名其妙地红）。
@@ -212,8 +292,10 @@ if stage == .installing,
 - `SealTests/DesignSystem/InstallWaitNoteTests.swift`（2 条）：`m:ss` 格式化与负数钳制。
 - `SealTests/Apps/SelfInstallAutoBackgroundTests.swift`（5 条）：`.inactive` 必须 `.waitForForeground`（问题 1 的根因回归）、只有 `.background` 允许 `.standDown`、未知状态按「还在前台」处理、穷举「全部已知状态里恰好一个走 `.standDown`」。
 - `SealTests/Signing/InstallStageTimelineTests.swift`（5 条）：首次进入安装阶段记起点、重复推送不重置、其它阶段一律清空、`.keep` 不会凭空补一个起点、批量链路与共享规则一致。
+- `SealTests/Installation/SelfReplacementInstallGateTests.swift`（4 条）：已有安装在进行时第二笔必须被拒、安装结束后解锁、**超时不解锁**、连续超时永不重开。
+- `SealTests/Concurrency/HardTimeoutTests.swift` 补 1 条：`cancelsWorkOnTimeout: false` 时**工作所在任务**的 `Task.isCancelled` 仍为 `false`（断言必须打在 `HardTimeout` 自己创建的那个任务上 —— 在闭包里再套一层 `Task.detached` 就会测到新任务，测试会退化成永远通过）。
 
-结果：**189 源码断言 + 82 变异 PASS**。
+结果：**203 源码断言 + 89 变异 PASS**。（旧断言 `count("if Self.isTimeoutInstallError(error) {") == 2` 因两个 `install` 重载合并成一份而降为 `1`，已同步改为「唯一的重试循环必须把超时当终态」。）
 
 ---
 
@@ -224,7 +306,9 @@ if stage == .installing,
 3. 运行中点「取消」/「取消续签」：界面立即关闭，日志出现 `SEAL-SIGN-012` / `SEAL-RENEW-011`，列表刷新后能看到真实结果。
 4. Seal 自续签：在下拉控制中心（`.inactive`）之后仍能完成替换，不再停在 93%。
 5. 批量续签普通 App：确认不再出现长时间停在「传输中」的项。
-6. Seal 自续签：进入安装阶段后点「取消」关掉抽屉，Seal **仍能完成替换**（触发点已在状态层，不随界面消失）—— 这条正是本轮补修的缺陷（§3.6）。
+6. Seal 自续签：进入安装阶段后点「取消」关掉抽屉，Seal **仍能完成替换**（触发点已在状态层，不随界面消失）—— 这条正是上一轮补修的缺陷（§3.6）。
+7. Seal 自续签：导出日志应能看到**安装链路的完整轨迹** —— `安装 开始自替换安装：…` → 等待期间每 15 秒一条 `自替换安装仍在等待：已等待 N 秒` → 最后是 `自替换安装调用已返回：…`（成功）或 `自替换安装等待超时：…`（有界失败）。**这条是下一轮排查的入口**：无论成功还是失败，日志都能指出卡在哪一段（上传 / installd / 回主页转场）。
+8. Seal 自续签：如果出现 `自替换安装仍在等待` 但永远不返回，请把日志发回来 —— §6 里「为什么自替换的安装调用不返回」目前只有调用侧证据，需要设备侧轨迹才能定位。
 
 ---
 
@@ -234,5 +318,6 @@ if stage == .installing,
 | --- | --- | --- |
 | 安装/上传超时预算偏长 | `mergedTimeout = min(1800, 180 + ipaMB×5) + 600`，20MB 包 ≈ 878 秒 | 是否缩短需用户拍板。缩短的代价是慢设备上的假超时：超时按**确定性拒绝**处理且不重试，但底层安装可能仍在跑 ⇒ 「装上了却记为失败」 |
 | 批量链路的「回主页」没有 `.restart` 闸门 | `consumeBatchEvent` 里 `if stage == .installing` 未按首次进入过滤，`.installing` 被重复推送时会排出多个「回主页」任务 | 已知且**良性**（第一个任务触发转场后进程被挂起，后续任务不会执行；转场失败时第一个 `exit(0)` 已结束进程），故本轮未动。若要统一，让 `BatchRefreshSession.advanceStage` 返回 `Tick` 即可 |
-| 问题 1 的真机证据 | 已从代码确认三条可能路径（`.inactive` 早退 / 安装期无反馈 / 界面触发点可被取消带走），但缺少卡住那一刻的日志 | 用户导出「我的 → 日志」中卡住前后 1 分钟的记录 |
+| 问题 1 的**调用侧**证据 | 已坐实：真机日志里普通 App 安装 7 秒完成（`16:59:06→16:59:13`），而 Seal 自替换在 `16:53:57` 之后 93 秒无任何安装结论、进程仍活着且从未被替换 ⇒ 自替换的 `stageAndInstall` **没有返回**（§2.5） | 已通过看门狗把「永久卡住」变成「有界失败 + 可查日志」。剩下的只是下一轮真机日志复核 |
+| 自替换的安装调用**为什么不返回** | 仍未知。首要嫌疑是 `SelfInstallAutoBackground` 的 `suspend`：它在上传完成（进入 `.installing`）后 1.2 秒就触发，而 `MinimuxerInstallChannel` 的注释明确写着「主动调用 `UIApplication.suspend` 会**冻结当前进程内的 installation_proxy 连接**，安装永远到不了完成回调」—— **这两处语义直接冲突**。次要嫌疑是无线链路下 AFC 暂存 / installd 解压卡住 | **下一轮日志即可判定**（看门狗的心跳就是探针）：日志停在 `开始自替换安装：…` 而**没有**任何 `自替换安装仍在等待` ⇒ 进程被挂起（`suspend` 命中，转场时机错了）；**有**心跳 ⇒ 进程活着，卡在 AFC/installd。若坐实前者，把转场触发点从「进入 `.installing`」推迟到「安装调用返回之后」，或改为只 `exit(0)` 不 `suspend`，需真机 A/B |
 | 问题 6 | 用户消息被截断（「6、签名、续签」） | 待用户补完 |

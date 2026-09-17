@@ -259,6 +259,35 @@ struct SelfReplacementInstallGate {
 
 无进度的 `install(ipaData:bundleID:isSelfReplacement:)` 改为转发到带进度的实现（`onProgress: { _ in }`），不再各自维护一份「自替换必须带看门狗 / 必须记日志 / 必须单飞」的规则 —— 两份拷贝漂移时不会有任何编译或测试信号。
 
+### 3.8 模拟器切片缺符号：把「记得小心」换成守卫（本轮补修，CI 反馈驱动）
+
+§3.7 的改动推送后 CI run `35168295836`：`rork-sign-tests` ✓、`build-package` ✓、**`swift-regression` ✗** ——
+
+```
+MinimuxerInstallChannel.swift:480:56: error: type 'Self' has no member 'isTimeoutInstallError'
+```
+
+**根因**：`waitForSelfReplacement` / `runSelfReplacementInstall` 刻意放在 `#if !targetEnvironment(simulator)` **之外**（模拟器上也要能编译），但它们调用的 `isTimeoutInstallError` 仍定义在 `#if` **之内**。设备切片看得到、模拟器切片看不到。
+
+**为什么不能只靠「下次注意」**：`build-package` 只编设备切片，这类错误在它那里**永远绿**；只有 `swift-regression`（模拟器切片）会红，而一轮 CI 13–16 分钟。**同一轮里这是第二次**（`diagnostic` 已经因同样原因提前挪出，`isTimeoutInstallError` 漏了），所以本轮把它做成守卫的**通用**检查。
+
+**修复**：把 `diagnostic(_:)`、`isTimeoutInstallError(_:)`、`isSelfReplacementBusyError(_:)` 全部移到 `#if` 之外（这三段逻辑与平台无关），`#if` 内留指路注释避免重复定义。
+
+**守卫实现**（`Scripts/verify-release-safety.py`）：
+
+1. `simulator_activity(condition)`：只认识 `targetEnvironment(simulator)` 这一种条件，返回它在模拟器切片下的真假；不认识的写法（`#if DEBUG` / `#if os(iOS)`）返回 `None`，按「两片都编译」处理 —— 取值不取决于目标平台，既不漏真问题也不制造误报。
+2. `mask_inactive_on_simulator(text)`：把「模拟器切片不编译」的行整段抹成等长空白（保留换行，行号不变）。
+3. 检查：找出**只**出现在被抹掉部分里的顶层类型成员（`_SIMULATOR_MEMBER`，**只认缩进恰好 4 空格**的声明），却出现在抹后文本中 ⇒ 模拟器代码引用了设备专属符号。
+
+两个必须避开的坑（都实际踩过并修掉）：
+
+- **判定要同时覆盖两种写法**：`#if !targetEnvironment(simulator)` 的整个分支 **和** `#if targetEnvironment(simulator)` 的 **`#else` 分支** —— 两段都不在模拟器上编译。第一版只认前者，于是 `bindTunnelConfiguration()`（定义在 `!simulator` 里、调用点在同文件的 `#else` 里）被误报成缺符号。**误报比漏报更坏：它会逼着后来的人把守卫删掉。**
+- **只认缩进恰好 4 空格的声明**。函数体内的局部变量缩进更深，`let ipaMB` / `let detail` 这类名字在设备专属分支与模拟器分支里各有一份，按「名字出现在抹后文本里」判定会把它们全部误报。
+
+性能：循环里先用**未去注释的原文**做一次廉价子串判断再决定是否 `strip_comments`（这个循环要跑遍 200+ 文件，而 `violations()` 总共要跑 90 多遍）。
+
+配套变异锚点：把 `isTimeoutInstallError` 的定义包回 `#if !targetEnvironment(simulator)`，守卫必须报红 —— 这条同时证明检查不是空转。
+
 ---
 
 ## 4. 守卫与测试
@@ -279,8 +308,8 @@ struct SelfReplacementInstallGate {
   - 自替换必须走**单飞闸门**，且超时**不得**解锁（`release(timedOut: Self.isTimeoutInstallError(error))`）；
   - 安装链路必须**真的接上**日志出口（`AppContainer` 的 `installChannel` 构造段里必须有 `logStore: logStore`；用 `section()` 限定范围 —— 该文件里 `logStore: logStore` 在签名协调器构造处也出现一次，全局匹配会让变异检不出来）；
   - 自替换安装必须写「开始 / 已返回」日志，等待期间必须有心跳；
-  - 两个新单测文件里的**关键断言确实存在**。
   - 两个新单测文件里的**关键断言确实存在** —— 源码断言守「形状」，单测守「行为」，测试被删空不能仍然全绿。
+- **新增通用检查 `Simulator: device-only members must not be referenced by simulator code`**（见 §3.8）：把「模拟器切片不编译」的行整段抹成等长空白，再找出**只**在被抹掉部分里定义的顶层类型成员、却出现在抹后文本中的那些。
 - **R09 通用化**：把「实参标签顺序必须与声明一致」做成可复用校验，覆盖 `AppRecord` / `signAndInstall` / `installSignedIPA` / `installCachedSignedIPAIfPossible`，并**断言扫到的调用点数下限** —— 本轮第一版正则把真实调用点（`coordinator.signAndInstall(`，前一个字符是 `.`）全部排除，变成「零调用点 ⇒ 零错误 ⇒ 绿」。
 - 新增 `squash()`：把多行代码压成一行式断言，不再在守卫里拼换行符 + 数缩进空格（缩进一改守卫就会莫名其妙地红）。
 - 修掉守卫自身的性能问题：每遍（= 每个变异）内缓存 `load` / `strip_comments`，`rglob` 结果进程内只算一次。**2 分 47 秒 → 48 秒**（此前已慢到被默认命令超时 SIGTERM，表现为「无输出、exit 1」）。
@@ -295,7 +324,7 @@ struct SelfReplacementInstallGate {
 - `SealTests/Installation/SelfReplacementInstallGateTests.swift`（4 条）：已有安装在进行时第二笔必须被拒、安装结束后解锁、**超时不解锁**、连续超时永不重开。
 - `SealTests/Concurrency/HardTimeoutTests.swift` 补 1 条：`cancelsWorkOnTimeout: false` 时**工作所在任务**的 `Task.isCancelled` 仍为 `false`（断言必须打在 `HardTimeout` 自己创建的那个任务上 —— 在闭包里再套一层 `Task.detached` 就会测到新任务，测试会退化成永远通过）。
 
-结果：**203 源码断言 + 89 变异 PASS**。（旧断言 `count("if Self.isTimeoutInstallError(error) {") == 2` 因两个 `install` 重载合并成一份而降为 `1`，已同步改为「唯一的重试循环必须把超时当终态」。）
+结果：**204 源码断言 + 90 变异 PASS**，耗时约 61 秒。（旧断言 `count("if Self.isTimeoutInstallError(error) {") == 2` 因两个 `install` 重载合并成一份而降为 `1`，已同步改为「唯一的重试循环必须把超时当终态」。）
 
 ---
 

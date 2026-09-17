@@ -447,6 +447,42 @@ actor MinimuxerInstallChannel: InstallChannel {
         return "\(nsError.domain) (\(nsError.code)): \(nsError.localizedDescription)"
     }
 
+    /// 安装超时 **不等于** 安装失败（R05 的核心判据）。
+    ///
+    /// `Minimuxer.stageAndInstall` 是同步阻塞 FFI，没有取消机制：`offThread` 的
+    /// 「超时」只是**上层不再等待**，底下这次安装**很可能还在跑**。因此超时后一旦重试，
+    /// 就会在同一个 Bundle ID 上出现两个并发的 installd（旧的还在装、新的已经开始传包）
+    /// —— 这正是 R05 要防的「第二次安装」，表现为 `ApplicationVerificationFailed`、
+    /// 白图标、或装到一半的应用。
+    ///
+    /// 判定不依赖错误文本（文案会漂移），而是看错误本身是不是超时：
+    /// - `HardTimeout.TimeoutError`：直接来自竞速包装；
+    /// - `installTimeoutFailure`：`offThread` 返回 nil 后由调用方抛出的那种。
+    ///
+    /// 放在 `#if !targetEnvironment(simulator)` **之外**：自替换看门狗（同样在 `#if` 之外）
+    /// 要用它决定超时后是否解锁单飞闸门，而这段逻辑与平台无关。
+    /// ⚠️ 这是本轮实际踩到的编译错误 —— `build-package` 绿、`swift-regression` 红。
+    private static func isTimeoutInstallError(_ error: Error) -> Bool {
+        if error is HardTimeout.TimeoutError { return true }
+        if let failure = error as? ImportFailure,
+           failure.code == installTimeoutFailure.code {
+            return true
+        }
+        return false
+    }
+
+    /// 自替换被「上一笔仍在进行中」拒绝（见 `SelfReplacementInstallGate`）。
+    ///
+    /// 与超时一样按终态处理：重试只会被同一个闸门再拒一次，而两条重试路径里的
+    /// `Minimuxer.reset()` / `Install.resetProvider()` 还会把**可能仍在跑的安装连接**
+    /// 拆掉 —— 那会让第一笔安装彻底失败，比不重试更糟。
+    ///
+    /// 判定同样不依赖错误文本，只看错误码。同样放在 `#if` 之外（理由同上）。
+    private static func isSelfReplacementBusyError(_ error: Error) -> Bool {
+        guard let failure = error as? ImportFailure else { return false }
+        return failure.code == selfReplacementAlreadyRunningFailure.code
+    }
+
     // MARK: - 自替换安装
 
     /// 提交一笔自替换安装（Seal 覆盖运行中的自己）。**同一时刻只允许一笔**。
@@ -938,38 +974,9 @@ actor MinimuxerInstallChannel: InstallChannel {
     /// 确定性安装拒绝（空间不足 / 完整性校验失败 / 免费账号 3 应用上限）：
     /// 这类 installd 拒绝重传重试无意义，应首次即失败，避免把大包空推 3 轮。
     /// 与 `installationFailure` 的分类标记保持一致。
-    /// 安装超时 **不等于** 安装失败。
     ///
-    /// `Minimuxer.stageAndInstall` 是同步阻塞 FFI，没有取消机制：
-    /// `offThread` 的「超时」只是**上层不再等待**，底下这次安装**很可能还在跑**。
-    /// 因此超时后一旦重试，就会在同一个 Bundle ID 上出现两个并发的 installd
-    /// （旧的还在装、新的已经开始传包）—— 这正是 R05 要防的「第二次安装」，
-    /// 表现为 `ApplicationVerificationFailed`、白图标、或装到一半的应用。
-    ///
-    /// 判定不依赖错误文本（文案会漂移），而是看错误本身是不是超时：
-    /// - `HardTimeout.TimeoutError`：直接来自竞速包装；
-    /// - `installTimeoutFailure`：`offThread` 返回 nil 后由调用方抛出的那种。
-    private static func isTimeoutInstallError(_ error: Error) -> Bool {
-        if error is HardTimeout.TimeoutError { return true }
-        if let failure = error as? ImportFailure,
-           failure.code == installTimeoutFailure.code {
-            return true
-        }
-        return false
-    }
-
-    /// 自替换被「上一笔仍在进行中」拒绝（见 `SelfReplacementInstallGate`）。
-    ///
-    /// 与超时一样按终态处理：重试只会被同一个闸门再拒一次，而两条重试路径里的
-    /// `Minimuxer.reset()` / `Install.resetProvider()` 还会把**可能仍在跑的安装连接**
-    /// 拆掉 —— 那会让第一笔安装彻底失败，比不重试更糟。
-    ///
-    /// 判定同样不依赖错误文本，只看错误码。
-    private static func isSelfReplacementBusyError(_ error: Error) -> Bool {
-        guard let failure = error as? ImportFailure else { return false }
-        return failure.code == selfReplacementAlreadyRunningFailure.code
-    }
-
+    /// 注意「安装超时 **不等于** 安装失败」这条判据在 `isTimeoutInstallError`
+    /// （`#if` 之外，见文件上方）—— 超时必须走那条路，不能用这里的文本匹配。
     private static func isTerminalInstallError(_ detail: String) -> Bool {
         let lower = detail.lowercased()
         if lower.contains("no space")

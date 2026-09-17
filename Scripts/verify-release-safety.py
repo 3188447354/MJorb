@@ -66,6 +66,66 @@ def strip_comments(text):
         i += 1
     return "".join(out)
 
+_SIMULATOR_POSITIVE = re.compile(r"^targetEnvironment\s*\(\s*simulator\s*\)$")
+_SIMULATOR_NEGATIVE = re.compile(r"^!\s*targetEnvironment\s*\(\s*simulator\s*\)$")
+
+def simulator_activity(condition):
+    """该条件在**模拟器切片**下的真假；不认识的写法返回 None（= 两片都算编译）。
+
+    只认识 `targetEnvironment(simulator)` 这一种条件，是刻意的：`#if DEBUG`、
+    `#if os(iOS)` 之类的取值不取决于目标平台，把它们当成「两片都编译」既不会漏掉
+    真正的问题，也不会制造误报。
+    """
+    condition = condition.strip()
+    if _SIMULATOR_POSITIVE.match(condition):
+        return True
+    if _SIMULATOR_NEGATIVE.match(condition):
+        return False
+    return None
+
+def mask_inactive_on_simulator(text):
+    """把「模拟器切片不编译」的行抹成等长空白，返回 (抹后文本, 被抹掉的行号集合)。
+
+    为什么要连 `#if targetEnvironment(simulator)` 的 `#else` 分支一起抹掉：那段同样
+    不在模拟器上编译。第一版只认 `!targetEnvironment(simulator)`，于是
+    `bindTunnelConfiguration()`（定义在 `#if !simulator` 里、调用点却在
+    `#if simulator` 的 `#else` 里）被误报成「模拟器缺符号」—— 两处都是设备专属，
+    根本没有问题。误报比漏报更坏：它会逼着后来的人把守卫删掉。
+    """
+    out = list(text)
+    frames = []
+    blanked = set()
+    offset = 0
+    for index, line in enumerate(text.splitlines(keepends=True), start=1):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            head = stripped.split(None, 1)[0]
+            if head == "#if":
+                frames.append(simulator_activity(stripped[3:]))
+            elif head == "#elseif" and frames:
+                frames[-1] = simulator_activity(stripped[len("#elseif"):])
+            elif head == "#else" and frames:
+                frames[-1] = None if frames[-1] is None else (not frames[-1])
+            elif head == "#endif" and frames:
+                frames.pop()
+        if any(frame is False for frame in frames):
+            blanked.add(index)
+            for k in range(offset, offset + len(line)):
+                if out[k] != "\n":
+                    out[k] = " "
+        offset += len(line)
+    return "".join(out), blanked
+
+# 只匹配**缩进恰好 4 空格**的声明，即顶层类型的成员。函数体内的局部变量缩进更深，
+# 必须排除：`let ipaMB` / `let detail` 这类名字在设备专属分支与模拟器分支里各有一份，
+# 按「名字出现在抹后文本里」判定会把它们全部误报成缺符号。
+_SIMULATOR_MEMBER = re.compile(
+    r"^    (?:@\w+[^\n]*\n    )*"
+    r"(?:private\s+|fileprivate\s+|internal\s+|public\s+|open\s+)?"
+    r"(?:static\s+)?(?:func|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)",
+    re.M,
+)
+
 def match_paren(text, open_index):
     """返回与 text[open_index] == '(' 配对的 ')' 下标；找不到返回 -1。"""
     depth = 0
@@ -596,6 +656,47 @@ def violations(load=read):
     hard_timeout_tests = load("SealTests/Concurrency/HardTimeoutTests.swift")
     check("func nonCancellingTimeoutLeavesTheWorkRunning()" in hard_timeout_tests,
           "R10: 'stop waiting without cancelling' needs a real unit test")
+
+    # 模拟器切片缺符号（2026-09-16，同一类错误一天内咬了两次）。
+    #
+    # 症状最坑的地方是**两片 CI 一绿一红**：`build-package` 只编设备切片，永远绿；
+    # 只有 `swift-regression`（模拟器切片）会红，而一轮 CI 要 13–16 分钟。第一次是
+    # `diagnostic`、第二次是 `isTimeoutInstallError` —— 都是同一个形状：
+    # 「定义在 `#if !targetEnvironment(simulator)` 里，却被 `#if` 之外的代码引用」。
+    #
+    # 检查方式：把「模拟器切片不编译」的行整段抹成空白，再看有没有**只**出现在被抹掉
+    # 那部分里的顶层类型成员，出现在抹后文本中 —— 出现了，就是模拟器代码引用了它。
+    simulator_leaks = []
+    for source_path in swift_sources():
+        relative = source_path.relative_to(ROOT).as_posix()
+        # 先在**未去注释**的原文上做一次廉价子串判断再决定是否去注释：
+        # 这个循环要跑遍 200+ 个文件、而守卫总共要把 `violations()` 跑 90 多遍，
+        # 对每个文件都做一遍去注释会让守卫慢 5 秒（实测）。全仓只有个别文件
+        # 与目标平台条件编译有关。
+        if "targetEnvironment" not in load_cached(relative):
+            continue
+        source = strip_cached(relative)
+        kept, blanked = mask_inactive_on_simulator(source)
+        if not blanked:
+            continue
+        kept_definitions = set(_SIMULATOR_MEMBER.findall(kept))
+        lines = source.splitlines(keepends=True)
+        # 重建「只保留设备专属行」的文本：非设备专属行换成等量换行，行号不变，
+        # 这样 `^    ` 的锚定与真实文件一致。
+        device_only = "".join(
+            lines[index - 1] if index in blanked else "\n" * lines[index - 1].count("\n")
+            for index in range(1, len(lines) + 1)
+        )
+        for match in _SIMULATOR_MEMBER.finditer(device_only):
+            name = match.group(1)
+            # 两片各留一份定义（模拟器桩）是合法写法，不算缺符号。
+            if name in kept_definitions:
+                continue
+            if re.search(r"\b" + re.escape(name) + r"\b", kept):
+                simulator_leaks.append(relative + " -> " + name)
+    check(not simulator_leaks,
+          "Simulator: device-only members must not be referenced by simulator code ("
+          + " | ".join(simulator_leaks) + ")")
 
     # R04: Portal 三个服务的回调一律经 ContinuationBox 转发。裸 continuation 第二次 resume
     # 不是可捕获错误，而是 SWIFT TASK CONTINUATION MISUSE 致命崩溃（进程直接终止）。
@@ -1538,6 +1639,29 @@ def main():
          "                logStore: logStore\n            )",
          "                logStore: nil\n            )",
          "R10: AppContainer must hand the install channel a real log store"),
+        # 把设备专属符号的定义挪回 `#if !targetEnvironment(simulator)` 里 = 原样重演
+        # 2026-09-16 的「模拟器切片缺符号」：`build-package` 照样绿，只有
+        # `swift-regression` 红。这条变异同时证明上面的检查确实在检查，而不是空转。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "    private static func isTimeoutInstallError(_ error: Error) -> Bool {\n"
+         "        if error is HardTimeout.TimeoutError { return true }\n"
+         "        if let failure = error as? ImportFailure,\n"
+         "           failure.code == installTimeoutFailure.code {\n"
+         "            return true\n"
+         "        }\n"
+         "        return false\n"
+         "    }",
+         "    #if !targetEnvironment(simulator)\n"
+         "    private static func isTimeoutInstallError(_ error: Error) -> Bool {\n"
+         "        if error is HardTimeout.TimeoutError { return true }\n"
+         "        if let failure = error as? ImportFailure,\n"
+         "           failure.code == installTimeoutFailure.code {\n"
+         "            return true\n"
+         "        }\n"
+         "        return false\n"
+         "    }\n"
+         "    #endif",
+         "Simulator: device-only members"),
     ]
     for path, old, new, expected in mutations:
         original = read(path)

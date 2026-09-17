@@ -29,6 +29,8 @@
 - **`section()` 的标记可能被变异删掉 ⇒ 整轮守卫带 Python 栈崩掉**。变异检查会对**每个**变异重跑一遍 `violations()`；只要某个变异恰好删掉了某条 `section()` 的标记（本仓真实一例：`if Self.isTimeoutInstallError(error) {` → `if false {`），`section()` 就会 `raise`，一条失败都报不出来。⇒ 这类**只用于断言**的调用改用 `section_or_empty()`（返回空串 ⇒ 断言失败，既不静默通过也不崩）；变异循环本身也加了兜底，把这种崩溃报成一条可读的失败。**加新的 `section()` 断言后，一定要跑一次完整守卫（含变异）**，只跑断言看不出这个。
 - **「脱敏过度」和「脱敏不足」一样是缺陷，而且更难发现**。手机号脱敏模式的字符类里有数字与连字符，于是把 `2026-09-17T06:38:18Z` 里的 `2026-09` 当成号码脱掉 ⇒ **日志里所有 ISO 时间戳的年月都没了**（`2026-09-17` → `20****09-17`）。危害不是「难看」而是「**读不出信息**」：证书的 `notBefore` / `notAfter` 相差一年，脱敏后只差 1 秒，看上去像「到期早于生效」，排查时差点被当成 bug 报上去。⇒ **脱敏规则改完，拿一条真实日志行跑一遍，确认「该留的还在、该去的没了」**——只断言「秘密不出现」发现不了这类问题（`LogPrivacyRedactorTests` 原本只有那一侧）。放宽「日期形状」这类豁免时尤其要小心：**豁免条件越宽，脱敏的口子越大**，所以两个方向都要有单测。
 - **两条恢复机制**都对**、但互不知情 ⇒ 同一件事给出三份互相矛盾的结论**。批量续签包含 Seal 自己时，进程必然在队列项还是 `running` 的时候被杀；队列恢复盲目把 `running` 降级为 `unknown`（「1 个应用的结果未知，需要重新核验」），而**结果其实已经写进持久化载荷**了（`succeeded: 2`）—— 于是假警报 + 队列幽灵条目 + 界面同时显示「成功 2/2」。⇒ **降级前先问「有没有更权威的数据源已经给出结论」**；有的话按结论**结算**，只有真没结论的才降级。**顺序也是修复的一部分**：必须先恢复载荷、再结算队列，否则那个 `running` 项在载荷被读之前就被标成未知了。⚠️ 这是「两条链路各说各话」的又一例（此前：`InstallStageTimeline`、错误映射的 `detail` 构造、安装心跳），区别是这次**两条都对**。
+- **把判据从「只能内部用」的地方挪出来时，先确认访问级别够不够**。把 `settledQueueStates` 挪到新文件后，它依赖的 `BatchRefreshSession.Item.State` 状态↔字符串映射当时是 **`private extension`（file 级）** ⇒ 新文件**和它的单测**都编译不过（`initializer is inaccessible due to 'fileprivate' protection level`），云构建直接红。**修法不是抄一份**（那就成了「同一条规则两份实现」，迟早漂移成「写进去是 completed、读出来当未知」），而是**把映射搬到类型自己的文件并放开为 `internal`**，让写入侧、读取侧、单测共用一份。⚠️ 顺带：守卫断言别写成 `"extension X {" in ...` —— 它是 `"private extension X {"` 的**子串**，抓不到「被收回成 file 级」；两个条件都要落在**新文件**上。
+- **异常日志也要幂等**。只写「异常」不够，还要保证同一条异常**不会每次轮询重复写** —— 重复会把真警报埋掉。实际踩到：`SEAL-RENEW-021` 的判据是「载荷还在 + 会话开着」，而载荷要等抽屉关闭才清 ⇒ 这中间每次 `load()` 都报同一条警告。⇒ 判据里要能区分「**已经处理过**」与「**真的被跳过**」（加显式标志）。
 - **统计字段的文案要跟字段语义对齐**。`usedBundleIDCount` 是「已注册存活数量」，却被渲染成「N 个可用 App ID」——日志里 `10 个可用 App ID` 的真实含义是**已用满 10 个**。这直接导致用户「id 有足够的名额」的误判，把排查方向带偏。同一字段在别处（`已签名 n / 10`）写法是对的，**两处口径不一致时以字段定义为准，并统一**。
 - **查「某字段有没有被写入」必须同时搜 `字段:` 与 `字段 = ` 两种形式**。只搜 `provisioningProfileUUID:`（构造器标签）会得出「扩展 UUID 从未落库」的错误结论，而真实写入是 `app.extensions[index].provisioningProfileUUID = binding.profileUUID`。**结论依赖 grep 完备性时，先确认搜索模式覆盖了赋值 / 解构 / 下标三条路径**，否则会基于假前提写错修复方案。
 - **设备端 profile 的清理范围要按「本次安装实际装上的那一组」算，不能按主 Bundle ID**。一次安装会为**每个扩展**各装一份 profile（抖音 8 扩展 = 9 份）。只按主 Bundle ID 匹配 ⇒ 扩展的旧 profile 从头到尾没人清理（真机：LiveContainer 的 ShareExtension 一天堆 6 份）。反过来也不能把 `Frameworks/*.framework/embedded.mobileprovision` 算进保留集合 —— 它不会被 installd 装成设备 profile，算进去等于给那个 Bundle ID 发免死金牌。
@@ -204,18 +206,29 @@
 
 #### 守卫与测试
 
-- **305→313 源码断言、152→158 变异**。
+- **305→314 源码断言、152→159 变异**。
+- ⚠️ **第一次推送把云构建弄红了，原因值得记**：把判据挪到新文件
+  `PendingBatchResultPayload.swift` 时，它要用的 `BatchRefreshSession.Item.State` 那组
+  状态↔字符串映射当时是 **`private extension`（file 级）**，住在 `AppsViewModel.swift` 里
+  ⇒ 新文件**和它的单测**都访问不到：
+  `error: initializer is inaccessible due to 'fileprivate' protection level`。
+  **修法不是抄一份**（那就成了「同一条规则两份实现」），而是**把映射搬到类型自己的文件**
+  （`BatchRefreshSession.swift`）并放开为 `internal` —— 写入侧、读取侧、单测三处共用一份。
+  **教训：把判据从「只能内部用」的地方挪出来时，先确认它的访问级别够不够。**
+- 顺带修掉一个断言漏洞：`"extension X {"` 是 `"private extension X {"` 的**子串**，
+  所以「只在别处查有没有 private」抓不到「被收回成 file 级」这个变异 ——
+  两个条件必须都落在**新文件**上。变异已复核会红。
 - 两条**既有断言**因行为变更而失效，已更新为**新行为**（而不是把实现改回去）：
   - `G: launch recovery must downgrade…` → 签名带了 `settled:`，文案改为
     「**没有结果的**项才降级」。
   - `R12: the restore poll path must stay silent…` → 条件多了
     `hasRestoredPendingBatchResult == false`。
-- 新增 R17 段 8 条断言，其中**最关键的是顺序断言**：用 `section_or_empty` 取
+- 新增 R17 段 9 条断言，其中**最关键的是顺序断言**：用 `section_or_empty` 取
   `recoverInterruptedQueueIfNeeded` 的函数体，比
   `restorePendingBatchResultIfNeeded()` < `settledQueueStates(from:` <
   `recoverInterruptedQueue(settled:` 的**相对位置**。
-- 新增 5 个变异锚点（一律降级、**顺序对调**、忘了先恢复、把 `running` 也映射、
-  单测改名），均已验证会红。
+- 新增 6 个变异锚点（一律降级、**顺序对调**、忘了先恢复、把 `running` 也映射、
+  **把映射收回成 file 级**、单测改名），均已验证会红。
 - 新增单测：`RefreshQueueStoreTests` +3（结算而非降级、结算过的项离开 `outstanding`、
   陌生 appID 被忽略）；新建 `PendingBatchResultPayloadTests`（6 条：Seal 那项按
   `completed` 结算、只映射已定论两态、空/畸形载荷、后者覆盖前者、`storageValue` 互逆）。

@@ -2307,38 +2307,3 @@ final class AppsViewModel: ObservableObject {
 
     private static let connectionRecoveryReason = "请确认已连接 Wi-Fi 并开启 LocalDevVPN。若长时间无响应，请在设置中确认 LocalDevVPN 已连接后重试。"
 }
-
-
-private extension BatchRefreshSession.Item.State {
-    var storageValue: String {
-        switch self {
-        case .waiting: return "waiting"
-        case .running: return "running"
-        case .completed: return "completed"
-        case .failed: return "failed"
-        case .preparingSealUpdate: return "preparingSealUpdate"
-        }
-    }
-
-    /// 映射到**续签队列项**的状态；只有「已定论」的两态有值。
-    ///
-    /// `waiting` / `running` / `preparingSealUpdate` 都没有结论（`running` 尤其：
-    /// 进程就是在这个状态下被杀的），返回 `nil` 让调用方按「结果未知」处理。
-    var settledQueueState: RefreshQueueItem.State? {
-        switch self {
-        case .completed: return .completed
-        case .failed: return .failed
-        case .waiting, .running, .preparingSealUpdate: return nil
-        }
-    }
-
-    init(storageValue: String?) {
-        switch storageValue {
-        case "running": self = .running
-        case "completed": self = .completed
-        case "failed": self = .failed
-        case "preparingSealUpdate": self = .preparingSealUpdate
-        default: self = .waiting
-        }
-    }
-}

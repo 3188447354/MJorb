@@ -88,3 +88,52 @@ extension BatchRefreshSession {
         return tick
     }
 }
+
+// MARK: - 持久化映射
+
+/// `BatchRefreshSession.Item.State` 与「批量续签结果载荷」之间的字符串映射。
+///
+/// ## ⚠️ 必须是 `internal`，不能收回成 `private`
+///
+/// 2026-09-17 踩到：这组映射原先写成 `private extension`（file 级），
+/// 只有 `AppsViewModel.swift` 能看见。后来 `PendingBatchResultPayload`（另一个文件）
+/// 与它的单测都要用 ⇒ 云构建直接编译失败
+/// （`initializer is inaccessible due to 'fileprivate' protection level`）。
+///
+/// ⇒ 它**本来就该是跨文件的**：写入侧（`persistPendingBatchResult`）与读取侧
+/// （`PendingBatchResultPayload`）必须是**同一份**映射，抄两份迟早漂移成
+/// 「写进去是 completed、读出来当未知」。
+extension BatchRefreshSession.Item.State {
+    var storageValue: String {
+        switch self {
+        case .waiting: return "waiting"
+        case .running: return "running"
+        case .completed: return "completed"
+        case .failed: return "failed"
+        case .preparingSealUpdate: return "preparingSealUpdate"
+        }
+    }
+
+    /// 映射到**续签队列项**的状态；只有「已定论」的两态有值。
+    ///
+    /// `waiting` / `running` / `preparingSealUpdate` 都没有结论（`running` 尤其：
+    /// 进程就是在这个状态下被杀的），返回 `nil` 让调用方按「结果未知」处理。
+    /// 把 `running` 也映射上等于**替那个正在被杀死的项宣布结果**。
+    var settledQueueState: RefreshQueueItem.State? {
+        switch self {
+        case .completed: return .completed
+        case .failed: return .failed
+        case .waiting, .running, .preparingSealUpdate: return nil
+        }
+    }
+
+    init(storageValue: String?) {
+        switch storageValue {
+        case "running": self = .running
+        case "completed": self = .completed
+        case "failed": self = .failed
+        case "preparingSealUpdate": self = .preparingSealUpdate
+        default: self = .waiting
+        }
+    }
+}

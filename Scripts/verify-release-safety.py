@@ -994,13 +994,26 @@ def violations(load=read):
     queue_store_source = strip_comments(
         load("Seal/Infrastructure/Renewal/RefreshQueueStore.swift")
     )
+    # 状态↔字符串的映射住在类型自己的文件里（2026-09-17 从 `AppsViewModel` 挪出来：
+    # 原先它是 `private extension`，写入侧、读取侧、单测**三个文件**都要用 ⇒ 编译不过）。
+    batch_session_source = strip_comments(
+        load("Seal/Core/Renewal/BatchRefreshSession.swift")
+    )
+    # ⚠️ 两个条件都必须落在**新文件**上：`"extension X {"` 是 `"private extension X {"`
+    # 的**子串**，只在别处查「有没有 private」是抓不到「被收回成 file 级」这个变异的。
+    check("extension BatchRefreshSession.Item.State {" in batch_session_source
+          and "private extension BatchRefreshSession.Item.State" not in batch_session_source
+          and "BatchRefreshSession.Item.State {" not in view_model_code,
+          "R17: the payload mapping must be internal and live with the type — it is used by "
+          "the writer, the reader AND the tests; a file-private copy is exactly how this "
+          "broke the build once")
     check("static func settledQueueStates(from payload: [String: Any]?)" in payload_source,
           "R17: the pending payload must be mappable to queue states — that mapping is "
           "what lets the queue recovery settle instead of guessing")
     # 只映射「已定论」的两态。把 `running` 也映射上就等于「替那个正在被杀死的项宣布结果」。
-    check("case .completed: return .completed" in view_model_code
-          and "case .failed: return .failed" in view_model_code
-          and "case .waiting, .running, .preparingSealUpdate: return nil" in view_model_code,
+    check("case .completed: return .completed" in batch_session_source
+          and "case .failed: return .failed" in batch_session_source
+          and "case .waiting, .running, .preparingSealUpdate: return nil" in batch_session_source,
           "R17: only settled states may be mapped — mapping `running` would claim a result "
           "for the very item that was killed mid-flight")
     check("if let known = settled[items[index].appID] {" in queue_store_source
@@ -2778,10 +2791,16 @@ def main():
          "        let settled: [UUID: RefreshQueueItem.State] = [:]",
          "R17: the payload must be restored and read BEFORE the queue is settled"),
         # 把 `running` 也映射成已定论：等于替那个**正在被杀死**的项宣布结果。
-        ("Seal/Features/Apps/AppsViewModel.swift",
+        ("Seal/Core/Renewal/BatchRefreshSession.swift",
          "        case .completed: return .completed",
          "        case .completed, .running: return .completed",
          "R17: only settled states may be mapped"),
+        # 把这组映射收回成 file 级：读取侧与单测在别的文件里 ⇒ 云构建直接编译不过
+        # （2026-09-17 真实踩到一次）。
+        ("Seal/Core/Renewal/BatchRefreshSession.swift",
+         "extension BatchRefreshSession.Item.State {",
+         "private extension BatchRefreshSession.Item.State {",
+         "R17: the payload mapping must be internal and live with the type"),
         # 把结算单测改名：证明「单测文件里有这几个字」的断言真的会红。
         ("SealTests/Renewal/RefreshQueueStoreTests.swift",
          "    func recoverInterruptedSettlesItemsThatAlreadyHaveAResult() async throws {",

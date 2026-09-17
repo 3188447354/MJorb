@@ -71,9 +71,28 @@ check(portal_source.count("withSessionRecovery(") == 3, ...)
 
 ### `ApplePortalCertificateService.addCertificate`（证书轮换）
 
-轮换的顺序是 **先 `revoke`、再创建**。撤销成功而创建失败（1100 被当成真过期、直接抛）
-⇒ 这个账号变成 **0 张证书** ⇒ **用它签过的所有 App 立刻打不开**。
-（这条后果在 `MEMORY.md` 里早就记着，但一直没意识到「创建」这一步漏了重试。）
+**这个结论不是从 `MEMORY.md` 抄的，是去代码里读出来的**（写「后果有多严重」这类结论前必须读一遍那条路径）。
+有两条链路确实是「先 revoke、再创建」，而且都用 `ApplePortalCertificateService`：
+
+**① `SettingsViewModel.revokeCertificateAndCreateLocal`（622 行起）**
+
+| 行 | 动作 |
+|---|---|
+| 688 | `revokeCertificate(serialNumber:)` —— **撤销旧证书** |
+| 696–712 | 拉清单确认槽位已释放（确认不了就不创建） |
+| 716–724 | 把本地 keychain 里那张证书的 `certificateP12` / `certificateSerialNumber` **清空** |
+| **726** | `createLocalCertificate(...)` —— **创建新证书** |
+| 748–751 | 失败 ⇒ `alertFailure`（**用户能看到**，不是静默） |
+
+**② `SettingsViewModel.executeCertificateCleanup`** —— 944 撤销 → 980 创建，同一形态。
+
+⇒ 创建这一步失败（1100 被当成真过期、直接抛）时：**旧证书已撤销、本地凭据已清空、新证书没建成**
+⇒ 这个账号变成 **0 张可用证书**，而撤销时 `affectedInstalledApps` 里的 App 已经失去签名依据
+（`AppsViewModel:1062-1071` 在「一键全撤」后立刻 `restartSigning`，并把这些 App 记进
+`certificateSacrificeResignQueue`；签名若没成功，队列会被清空、只剩一条日志引导手动续签）。
+
+⇒ **`updateFeatures` 那条是「静默降级」，这条是「账号被清空」** —— 严重性不在一个量级，
+所以这条即使只在设置页触发也必须补。
 
 ## 修复
 

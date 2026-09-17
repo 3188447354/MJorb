@@ -213,10 +213,26 @@
 守卫**结构上就看不到**这一处 —— R24 的断言只作用在 `portal_source`
 （`ApplePortalSigningService.swift`）一个文件上。这正是「只对一条链路做断言」的形态。
 
-**为什么这条的后果最严重**：轮换的顺序是**先 `revoke`、再创建**。
-撤销成功而创建失败（1100 被当成真过期、直接抛）会让这个账号变成 **0 张证书**
-⇒ **用它签过的所有 App 立刻打不开**。这条后果在 `MEMORY.md` 里早就记着，
-但一直没意识到「创建」这一步本身漏了重试。
+**为什么这条的后果最严重** —— ⚠️ **这一句是去代码里读出来的，不是从 `MEMORY.md` 抄的**
+（写「后果有多严重」这类结论前必须把那条路径读一遍：凭记忆写会两种错法都犯 ——
+夸大把人吓住，或轻描淡写漏掉真风险）。有两条链路确实是「先 revoke、再创建」，
+而且都走 `ApplePortalCertificateService`：
+
+| 链路 | 撤销 | 创建 |
+|---|---|---|
+| `SettingsViewModel.revokeCertificateAndCreateLocal`（622 行起） | 688 | **726** |
+| `SettingsViewModel.executeCertificateCleanup` | 944 | 980 |
+
+`revokeCertificateAndCreateLocal` 的完整路径：撤销（688）→ 确认槽位已释放（696–712）→
+**把本地 keychain 里那张证书的 P12 / serial 清空（716–724）** → 创建新证书（726）→
+失败则 `alertFailure`（748–751，**用户能看到**）。
+
+⇒ 创建失败时：**旧证书已撤销、本地凭据已清空、新证书没建成** ⇒ 账号变成 **0 张可用证书**；
+而撤销时 `AppsViewModel:1062-1071` 会记下 `affectedInstalledApps`（`certificateSacrificeResignQueue`）
+并**立刻重试签名**，签名没成功就把队列清空、只留一条日志引导手动续签。
+
+**与 `updateFeatures` 那条的差别**：那条是「静默降级成空 entitlements」，这条是「**账号被清空**」
+—— 严重性不在一个量级。
 
 **修法**：给 `ApplePortalCertificateService` 加一个 `withSessionRecovery`，
 **只复用** `ApplePortalSigningService` 的

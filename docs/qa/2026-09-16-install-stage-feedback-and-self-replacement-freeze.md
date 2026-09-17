@@ -357,7 +357,7 @@ cannot use mutating member on immutable value: '$0' is immutable
 
 **为什么还要动这一段**：CI 已在 `0da974c` 全绿，但 §6 里那条「自替换的 `stageAndInstall` 为什么不返回」仍然卡在**没有证据**上 —— `SelfInstallAutoBackground` 这条链路此前**一行日志都没有**，于是「转场到底有没有触发、是在 `installation_proxy` 返回之前还是之后触发」只能靠猜。
 
-**读代码读出来的矛盾（仍未定论，但现在是可测的）**：
+**读代码读出来的矛盾（2026-09-17 已由 §2.3.1 定论）**：
 
 | 位置 | 说法 |
 | --- | --- |
@@ -365,7 +365,13 @@ cannot use mutating member on immutable value: '$0' is immutable
 | `MinimuxerInstallChannel`（自替换分支注释） | 「自替换也必须让 `installation_proxy` 完整返回；**提前 suspend 会冻结当前连接并留下旧 profile**」 |
 | 实际触发时机 | **上传完成**（`.installing`，即上传到 100% 的 1.01 哨兵）后 **1.2 秒** —— 那时 `stageAndInstall` 显然还没返回 |
 
-**这两套时序是冲突的**。但缺设备侧证据，谁对无法判定 —— 所以本轮**刻意不动行为**（改动时序是在没有证据的情况下赌一把，可能把能用的路径改坏），只让它可观测。
+当时以为「这两套时序是冲突的」，所以**刻意不动行为**（改时序是在没有证据的情况下赌一把），只让它可观测。
+
+> **2026-09-17 更正**：读了两份真机日志（各含两次自续签）后，冲突不成立 —— 两条注释说的是
+> **同一件事的两端**：进程不退出 ⇒ iOS 不完成替换 ⇒ installd 一直等 ⇒ `stageAndInstall`
+> 不返回。`MinimuxerInstallChannel` 那条注释描述的是**后果**，不是原因。
+> 真正被丢掉的动作在 `.standDown`（见 §2.3.1 / §3.11）。**这一段保留原样，是因为
+> 「先把日志加上、再决定动不动行为」这个顺序是对的** —— 正是这些日志让下一轮能直接否证。
 
 **改动**：
 
@@ -373,7 +379,7 @@ cannot use mutating member on immutable value: '$0' is immutable
 2. 入口、`.standDown` / `.triggerTransition` / `.waitForForeground` 三个分支、以及 `exit(0)` 兜底各留一条日志，**每条立刻 `flush()`**。
 3. 「即将触发转场（suspend）」这条**刻意写在 `triggerHomeTransition` 之前**：`suspend` 一旦生效进程即被冻结，之后写的日志出不来。
 
-**下一份真机日志即可判定**：
+**下一份真机日志即可判定**（2026-09-17 已判定，见 §2.3.1；判定过程保留在下面）：
 
 ```
 安装  开始自替换安装：com.mjorb.seal.…，包 xx MB，第 1/3 次，等待上限 N 秒
@@ -386,9 +392,19 @@ Seal 自替换：触发回主屏转场（suspend）                  ← 新增
 - **最后一条永不出现** ⇒ 与安装通道的注释一致，`suspend` 冻结了承载安装的连接；
 - **它出现在转场之前** ⇒ 安装调用确实返回了，问题在 AFC / installd 一侧。
 
+> 实际结果：**「触发回主屏转场（suspend）」这一行压根没出现**（当时日志尚未加上，
+> 是从「进程既不转场也不退出」否证出来的）—— 所以既不是「`suspend` 截断」，
+> 也不是「AFC/installd 卡住」，而是动作根本没走到这里。详见 §2.3.1。
+
 **守卫**：新增 3 条断言 + 3 个变异锚点 —— ①这条链路必须真的写日志且 `flush()`；②「触发转场」的日志必须排在 `triggerHomeTransition` **之前**（**断顺序，不断文案**：用 `branch.index(a) < branch.index(b)`）；③两条链路的调用点都必须传真实出口。
 
-同时把 `.standDown` 的断言从拼接式（`"case .standDown: return false"`）改成 `section()` 切分支后断语义（`"return false" in branch and "exit(0)" not in branch`）—— 插一条日志就让拼接式断言失效，而那种失败信息看着像「语义坏了」，实际只是文案挪了位置。
+同时把 `.standDown` 的断言从拼接式（`"case .standDown: return false"`）改成 `section()` 切分支后断语义 —— 插一条日志就让拼接式断言失效，而那种失败信息看着像「语义坏了」，实际只是文案挪了位置。
+
+> ⚠️ **2026-09-17 追加**：当时那版语义断言是 `"return false" in branch and "exit(0)" not in branch`，
+> 而 §3.11 把 `.standDown` 改成了「该强杀」，两半都失效。重写时又踩到同一类坑的**变体**：
+> 一度写成 `"exit(0)" in stand_down`，而那是这段**日志文案**里的字（「强制 exit(0) 让 iOS 完成替换」）——
+> 删掉真正的 `return` 时它照样通过。现在断的是结构：`guard outcome == .wait else` +
+> `return }` + 真的 `backgroundPollNanoseconds` sleep。**文案是给人看的，不是给守卫看的。**
 
 **顺带修掉一处会污染诊断日志的重复触发**：批量链路的「回主页」此前没有 `.restart` 闸门（`if stage == .installing` 未按首次进入过滤）。`.installing` 会被**重复推送**（安装通道的 >1.0 哨兵 + 签名侧补发），所以会排出多个「回主页」任务 —— 这种重复本身是良性的（第一个任务转场后进程被挂起，后续任务不执行；转场失败时第一个 `exit(0)` 已结束进程），但**每个任务都会写一遍「上传完成 / 触发转场」日志**，恰好把这一轮新增的那段关键时序信息淹没。
 

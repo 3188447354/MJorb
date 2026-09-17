@@ -351,6 +351,23 @@ Seal 自替换：触发回主屏转场（suspend）                  ← 新增
 
 同时把 `.standDown` 的断言从拼接式（`"case .standDown: return false"`）改成 `section()` 切分支后断语义（`"return false" in branch and "exit(0)" not in branch`）—— 插一条日志就让拼接式断言失效，而那种失败信息看着像「语义坏了」，实际只是文案挪了位置。
 
+**顺带修掉一处会污染诊断日志的重复触发**：批量链路的「回主页」此前没有 `.restart` 闸门（`if stage == .installing` 未按首次进入过滤）。`.installing` 会被**重复推送**（安装通道的 >1.0 哨兵 + 签名侧补发），所以会排出多个「回主页」任务 —— 这种重复本身是良性的（第一个任务转场后进程被挂起，后续任务不执行；转场失败时第一个 `exit(0)` 已结束进程），但**每个任务都会写一遍「上传完成 / 触发转场」日志**，恰好把这一轮新增的那段关键时序信息淹没。
+
+修法就是 §6 里早就写下的那句「让 `BatchRefreshSession.advanceStage` 返回 `Tick`」：
+
+```swift
+@discardableResult
+mutating func advanceStage(_ stage: SigningStage, at now: Date = Date()) -> InstallStageTimeline.Tick
+
+// consumeBatchEvent：
+let tick = batchRefreshSession?.advanceStage(stage) ?? .clear   // 上面有 guard 保证非 nil
+if stage == .installing, tick == .restart {
+    SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore: logStore)
+}
+```
+
+`guard batchRefreshSession != nil else { return }` 在 `consumeBatchEvent` 开头，所以加闸门**不会**引入「抽屉被关掉后不再回主页」的回归。单签那条链路本来就用同一个闸门，现在两条链路一致。
+
 ---
 
 ## 4. 守卫与测试
@@ -374,6 +391,7 @@ Seal 自替换：触发回主屏转场（suspend）                  ← 新增
   - 两个新单测文件里的**关键断言确实存在** —— 源码断言守「形状」，单测守「行为」，测试被删空不能仍然全绿。
 - **新增通用检查 `Simulator: device-only members must not be referenced by simulator code`**（见 §3.8）：把「模拟器切片不编译」的行整段抹成等长空白，再找出**只**在被抹掉部分里定义的顶层类型成员、却出现在抹后文本中的那些。
 - **新增通用检查 `#expect must not call a mutating method ...`**（见 §3.9）：mutating 方法名从 `Seal/` 里现取，再扫 `SealTests/**` 的 `#expect(...)` 实参。
+- **批量链路的「回主页」必须带 `.restart` 闸门**（见 §3.10）：`.installing` 重复推送时不得排出第二个「回主页」任务。
 - **「回主屏」链路的日志**（见 §3.10）：这条链路必须真的写日志且 `flush()`；「触发转场」的日志必须排在 `triggerHomeTransition` **之前**（断顺序，不断文案）；两条链路的调用点都必须传真实日志出口（`count(...) == 2`）。
 - **R09 通用化**：把「实参标签顺序必须与声明一致」做成可复用校验，覆盖 `AppRecord` / `signAndInstall` / `installSignedIPA` / `installCachedSignedIPAIfPossible`，并**断言扫到的调用点数下限** —— 本轮第一版正则把真实调用点（`coordinator.signAndInstall(`，前一个字符是 `.`）全部排除，变成「零调用点 ⇒ 零错误 ⇒ 绿」。
 - 新增 `squash()`：把多行代码压成一行式断言，不再在守卫里拼换行符 + 数缩进空格（缩进一改守卫就会莫名其妙地红）。
@@ -389,7 +407,7 @@ Seal 自替换：触发回主屏转场（suspend）                  ← 新增
 - `SealTests/Installation/SelfReplacementInstallGateTests.swift`（4 条）：已有安装在进行时第二笔必须被拒、安装结束后解锁、**超时不解锁**、连续超时永不重开。
 - `SealTests/Concurrency/HardTimeoutTests.swift` 补 1 条：`cancelsWorkOnTimeout: false` 时**工作所在任务**的 `Task.isCancelled` 仍为 `false`（断言必须打在 `HardTimeout` 自己创建的那个任务上 —— 在闭包里再套一层 `Task.detached` 就会测到新任务，测试会退化成永远通过）。
 
-结果：**208 源码断言 + 93 变异 PASS**，耗时约 50 秒。（旧断言 `count("if Self.isTimeoutInstallError(error) {") == 2` 因两个 `install` 重载合并成一份而降为 `1`，已同步改为「唯一的重试循环必须把超时当终态」。）
+结果：**209 源码断言 + 94 变异 PASS**，耗时约 50 秒。（旧断言 `count("if Self.isTimeoutInstallError(error) {") == 2` 因两个 `install` 重载合并成一份而降为 `1`，已同步改为「唯一的重试循环必须把超时当终态」。）
 
 ---
 
@@ -420,7 +438,7 @@ Seal 自替换：触发回主屏转场（suspend）                  ← 新增
 | 项 | 现状 | 需要的动作 |
 | --- | --- | --- |
 | 安装/上传超时预算偏长 | `mergedTimeout = min(1800, 180 + ipaMB×5) + 600`，20MB 包 ≈ 878 秒 | 是否缩短需用户拍板。缩短的代价是慢设备上的假超时：超时按**确定性拒绝**处理且不重试，但底层安装可能仍在跑 ⇒ 「装上了却记为失败」 |
-| 批量链路的「回主页」没有 `.restart` 闸门 | `consumeBatchEvent` 里 `if stage == .installing` 未按首次进入过滤，`.installing` 被重复推送时会排出多个「回主页」任务 | 已知且**良性**（第一个任务触发转场后进程被挂起，后续任务不会执行；转场失败时第一个 `exit(0)` 已结束进程），故本轮未动。若要统一，让 `BatchRefreshSession.advanceStage` 返回 `Tick` 即可 |
+| ~~批量链路的「回主页」没有 `.restart` 闸门~~ | **已修（§3.10）**：`consumeBatchEvent` 里 `if stage == .installing` 未按首次进入过滤 | 原先评估为**良性**（第一个任务触发转场后进程被挂起，后续任务不会执行；转场失败时第一个 `exit(0)` 已结束进程），但**每个任务都会写一遍「上传完成 / 触发转场」日志**，把真机排查最关键的那段时序信息淹没。已让 `BatchRefreshSession.advanceStage` 返回 `Tick`，批量链路与单签对齐 |
 | 问题 1 的**调用侧**证据 | 已坐实：真机日志里普通 App 安装 7 秒完成（`16:59:06→16:59:13`），而 Seal 自替换在 `16:53:57` 之后 93 秒无任何安装结论、进程仍活着且从未被替换 ⇒ 自替换的 `stageAndInstall` **没有返回**（§2.5） | 已通过看门狗把「永久卡住」变成「有界失败 + 可查日志」。剩下的只是下一轮真机日志复核 |
 | 自替换的安装调用**为什么不返回** | 仍未知，但已从「靠猜」变成「可观测」（§3.10）。**代码里有一处明确矛盾**：`SelfInstallAutoBackground` 文档说「iOS 只有在旧进程退出前台后才完成替换」，而 `MinimuxerInstallChannel` 的自替换分支写着「自替换也必须让 `installation_proxy` 完整返回；**提前 suspend 会冻结当前连接并留下旧 profile**」—— 可实际触发时机是**上传完成后 1.2 秒**，那时 `stageAndInstall` 显然还没返回。次要嫌疑是无线链路下 AFC 暂存 / installd 解压卡住 | **下一份真机日志即可判定**：看 `安装 自替换安装调用已返回：…` 这条**有没有出现**、以及它相对 `Seal 自替换：触发回主屏转场（suspend）` 的先后。若「已返回」永不出现 ⇒ `suspend` 截断了安装（坐实矛盾），候选修法是把转场触发点从「进入 `.installing`」推迟到「安装调用返回之后」，或改为只 `exit(0)` 不 `suspend`，需真机 A/B；若它出现在转场之前 ⇒ 问题在 AFC / installd 一侧 |
 | 问题 6 | 用户消息被截断（「6、签名、续签」） | 待用户补完 |

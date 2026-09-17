@@ -1546,7 +1546,10 @@ final class AppsViewModel: ObservableObject {
             batchRefreshSession?.currentAppName = app.displayName
             // 阶段推进集中走 advanceStage：它同时负责安装起点计时与上传进度的清理，
             // 避免「上一项的 87% / 已等待」泄漏到下一项。
-            batchRefreshSession?.advanceStage(stage)
+            // 它返回的 `Tick` 同时是「是否首次进入该阶段」的判据 —— 下面触发「回主页」要用。
+            // `?? .clear` 只是让类型确定下来；函数开头的 `guard batchRefreshSession != nil`
+            // 已经保证这里拿得到真实的 `Tick`。
+            let tick = batchRefreshSession?.advanceStage(stage) ?? .clear
             let itemState: BatchRefreshSession.Item.State = app.isSeal && (stage == .pushing || stage == .installing) ? .preparingSealUpdate : .running
             if app.isSeal && (stage == .pushing || stage == .installing) {
                 batchRefreshSession?.status = .preparingSealUpdate
@@ -1554,7 +1557,13 @@ final class AppsViewModel: ObservableObject {
                 // 批量续签 Seal：进入 .installing（上传完成）后同样自动回主页触发 iOS 替换，
                 // 与单签 SigningProgressView 行为一致。Seal 自续签必然替换运行中的自己，
                 // 进程会被新包终止，其后排队的续签项会一并中断（与手按 Home 相同）。
-                if stage == .installing {
+                //
+                // `.restart` 闸门：`.installing` 会被**重复推送**，不设闸门就会排出多个
+                // 「回主页」任务。这种重复本身是良性的（第一个任务转场后进程被挂起，后续
+                // 任务不会执行；转场失败时第一个 `exit(0)` 已结束进程），但**每个任务都会
+                // 写一遍「上传完成 / 触发转场」日志**，把真机排查最关键的那段时序信息淹没。
+                // 单签那条链路本来就用同一个闸门，这里与它对齐。
+                if stage == .installing, tick == .restart {
                     SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore: logStore)
                 }
             } else {

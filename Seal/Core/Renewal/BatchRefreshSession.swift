@@ -66,12 +66,25 @@ extension BatchRefreshSession {
     /// 起点规则与单签共用 `InstallStageTimeline`：这条规则以前在
     /// `AppsViewModel.updateSigningStage` 里另有一份拷贝，两处漂移不会编译失败，
     /// 只会让其中一条链路的计时变成假象。
-    mutating func advanceStage(_ stage: SigningStage, at now: Date = Date()) {
+    ///
+    /// **把 `Tick` 返回给调用方**，是为了让调用方也能用「是否首次进入该阶段」这个判据。
+    /// 批量续签 Seal 时要在进入 `.installing` 后触发「回主页」，而 `.installing` 会被
+    /// **重复推送**（安装通道的 >1.0 哨兵一次、签名侧补发一次）—— 不设闸门就会排出多个
+    /// 「回主页」任务。先前把这种重复评估为「良性」（第一个任务转场后进程被挂起，后续任务
+    /// 不执行；转场失败时第一个 `exit(0)` 已结束进程），但它**每个任务都会写一遍
+    /// 「上传完成 / 触发转场」日志**，把真机排查最关键的那段时序信息淹没。
+    /// 单签那条链路本来就用同一个闸门，这里与它对齐。
+    @discardableResult
+    mutating func advanceStage(
+        _ stage: SigningStage,
+        at now: Date = Date()
+    ) -> InstallStageTimeline.Tick {
         let tick = InstallStageTimeline.tick(entering: stage, currentStage: currentStage)
         installStartedAt = InstallStageTimeline.applied(tick, startedAt: installStartedAt, now: now)
         if stage != .pushing {
             currentInstallProgress = nil
         }
         currentStage = stage
+        return tick
     }
 }

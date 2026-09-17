@@ -600,6 +600,13 @@ def violations(load=read):
     check(apps_view.count(
               "SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore: logStore)") == 2,
           "R10: both signing paths must trigger the return-home with a real log outlet")
+    # 批量链路的「回主页」也必须带 `.restart` 闸门。`.installing` 会被重复推送
+    #（安装通道的 >1.0 哨兵 + 签名侧补发），不设闸门就会排出多个任务 ——
+    # 这种重复本身是良性的（第一个任务转场后进程被挂起，后续任务不执行），但**每个任务
+    # 都会写一遍「上传完成 / 触发转场」日志**，把真机排查最关键的那段时序信息淹没。
+    # 单签那条链路本来就有这个闸门，这里与它对齐。
+    check("if stage == .installing, tick == .restart {" in apps_view,
+          "R10: a repeated .installing push must not spawn a second return-home")
     # 界面自己再触发一次 = 双重「回主页」（两个系统转场 + 两个 exit(0) 兜底）。
     check("SelfInstallAutoBackground.returnToHomeAfterSealUpload" not in progress_view,
           "R10: the view must not trigger the return-home — it can be dismissed mid-install")
@@ -1682,6 +1689,12 @@ def main():
          "SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore: logStore)",
          "SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore: nil)",
          "R10: both signing paths must trigger the return-home with a real log outlet"),
+        # 去掉批量链路的 `.restart` 闸门：`.installing` 重复推送时会排出多个「回主页」任务，
+        # 每个都写一遍日志，把真机排查要看的时序淹没。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "                if stage == .installing, tick == .restart {",
+         "                if stage == .installing {",
+         "R10: a repeated .installing push must not spawn a second return-home"),
         # 让等待循环不再走被测过的 step()：函数还在，约束已经失效。
         ("Seal/Features/Apps/SigningProgressView.swift",
          "            switch step(for: app.applicationState) {",

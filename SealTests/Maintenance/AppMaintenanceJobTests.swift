@@ -219,6 +219,62 @@ struct AppMaintenanceJobTests {
     }
 
     @Test
+    /// 扩展 ID 必须进**宽松**受保护集合，**不**受 `signedArtifactStatus` 门槛影响。
+    ///
+    /// 严格 keep-map 只在 `signedArtifactStatus == .installed` 时才收扩展（那个取舍本身对：
+    /// 安装失败时扩展记录指向设备上并不存在的 profile，拿它当保留集合会把真在用的删掉）。
+    /// 但那个标记一旦陈旧，扩展 ID 就掉出**保护范围** ⇒ 变成回收候选，
+    /// 而扩展的设备端核验（`isAppInstalled`）恒为「没装」⇒ 删掉正在用的扩展 profile。
+    /// 2026-09-17 真机（构建 95）就是这么丢掉 LiveContainer 三个扩展的：
+    /// `候选 4，回收 3，已装保留 1`，主 App 被设备核验救下、三个扩展全删。
+    func protectedSetCoversExtensionsEvenWhenRecordIsNotMarkedInstalled() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let mainID = "com.example.seal.TEAMID"
+        let extensionID = "com.example.seal.TEAMID.ShareExtension"
+        let store = InMemoryAppStore(records: [
+            makeRecord(
+                appID: UUID(),
+                mappedBundleIdentifier: mainID,
+                provisioningProfileUUID: "AAAA-BBBB",
+                // 刻意**不**是 `.installed` —— 真机上记录陈旧的形态就是这种。
+                signedArtifactStatus: .available,
+                extensions: [
+                    AppExtensionRecord(
+                        name: "ShareExtension",
+                        originalBundleIdentifier: "com.example.ShareExtension",
+                        mappedBundleIdentifier: extensionID,
+                        provisioningProfileUUID: "CCCC-DDDD"
+                    )
+                ]
+            )
+        ])
+        let sweeper = RecordingProfileSweeper()
+
+        let job = makeJob(fixture, store: store, profileSweeper: sweeper)
+        _ = await job.run()
+
+        let keepMaps = await sweeper.receivedKeepMaps
+        let protectedSets = await sweeper.receivedProtectedSets
+        #expect(keepMaps.count == 1)
+        #expect(protectedSets.count == 1)
+
+        let keptKeys = Set(keepMaps.first?.keys ?? [])
+        let protected = protectedSets.first ?? []
+        // 严格集合里**不该**有扩展（它不是 `.installed`）。
+        let extensionInKeepMap = keptKeys.contains(extensionID)
+        #expect(extensionInKeepMap == false)
+        // 宽松集合里**必须**有扩展 —— 否则它会被当孤儿删掉。
+        let extensionProtected = protected.contains(extensionID)
+        #expect(extensionProtected == true)
+        let mainProtected = protected.contains(mainID)
+        #expect(mainProtected == true)
+        // 两个集合**不能是同一个** —— 合成一个就是这次真机事故的成因。
+        let identical = keptKeys == protected
+        #expect(identical == false)
+    }
+
+    @Test
     func sealRunningProfileOverridesTheRecordedValue() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -451,12 +507,18 @@ private actor RecordingProfileSweeper: StaleProfileSweeping {
     /// 同时记下「有没有要求回收孤儿」：这是「换 Apple ID 后旧 Team 后缀的 profile
     /// 到底会不会被清」的唯一开关，漏传就整条功能静默失效（不会编译失败）。
     private(set) var receivedReclaimFlags: [Bool] = []
+    /// 记下「宽松受保护集合」：它决定「谁不许成为回收候选」，
+    /// 与 keep-map（决定「留哪一份」）是两个不同的集合。
+    /// 调用方漏传 ⇒ 其它 App 的**扩展**会被当孤儿删掉（真机发生过）。
+    private(set) var receivedProtectedSets: [Set<String>] = []
 
     func sweepStaleProfiles(
         keepingByBundleID: [String: String],
+        protectedBundleIDs: Set<String>,
         reclaimSealOrphans: Bool
     ) async -> ProfileCleanupSummary {
         receivedKeepMaps.append(keepingByBundleID)
+        receivedProtectedSets.append(protectedBundleIDs)
         receivedReclaimFlags.append(reclaimSealOrphans)
         return ProfileCleanupSummary()
     }

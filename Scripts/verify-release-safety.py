@@ -372,6 +372,9 @@ def violations(load=read):
           "R08: idle maintenance must sweep stale device profiles")
     check("guard let uuid = record.provisioningProfileUUID" in maintenance_source,
           "R08: records without a profile UUID must be skipped, never guessed")
+    # 自替换结算清理（R11 里要用）：它是**唯一**能回收 Seal 自己那批 Team 变体的路径，
+    # 而它的保留集合只有 Seal 一个条目 ⇒ 其它 App 全靠宽松受保护集合兜住。
+    registrar_source = load("Seal/Core/Renewal/SelfAppRegistrar.swift")
     # 扩展记录是「乐观值」：applySigningResult 在签名阶段就写它，不等安装校验。
     # 签名成功但安装失败时，扩展记录指向一份设备上不存在的 profile ——
     # 拿它当保留集合会删掉真正在用的那一份，扩展当场失效。
@@ -471,10 +474,46 @@ def violations(load=read):
     #    与设备端不一致，就会把「正在用的那个」判成可回收 ⇒ 删掉活着的 profile。
     #    调用方目前确实会把 key 归一化成小写，但**这条判断的错法方向是删数据**，
     #    不能靠调用方约定来保证安全 —— 2026-09-17 就是被单测当场证伪的。
-    check("keepingByBundleID.keys.contains(where: { $0.lowercased() == lowered })"
+    check("keepingByBundleID.keys.contains(where: { normalized($0) == lowered })"
           in reclaim_source,
           "R11: the keep-map membership test must be case-insensitive — a case mismatch "
           "would classify a live profile as reclaimable")
+    # ①c **两个集合必须分开**（2026-09-17 真机事故的修法）。
+    #
+    #    判据是「不在保留集合里 ⇒ 成为候选」，所以「保留集合漏了谁」会直接变成「删掉谁」。
+    #    严格集合（`keepingByBundleID`）刻意宁缺勿滥 —— 拿不到可信 UUID 就不进集合；
+    #    宽松集合（`protectedBundleIDs`）宁滥勿缺 —— 记录里出现过就进。
+    #    一旦有人把后者合并进前者（或干脆删掉后者），**已装 App 的扩展 profile 会被删掉**：
+    #    扩展不是独立安装的 App，`isAppInstalled` 对它恒为 `false`，
+    #    设备端核验这道安全网对扩展完全是瞎的。
+    #    真机日志（构建 95）：`候选 4，回收 3，已装保留 1`，示例里主 App 与它的三个扩展并列。
+    check("protectedBundleIDs: Set<String>" in reclaim_source
+          and "protectedBundleIDs.contains(where: { normalized($0) == lowered })"
+          in reclaim_source,
+          "R11: the candidate rule needs a separate protected set — without it, extension "
+          "profiles of installed apps are reclaimed (device probing can't see extensions)")
+    # ①d 宽松集合的构造**不得**受 `signedArtifactStatus` 门槛影响。
+    #    严格 keep-map 要求 `.installed` 才收扩展（那个取舍是对的），但那个标记一旦陈旧，
+    #    扩展 ID 就掉出保护范围 ⇒ 被当孤儿删掉。
+    protected_parts = reclaim_source.split("static func protectedBundleIDs(records:", 1)
+    protected_body = squash(protected_parts[1]) if len(protected_parts) > 1 else ""
+    check(protected_body != ""
+          and "signedArtifactStatus" not in protected_body
+          and "record.extensions" in protected_body,
+          "R11: the protected set must collect extensions unconditionally — gating it on "
+          "signedArtifactStatus is exactly how live extension profiles got deleted")
+    # ①e 两个集合必须真的**贯通到设备层**，不能只在判据里存在。
+    #    判据再对，调用方传个空集合也等于没有保护。
+    for name, source in (("idle maintenance", maintenance_source),
+                         ("post-install cleanup", coordinator_source),
+                         ("self-replacement settle", registrar_source)):
+        check("ProfileReclaimPolicy.protectedBundleIDs(records:" in squash(strip_comments(source)),
+              f"R11: {name} must pass a record-derived protected set")
+    # ①f 受保护集合为空时**整轮不回收**（fail closed）。
+    #    记录读不到 ⇒ 保护范围未知 ⇒ 宁可这一轮不回收，也不能按「现有信息尽量删」办。
+    check("let reclaimEnabled = reclaimSealOrphans && protectedBundleIDs.isEmpty == false"
+          in squash(strip_comments(cleaner_source)),
+          "R11: an empty protected set must disable reclaim entirely (fail closed)")
     # ② 决策函数是**唯一**的安全边界，三个分支缺一不可。
     #    `.notInstalled` 必须**问过阳性对照**才可能返回 `.reclaim` —— 这是最容易被
     #    「简化」掉的一句：直接 `return .reclaim` 之后，形态判据与单测全都还在，
@@ -557,6 +596,109 @@ def violations(load=read):
     check("func maintenanceSweepEnablesSealOrphanReclaim()" in maintenance_tests
           and "receivedReclaimFlags" in maintenance_tests,
           "R11: the opt-in flag must stay covered by a real unit test")
+    # 受保护集合必须有单测，而且必须覆盖**两个方向**：
+    #   ① 扩展 ID 在集合里 ⇒ 不是候选（真机事故的直接修法）；
+    #   ② 同一个 ID **不**在集合里 ⇒ 确实是候选（否则 ① 可能只是因为「形态没匹配上」而通过，
+    #      也就是绿着坏掉 —— 判据被删空时测试照样全绿）。
+    check("func protectedExtensionIsNeverACandidate()" in reclaim_tests
+          and "func extensionIsCollectedEvenWhenRecordIsNotMarkedInstalled()" in reclaim_tests,
+          "R11: the protected set needs real unit tests (extension protected / still a "
+          "candidate without protection)")
+    protected_test_body = section(
+        reclaim_tests,
+        "func protectedExtensionIsNeverACandidate()",
+        "func protectedSetMatchingIsCaseInsensitive()"
+    )
+    check(protected_test_body.count("protectedBundleIDs: [extensionID]") >= 1
+          and protected_test_body.count("protectedBundleIDs: []") >= 1,
+          "R11: the protected-set test must assert both directions — with and without "
+          "protection — or it passes for the wrong reason")
+    # 构造侧：不得出现 `signedArtifactStatus` 门槛（源码断言已守实现，这里守**单测真的钉住了它**）。
+    check("func extensionIsCollectedWhenStatusIsNil()" in reclaim_tests,
+          "R11: the protected set must be tested with a nil install status")
+    # 三个调用点各自要有单测证明「真的传下去了」。
+    check("func protectedSetCoversExtensionsEvenWhenRecordIsNotMarkedInstalled()" in maintenance_tests,
+          "R11: idle maintenance must prove it passes the protected set")
+    settle_tests = load("SealTests/Renewal/SelfAppPendingHandoffTests.swift")
+    check("func settleCleanupCarriesProtectedBundleIDsForOtherAppsExtensions()" in settle_tests,
+          "R11: self-replacement settle cleanup must prove it passes the protected set — "
+          "its keep-map only holds Seal itself, so extensions have no other protection")
+
+    # R12: 批量续签的逐项成功日志 + 轮询日志降噪（2026-09-17 真机日志驱动）。
+    #
+    # ① 批量续签原来**一条逐项结果都不写** —— 「续签并安装成功」只在**单签**的
+    #    `AppsViewModel.signAndInstall` 里写，而批量走的是 `RenewalCoordinator` →
+    #    `SigningCoordinator.signAndInstall`。后果是真机上「某个 App 到底成没成」
+    #    只能靠推断：2026-09-17 用户续签 LiveContainer 后界面停在「安装中」，
+    #    取消后看到 App 像是重装了，却无法确认装没装上、描述文件是不是新申请的。
+    #    排障入口只有导出的日志，而当时日志里**一个字都没有**。
+    renewal_source = strip_comments(load("Seal/Core/Renewal/RenewalCoordinator.swift"))
+    check('"SEAL-RENEW-020"' in renewal_source
+          and "Self.describeProfile(updated)" in renewal_source,
+          "R12: the batch renewal path must log a per-item success line")
+    # 这条日志必须带上**描述文件身份**（UUID + 创建/到期时间）。
+    # 只写「成功」两个字回答不了那个真正的问题：「换的是新申请的那份，还是旧的那份」。
+    # 断言的是 `describeProfile` 的**函数体**而不是整个文件 —— 后者在函数被改成
+    # `return ""` 时照样通过（定义还在，只是不再产出任何字段）。
+    # 用 `section()` 而不是 `split(...)[1]`：后者会取到**文件尾**，
+    # 于是「函数体里有没有这个字段」变成了「文件后面还有没有这个字段」。
+    profile_body = squash(section(
+        renewal_source,
+        "static func describeProfile(",
+        "private func emitFailure("
+    ))
+    check(profile_body != ""
+          and "provisioningProfileUUID" in profile_body
+          and "provisioningProfileCreationDate" in profile_body
+          and "provisioningProfileExpirationDate" in profile_body
+          and "ISO8601DateFormatter" in profile_body,
+          "R12: the per-item success line must carry the profile identity (UUID + creation "
+          "+ expiry), ISO8601-formatted so it can be compared with Apple's portal")
+    # 实参漏传不会编译失败，只会让这条日志重新变成空白 —— 与 `reclaimSealOrphans`
+    # 属同一类静默失效（见 R11 ⑦）。必须限定在 `RenewalCoordinator` 的构造块里查：
+    # `logStore: logStore` 在 `AppContainer` 里出现 8 次，全局匹配会让
+    # 「只删掉这一处」的变异检不出来。
+    renewal_init = section(
+        load("Seal/Application/AppContainer.swift"),
+        "let renewalCoordinator = RenewalCoordinator(",
+        "let appRecordRecovery"
+    )
+    check("logStore: logStore" in squash(renewal_init),
+          "R12: the batch coordinator must be given a log store — a missing argument "
+          "compiles fine and silently blanks the per-item log again")
+    # 源码断言只能证明「字段被写出来了」，证明不了格式化真的产出了 UUID 与时间
+    # （可能被脱敏吃掉、字段可能是 nil）。所以那条日志里唯一可测的纯函数要有单测，
+    # 而且单测必须断言**完整**的 ISO8601 形态 —— 断言 `contains("T")` 这种单字符会
+    # 同时匹配 `contains(_: Character)` 与 `contains(_: String)`，宏展开难以预料。
+    log_tests = load("SealTests/Renewal/RenewalCoordinatorLogTests.swift")
+    check("func profileIdentityIncludesUUIDAndBothDates()" in log_tests
+          and "func missingDatesAreSpelledOutRatherThanOmitted()" in log_tests,
+          "R12: the per-item success line needs a real unit test for its profile identity")
+    check('"2026-09-17T05:28:58Z"' in log_tests,
+          "R12: the ISO8601 unit test must assert the full form, not a single character")
+
+    # ② 轮询日志必须保持删除状态（2026-09-17 真机日志量化）。
+    #
+    # `restorePendingBatchResultIfNeeded` 由 `load()` 每 ~9 秒调用一次，而
+    # 「没有待恢复的数据」与「当前有会话在进行」都是**正常路径**。
+    # 那两条是 09-16「93 秒空白」排查时加的临时脚手架，实测占了全部日志的
+    # **30%（73/244 行）**，把真实信号挤出了只保留 1000 条的环形缓冲。
+    view_model_code = strip_comments(load("Seal/Features/Apps/AppsViewModel.swift"))
+    check("[BatchDebug]" not in view_model_code,
+          "R12: the temporary [BatchDebug] scaffolding must stay removed — it was 30% of "
+          "the log ring buffer and pushed real signal out")
+    # 但「**确实有待恢复的数据、却被跳过**」是异常，仍要留痕 —— 那才是「结果丢了」的
+    # 征兆。两条一起断言：正常路径静默（裸 `return`）＋ 异常路径有条件日志。
+    restore_body = squash(section(
+        view_model_code,
+        "private func restorePendingBatchResultIfNeeded()",
+        "private func clearPendingBatchResult()"
+    ))
+    check(restore_body != ""
+          and "guard let payload = pendingPayload else { return }" in restore_body
+          and "if pendingPayload != nil {" in restore_body,
+          "R12: the restore poll path must stay silent on the normal path — only "
+          "'pending data exists but the restore was skipped' deserves a log line")
 
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
@@ -1990,9 +2132,39 @@ def main():
         # 把 keep-map 命中判断退回「精确查表」：key 大小写不一致时会把「正在用的那个」
         # 判成可回收 ⇒ 删掉活着的 profile。（2026-09-17 真的这样挂过一次 CI。）
         ("Seal/Core/Maintenance/ProfileReclaimPolicy.swift",
-         "guard keepingByBundleID.keys.contains(where: { $0.lowercased() == lowered }) == false else {",
+         "guard keepingByBundleID.keys.contains(where: { normalized($0) == lowered }) == false else {",
          "guard keepingByBundleID[lowered] == nil else {",
          "R11: the keep-map membership test must be case-insensitive"),
+        # 删掉宽松受保护集合那一句：扩展 ID 重新变成候选，而设备端核验对扩展恒答「没装」
+        # ⇒ 已装 App 的扩展 profile 被删（2026-09-17 真机事故）。
+        ("Seal/Core/Maintenance/ProfileReclaimPolicy.swift",
+         "guard protectedBundleIDs.contains(where: { normalized($0) == lowered }) == false else {",
+         "guard true else {",
+         "R11: the candidate rule needs a separate protected set"),
+        # 给宽松集合加回 `.installed` 门槛：与严格 keep-map 变成同一个集合，
+        # 标记一陈旧扩展就掉出保护范围 —— 这正是事故的形态。
+        ("Seal/Core/Maintenance/ProfileReclaimPolicy.swift",
+         "            for extensionRecord in record.extensions {\n"
+         "                if let extensionID = effectiveBundleID(",
+         "            guard record.signedArtifactStatus == .installed else { continue }\n"
+         "            for extensionRecord in record.extensions {\n"
+         "                if let extensionID = effectiveBundleID(",
+         "R11: the protected set must collect extensions unconditionally"),
+        # 调用点漏传受保护集合（传空集）：判据本身没被改，但保护等于没有。
+        ("Seal/Core/Maintenance/AppMaintenanceJob.swift",
+         "protectedBundleIDs: ProfileReclaimPolicy.protectedBundleIDs(records: records),",
+         "protectedBundleIDs: [],",
+         "R11: idle maintenance must pass a record-derived protected set"),
+        # 结算路径漏传：它的 keep-map 只有 Seal 自己，别的 App 的扩展全靠这个集合。
+        ("Seal/Core/Renewal/SelfAppRegistrar.swift",
+         "protectedBundleIDs: ProfileReclaimPolicy.protectedBundleIDs(records: allRecords)",
+         "protectedBundleIDs: []",
+         "R11: self-replacement settle must pass a record-derived protected set"),
+        # 去掉 fail closed：保护范围未知时照样按「现有信息尽量删」办。
+        ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
+         "let reclaimEnabled = reclaimSealOrphans && protectedBundleIDs.isEmpty == false",
+         "let reclaimEnabled = reclaimSealOrphans",
+         "R11: an empty protected set must disable reclaim entirely"),
         # 把那条「混合大小写 key」的单测改成小写：源码断言（实现里写了 lowercased() 比较）
         # 仍然全绿，但测试已经守不住这个行为了。
         ("SealTests/Maintenance/ProfileReclaimPolicyTests.swift",
@@ -2017,6 +2189,53 @@ def main():
          "    func maintenanceSweepEnablesSealOrphanReclaim() async throws {",
          "    func maintenanceSweepEnablesSealOrphanReclaimRenamed() async throws {",
          "R11: the opt-in flag must stay covered by a real unit test"),
+        # ── R12：批量续签的逐项成功日志（2026-09-17 真机反馈）──
+        # 删掉逐项成功日志：批量路径重新变成「日志里没有结论」，
+        # 用户无法判断「某个 App 到底成没成、描述文件是不是新申请的」。
+        ("Seal/Core/Renewal/RenewalCoordinator.swift",
+         '                    code: "SEAL-RENEW-020"',
+         '                    code: "SEAL-RENEW-020-REMOVED"',
+         "R12: the batch renewal path must log a per-item success line"),
+        # 日志还在，但不再带描述文件身份：看起来「有留痕」，
+        # 实际回答不了那个真正的问题（换的是新申请的那份，还是旧的那份）。
+        ("Seal/Core/Renewal/RenewalCoordinator.swift",
+         "描述文件 \\(Self.describeProfile(updated))",
+         "描述文件已更新",
+         "R12: the batch renewal path must log a per-item success line"),
+        # 描述文件身份里丢掉到期时间：UUID 与创建时间都在，唯独少了「还能用多久」。
+        ("Seal/Core/Renewal/RenewalCoordinator.swift",
+         "let expires = record.provisioningProfileExpirationDate",
+         "let expires: Date? = nil",
+         "R12: the per-item success line must carry the profile identity"),
+        # 把 ISO8601 换成本地化格式：导出日志的人可能不在中文环境里，
+        # 而且没法直接和 Apple 门户返回的时间对照。
+        ("Seal/Core/Renewal/RenewalCoordinator.swift",
+         "let formatter = ISO8601DateFormatter()",
+         "let formatter = DateFormatter()",
+         "R12: the per-item success line must carry the profile identity"),
+        # 构造点漏传日志库：编译不失败，只是这条日志重新变空白。
+        ("Seal/Application/AppContainer.swift",
+         "                logStore: logStore\n            )\n            let appRecordRecovery = AppRecordRecovery(",
+         "                logStore: nil\n            )\n            let appRecordRecovery = AppRecordRecovery(",
+         "R12: the batch coordinator must be given a log store"),
+        # 把那条 ISO8601 单测改宽成单字符断言：源码断言仍然全绿，
+        # 但测试已经守不住「时间真的是 ISO8601」了（单字符会同时匹配 Character 重载）。
+        ("SealTests/Renewal/RenewalCoordinatorLogTests.swift",
+         '        #expect(text.contains("2026-09-17T05:28:58Z"))',
+         '        #expect(text.contains("T"))',
+         "R12: the ISO8601 unit test must assert the full form"),
+        # ── R12：轮询日志降噪（2026-09-17 真机日志量化：30% 是噪音）──
+        # 把「有待恢复数据才留痕」改回无条件留痕：`load()` 每 9 秒一次，
+        # 立刻回到「三成日志是噪音、真实信号被挤出环形缓冲」的状态。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "            if pendingPayload != nil {\n",
+         "            if true {\n",
+         "R12: the restore poll path must stay silent on the normal path"),
+        # 重新引入临时脚手架：证明「[BatchDebug] 已清干净」这条 not-in 断言真的会红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "        let pendingPayload = loadPendingBatchResultPayload()",
+         "        let pendingPayload = loadPendingBatchResultPayload()\n        Task { try? await logStore?.append(category: .renewal, level: .info, message: \"[BatchDebug] restore poll\", code: \"SEAL-BATCH-DEBUG-9\") }",
+         "R12: the temporary [BatchDebug] scaffolding must stay removed"),
         ("SealTests/Maintenance/AppMaintenanceJobTests.swift",
          "            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",\n            signedArtifactStatus: signedArtifactStatus,",
          "            signedArtifactStatus: signedArtifactStatus,\n            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",",

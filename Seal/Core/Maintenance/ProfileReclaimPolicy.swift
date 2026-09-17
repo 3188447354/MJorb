@@ -45,16 +45,27 @@ enum ProfileReclaimPolicy {
     ///
     /// **只是候选** —— 还必须过 `decision(probe:positiveControlPassed:)` 才允许删除。
     ///
+    /// ## ⚠️ 两个集合必须分开，绝不能合成一个
+    ///
+    /// - `keepingByBundleID`（**严格**）：决定「同一 Bundle ID 的多份 profile 留哪一份」。
+    ///   它**刻意**宁缺勿滥 —— 拿不到可信 UUID 就整条不进集合。
+    /// - `protectedBundleIDs`（**宽松**）：决定「谁**不许**成为候选」。只要 Seal 记录里
+    ///   出现过这个 Bundle ID 就进来，**不要求** `signedArtifactStatus == .installed`。
+    ///
+    /// 判据永远是「**宽松的决定不删，严格的决定留哪份**」。
+    /// 反过来用严格集合决定删谁，一定会删多 —— 2026-09-17 真机就是这么丢掉
+    /// 已装 App 的扩展 profile 的（见 `protectedBundleIDs(records:)` 的说明）。
+    ///
     /// - Parameters:
     ///   - bundleID: 设备端 profile 里的 Bundle ID（大小写不敏感）。
     ///   - keepingByBundleID: 当前在用的保留集合。**key 的大小写不敏感** —— 见下。
+    ///   - protectedBundleIDs: Seal 记录里出现过的全部 Bundle ID（含扩展）。
     static func isReclaimableOrphan(
         bundleID: String,
-        keepingByBundleID: [String: String]
+        keepingByBundleID: [String: String],
+        protectedBundleIDs: Set<String>
     ) -> Bool {
-        let lowered = bundleID
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
+        let lowered = normalized(bundleID)
         guard lowered.isEmpty == false else { return false }
         // 当前在用的由 keep-map 决定保留哪一份，不走这条路径。
         //
@@ -64,13 +75,77 @@ enum ProfileReclaimPolicy {
         // 不能靠「调用方一定记得转小写」这种约定来保证安全。
         // 2026-09-17 被单测当场证伪：`currentBundleIdentifierIsNeverACandidate` 传了
         // 混合大小写的 key，精确查表没命中 ⇒ 把「正在用的那个」判成了可回收。
-        guard keepingByBundleID.keys.contains(where: { $0.lowercased() == lowered }) == false else {
+        guard keepingByBundleID.keys.contains(where: { normalized($0) == lowered }) == false else {
+            return false
+        }
+        // ② 宽松集合：Seal 记录里出现过的一律不当候选。
+        //
+        // 这一条是**扩展的唯一保护**：扩展不是独立安装的 App，
+        // `isAppInstalled` 对它恒为 `false`，`decision` 里的设备端核验完全瞎。
+        // 少了这一条，已装 App 的扩展 profile 会被删掉（真机上真的发生过）。
+        guard protectedBundleIDs.contains(where: { normalized($0) == lowered }) == false else {
             return false
         }
         // 标记前后都必须有内容：`com.foo.seal.` 本身不是一个 Bundle ID。
         guard let range = lowered.range(of: sealGeneratedMarker) else { return false }
         return range.lowerBound > lowered.startIndex
             && range.upperBound < lowered.endIndex
+    }
+
+    /// 归一化：去空白 + 小写。Bundle ID 大小写不敏感，查表前一律走这里。
+    static func normalized(_ bundleID: String) -> String {
+        bundleID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    /// 「记录里哪个字段代表生效的 Bundle ID」—— **唯一**出处。
+    ///
+    /// `mappedBundleIdentifier` 优先，为空/全空白时回退 `preferredBundleIdentifier`。
+    /// 提取出来是因为 `AppMaintenanceJob.profileKeepMap` 与 `protectedBundleIDs(records:)`
+    /// 都要用它 —— 同一规则抄两份，迟早漂移。
+    static func effectiveBundleID(mapped: String?, preferred: String?) -> String? {
+        guard let raw = mapped ?? preferred else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// 构造**宽松**的「受保护 Bundle ID 集合」：Seal 记录里出现过的全部 Bundle ID。
+    ///
+    /// ## 为什么扩展必须**无条件**进来（不看 `signedArtifactStatus`）
+    ///
+    /// `AppMaintenanceJob.profileKeepMap` 只把扩展收进**严格**集合、且要求
+    /// `signedArtifactStatus == .installed`。那个取舍本身是对的（安装失败时扩展记录指向
+    /// 设备上并不存在的 profile，拿它当保留集合会把真在用的那份删掉）。
+    ///
+    /// 但它有个**没被考虑到的另一侧**：严格集合同时被当成了「候选过滤集合」，
+    /// 于是那个标记一旦陈旧，扩展 ID 就掉出保护范围 ⇒ 变成回收候选。
+    /// 而扩展的设备端核验恒为「没装」⇒ 直接删掉正在用的扩展 profile。
+    ///
+    /// 真机实证（2026-09-17，构建 95）：
+    /// `候选 4，回收 3，已装保留 1`，示例里主 App 与它的三个扩展并列 ——
+    /// 主 App 被设备端核验救下，三个扩展全删。
+    ///
+    /// ⇒ 宽松集合**只**用来回答「谁不许成为候选」，不回答「留哪一份」，
+    /// 所以这里可以（也必须）宁滥勿缺。
+    static func protectedBundleIDs(records: [AppRecord]) -> Set<String> {
+        var ids: Set<String> = []
+        for record in records {
+            if let main = effectiveBundleID(
+                mapped: record.mappedBundleIdentifier,
+                preferred: record.preferredBundleIdentifier
+            ) {
+                ids.insert(main)
+            }
+            // ⚠️ 扩展**不**加 `signedArtifactStatus == .installed` 门槛，理由见上。
+            for extensionRecord in record.extensions {
+                if let extensionID = effectiveBundleID(
+                    mapped: extensionRecord.mappedBundleIdentifier,
+                    preferred: nil
+                ) {
+                    ids.insert(extensionID)
+                }
+            }
+        }
+        return ids
     }
 
     // MARK: - 设备端核验

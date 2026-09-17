@@ -1372,8 +1372,17 @@ actor SigningCoordinator {
             keepingByBundleID[profile.bundleIdentifier] = profile.uuid
         }
         Task {
+            // 宽松受保护集合：Seal 记录里出现过的**全部** Bundle ID（含扩展，不要求
+            // `signedArtifactStatus == .installed`）。与上面 `keepingByBundleID`（只有本次
+            // 安装产物里的那几个 ID）是**两个不同的集合**，见
+            // `ProfileReclaimPolicy.isReclaimableOrphan`。
+            // 少了它，其它 App 的扩展 ID 会变成回收候选，而扩展的设备端核验恒为「没装」
+            // ⇒ 删掉正在用的扩展 profile（2026-09-17 真机发生过）。
+            // 读不到记录时集合为空 ⇒ `removeProfiles` fail closed，整轮不回收（路径 1 不受影响）。
+            let records = (try? await appStore.fetchAll()) ?? []
             let summary = await DeviceProfileCleaner.removeStaleProfiles(
                 keepingByBundleID: keepingByBundleID,
+                protectedBundleIDs: ProfileReclaimPolicy.protectedBundleIDs(records: records),
                 reclaimSealOrphans: true
             )
             try? await logStore?.append(

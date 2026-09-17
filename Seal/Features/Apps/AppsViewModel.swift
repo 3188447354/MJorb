@@ -1386,7 +1386,7 @@ final class AppsViewModel: ObservableObject {
 
     func dismissBatchRefresh() {
         guard let batchRefreshSession else { return }
-        Task { try? await logStore?.append(category: .renewal, level: .info, message: "[BatchDebug] dismissBatchRefresh called, status=\(batchRefreshSession.status)", code: "SEAL-BATCH-DEBUG-6") }
+        Task { try? await logStore?.append(category: .renewal, level: .info, message: "批量续签结果抽屉已关闭（\(batchRefreshSession.status)）", code: "SEAL-RENEW-025") }
         switch batchRefreshSession.status {
         case .preparing, .running, .preparingSealUpdate:
             return
@@ -1657,7 +1657,7 @@ final class AppsViewModel: ObservableObject {
 
     private func persistPendingBatchResultForSealUpdate() {
         guard let session = batchRefreshSession else {
-            Task { try? await logStore?.append(category: .renewal, level: .warning, message: "[BatchDebug] persist skipped: batchRefreshSession is nil", code: "SEAL-BATCH-DEBUG-1") }
+            Task { try? await logStore?.append(category: .renewal, level: .warning, message: "批量续签结果未能持久化：当前没有进行中的会话", code: "SEAL-RENEW-022") }
             return
         }
         let itemPayload = session.items.map { item -> [String: Any] in
@@ -1682,26 +1682,37 @@ final class AppsViewModel: ObservableObject {
         if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: Self.pendingBatchResultFileURL, options: .atomic)
         }
-        Task { try? await logStore?.append(category: .renewal, level: .info, message: "[BatchDebug] persisted: total=\(session.total) succeeded=\(succeeded) failed=\(session.failed) items=\(itemPayload.count)", code: "SEAL-BATCH-DEBUG-2") }
+        Task { try? await logStore?.append(category: .renewal, level: .info, message: "批量续签结果已持久化（共 \(session.total)，成功 \(succeeded)，失败 \(session.failed)，明细 \(itemPayload.count) 项）", code: "SEAL-RENEW-023") }
     }
 
-    private func restorePendingBatchResultIfNeeded() {
-        guard batchRefreshSession == nil, batchRefreshTask == nil else {
-            Task { try? await logStore?.append(category: .renewal, level: .warning, message: "[BatchDebug] restore skipped: session=\(batchRefreshSession != nil) task=\(batchRefreshTask != nil)", code: "SEAL-BATCH-DEBUG-3") }
-            return
-        }
-        // 优先从文件读取（更可靠，避免 Seal 自签覆盖安装时 UserDefaults 丢失），文件没有再回退到 UserDefaults
-        let payload: [String: Any]?
+    /// 读取「待恢复的批量续签结果」载荷。
+    ///
+    /// 优先从文件读取（更可靠，避免 Seal 自签覆盖安装时 UserDefaults 丢失），
+    /// 文件没有再回退到 UserDefaults。
+    private func loadPendingBatchResultPayload() -> [String: Any]? {
         if let fileData = try? Data(contentsOf: Self.pendingBatchResultFileURL),
            let filePayload = try? JSONSerialization.jsonObject(with: fileData) as? [String: Any] {
-            payload = filePayload
-        } else {
-            payload = UserDefaults.standard.dictionary(forKey: Self.pendingBatchResultKey)
+            return filePayload
         }
-        guard let payload else {
-            Task { try? await logStore?.append(category: .renewal, level: .info, message: "[BatchDebug] restore skipped: no pending data in file or UserDefaults", code: "SEAL-BATCH-DEBUG-4") }
+        return UserDefaults.standard.dictionary(forKey: Self.pendingBatchResultKey)
+    }
+
+    /// 恢复「批量续签结果」。
+    ///
+    /// ⚠️ **这里刻意不写轮询日志。** 本函数由 `load()` 每 ~9 秒调用一次，而
+    /// 「没有待恢复的数据」与「当前有会话在进行」都是**正常路径**。
+    /// 2026-09-17 真机日志实测：原先这两条轮询日志占了全部日志的 **30%**（73/244 行），
+    /// 把真实信号挤出了只保留 1000 条的环形缓冲。
+    /// 唯一值得留痕的是「**确实有待恢复的数据、却被跳过**」—— 那才是「结果丢了」的征兆。
+    private func restorePendingBatchResultIfNeeded() {
+        let pendingPayload = loadPendingBatchResultPayload()
+        guard batchRefreshSession == nil, batchRefreshTask == nil else {
+            if pendingPayload != nil {
+                Task { try? await logStore?.append(category: .renewal, level: .warning, message: "待恢复的批量续签结果被跳过：当前有进行中的会话或结果抽屉仍开着", code: "SEAL-RENEW-021") }
+            }
             return
         }
+        guard let payload = pendingPayload else { return }
         let succeeded = payload["succeeded"] as? Int ?? 0
         let failed = payload["failed"] as? Int ?? 0
         let total = payload["total"] as? Int ?? max(succeeded + failed, 0)
@@ -1727,7 +1738,7 @@ final class AppsViewModel: ObservableObject {
             }
         }
         batchRefreshSession = restored
-        Task { try? await logStore?.append(category: .renewal, level: .info, message: "[BatchDebug] restored: total=\(total) succeeded=\(succeeded) failed=\(failed) items=\(restored.items.count) status=completed", code: "SEAL-BATCH-DEBUG-5") }
+        Task { try? await logStore?.append(category: .renewal, level: .info, message: "批量续签结果已从持久化载荷恢复（共 \(total)，成功 \(succeeded)，失败 \(failed)，明细 \(restored.items.count) 项）", code: "SEAL-RENEW-024") }
     }
 
     private func clearPendingBatchResult() {

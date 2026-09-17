@@ -93,6 +93,54 @@ struct SelfAppPendingHandoffTests {
         #expect(try await fixture.transactionStore.loadPending() == nil)
     }
 
+    /// 结算清理的保留集合**只有 Seal 自己一个条目** ⇒ 其它 App 的 Bundle ID 全是候选。
+    /// 主 App 靠设备端核验能救回来，**扩展救不回来**（扩展不是独立安装的 App，
+    /// `isAppInstalled` 恒为 `false`）—— 2026-09-17 真机（构建 95）就是这么丢掉
+    /// LiveContainer 三个扩展的 profile 的：`候选 4，回收 3，已装保留 1`。
+    ///
+    /// 所以 `protectedBundleIDs` 是这条路径**唯一**能保护扩展的东西，必须真的传下去。
+    @Test
+    func settleCleanupCarriesProtectedBundleIDsForOtherAppsExtensions() async throws {
+        let fixture = try await ReplacementRegistrarFixture.make(action: .settle)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let otherMain = "com.example.livecontainer.seal.TEAM"
+        let otherExtension = "com.example.livecontainer.seal.TEAM.ShareExtension"
+        try await fixture.appStore.save(AppRecord(
+            id: UUID(),
+            originalBundleIdentifier: "com.example.livecontainer",
+            mappedBundleIdentifier: otherMain,
+            name: "另一个 App",
+            version: "1.0",
+            buildNumber: "1",
+            size: 1,
+            state: .installed,
+            provisioningProfileUUID: "OTHER-PROFILE",
+            ipaRelativePath: "Apps/Other/Original.ipa",
+            signedArtifactStatus: .installed,
+            importedAt: .distantPast,
+            extensions: [
+                AppExtensionRecord(
+                    name: "ShareExtension",
+                    originalBundleIdentifier: "com.example.ShareExtension",
+                    mappedBundleIdentifier: otherExtension,
+                    provisioningProfileUUID: "OTHER-EXT-PROFILE"
+                )
+            ]
+        ))
+
+        try await fixture.registrar.ensureRegistered()
+
+        let requests = await fixture.profileCleaner.requests
+        #expect(requests.count == 1)
+        let protected = requests.first?.protectedBundleIDs ?? []
+        // 其它 App 的扩展必须在受保护集合里 —— 这是它唯一的保护。
+        let extensionProtected = protected.contains(otherExtension)
+        #expect(extensionProtected == true)
+        let mainProtected = protected.contains(otherMain)
+        #expect(mainProtected == true)
+    }
+
     /// 自替换结算清理是**唯一**会回收 Seal 自己那份 profile 堆积的路径（Seal 的自更新不走
     /// `installSignedIPA`，所以「安装后旧描述文件清理」根本轮不到它）。而它原先只把摘要写进
     /// **事务审计** —— 排障时能拿到的只有日志，于是真机上 Seal 堆了 16 份旧 profile，

@@ -8,7 +8,11 @@ import Testing
 /// 只会在真机上删掉正在用的 profile，让对应 App 立刻无法启动。
 /// 所以这里要同时钉住两个方向：
 ///   1. 该回收的形态必须认得出来（否则功能空转、堆积继续）；
-///   2. 当前在用的、以及**没带 Seal 标记**的必须认不出来（否则误删）。
+///   2. 当前在用的、受保护的、以及**没带 Seal 标记**的必须认不出来（否则误删）。
+///
+/// 判据里有**两个集合**，别混淆（2026-09-17 真机事故的成因就是合成一个）：
+///   - `keepingByBundleID`（严格）：决定「同一 Bundle ID 的多份 profile 留哪一份」；
+///   - `protectedBundleIDs`（宽松）：决定「谁**不许**成为候选」。
 @Suite("旧 Team 变体 profile 的回收判据")
 struct ProfileReclaimPolicyTests {
     /// 真机实测的形态：普通 App = `<原始>.seal.<team>`。
@@ -17,7 +21,8 @@ struct ProfileReclaimPolicyTests {
         #expect(
             ProfileReclaimPolicy.isReclaimableOrphan(
                 bundleID: "com.kdt.livecontainer.seal.3432ZHJUF9",
-                keepingByBundleID: ["com.kdt.livecontainer.seal.KYRJV2U7WS": "LIVE-UUID"]
+                keepingByBundleID: ["com.kdt.livecontainer.seal.KYRJV2U7WS": "LIVE-UUID"],
+                protectedBundleIDs: []
             )
         )
     }
@@ -30,7 +35,8 @@ struct ProfileReclaimPolicyTests {
         #expect(
             ProfileReclaimPolicy.isReclaimableOrphan(
                 bundleID: "com.mjorb.seal.TB95F327DS",
-                keepingByBundleID: ["com.mjorb.seal.KYRJV2U7WS": "LIVE-UUID"]
+                keepingByBundleID: ["com.mjorb.seal.KYRJV2U7WS": "LIVE-UUID"],
+                protectedBundleIDs: []
             )
         )
     }
@@ -42,7 +48,8 @@ struct ProfileReclaimPolicyTests {
         #expect(
             ProfileReclaimPolicy.isReclaimableOrphan(
                 bundleID: "com.kdt.livecontainer.seal.KYRJV2U7WS",
-                keepingByBundleID: keep
+                keepingByBundleID: keep,
+                protectedBundleIDs: []
             ) == false
         )
     }
@@ -54,15 +61,90 @@ struct ProfileReclaimPolicyTests {
         #expect(
             ProfileReclaimPolicy.isReclaimableOrphan(
                 bundleID: "com.KDT.LiveContainer.Seal.KYRJV2U7WS",
-                keepingByBundleID: keep
+                keepingByBundleID: keep,
+                protectedBundleIDs: []
             ) == false
         )
         #expect(
             ProfileReclaimPolicy.isReclaimableOrphan(
                 bundleID: "com.KDT.LiveContainer.Seal.3432ZHJUF9",
-                keepingByBundleID: keep
+                keepingByBundleID: keep,
+                protectedBundleIDs: []
             )
         )
+    }
+
+    // MARK: - 宽松受保护集合（`protectedBundleIDs`）
+
+    /// **这条对应 2026-09-17 真机事故**：已装 App 的扩展 profile 被当孤儿删掉。
+    ///
+    /// 扩展不是独立安装的 App，`isAppInstalled` 对它恒为 `false` ——
+    /// 设备端核验这道安全网**对扩展完全瞎**。所以扩展唯一的保护就是
+    /// 「它的 Bundle ID 出现在宽松集合里 ⇒ 根本不成为候选」。
+    ///
+    /// 真机日志（构建 95）：`候选 4，回收 3，已装保留 1`，
+    /// 示例里主 App 与它的三个扩展并列 —— 主 App 被设备核验救下，三个扩展全删。
+    @Test
+    func protectedExtensionIsNeverACandidate() {
+        let extensionID = "com.example.livecontainer.seal.TEAM.ShareExtension"
+        #expect(
+            ProfileReclaimPolicy.isReclaimableOrphan(
+                bundleID: extensionID,
+                keepingByBundleID: [:],
+                protectedBundleIDs: [extensionID]
+            ) == false
+        )
+        // 同一个 ID 不在受保护集合里时，它确实**会**成为候选 ——
+        // 否则上一条可能只是因为「形态没匹配上」而通过（绿着坏掉）。
+        #expect(
+            ProfileReclaimPolicy.isReclaimableOrphan(
+                bundleID: extensionID,
+                keepingByBundleID: [:],
+                protectedBundleIDs: []
+            )
+        )
+    }
+
+    /// 受保护集合的比对也必须大小写不敏感 —— 两个集合走的是同一类字符串，
+    /// 设备端返回的大小写不受我们控制。
+    @Test
+    func protectedSetMatchingIsCaseInsensitive() {
+        let extensionID = "com.example.livecontainer.seal.TEAM.ShareExtension"
+        #expect(
+            ProfileReclaimPolicy.isReclaimableOrphan(
+                bundleID: extensionID,
+                keepingByBundleID: [:],
+                protectedBundleIDs: [extensionID.lowercased()]
+            ) == false
+        )
+        #expect(
+            ProfileReclaimPolicy.isReclaimableOrphan(
+                bundleID: extensionID.lowercased(),
+                keepingByBundleID: [:],
+                protectedBundleIDs: [extensionID.uppercased()]
+            ) == false
+        )
+    }
+
+    /// 受保护集合**只**负责「不删谁」，不负责放宽形态判据：
+    /// 集合为空时，规则必须与从前完全一致（该认出来的仍然认出来）。
+    @Test
+    func emptyProtectedSetDoesNotWidenTheCandidateRule() {
+        let orphan = "com.kdt.livecontainer.seal.3432ZHJUF9"
+        let withEmptySet = ProfileReclaimPolicy.isReclaimableOrphan(
+            bundleID: orphan,
+            keepingByBundleID: [:],
+            protectedBundleIDs: []
+        )
+        #expect(withEmptySet)
+        // 没带 Seal 标记的仍不能成为候选（不能因为集合为空就「什么都当候选」）。
+        let foreign = "com.example.other.ABC1234567"
+        let foreignWithEmptySet = ProfileReclaimPolicy.isReclaimableOrphan(
+            bundleID: foreign,
+            keepingByBundleID: [:],
+            protectedBundleIDs: []
+        )
+        #expect(foreignWithEmptySet == false)
     }
 
     /// **其它工具签的 App 必须认不出来**：AltStore / SideStore 用
@@ -72,7 +154,8 @@ struct ProfileReclaimPolicyTests {
         #expect(
             ProfileReclaimPolicy.isReclaimableOrphan(
                 bundleID: "com.example.other.ABC1234567",
-                keepingByBundleID: [:]
+                keepingByBundleID: [:],
+                protectedBundleIDs: []
             ) == false
         )
     }
@@ -84,13 +167,15 @@ struct ProfileReclaimPolicyTests {
         #expect(
             ProfileReclaimPolicy.isReclaimableOrphan(
                 bundleID: ".seal.com.example",
-                keepingByBundleID: [:]
+                keepingByBundleID: [:],
+                protectedBundleIDs: []
             ) == false
         )
         #expect(
             ProfileReclaimPolicy.isReclaimableOrphan(
                 bundleID: "com.example.seal.",
-                keepingByBundleID: [:]
+                keepingByBundleID: [:],
+                protectedBundleIDs: []
             ) == false
         )
     }
@@ -100,7 +185,8 @@ struct ProfileReclaimPolicyTests {
         #expect(
             ProfileReclaimPolicy.isReclaimableOrphan(
                 bundleID: "   ",
-                keepingByBundleID: [:]
+                keepingByBundleID: [:],
+                protectedBundleIDs: []
             ) == false
         )
     }
@@ -111,7 +197,8 @@ struct ProfileReclaimPolicyTests {
         #expect(
             ProfileReclaimPolicy.isReclaimableOrphan(
                 bundleID: "  com.kdt.livecontainer.seal.3432ZHJUF9\n",
-                keepingByBundleID: [:]
+                keepingByBundleID: [:],
+                protectedBundleIDs: []
             )
         )
     }
@@ -121,6 +208,128 @@ struct ProfileReclaimPolicyTests {
     @Test
     func markerConstantIsTheDottedForm() {
         #expect(ProfileReclaimPolicy.sealGeneratedMarker == ".seal.")
+    }
+}
+
+/// 宽松受保护集合的**构造**测试。
+///
+/// 它与严格 keep-map（`AppMaintenanceJob.profileKeepMap`）是两个集合：
+/// 后者只在 `signedArtifactStatus == .installed` 时才收扩展（那个取舍本身是对的），
+/// 但那个标记一旦陈旧，扩展 ID 就会掉出**保护范围** ⇒ 被当孤儿删掉。
+/// 所以这里必须钉住「构造时不看 `signedArtifactStatus`」。
+@Suite("受保护集合的构造：扩展无条件进集合")
+struct ProfileReclaimProtectedSetTests {
+    private func makeRecord(
+        mapped: String?,
+        preferred: String? = nil,
+        status: SignedArtifactStatus?,
+        extensions: [AppExtensionRecord] = []
+    ) -> AppRecord {
+        AppRecord(
+            originalBundleIdentifier: "com.example.original",
+            mappedBundleIdentifier: mapped,
+            name: "受保护集合测试",
+            version: "1.0",
+            buildNumber: "1",
+            size: 1,
+            state: .imported,
+            ipaRelativePath: "Apps/Test/Original.ipa",
+            signedArtifactStatus: status,
+            preferredBundleIdentifier: preferred,
+            importedAt: Date(),
+            extensions: extensions
+        )
+    }
+
+    private func makeExtension(mapped: String?) -> AppExtensionRecord {
+        AppExtensionRecord(
+            name: "ShareExtension",
+            originalBundleIdentifier: "com.example.ShareExtension",
+            mappedBundleIdentifier: mapped
+        )
+    }
+
+    /// 记录**不是** `.installed` 时，扩展 ID 仍然必须进宽松集合。
+    /// 这是与严格 keep-map 的关键区别，也是这次真机事故的直接修法。
+    @Test
+    func extensionIsCollectedEvenWhenRecordIsNotMarkedInstalled() {
+        let record = makeRecord(
+            mapped: "com.example.seal.TEAM",
+            status: .available,
+            extensions: [makeExtension(mapped: "com.example.seal.TEAM.ShareExtension")]
+        )
+        let ids = ProfileReclaimPolicy.protectedBundleIDs(records: [record])
+        #expect(ids.contains("com.example.seal.TEAM.ShareExtension"))
+        #expect(ids.contains("com.example.seal.TEAM"))
+    }
+
+    /// 即使 `signedArtifactStatus` 完全缺失（`nil`），扩展也要进集合。
+    @Test
+    func extensionIsCollectedWhenStatusIsNil() {
+        let record = makeRecord(
+            mapped: "com.example.seal.TEAM",
+            status: nil,
+            extensions: [makeExtension(mapped: "com.example.seal.TEAM.ShareExtension")]
+        )
+        let ids = ProfileReclaimPolicy.protectedBundleIDs(records: [record])
+        #expect(ids.contains("com.example.seal.TEAM.ShareExtension"))
+    }
+
+    /// 多个 App 的扩展都要收进来 —— 结算清理那条路径的保留集合只有 Seal 自己，
+    /// 别的 App 全靠这个集合兜住。
+    @Test
+    func collectsExtensionsFromEveryRecord() {
+        let first = makeRecord(
+            mapped: "com.a.seal.TEAM",
+            status: .installed,
+            extensions: [makeExtension(mapped: "com.a.seal.TEAM.ShareExtension")]
+        )
+        let second = makeRecord(
+            mapped: "com.b.seal.TEAM",
+            status: .available,
+            extensions: [makeExtension(mapped: "com.b.seal.TEAM.LiveProcess")]
+        )
+        let ids = ProfileReclaimPolicy.protectedBundleIDs(records: [first, second])
+        #expect(ids.contains("com.a.seal.TEAM.ShareExtension"))
+        #expect(ids.contains("com.b.seal.TEAM.LiveProcess"))
+        #expect(ids.contains("com.a.seal.TEAM"))
+        #expect(ids.contains("com.b.seal.TEAM"))
+    }
+
+    /// `mappedBundleIdentifier` 为空/全空白时要回退到 `preferredBundleIdentifier`
+    /// （等价于重构前 `AppMaintenanceJob.profileKeepMap` 的写法），
+    /// 而不是把空白串塞进集合（那样集合里会有一条永远匹配不上的垃圾）。
+    @Test
+    func fallsBackToPreferredIdentifierAndSkipsBlank() {
+        let preferredOnly = makeRecord(mapped: nil, preferred: "com.example.seal.TEAM", status: nil)
+        let ids = ProfileReclaimPolicy.protectedBundleIDs(records: [preferredOnly])
+        #expect(ids.contains("com.example.seal.TEAM"))
+        #expect(ids.contains("") == false)
+
+        let blank = makeRecord(mapped: "   ", preferred: nil, status: nil)
+        let blankIds = ProfileReclaimPolicy.protectedBundleIDs(records: [blank])
+        #expect(blankIds.isEmpty)
+    }
+
+    /// `effectiveBundleID` 是「哪个字段代表生效的 Bundle ID」的**唯一**出处，
+    /// 直接钉住它的行为。
+    @Test
+    func effectiveBundleIdentifierPrefersMappedThenPreferred() {
+        #expect(
+            ProfileReclaimPolicy.effectiveBundleID(mapped: "com.a", preferred: "com.b") == "com.a"
+        )
+        #expect(
+            ProfileReclaimPolicy.effectiveBundleID(mapped: nil, preferred: "com.b") == "com.b"
+        )
+        #expect(
+            ProfileReclaimPolicy.effectiveBundleID(mapped: "  com.a  ", preferred: nil) == "com.a"
+        )
+        #expect(
+            ProfileReclaimPolicy.effectiveBundleID(mapped: "   ", preferred: nil) == nil
+        )
+        #expect(
+            ProfileReclaimPolicy.effectiveBundleID(mapped: nil, preferred: nil) == nil
+        )
     }
 }
 

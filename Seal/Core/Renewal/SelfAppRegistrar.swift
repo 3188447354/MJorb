@@ -51,7 +51,13 @@ actor SelfAppRegistrar {
 
         // 启动只对账上一进程留下的自替换事务，绝不在这里发起安装。
         // 结算会推进记录，之后必须重新读取，避免旧快照覆盖刚确认的真实身份。
-        if try await reconcileSelfReplacement(existing: existing, accounts: accounts) {
+        if try await reconcileSelfReplacement(
+            existing: existing,
+            accounts: accounts,
+            // 传全部记录（不只是 Seal 那条）：结算清理的保留集合只有 Seal 自己一个条目，
+            // 宽松受保护集合必须由**全部**记录算出来，否则其它 App 的扩展会被当孤儿删掉。
+            allRecords: records
+        ) {
             records = try await appStore.fetchAll()
             existing = SelfAppRecordSelection.preferredExistingSealRecord(
                 in: records,
@@ -225,7 +231,8 @@ actor SelfAppRegistrar {
     @discardableResult
     private func reconcileSelfReplacement(
         existing: AppRecord?,
-        accounts: [AppleAccountRecord]
+        accounts: [AppleAccountRecord],
+        allRecords: [AppRecord]
     ) async throws -> Bool {
         guard let selfReplacement else { return false }
         switch try await selfReplacement.reconcileAtLaunch() {
@@ -248,11 +255,16 @@ actor SelfAppRegistrar {
             }
             // 先推进记录，再精准清理：清理发生时记录必须已指向候选身份，
             // 清理失败只进事务审计，不回滚已确认的安装身份。
+            //
+            // `protectedBundleIDs` 是这条路径**唯一**能保护其它 App 扩展的东西 ——
+            // 它的保留集合只有 Seal 自己一个条目，别的 ID 全是候选，而扩展的设备端核验
+            // 恒为「没装」⇒ 不保护就会被删。见 `ProfileCleanupRequest` 的说明。
             let request = ProfileCleanupRequest(
                 transactionID: settled.transactionID,
                 bundleIdentifier: settled.mainBundleIdentifier,
                 keepingProfileUUID: settled.mainProfileUUID,
-                installedIdentityReadAt: settled.installedIdentityReadAt
+                installedIdentityReadAt: settled.installedIdentityReadAt,
+                protectedBundleIDs: ProfileReclaimPolicy.protectedBundleIDs(records: allRecords)
             )
             let cleanup = await profileCleaner?.removeStaleProfiles(request)
                 ?? ProfileCleanupSummary(stage: "skipped-no-cleaner")

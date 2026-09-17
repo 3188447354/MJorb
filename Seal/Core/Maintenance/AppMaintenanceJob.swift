@@ -152,6 +152,13 @@ final class AppMaintenanceJob {
             )
             summary = await profileSweeper.sweepStaleProfiles(
                 keepingByBundleID: keep,
+                // ⚠️ 宽松集合：记录里出现过的**全部** Bundle ID（含扩展，**不**要求
+                // `signedArtifactStatus == .installed`）。它与上面的 `keep` 是**两个不同
+                // 的集合**，不要合并 —— `keep` 决定「留哪一份」（宁缺勿滥），
+                // 本集合决定「谁不许成为回收候选」（宁滥勿缺）。
+                // 少了它，`signedArtifactStatus` 一旦陈旧，扩展 ID 就会掉出保护范围，
+                // 而扩展的设备端核验恒为「没装」⇒ 删掉正在用的扩展 profile。
+                protectedBundleIDs: ProfileReclaimPolicy.protectedBundleIDs(records: records),
                 // 顺带回收「换 Apple ID 后旧 Team 后缀」留下的孤儿 profile（实测 39 个
                 // Bundle ID 变体、33 份孤儿）。这条路径是**唯一**覆盖全部 Seal 管理 App
                 // 的批量清理点，也是唯一能清掉「已从 Seal 列表删掉的 App」的地方 ——
@@ -172,11 +179,16 @@ final class AppMaintenanceJob {
         return .done(summary)
     }
 
-    /// 构造「Bundle ID → 必须保留的 profile UUID」。
+    /// 构造「Bundle ID → 必须保留的 profile UUID」—— **严格**集合。
     ///
     /// 只收**有明确记录**的应用：`provisioningProfileUUID` 缺失或为空的整条跳过。
     /// 宁可留着旧 profile（只是占地方），也绝不能猜错 —— 删掉正在用的那一份会让
     /// 已安装的 App 立刻无法启动（iOS 启动时会校验 profile 是否还在设备上）。
+    ///
+    /// ⚠️ **这个集合只回答「同一 Bundle ID 的多份 profile 留哪一份」，不回答
+    /// 「谁不许成为回收候选」** —— 后者是 `ProfileReclaimPolicy.protectedBundleIDs(records:)`。
+    /// 两者必须分开：本集合刻意宁缺勿滥（下面扩展的门槛就是例子），
+    /// 拿它当候选过滤集合会把「因为拿不到可信 UUID 而没进集合」的 App 的扩展删掉。
     ///
     /// 扩展只在 `signedArtifactStatus == .installed` 时才进保留集合。原因：
     /// `SigningCoordinator.applySigningResult` 在**签名阶段**就会把扩展的 UUID 改成新产物的
@@ -186,8 +198,12 @@ final class AppMaintenanceJob {
     static func profileKeepMap(records: [AppRecord], sealProfileUUID: String?) -> [String: String] {
         var map: [String: String] = [:]
         for record in records {
-            guard let bundleID = record.mappedBundleIdentifier ?? record.preferredBundleIdentifier,
-                  Self.isBlank(bundleID) == false else {
+            // 「哪个字段代表生效的 Bundle ID」只有一处实现（`ProfileReclaimPolicy`），
+            // 不在这里再抄一遍 —— 同一条规则抄两份，迟早漂移。
+            guard let bundleID = ProfileReclaimPolicy.effectiveBundleID(
+                mapped: record.mappedBundleIdentifier,
+                preferred: record.preferredBundleIdentifier
+            ) else {
                 continue
             }
             // 拿不到「当前在用的是哪一份」就整条跳过：宁可留着旧 profile（只是占地方），

@@ -130,7 +130,11 @@ struct AppContainer {
                 },
                 accountsProvider: {
                     (try? await accountRepository.fetchAll()) ?? []
-                }
+                },
+                // 批量续签的逐项成功日志（SEAL-RENEW-020）走这里。
+                // 漏传不会编译失败，只会让「批量到底成没成」重新变成日志里的空白 ——
+                // 守卫 R12 断言了这个实参存在。
+                logStore: logStore
             )
             let appRecordRecovery = AppRecordRecovery(
                 appStore: appStore,

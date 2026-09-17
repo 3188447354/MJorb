@@ -39,6 +39,14 @@ actor RenewalCoordinator {
     private let planner: RefreshPlanner
     private let defaultAccountIDProvider: (@Sendable () async -> UUID?)?
     private let accountsProvider: (@Sendable () async -> [AppleAccountRecord])?
+    /// 逐项结果要落日志。
+    ///
+    /// 批量续签原来**一条逐项结果都不写** —— 「续签并安装成功」只在单签路径
+    /// （`AppsViewModel.signAndInstall`）里写，而批量走的是本协调器直接调
+    /// `SigningCoordinator.signAndInstall`。后果是真机上「某个 App 到底成没成」
+    /// 只能靠推断（2026-09-17：用户取消批量后看到 App 像是重装了，却无法确认），
+    /// 排障时拿到的只有日志，日志里却没有结论。
+    private let logStore: SealLogStore?
 
     /// 单个应用续签总尝试次数上限，仅临时网络故障允许重试。
     private let maxAttempts = 3
@@ -56,7 +64,8 @@ actor RenewalCoordinator {
         queueStore: RefreshQueueStore,
         planner: RefreshPlanner = RefreshPlanner(),
         defaultAccountIDProvider: (@Sendable () async -> UUID?)? = nil,
-        accountsProvider: (@Sendable () async -> [AppleAccountRecord])? = nil
+        accountsProvider: (@Sendable () async -> [AppleAccountRecord])? = nil,
+        logStore: SealLogStore? = nil
     ) {
         self.appStore = appStore
         self.signingCoordinator = signingCoordinator
@@ -64,6 +73,7 @@ actor RenewalCoordinator {
         self.planner = planner
         self.defaultAccountIDProvider = defaultAccountIDProvider
         self.accountsProvider = accountsProvider
+        self.logStore = logStore
     }
 
     func refreshAll(
@@ -297,6 +307,21 @@ actor RenewalCoordinator {
                 // 成功
                 try await queueStore.markCompleted(appID: item.appID)
                 succeeded += 1
+                // 逐项成功留痕（含描述文件身份）。
+                //
+                // 缺这条日志时，「批量续签到底成没成」在日志里**完全查不到**：
+                // 批量走 `SigningCoordinator.signAndInstall`，而「续签并安装成功」
+                // 只在**单签**的 `AppsViewModel.signAndInstall` 里写。
+                // 2026-09-17 真机实测 —— 用户续签 LiveContainer 时界面停在「安装中」，
+                // 取消后无从判断到底装没装上（实际成功了），就是因为这里静默。
+                //
+                // 带上描述文件 UUID + 创建/到期时间：这三个字段是**自证**用的，
+                // 用户可以在应用详情页对着看，确认记录指向的就是刚申请的那一份。
+                try? await logStore?.append(
+                    category: .renewal,
+                    message: "批量续签：第 \(offset + 1)/\(queue.count) 项成功 —— \(updated.mappedBundleIdentifier ?? updated.preferredBundleIdentifier)，描述文件 \(Self.describeProfile(updated))",
+                    code: "SEAL-RENEW-020"
+                )
                 await progress(
                     .appSucceeded(
                         index: offset + 1,
@@ -353,6 +378,29 @@ actor RenewalCoordinator {
             recovery: "按上述说明处理后重新续签",
             code: requiresActionCode
         )
+    }
+
+    /// 描述文件身份的**自证串**：UUID + 创建时间 + 到期时间。
+    ///
+    /// 为什么这三个字段必须进日志：`SEAL-RENEW-020` 要回答的是
+    /// 「这次续签到底给我换了一份**新的**描述文件吗，还是只是重签了旧的那份」。
+    /// 只写「成功」两个字回答不了 —— 用户 2026-09-17 的困惑正是这个。
+    /// 有了创建时间，日志本身就能自证：创建时间 ≈ 本次续签时刻 ⇒ 是新申请的；
+    /// 创建时间是几天前 ⇒ 复用了旧的（此时到期日会明显偏早，需要留意）。
+    ///
+    /// 用 ISO8601 而不是本地化格式：导出日志后要能直接和 Apple 门户返回的时间对上。
+    ///
+    /// 非 private：它是这条日志里**唯一可测的纯函数**，行为由
+    /// `RenewalCoordinatorLogTests` 钉住。源码断言只能证明「日志里有这个字段」，
+    /// 证明不了它真的把 UUID 与时间写了出来。
+    static func describeProfile(_ record: AppRecord) -> String {
+        let uuid = record.provisioningProfileUUID ?? "未知"
+        let formatter = ISO8601DateFormatter()
+        let created = record.provisioningProfileCreationDate
+            .map { formatter.string(from: $0) } ?? "未知"
+        let expires = record.provisioningProfileExpirationDate
+            .map { formatter.string(from: $0) } ?? "未知"
+        return "\(uuid)（创建 \(created)，到期 \(expires)）"
     }
 
     /// 失败后重新读取一次最新应用记录并推送失败事件

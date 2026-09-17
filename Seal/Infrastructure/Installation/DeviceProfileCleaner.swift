@@ -93,6 +93,12 @@ struct ProfileCleanupRequest: Sendable, Equatable {
     let bundleIdentifier: String
     let keepingProfileUUID: String
     let installedIdentityReadAt: Date
+    /// Seal 记录里出现过的全部 Bundle ID（含扩展）—— 见 `ProfileReclaimPolicy`。
+    ///
+    /// **必须由调用方从记录现算**，不能留空：这条路径的保留集合只有 Seal 自己一个条目，
+    /// 少了这个集合，其它 App 的 Bundle ID 全会变成回收候选，而它们的**扩展**
+    /// 靠设备端核验救不回来（扩展不是独立安装的 App，`isAppInstalled` 恒为 false）。
+    let protectedBundleIDs: Set<String>
 }
 
 /// 结算路径的清理边界，便于用桩替换真实设备清理。
@@ -111,9 +117,19 @@ protocol SelfReplacementProfileCleaning: Sendable {
 ///   已安装 App」的 profile（换 Apple ID 后旧 Team 后缀留下的那一批，实测可达 30+ 份）。
 ///   开启后每一条都要过设备端核验，**确认没装才删**；且核验通道要先通过阳性对照，
 ///   任一环不通过就整轮不删。判据见 `ProfileReclaimPolicy`。
+///
+/// ## ⚠️ `protectedBundleIDs` 为什么是**必填**、没有默认值
+///
+/// 它回答的是「谁**不许**成为回收候选」，与 `keepingByBundleID`（回答「留哪一份」）
+/// 是**两个不同的集合**，见 `ProfileReclaimPolicy.isReclaimableOrphan` 的说明。
+///
+/// 不留默认值是为了让**将来新增的调用点**必须显式回答这个问题 ——
+/// 留 `= []` 就等于「忘了传 ⇒ 保护范围为空 ⇒ 删多」，而这条错法在真机上是
+/// **静默删数据**（2026-09-17 已真实发生）。宁可让它编译不过。
 protocol StaleProfileSweeping: Sendable {
     func sweepStaleProfiles(
         keepingByBundleID: [String: String],
+        protectedBundleIDs: Set<String>,
         reclaimSealOrphans: Bool
     ) async -> ProfileCleanupSummary
 }
@@ -132,10 +148,12 @@ struct DeviceProfileCleaner: Sendable {
     /// 没有刚装 profile 的 UUID 就无法安全区分「旧」与「刚装」，此时直接放弃，避免误删。
     ///
     /// - Parameter reclaimSealOrphans: 同 `StaleProfileSweeping` 的说明。
+    /// - Parameter protectedBundleIDs: 同 `StaleProfileSweeping` 的说明（**必填**）。
     @discardableResult
     static func removeStaleProfiles(
         for bundleIdentifier: String,
         keeping keepingProfileUUID: String?,
+        protectedBundleIDs: Set<String>,
         reclaimSealOrphans: Bool = false
     ) async -> ProfileCleanupSummary {
         guard let keepingProfileUUID,
@@ -145,6 +163,7 @@ struct DeviceProfileCleaner: Sendable {
         }
         return await removeStaleProfiles(
             keepingByBundleID: [bundleIdentifier: keepingProfileUUID],
+            protectedBundleIDs: protectedBundleIDs,
             reclaimSealOrphans: reclaimSealOrphans
         )
     }
@@ -157,9 +176,11 @@ struct DeviceProfileCleaner: Sendable {
     ///
     /// - Parameter reclaimSealOrphans: 见 `StaleProfileSweeping`。默认 `false` ——
     ///   这条路径会删设备端数据，必须由调用方显式开启。
+    /// - Parameter protectedBundleIDs: 见 `StaleProfileSweeping`（**必填**）。
     @discardableResult
     static func removeStaleProfiles(
         keepingByBundleID: [String: String],
+        protectedBundleIDs: Set<String>,
         reclaimSealOrphans: Bool = false
     ) async -> ProfileCleanupSummary {
         var normalized: [String: String] = [:]
@@ -174,6 +195,7 @@ struct DeviceProfileCleaner: Sendable {
         }
         return await removeProfiles(
             keepingByBundleID: normalized,
+            protectedBundleIDs: protectedBundleIDs,
             reclaimSealOrphans: reclaimSealOrphans
         )
     }
@@ -249,6 +271,7 @@ struct DeviceProfileCleaner: Sendable {
 
     private static func removeProfiles(
         keepingByBundleID: [String: String],
+        protectedBundleIDs: Set<String>,
         reclaimSealOrphans: Bool
     ) async -> ProfileCleanupSummary {
         var summary = ProfileCleanupSummary()
@@ -297,6 +320,17 @@ struct DeviceProfileCleaner: Sendable {
         // 真正的删除要等阶段 B 的设备端核验。
         // 拆成两段是为了能在删**任何一份**孤儿之前先做阳性对照 —— 否则对照失败时
         // 已经删掉的那些收不回来。
+        //
+        // ⚠️ 回收还必须配一个**非空**的受保护集合（`protectedBundleIDs`）。
+        // 它回答「谁不许成为候选」，与 `keepingByBundleID`（回答「留哪一份」）
+        // 是两个集合。少了它，保护范围就等于只有 keep-map 里的那几条 ⇒ 其它 App 的
+        // Bundle ID（尤其是**扩展**，设备端核验对它们恒为「没装」）会被当成孤儿删掉。
+        // 这条错法是**静默删数据**，所以这里 fail closed：集合为空就整轮不回收，
+        // 而不是「按现有信息尽量删」。
+        let reclaimEnabled = reclaimSealOrphans && protectedBundleIDs.isEmpty == false
+        if reclaimSealOrphans && protectedBundleIDs.isEmpty {
+            summary.reclaimAborted = "无受保护集合（记录为空或未传入）"
+        }
         var handledUUIDs = Set<String>()
         var reclaimCandidates: [(uuid: String, bundleID: String)] = []
         for fileURL in profileURLs {
@@ -327,10 +361,11 @@ struct DeviceProfileCleaner: Sendable {
 
             // 路径 2：集合外的「Seal 生成孤儿」（换 Apple ID 后的旧 Team 后缀）。
             // 默认关闭；开启时也**只是候选**，要过阶段 B 才删。
-            guard reclaimSealOrphans,
+            guard reclaimEnabled,
                   ProfileReclaimPolicy.isReclaimableOrphan(
                       bundleID: profileBundleID,
-                      keepingByBundleID: keepingByBundleID
+                      keepingByBundleID: keepingByBundleID,
+                      protectedBundleIDs: protectedBundleIDs
                   ) else {
                 continue
             }
@@ -395,10 +430,12 @@ struct DeviceProfileCleaner: Sendable {
 extension DeviceProfileCleaner: StaleProfileSweeping {
     func sweepStaleProfiles(
         keepingByBundleID: [String: String],
+        protectedBundleIDs: Set<String>,
         reclaimSealOrphans: Bool
     ) async -> ProfileCleanupSummary {
         await Self.removeStaleProfiles(
             keepingByBundleID: keepingByBundleID,
+            protectedBundleIDs: protectedBundleIDs,
             reclaimSealOrphans: reclaimSealOrphans
         )
     }
@@ -410,10 +447,16 @@ extension DeviceProfileCleaner: SelfReplacementProfileCleaning {
     /// 时整批放弃，绝不误删正在使用的 profile。清理失败只进摘要，不回滚已确认身份。
     ///
     /// 开启 `reclaimSealOrphans`：Seal 自己换过 Apple ID 后会留下
-    /// `com.mjorb.seal.<旧 team>` 的 profile（实测 5 个 team 变体），
-    /// 而**只有**这条路径能回收 Seal 自己那一批（Seal 的自更新不走普通安装）。
+    /// `com.mjorb.seal.<旧 team>` 的 profile（实测 5 个 team 变体）。
     /// 当前正在运行的那一份由 keep-map（路径 1）保住，根本不会成为候选；
     /// 其余变体要过设备端核验 —— 见 `removeProfiles` 阶段 B 的阳性对照。
+    ///
+    /// ⚠️ **本路径的 keep-map 只有 Seal 自己一个条目**（`removeStaleProfiles(for:keeping:)`
+    /// 内部构造），所以其它 App 的 Bundle ID 全都是「候选」。主 App 靠设备端核验能救回来，
+    /// **扩展救不回来**（扩展不是独立安装的 App，`isAppInstalled` 恒为 `false`）——
+    /// 2026-09-17 真机上就是这么丢掉已装 App 三个扩展的 profile 的。
+    /// ⇒ `request.protectedBundleIDs` 是这条路径**唯一**能保护扩展的东西，
+    /// 它为空时 `removeProfiles` 会 fail closed（整轮不回收）。
     func removeStaleProfiles(_ request: ProfileCleanupRequest) async -> ProfileCleanupSummary {
         guard let readRunningIdentity else {
             return ProfileCleanupSummary(stage: "skipped-identity-unavailable")
@@ -436,6 +479,7 @@ extension DeviceProfileCleaner: SelfReplacementProfileCleaning {
         return await Self.removeStaleProfiles(
             for: request.bundleIdentifier,
             keeping: request.keepingProfileUUID,
+            protectedBundleIDs: request.protectedBundleIDs,
             reclaimSealOrphans: true
         )
     }

@@ -1227,6 +1227,25 @@ def violations(load=read):
     check('recovery: "前往「我的」页面重新登录该 Apple ID"' not in cert_failure,
           "R23: 不能退回「只让用户去重新验证」这一条路（那正是死循环的成因）")
 
+    # R24: 三个 portal 变更都必须过 `withSessionRecovery`（2026-09-17 补）。
+    #
+    # 另外两个（创建 App ID、申请描述文件）早就有它，**只有证书创建漏了** ——
+    # 而同一条「遇 1100 退避重试」的规则漏在一条链路上，正是本仓反复踩的坑（第 5 次）。
+    # 为什么这条最要紧：**证书是整条流程里第一个真正落到 Apple 侧的变更**，
+    # 多扩展 App 的上一次尝试刚连发过一批请求，这次一上来就可能撞上短时限流 ⇒
+    # 返回 1100 ⇒ 被归类成「账号需要重新验证」⇒ 用户去重新验证、再签、又被限流（死循环）。
+    check('withSessionRecovery("创建 App ID \\(mappedBundleID)")' in portal_source,
+          "R24: 创建 App ID 必须过退避重试")
+    check('withSessionRecovery("申请描述文件 \\(preparedAppID.mapped)")' in portal_source,
+          "R24: 申请描述文件必须过退避重试")
+    check('withSessionRecovery("创建证书")' in portal_source,
+          "R24: 创建证书也必须过退避重试 —— 它是整条流程里第一个真正落到 Apple 侧的变更，"
+          "最容易撞上限流；漏掉它会让限流被误报成「账号需要重新验证」")
+    # 注意：定义写的是 `withSessionRecovery<T>(`，不带 `<` 的计数只数得到**调用点**。
+    check(portal_source.count("withSessionRecovery(") == 3,
+          "R24: 退避重试的调用点数量变了（应为 3 个 portal 变更）—— "
+          "新增/删除 portal 调用时请同步这里")
+
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
     # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
@@ -3104,6 +3123,23 @@ def main():
          '                    + "（扩展较多的 App 一次签名要连续注册多个 App ID，最容易触发）。\\n"',
          '                    + "这个错误的成因是登录失效。\\n"',
          "R23: 证书阶段必须点明「可能是限流」"),
+        # ── R24：三个 portal 变更都要过退避重试（2026-09-17 补）──
+        # 把证书创建退回「直接请求」：它是流程里第一个真正落到 Apple 侧的变更，
+        # 最容易撞上限流，而漏掉它会让限流被误报成「账号需要重新验证」。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         '            let created = try await withSessionRecovery("创建证书") {\n'
+         '                try await addCertificate(\n'
+         '                    team: team,\n'
+         '                    session: session,\n'
+         '                    deviceName: deviceName\n'
+         '                )\n'
+         '            }',
+         '            let created = try await addCertificate(\n'
+         '                team: team,\n'
+         '                session: session,\n'
+         '                deviceName: deviceName\n'
+         '            )',
+         "R24: 创建证书也必须过退避重试"),
         # 把结算单测改名：证明「单测文件里有这几个字」的断言真的会红。
         ("SealTests/Renewal/RefreshQueueStoreTests.swift",
          "    func recoverInterruptedSettlesItemsThatAlreadyHaveAResult() async throws {",

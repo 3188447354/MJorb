@@ -1126,11 +1126,26 @@ actor ApplePortalSigningService {
     ) async throws -> SigningIdentity {
         let requested: ALTCertificate
         do {
-            let created = try await addCertificate(
-                team: team,
-                session: session,
-                deviceName: deviceName
-            )
+            // ⚠️ **证书创建也必须过 `withSessionRecovery`**（2026-09-17 补）。
+            //
+            // 另外两个 portal 变更（创建 App ID、申请描述文件）早就有它，**只有证书创建漏了** ——
+            // 而同一条「遇 1100 退避重试」的规则漏在一条链路上，正是本仓反复踩的坑。
+            //
+            // 为什么这条最要紧：**证书是整条签名流程里第一个真正落到 Apple 侧的变更**，
+            // 多扩展 App（抖音 = 主 App + 8 扩展）的上一次尝试刚连发过一批请求，
+            // 这次一上来就可能撞上短时限流 ⇒ 返回 1100 ⇒ 被 `certificateFailure` 归类成
+            // 「账号需要重新验证」⇒ 用户去重新验证、再签、又被限流（用户 2026-09-17 反馈的死循环）。
+            //
+            // 退避重试后仍失败才向上抛。顺带：`withSessionRecovery` 每次重试都会写
+            // 「Apple 会话疑似被限流，退避 N 秒后重试 创建证书」—— 这条日志本身就是
+            // 「到底是不是限流」的直接证据（此前证书阶段完全看不到这一层）。
+            let created = try await withSessionRecovery("创建证书") {
+                try await addCertificate(
+                    team: team,
+                    session: session,
+                    deviceName: deviceName
+                )
+            }
             requested = created
         } catch {
             if let failure = CertificateRequestFailurePolicy.requestFailure(error: error) { throw failure }

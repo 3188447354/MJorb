@@ -259,7 +259,16 @@ struct AppMaintenanceJobTests {
         #expect(keepMaps.count == 1)
         #expect(protectedSets.count == 1)
 
-        let keptKeys = Set(keepMaps.first?.keys ?? [])
+        // ⚠️ 不要写 `Set(keepMaps.first?.keys ?? [])` —— `Dictionary.Keys` **不是**
+        // `ExpressibleByArrayLiteral`，`[]` 会被推断成 `[Any]` ⇒
+        // `cannot convert value of type '[Any]' to expected argument type 'Dictionary<String, String>.Keys'`。
+        // 2026-09-17 因此挂了一轮 CI：本机无 Swift 工具链、`build-package` 又不编译测试 target
+        // ⇒ 这类错误只在 `swift-regression` 暴露（一轮白等 13–16 分钟）。
+        guard let keepMap = keepMaps.first else {
+            Issue.record("profileSweeper 没有收到 keep-map")
+            return
+        }
+        let keptKeys = Set(keepMap.keys)
         let protected = protectedSets.first ?? []
         // 严格集合里**不该**有扩展（它不是 `.installed`）。
         let extensionInKeepMap = keptKeys.contains(extensionID)

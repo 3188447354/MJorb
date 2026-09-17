@@ -29,6 +29,12 @@
 - **守卫用 `"片段" in 源码` 断言时，同一模式出现多次就会失去约束力**。删除步骤从 1 处变成 2 处后，`check("guard gate.shouldAbort(token) == false else" in job)` 在删掉其中一处的变异下仍然通过（被另一处掩盖）—— 守卫变成「永远全绿」，比直接失败更危险。**同一模式出现多次时改为按出现次数断言**（`job.count(...) >= 2`）。这次是变异测试自己把问题暴露出来的。
 - **字段存在不等于语义可信**。`AppExtensionRecord.provisioningProfileUUID` 有值，但它的写入时机（签名阶段）比顶层字段（安装校验后）早，两者**可信度不同**。任何「以记录为删除/撤销/覆盖依据」的逻辑，都要先问「这个字段是在哪个时点写的、那时设备上真的换了吗」。
 - **`build-package` 不编译测试 target，所以测试代码的编译错误会绕过它、只在 `swift-regression` 红**。本机无 Swift 工具链时，给 `SealTests/**` 加新调用（尤其是构造器）等于「盲写」，一轮 CI 白等 13 分钟。2026-09-16 实际踩到：`error: argument 'ipaRelativePath' must precede argument 'signedArtifactStatus'`（Swift 的 memberwise init **强制实参顺序与声明一致**，漏写中间的默认参数可以，但顺序不能颠倒）。**对策**：守卫 R09 用 Python 解析 `AppRecord` 声明的参数序列，逐个校验所有调用点的标签顺序；**同类坑当天咬了第二次**（给 `signAndInstall` 加 `onInstallProgress` 时写到了 `broadcastsInstallStage` 之后），现已把 R09 通用化为「声明文件 + 声明锚点 + 调用点正则 + 调用点数下限」的列表，覆盖 `AppRecord` / `signAndInstall` / `installSignedIPA` / `installCachedSignedIPAIfPossible`。加新调用前**逐字段对照声明顺序**，别凭记忆。
+  **2026-09-17 同类的第三次**：`Set(keepMaps.first?.keys ?? [])` ⇒
+  `cannot convert value of type '[Any]' to expected argument type 'Dictionary<String, String>.Keys'`。
+  **`Dictionary.Keys` / `Values` 不是 `ExpressibleByArrayLiteral`**，`?? []` 里的 `[]` 会退化成 `[Any]`。
+  通用判据：**`??` 右侧用字面量兜底时，左侧必须是可以从该字面量构造出来的类型**
+  （`Array` / `Set` / `Dictionary` 可以，`Keys` / `Values` / 其它 `Collection` 不行）。
+  已做成守卫的静态检查（含变异锚点）。
 - **「进度条停在 X% 不动」要先问「这个阶段到底有没有进度回调」**。iOS 安装阶段（installd 经 installation_proxy 安装）**完全不回报进度**：上传结束（1.01 哨兵）之后到安装完成之间，UI 拿不到任何数值。所以「停在 93%」「卡在传输中」往往不是进度 bug，而是**阶段推进缺失 + 缺少等待说明**。两个界面表现不同只是因为订阅的东西不同：单签订阅 Double 哨兵（能切到 `.installing` ⇒ 93%，然后静止），**批量只订阅 `SigningStage`、根本收不到哨兵**，于是整段停在「传输中」。判据：`SigningProgressView.overallProgress(.installing) == 0.93`、`BatchRefreshView.runningStageTitle(.pushing) == "传输中"`。
 - **`guard app.applicationState == .active else { return }` 出现在「自动切后台」流程里是危险的**。`.inactive` 是**瞬时**失焦（控制中心、通知横幅、来电、App 切换器预览、系统弹窗），进程仍在前台。Seal 自续签依赖「旧进程让出前台」才能被 iOS 完成替换，把 `.inactive` 当「用户已离开」直接 return，会连 `exit(0)` 兜底一起跳过 ⇒ 界面永久停在 93%。**只有 `.background` 才算用户真的切走了**；`.inactive` 要等它恢复，恢复不了就走兜底退出。
 - **`applicationState == .background` 时「什么都不做」同样会永久卡住 —— 这是 2026-09-16「续签卡在 93%」的真正根因**。上面那条把 `.inactive` 修好了，但 `.background` 被写成 `case .standDown: return false`，语义是「用户已切走、进程让出前台、iOS 会自己完成替换 ⇒ 不强杀」。**这个前提对「覆盖安装运行中的自己」不成立**：iOS 需要旧进程**终止**，而后台进程不会自己终止 —— 自续签还主动开了后台保活（日志「Seal 自续签事务：后台保活已启动」），等于把这个前提主动破坏掉。结果是进程既不转场也不退出、永久占着前台，installd 一直等它让位，`stageAndInstall` 永远不返回。**正确做法：有界等待（等用户回到前台走转场）+ 超时强杀**（后台强杀用户无感，而不终止进程 iOS 就完不成替换）。**判据：凡是「某个状态下就什么都不做」的分支，问一句「那谁来推进这件事」** —— 如果答案是「系统会自己搞定」，先验证这个假设对**覆盖安装自己**是否成立。
@@ -214,6 +220,37 @@ LiveContainer **装着**（13:24:30 刚装完，记录 `.installed`）。主 App
 新增单测 `RenewalCoordinatorLogTests`（4 条）。
 
 **验证状态**：静态守卫 PASS；编译与真机回归待云构建。
+
+---
+
+**🔁 补记：run#96 挂在测试 target 的编译错上（第 265 条断言 / 第 132 个锚点由此而来）**
+
+`build-package` 绿、`rork-self-tests` 绿、`swift-regression` 红，21 条 `error:` 全是同一处：
+
+```
+AppMaintenanceJobTests.swift:262:52: error: cannot convert value of type '[Any]' to
+    expected argument type 'Dictionary<String, String>.Keys'
+```
+
+写的是 `let keptKeys = Set(keepMaps.first?.keys ?? [])`。
+**`Dictionary.Keys` 不是 `ExpressibleByArrayLiteral`**，所以 `?? []` 里的 `[]` 无法被推断成
+那个类型，Swift 退化成 `[Any]`。
+
+**这是「本机不能编译 ⇒ 测试 target 只能盲写」的又一次代价**，而且 `build-package`
+**不编译测试 target** ⇒ 只有 `swift-regression` 会红，一轮白等 13–16 分钟。
+
+修法是先 `guard let` 取出字典再 `Set(dict.keys)`（顺便能用 `Issue.record` 报出
+「桩根本没收到 keep-map」这种更有信息量的失败）。
+
+**已做成守卫的静态检查**（本轮新增）：扫 `Seal/` 与 `SealTests/` 里
+`\.(?:keys|values)\s*\?\?\s*\[\]` 这个形状，并配变异锚点。
+通用判据值得记住：**`??` 的右侧用字面量兜底时，左侧必须是可以从该字面量构造出来的类型**
+（`Array` / `Set` / `Dictionary` 可以；`Keys` / `Values` 或其它 `Collection` 不行）。
+
+⚠️ 实现这个检查时踩了一个自己的坑：预筛条件一开始写成 `"??" in raw` —— 几乎每个 Swift
+文件都含 `??`，于是每个变异遍都会去注释 200+ 文件，整轮守卫耗时翻倍。
+**预筛要用「坏形状」本身**，不要用「坏形状的一个必要但不充分的条件」。
+另外命中后仍要用 `strip_comments()` 复核：**注释里写反面示例是允许的**（本轮就写了）。
 
 ---
 

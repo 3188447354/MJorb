@@ -1171,6 +1171,36 @@ def violations(load=read):
           "#expect must not call a mutating method — it is rewritten into a closure ("
           + " | ".join(expect_mutations) + ")")
 
+    # `?? []` 的类型推断陷阱（2026-09-17 因此挂了一轮 CI，同样只在 `swift-regression` 暴露）。
+    #
+    # `Dictionary.Keys` / `Dictionary.Values` **不是** `ExpressibleByArrayLiteral`，
+    # 所以 `dict.first?.keys ?? []` 里的 `[]` 无法被推断成那个类型，Swift 退化成 `[Any]`：
+    #   error: cannot convert value of type '[Any]' to expected argument type
+    #          'Dictionary<String, String>.Keys'
+    # 正确写法：先 `guard let` 取出字典再 `Set(dict.keys)`，或用 `.map { $0 }` 显式转成数组。
+    #
+    # 判据（值得记住的通用形式）：**`??` 的右侧用字面量兜底时，左侧必须是可以从该字面量
+    # 构造出来的类型**（`Array` / `Set` / `Dictionary` 可以，`Keys` / `Values` / 其它
+    # `Collection` 不行）。
+    keys_fallback_pattern = re.compile(r"\.(?:keys|values)\s*\?\?\s*\[\]")
+    keys_fallback = []
+    for source_path in swift_sources():
+        relative = source_path.relative_to(ROOT).as_posix()
+        if not (relative.startswith("Seal/") or relative.startswith("SealTests/")):
+            continue
+        # 廉价预筛用「坏形状」本身，不要用 `"??" in raw` —— 几乎每个 Swift 文件都含 `??`，
+        # 那样每个变异遍都会去注释 200+ 文件，整轮守卫耗时翻倍（本轮实测过一次）。
+        if keys_fallback_pattern.search(load_cached(relative)) is None:
+            continue
+        # 命中的还要确认**不在注释里**：注释里写反面示例是允许的，本轮就写了。
+        for line_number, line in enumerate(strip_cached(relative).splitlines(), start=1):
+            if keys_fallback_pattern.search(line):
+                keys_fallback.append(f"{relative}:{line_number}")
+    check(not keys_fallback,
+          "`?? []` after .keys/.values cannot type-check — Dictionary.Keys is not "
+          "ExpressibleByArrayLiteral, so `[]` degrades to [Any] ("
+          + " | ".join(keys_fallback) + ")")
+
     # R04: Portal 三个服务的回调一律经 ContinuationBox 转发。裸 continuation 第二次 resume
     # 不是可捕获错误，而是 SWIFT TASK CONTINUATION MISUSE 致命崩溃（进程直接终止）。
     # AltSign 存在两条重复回调路径：「先报错、随后迟到地报成功」与「超时先到、回调才到」。
@@ -2419,6 +2449,13 @@ def main():
          "        #expect(first)",
          "        #expect(gate.acquire())",
          "#expect must not call a mutating method"),
+        # 把 `Set(keepMap.keys)` 写回 `Set(keepMaps.first?.keys ?? [])`：原样重演
+        # `cannot convert value of type '[Any]' to expected argument type
+        # 'Dictionary<String, String>.Keys'`（同样只在 `swift-regression` 红）。
+        ("SealTests/Maintenance/AppMaintenanceJobTests.swift",
+         "        let keptKeys = Set(keepMap.keys)",
+         "        let keptKeys = Set(keepMaps.first?.keys ?? [])",
+         "`?? []` after .keys/.values cannot type-check"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

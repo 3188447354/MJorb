@@ -314,6 +314,45 @@ cannot use mutating member on immutable value: '$0' is immutable
 
 ---
 
+### 3.10 「回主屏转场到底有没有触发」变成可观测（纯诊断，零行为变更）
+
+**为什么还要动这一段**：CI 已在 `0da974c` 全绿，但 §6 里那条「自替换的 `stageAndInstall` 为什么不返回」仍然卡在**没有证据**上 —— `SelfInstallAutoBackground` 这条链路此前**一行日志都没有**，于是「转场到底有没有触发、是在 `installation_proxy` 返回之前还是之后触发」只能靠猜。
+
+**读代码读出来的矛盾（仍未定论，但现在是可测的）**：
+
+| 位置 | 说法 |
+| --- | --- |
+| `SelfInstallAutoBackground` 文档 | 「iOS 只有在旧进程退出前台后才会用新版完成替换」 |
+| `MinimuxerInstallChannel`（自替换分支注释） | 「自替换也必须让 `installation_proxy` 完整返回；**提前 suspend 会冻结当前连接并留下旧 profile**」 |
+| 实际触发时机 | **上传完成**（`.installing`，即上传到 100% 的 1.01 哨兵）后 **1.2 秒** —— 那时 `stageAndInstall` 显然还没返回 |
+
+**这两套时序是冲突的**。但缺设备侧证据，谁对无法判定 —— 所以本轮**刻意不动行为**（改动时序是在没有证据的情况下赌一把，可能把能用的路径改坏），只让它可观测。
+
+**改动**：
+
+1. `SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore:)` 接受日志出口；`AppsViewModel` 本来就持有 `logStore`，单签与批量两条链路都把**真实**出口传下去（守卫断言 `count(...) == 2`，防止只声明依赖、调用点传 `nil`）。
+2. 入口、`.standDown` / `.triggerTransition` / `.waitForForeground` 三个分支、以及 `exit(0)` 兜底各留一条日志，**每条立刻 `flush()`**。
+3. 「即将触发转场（suspend）」这条**刻意写在 `triggerHomeTransition` 之前**：`suspend` 一旦生效进程即被冻结，之后写的日志出不来。
+
+**下一份真机日志即可判定**：
+
+```
+安装  开始自替换安装：com.mjorb.seal.…，包 xx MB，第 1/3 次，等待上限 N 秒
+安装  自替换安装仍在等待：已等待 15 秒（installd 安装阶段不回报进度）
+Seal 自替换：上传完成，1.2 秒后判断前台状态并回主屏      ← 新增
+Seal 自替换：触发回主屏转场（suspend）                  ← 新增
+安装  自替换安装调用已返回：…                          ← 若永不出现 ⇒ suspend 确实截断了安装
+```
+
+- **最后一条永不出现** ⇒ 与安装通道的注释一致，`suspend` 冻结了承载安装的连接；
+- **它出现在转场之前** ⇒ 安装调用确实返回了，问题在 AFC / installd 一侧。
+
+**守卫**：新增 3 条断言 + 3 个变异锚点 —— ①这条链路必须真的写日志且 `flush()`；②「触发转场」的日志必须排在 `triggerHomeTransition` **之前**（**断顺序，不断文案**：用 `branch.index(a) < branch.index(b)`）；③两条链路的调用点都必须传真实出口。
+
+同时把 `.standDown` 的断言从拼接式（`"case .standDown: return false"`）改成 `section()` 切分支后断语义（`"return false" in branch and "exit(0)" not in branch`）—— 插一条日志就让拼接式断言失效，而那种失败信息看着像「语义坏了」，实际只是文案挪了位置。
+
+---
+
 ## 4. 守卫与测试
 
 `Scripts/verify-release-safety.py`：
@@ -335,6 +374,7 @@ cannot use mutating member on immutable value: '$0' is immutable
   - 两个新单测文件里的**关键断言确实存在** —— 源码断言守「形状」，单测守「行为」，测试被删空不能仍然全绿。
 - **新增通用检查 `Simulator: device-only members must not be referenced by simulator code`**（见 §3.8）：把「模拟器切片不编译」的行整段抹成等长空白，再找出**只**在被抹掉部分里定义的顶层类型成员、却出现在抹后文本中的那些。
 - **新增通用检查 `#expect must not call a mutating method ...`**（见 §3.9）：mutating 方法名从 `Seal/` 里现取，再扫 `SealTests/**` 的 `#expect(...)` 实参。
+- **「回主屏」链路的日志**（见 §3.10）：这条链路必须真的写日志且 `flush()`；「触发转场」的日志必须排在 `triggerHomeTransition` **之前**（断顺序，不断文案）；两条链路的调用点都必须传真实日志出口（`count(...) == 2`）。
 - **R09 通用化**：把「实参标签顺序必须与声明一致」做成可复用校验，覆盖 `AppRecord` / `signAndInstall` / `installSignedIPA` / `installCachedSignedIPAIfPossible`，并**断言扫到的调用点数下限** —— 本轮第一版正则把真实调用点（`coordinator.signAndInstall(`，前一个字符是 `.`）全部排除，变成「零调用点 ⇒ 零错误 ⇒ 绿」。
 - 新增 `squash()`：把多行代码压成一行式断言，不再在守卫里拼换行符 + 数缩进空格（缩进一改守卫就会莫名其妙地红）。
 - 修掉守卫自身的性能问题：每遍（= 每个变异）内缓存 `load` / `strip_comments`，`rglob` 结果进程内只算一次。**2 分 47 秒 → 48 秒**（此前已慢到被默认命令超时 SIGTERM，表现为「无输出、exit 1」）。
@@ -349,7 +389,7 @@ cannot use mutating member on immutable value: '$0' is immutable
 - `SealTests/Installation/SelfReplacementInstallGateTests.swift`（4 条）：已有安装在进行时第二笔必须被拒、安装结束后解锁、**超时不解锁**、连续超时永不重开。
 - `SealTests/Concurrency/HardTimeoutTests.swift` 补 1 条：`cancelsWorkOnTimeout: false` 时**工作所在任务**的 `Task.isCancelled` 仍为 `false`（断言必须打在 `HardTimeout` 自己创建的那个任务上 —— 在闭包里再套一层 `Task.detached` 就会测到新任务，测试会退化成永远通过）。
 
-结果：**206 源码断言 + 91 变异 PASS**，耗时 53 秒。（旧断言 `count("if Self.isTimeoutInstallError(error) {") == 2` 因两个 `install` 重载合并成一份而降为 `1`，已同步改为「唯一的重试循环必须把超时当终态」。）
+结果：**208 源码断言 + 93 变异 PASS**，耗时约 50 秒。（旧断言 `count("if Self.isTimeoutInstallError(error) {") == 2` 因两个 `install` 重载合并成一份而降为 `1`，已同步改为「唯一的重试循环必须把超时当终态」。）
 
 ---
 
@@ -361,8 +401,17 @@ cannot use mutating member on immutable value: '$0' is immutable
 4. Seal 自续签：在下拉控制中心（`.inactive`）之后仍能完成替换，不再停在 93%。
 5. 批量续签普通 App：确认不再出现长时间停在「传输中」的项。
 6. Seal 自续签：进入安装阶段后点「取消」关掉抽屉，Seal **仍能完成替换**（触发点已在状态层，不随界面消失）—— 这条正是上一轮补修的缺陷（§3.6）。
-7. Seal 自续签：导出日志应能看到**安装链路的完整轨迹** —— `安装 开始自替换安装：…` → 等待期间每 15 秒一条 `自替换安装仍在等待：已等待 N 秒` → 最后是 `自替换安装调用已返回：…`（成功）或 `自替换安装等待超时：…`（有界失败）。**这条是下一轮排查的入口**：无论成功还是失败，日志都能指出卡在哪一段（上传 / installd / 回主页转场）。
-8. Seal 自续签：如果出现 `自替换安装仍在等待` 但永远不返回，请把日志发回来 —— §6 里「为什么自替换的安装调用不返回」目前只有调用侧证据，需要设备侧轨迹才能定位。
+7. Seal 自续签：导出日志应能看到**两条链路的完整轨迹**（§3.10 新增了「回主屏」那段）：
+   ```
+   安装  开始自替换安装：…，第 1/3 次，等待上限 N 秒
+   安装  自替换安装仍在等待：已等待 15 秒（installd 安装阶段不回报进度）
+   Seal 自替换：上传完成，1.2 秒后判断前台状态并回主屏
+   Seal 自替换：触发回主屏转场（suspend）
+   安装  自替换安装调用已返回：…        ← 成功
+   安装  自替换安装等待超时：…          ← 有界失败
+   ```
+   **这条是下一轮排查的入口**：无论成功还是失败，日志都能指出卡在哪一段（上传 / installd / 回主页转场）。
+8. Seal 自续签：如果出现心跳但 `自替换安装调用已返回` **永不出现**，请把日志发回来 —— 这条日志的**有无**就能判定 §6 里那个未决问题（`suspend` 冻结了安装连接 vs AFC/installd 卡住）。
 
 ---
 
@@ -373,5 +422,5 @@ cannot use mutating member on immutable value: '$0' is immutable
 | 安装/上传超时预算偏长 | `mergedTimeout = min(1800, 180 + ipaMB×5) + 600`，20MB 包 ≈ 878 秒 | 是否缩短需用户拍板。缩短的代价是慢设备上的假超时：超时按**确定性拒绝**处理且不重试，但底层安装可能仍在跑 ⇒ 「装上了却记为失败」 |
 | 批量链路的「回主页」没有 `.restart` 闸门 | `consumeBatchEvent` 里 `if stage == .installing` 未按首次进入过滤，`.installing` 被重复推送时会排出多个「回主页」任务 | 已知且**良性**（第一个任务触发转场后进程被挂起，后续任务不会执行；转场失败时第一个 `exit(0)` 已结束进程），故本轮未动。若要统一，让 `BatchRefreshSession.advanceStage` 返回 `Tick` 即可 |
 | 问题 1 的**调用侧**证据 | 已坐实：真机日志里普通 App 安装 7 秒完成（`16:59:06→16:59:13`），而 Seal 自替换在 `16:53:57` 之后 93 秒无任何安装结论、进程仍活着且从未被替换 ⇒ 自替换的 `stageAndInstall` **没有返回**（§2.5） | 已通过看门狗把「永久卡住」变成「有界失败 + 可查日志」。剩下的只是下一轮真机日志复核 |
-| 自替换的安装调用**为什么不返回** | 仍未知。首要嫌疑是 `SelfInstallAutoBackground` 的 `suspend`：它在上传完成（进入 `.installing`）后 1.2 秒就触发，而 `MinimuxerInstallChannel` 的注释明确写着「主动调用 `UIApplication.suspend` 会**冻结当前进程内的 installation_proxy 连接**，安装永远到不了完成回调」—— **这两处语义直接冲突**。次要嫌疑是无线链路下 AFC 暂存 / installd 解压卡住 | **下一轮日志即可判定**（看门狗的心跳就是探针）：日志停在 `开始自替换安装：…` 而**没有**任何 `自替换安装仍在等待` ⇒ 进程被挂起（`suspend` 命中，转场时机错了）；**有**心跳 ⇒ 进程活着，卡在 AFC/installd。若坐实前者，把转场触发点从「进入 `.installing`」推迟到「安装调用返回之后」，或改为只 `exit(0)` 不 `suspend`，需真机 A/B |
+| 自替换的安装调用**为什么不返回** | 仍未知，但已从「靠猜」变成「可观测」（§3.10）。**代码里有一处明确矛盾**：`SelfInstallAutoBackground` 文档说「iOS 只有在旧进程退出前台后才完成替换」，而 `MinimuxerInstallChannel` 的自替换分支写着「自替换也必须让 `installation_proxy` 完整返回；**提前 suspend 会冻结当前连接并留下旧 profile**」—— 可实际触发时机是**上传完成后 1.2 秒**，那时 `stageAndInstall` 显然还没返回。次要嫌疑是无线链路下 AFC 暂存 / installd 解压卡住 | **下一份真机日志即可判定**：看 `安装 自替换安装调用已返回：…` 这条**有没有出现**、以及它相对 `Seal 自替换：触发回主屏转场（suspend）` 的先后。若「已返回」永不出现 ⇒ `suspend` 截断了安装（坐实矛盾），候选修法是把转场触发点从「进入 `.installing`」推迟到「安装调用返回之后」，或改为只 `exit(0)` 不 `suspend`，需真机 A/B；若它出现在转场之前 ⇒ 问题在 AFC / installd 一侧 |
 | 问题 6 | 用户消息被截断（「6、签名、续签」） | 待用户补完 |

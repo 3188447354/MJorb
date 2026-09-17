@@ -1555,7 +1555,7 @@ final class AppsViewModel: ObservableObject {
                 // 与单签 SigningProgressView 行为一致。Seal 自续签必然替换运行中的自己，
                 // 进程会被新包终止，其后排队的续签项会一并中断（与手按 Home 相同）。
                 if stage == .installing {
-                    SelfInstallAutoBackground.returnToHomeAfterSealUpload()
+                    SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore: logStore)
                 }
             } else {
                 batchRefreshSession?.status = .running
@@ -1952,7 +1952,7 @@ final class AppsViewModel: ObservableObject {
         if stage == .installing,
            tick == .restart,
            signingSession?.app.isSeal == true {
-            SelfInstallAutoBackground.returnToHomeAfterSealUpload()
+            SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore: logStore)
         }
     }
 

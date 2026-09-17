@@ -47,6 +47,8 @@
 - **`#if !targetEnvironment(simulator)` 的边界要按「模拟器切片编不编译」来划，别按「读起来像不像真机代码」**。同一类错误在 2026-09-16 一天内咬了两次（`diagnostic`、`isTimeoutInstallError`）：符号定义在 `#if !targetEnvironment(simulator)` **之内**，却被 `#if` **之外**的代码引用 ⇒ **`build-package` 全绿（只编设备切片）、只有 `swift-regression` 红**，一轮白等 13–16 分钟。**判据：写完一段与平台无关的辅助逻辑（错误归类、诊断文本、超时判定）时，先问「谁会调它」** —— 调用方在 `#if` 外，定义就必须在 `#if` 外。现在守卫有一条通用检查（`Simulator: device-only members ...`）：把「模拟器不编译」的行整段抹掉，再看有没有**只**在被抹掉部分里定义的顶层类型成员出现在抹后文本中。注意判定条件必须同时覆盖 `#if !targetEnvironment(simulator)` 的**整个分支**与 `#if targetEnvironment(simulator)` 的 **`#else` 分支** —— 只认前者会把 `bindTunnelConfiguration`（定义在 `!simulator` 里、调用点在同文件的 `#else` 里）误报成缺符号。
 - **`#expect(...)` 里不能出现 `mutating` 方法调用**。swift-testing 的 `#expect` 是**宏**：它把表达式重写成闭包、把子表达式绑成 `$0`/`$1`…，于是 `mutating` 成员作用在捕获值上编译不过 —— `error: cannot use mutating member on immutable value: '$0' is immutable`。修法是先把结果取到局部变量再断言：`let ok = gate.acquire(); #expect(ok)`。**这个错误同样只在 `swift-regression` 出现**（`build-package` 不编译测试 target），2026-09-16 紧随上一条之后踩到（`#expect(gate.acquire())`，95 条报错全是同一个宏展开）。守卫已加通用检查（`#expect must not call a mutating method ...`），mutating 方法名从 `Seal/` 里现取、不写死。
 - **守卫的耗时波动本身就是故障源**。变异检查每一遍都会把所有源文件重新读一遍（200+ 文件 × 90 多遍 ≈ 2 万次磁盘读），而本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 同一份代码整轮耗时实测在 **61–117 秒**之间波动，已经贴到命令默认 120 秒超时（超时会被 SIGTERM，且**没有任何输出**，极易误判成脚本崩了）。对策：在 `main()` 里按路径缓存**基准内容**（每遍只有**一个**文件被替换成变异版本，所以不会读到陈旧文本），耗时降到 53 秒。⚠️ **不要**顺手把 `strip_comments` 的结果也跨遍缓存 —— 那会让被替换的那个文件读到基准版的去注释结果，变异检查静默失效（守卫全绿但什么都没检查）。
+- **日志必须写在「挂起 / 退出」之前，并且立刻 `flush()`**。Seal 自替换的「回主屏」终点是 `suspend`（进程被冻结）或 `exit(0)`（进程结束）—— 这两条路之后写的任何日志都出不来。所以「即将触发转场」这条**必须在 `triggerHomeTransition` 之前落盘**，每条日志都要 `flush()` 而不是只 `append`（`SealLogStore` 的 `append` 只写内存缓冲）。顺序反了、或只 append 不 flush，等价于这条链路仍然静默：下次真机排查又只剩「一片空白」。**判据：给一条「会静默卡死」的链路加日志时，先问「这段代码的终点是什么，日志有没有机会落盘」。**
+- **守卫断言要断「语义」，不要断「拼出来的文案」**。`check("case .standDown: return false" in squashed)` 这种拼接式断言，只要在分支里插一条日志就失效 —— 而报出来的失败信息看着像「语义坏了」，实际只是文案挪了位置，很容易把人带偏。改成 `section(squashed, "case .standDown:", "case .triggerTransition:")` 切出分支，再断言里面的**语义**（`"return false" in branch and "exit(0)" not in branch`）。要断顺序时用 `branch.index(a) < branch.index(b)`，同样不依赖日志措辞。
 
 ---
 
@@ -69,6 +71,25 @@
 - **结果**：守卫 **204 源码 + 90 变异 PASS**（本轮之前 203 + 89）。
 - **涉及文件**：`Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`、`Scripts/verify-release-safety.py`。
 - **验证状态**：推送 `aa13af1..d1a67b6`，CI run `35169418800` —— `build-package` ✓、`rork-sign-tests` ✓、**`swift-regression` 仍 ✗**，但换了一个错误：见下条。
+
+### 2026-09-16（续 7）· 把「回主屏转场到底有没有触发」变成可观测：CI 绿之后补上最后一段盲区
+
+- **背景**：CI 已在 `0da974c` 全绿。剩下的唯一未决问题是「自替换的 `stageAndInstall` 为什么不返回」，而它**卡在没有证据**上：`SelfInstallAutoBackground`（Seal 自续签的「回主屏」动作）这条链路在 2026-09-16 之前**一行日志都没有**，于是「转场到底有没有触发、是在 `installation_proxy` 返回之前还是之后触发」只能靠猜。
+- **读代码读出来的矛盾（仍未定论，但现在是可测的）**：
+  - `SelfInstallAutoBackground` 的文档说「iOS 只有在旧进程退出前台后才会完成替换」；
+  - `MinimuxerInstallChannel` 里写着「自替换也必须让 `installation_proxy` 完整返回；**提前 suspend 会冻结当前连接并留下旧 profile**」；
+  - 而实际的触发时机是**上传完成**（`.installing`，即上传到 100% 的 1.01 哨兵）后 **1.2 秒** —— 那时 `stageAndInstall` 显然还没返回。
+  - **这两套时序是冲突的**，但缺设备侧证据无法判定谁对。所以本轮**不动行为**，只让它可观测。
+- **修复（纯诊断，零行为变更）**：
+  1. `SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore:)` 接受日志出口（`AppsViewModel` 本来就持有 `logStore`，两条链路都把**真实**的出口传下去）。
+  2. 入口、`.standDown` / `.triggerTransition` / `.waitForForeground` 三个分支、以及 `exit(0)` 兜底各留一条日志，**每条立刻 `flush()`**。
+  3. 「即将触发转场（suspend）」这条**刻意写在 `triggerHomeTransition` 之前**：`suspend` 一旦生效进程即被冻结，之后写的日志出不来。
+- **下一份真机日志即可判定**：`安装 开始自替换安装：…` → 心跳 → `Seal 自替换：触发回主屏转场（suspend）` → `安装 自替换安装调用已返回：…`。**若最后一条永不出现，说明 `suspend` 确实截断了安装**（与安装通道注释一致）；若它出现在转场之前，则问题在 AFC / installd 一侧。
+- **守卫**：新增 3 条断言 + 3 个变异锚点 —— ①这条链路必须真的写日志且 `flush()`；②「触发转场」的日志必须排在 `triggerHomeTransition` **之前**（断顺序，不断文案）；③两条链路的调用点都必须传真实出口（`count(...) == 2`）。
+  同时把 `.standDown` 的断言从拼接式（`"case .standDown: return false"`）改成 `section()` 切分支后断语义 —— 插一条日志就让拼接式断言失效，而那种失败看着像语义坏了。
+- **结果**：守卫 **208 源码 + 93 变异 PASS**，耗时约 50 秒。
+- **涉及文件**：`Seal/Features/Apps/SigningProgressView.swift`、`Seal/Features/Apps/AppsViewModel.swift`、`Scripts/verify-release-safety.py`。
+- **验证状态**：守卫本地 PASS；`swift-regression` 待 CI；**真机回归第 7、8 项仍是本轮修复的验证入口**。
 
 ### 2026-09-16（续 6）· 修掉 `#expect` 里的 mutating 调用；顺手把守卫从 117 秒压回 53 秒
 
@@ -96,7 +117,7 @@
   去注释结果，变异检查静默失效（守卫全绿但什么都没检查）。
 - **结果**：守卫 **206 源码 + 91 变异 PASS**，耗时 53 秒。
 - **涉及文件**：`SealTests/Installation/SelfReplacementInstallGateTests.swift`、`Scripts/verify-release-safety.py`。
-- **验证状态**：守卫本地 PASS；`swift-regression` 转绿待 CI；真机回归项不变（见 QA 文档 §5）。
+- **验证状态**：推送 `d1a67b6..0da974c`，CI run `35170583408` —— **`completed / success`**：`build-package` ✓、`swift-regression` ✓（连续两轮红之后终于转绿）、`rork-sign-tests` ✓、`publish-release` skipped（正常）。真机回归项不变（见 QA 文档 §5）。
 
 ### 2026-09-16（续 4）· 用真机日志坐实「卡在 93%」：自替换安装调用从未返回，而这段一行日志都没有
 

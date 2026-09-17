@@ -635,6 +635,22 @@ private struct CurrentSegmentFill: View {
 ///      保证进程一定结束、iOS 才能完成替换；转场成功时进程已被挂起，不会走到这里。
 /// 本类型只做「切后台 / 退出」，不碰签名、证书、自替换事务：安装结果仍由重新打开的
 /// 新进程 `SelfReplacementCoordinator` 对账确认。
+///
+/// ## 为什么每一步都要写日志（2026-09-16 补）
+///
+/// 真机反馈「续签卡在 93%」时，这条链路**一行日志都没有** —— 于是「转场到底有没有触发」
+/// 只能靠猜。现在入口、`.standDown` / `.triggerTransition` / `.waitForForeground` 三个
+/// 分支、以及 `exit(0)` 兜底都各留一条，且**每条立刻 `flush()`**：`suspend` 一旦生效
+/// 进程即被冻结，之后写的日志出不来。
+///
+/// ⚠️ **仍未定论**：本类型的文档说「iOS 只有在旧进程退出前台后才会完成替换」，
+/// 而 `MinimuxerInstallChannel` 里写着「自替换也必须让 installation_proxy 完整返回；
+/// 提前 suspend 会冻结当前连接并留下旧 profile」。而本类型是在**上传完成**
+/// （`.installing`，即上传到 100% 的 1.01 哨兵）后 1.2 秒就触发转场 —— 那时
+/// `stageAndInstall` 显然还没返回。**这两套时序是冲突的，但缺设备侧证据无法判定谁对**：
+/// 加日志就是为了让下一次真机日志能直接读出顺序 ——
+/// `安装 开始自替换安装：…` → 心跳 → `Seal 自替换：触发回主屏转场（suspend）` →
+/// `安装 自替换安装调用已返回：…`（若这条**永远不出现**，说明 suspend 确实截断了安装）。
 enum SelfInstallAutoBackground {
     /// 转场前的可感知停顿：既让 UI 的「正在退回主屏幕」渲染出来，也给 Rust 暂存落盘留余量。
     private static let transitionBeatNanoseconds: UInt64 = 1_200_000_000
@@ -682,13 +698,15 @@ enum SelfInstallAutoBackground {
     }
 
     @MainActor
-    static func returnToHomeAfterSealUpload() {
+    static func returnToHomeAfterSealUpload(logStore: SealLogStore? = nil) {
         Task { @MainActor in
+            await log(logStore, "Seal 自替换：上传完成，1.2 秒后判断前台状态并回主屏")
             try? await Task.sleep(nanoseconds: transitionBeatNanoseconds)
             let app = UIApplication.shared
-            guard await waitUntilExitIsSafe(app) else { return }
+            guard await waitUntilExitIsSafe(app, logStore: logStore) else { return }
             // 兜底：3 秒后进程还活着，说明转场没生效（会永久停在进度页），此时才强制退出。
             // 转场成功的话进程已被挂起，这行不会执行 —— 所以不会打断退场动画。
+            await log(logStore, "Seal 自替换：3 秒内进程仍存活（转场未生效），强制 exit(0)")
             try? await Task.sleep(nanoseconds: exitFallbackNanoseconds)
             exit(0)
         }
@@ -703,19 +721,41 @@ enum SelfInstallAutoBackground {
     /// 旧实现把 `.inactive` 也当成「用户已离开」直接 `return`，连 `exit(0)` 兜底一起跳过，
     /// 于是安装永远完不成、界面永久停在 93%。
     @MainActor
-    private static func waitUntilExitIsSafe(_ app: UIApplication) async -> Bool {
+    private static func waitUntilExitIsSafe(
+        _ app: UIApplication,
+        logStore: SealLogStore?
+    ) async -> Bool {
         for _ in 0...inactiveRetryLimit {
             switch step(for: app.applicationState) {
             case .standDown:
+                await log(logStore, "Seal 自替换：已切到后台，交给 iOS 完成替换（不强制退出）")
                 return false
             case .triggerTransition:
+                // 这行必须在 `triggerHomeTransition` **之前**落盘：`suspend` 一旦生效，
+                // 本进程就被冻结，之后写的任何日志都出不来。
+                await log(logStore, "Seal 自替换：触发回主屏转场（suspend）")
                 triggerHomeTransition(app)
                 return true
             case .waitForForeground:
+                await log(logStore, "Seal 自替换：当前为瞬时失焦，等待回到前台")
                 try? await Task.sleep(nanoseconds: inactiveRetryNanoseconds)
             }
         }
+        await log(logStore, "Seal 自替换：一直未能回到前台，走 exit(0) 兜底")
         return true
+    }
+
+    /// 最佳努力日志：**每条都立刻 `flush()`**。
+    ///
+    /// 这段代码的终点是进程被挂起（`suspend`）或被 `exit(0)` 结束 —— 留在内存缓冲里的行
+    /// 会随进程一起消失。而这几行正是判定「先挂起、还是先等 installation_proxy 返回」的
+    /// 唯一依据：2026-09-16 真机上自替换卡在 93% 时，**这条链路一行日志都没有**，
+    /// 只能靠猜（见 `docs/qa/2026-09-16-install-stage-feedback-and-self-replacement-freeze.md` §6）。
+    /// 与安装通道的 `log` 同样处理：写不进去也绝不阻断转场。
+    private static func log(_ store: SealLogStore?, _ message: String) async {
+        guard let store else { return }
+        try? await store.append(category: .installation, message: message)
+        await store.flush()
     }
 
     /// 触发与「按 Home」等价的系统转场。`suspend` 是私有 selector：

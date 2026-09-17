@@ -546,21 +546,45 @@ def violations(load=read):
           "R10: an unknown foreground state must wait, not give up")
     return_home = squash(strip_comments(section(
         progress_raw,
-        "static func returnToHomeAfterSealUpload()",
+        "static func returnToHomeAfterSealUpload(logStore: SealLogStore? = nil)",
         "private static func triggerHomeTransition"
     )))
     # 结构还在不等于还在用：等待循环必须真的走 step()，否则守卫守的是一个没人调的函数。
     check("switch step(for: app.applicationState)" in return_home,
           "R10: the wait loop must route through the tested step function")
-    check("case .waitForForeground: try? await Task.sleep" in return_home
+    check("case .waitForForeground: await log(logStore," in return_home
+          and "try? await Task.sleep(nanoseconds: inactiveRetryNanoseconds)" in return_home
           and "for _ in 0...inactiveRetryLimit" in return_home,
           "R10: .inactive must actually be waited out, not merely skipped")
     # `.standDown` 的语义是「不触发转场、也不强杀进程」：用户已经自己切走了，
     # 再 exit(0) 会和用户的操作打架。
-    check("case .standDown: return false" in return_home,
+    # 用 `section()` 切出这个分支再断言，而不是拼 `"case .standDown: return false"` ——
+    # 分支里插一条日志（本轮就插了）会让拼接式断言失效，那种失败看着像「语义坏了」，
+    # 其实只是文案挪了位置。这里断言的是**语义**：返回 false 且不 exit。
+    stand_down = section(return_home, "case .standDown:", "case .triggerTransition:")
+    check("return false" in stand_down and "exit(0)" not in stand_down,
           "R10: a real background transition must not kill the process")
     check("exit(0)" in return_home,
           "R10: the exit fallback must stay reachable on every non-background path")
+    # 「回主屏」这条链路必须留下日志，而且**挂起前那条必须先落盘**。
+    #
+    # 2026-09-16 真机：自替换卡在 93% 时这条链路一行日志都没有，于是「转场到底有没有
+    # 触发、是在 installation_proxy 返回之前还是之后触发」只能靠猜。加日志是为了让它
+    # **可观测**：`安装 开始自替换安装：…` → 心跳 → `Seal 自替换：触发回主屏转场（suspend）`
+    # → `安装 自替换安装调用已返回：…`（若这条永不出现 ⇒ suspend 确实截断了安装）。
+    #
+    # `suspend` 一旦生效进程即被冻结，所以「触发转场」这条**必须写在 `triggerHomeTransition`
+    # 之前**，且每条都 `flush()`：顺序反了、或只 append 不 flush，下次真机排查又会退回
+    # 「一片空白」—— 那正是这条缺陷最难查的地方。
+    check("await store.append(category: .installation" in progress_raw
+          and "await store.flush()" in progress_raw,
+          "R10: the return-home path must log — silence is why the freeze was undiagnosable")
+    # 断言「顺序」而不是「文案」：日志措辞可以改，但必须先落盘再挂起。
+    transition_branch = section(return_home, "case .triggerTransition:", "case .waitForForeground:")
+    check("await log(logStore," in transition_branch
+          and transition_branch.index("await log(logStore,")
+          < transition_branch.index("triggerHomeTransition(app)"),
+          "R10: the suspend log must be flushed before the process is frozen")
     # 「回主页」的触发点必须在**状态层**，不能挂在界面上。
     # 抽屉现在有「取消」按钮（软取消：立即关界面，已下发的安装由 installd 跑完），
     # 用户一旦在 Seal 安装期间点取消，SigningProgressView 就没了 ——
@@ -571,10 +595,13 @@ def violations(load=read):
     check("if stage == .installing, tick == .restart, signingSession?.app.isSeal == true {"
           in apps_view,
           "R10: single signing must trigger the return-home from the state layer, once")
-    check("SelfInstallAutoBackground.returnToHomeAfterSealUpload()" in apps_view,
-          "R10: the state layer must actually call the return-home action")
+    # 两条链路（单签 + 批量）都必须把**真实的**日志出口交下去：
+    # 只声明依赖、调用点传 nil，等于这条链路重新变回静默（下次真机又查不出卡在哪）。
+    check(apps_view.count(
+              "SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore: logStore)") == 2,
+          "R10: both signing paths must trigger the return-home with a real log outlet")
     # 界面自己再触发一次 = 双重「回主页」（两个系统转场 + 两个 exit(0) 兜底）。
-    check("SelfInstallAutoBackground.returnToHomeAfterSealUpload()" not in progress_view,
+    check("SelfInstallAutoBackground.returnToHomeAfterSealUpload" not in progress_view,
           "R10: the view must not trigger the return-home — it can be dismissed mid-install")
     # 源码断言守的是「形状」，单测守的是「行为」。`.inactive` 这条分支必须真的有单测 ——
     # 否则重构可以改掉它的返回值而守卫只看见「函数还在」（本轮把这段抽成纯函数就是为了它）。
@@ -1638,9 +1665,23 @@ def main():
         # `.inactive` 等够 3 秒改成直接放弃等待：控制中心一遮挡就会走到 exit(0)，
         # 在用户还在前台时把进程杀掉，安装永远完不成。
         ("Seal/Features/Apps/SigningProgressView.swift",
-         "            case .waitForForeground:\n                try? await Task.sleep(nanoseconds: inactiveRetryNanoseconds)",
-         "            case .waitForForeground:\n                break",
+         "                await log(logStore, \"Seal 自替换：当前为瞬时失焦，等待回到前台\")\n"
+         "                try? await Task.sleep(nanoseconds: inactiveRetryNanoseconds)",
+         "                break",
          "R10: .inactive must actually be waited out"),
+        # 让「触发转场」的日志排在 `triggerHomeTransition` **之后**：`suspend` 生效即冻结
+        # 进程，这行日志就永远出不来 —— 下次真机排查又只剩「一片空白」。
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         '                await log(logStore, "Seal 自替换：触发回主屏转场（suspend）")\n'
+         "                triggerHomeTransition(app)",
+         "                triggerHomeTransition(app)\n"
+         '                await log(logStore, "Seal 自替换：触发回主屏转场（suspend）")',
+         "R10: the suspend log must be flushed before the process is frozen"),
+        # 调用点传 nil = 「回主页」这条链路重新变回静默（只声明依赖不等于接上了）。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore: logStore)",
+         "SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore: nil)",
+         "R10: both signing paths must trigger the return-home with a real log outlet"),
         # 让等待循环不再走被测过的 step()：函数还在，约束已经失效。
         ("Seal/Features/Apps/SigningProgressView.swift",
          "            switch step(for: app.applicationState) {",

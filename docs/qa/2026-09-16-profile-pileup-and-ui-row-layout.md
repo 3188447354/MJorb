@@ -226,10 +226,15 @@ HStack(alignment: .firstTextBaseline, spacing: 14) {
 
 这条日志是 `AppMaintenanceJob` 第 4 步（`SEAL-PROFILE-320`）**无条件**写的，
 而 `系统` 类别在导出里确实存在（9 条）⇒ 不是导出过滤掉了。
-所以结论只能是：**维护期的第 4 步从来没有执行过**。
 
-而第 4 步恰恰是 §3.3 里说的「清掉历史堆积的关键」—— 它是唯一覆盖**全部** Seal 管理 App 的路径。
-也就是说：上轮加的这条路径，真机上一次都没跑。
+⚠️ **但「零命中」在这里有第二个、更简单的解释**：那个构建里**根本没有第 4 步**。
+`git show 0c16174:Seal/Core/Maintenance/AppMaintenanceJob.swift | grep -c profileSweeper`
+= **0** —— 维护第 4 步是 run#79（`bc069e3`）才进去的，而用户的构建 ≤ run#75。
+所以这一条的零命中**不构成证据**（详见 §7.6）。
+
+**仍然成立、且是本节结论的那一半**：第 4 步恰恰是 §3.3 里说的「清掉历史堆积的关键」
+—— 它是唯一覆盖**全部** Seal 管理 App 的路径。而它在用户设备上**一次都没跑过**，
+原因就是它不在那个构建里。
 
 ### 7.2 为什么没跑，原先查不出来
 
@@ -384,36 +389,117 @@ CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER:-${SEAL_BUILD_NUMBER:-1}}"
 
 这解释了为什么 §7.1 里那些「修复没生效」的观察会那么干净 —— 因为那些修复**根本不在那个构建里**。
 
-#### 顺带得到一个决定性证据：维护作业从未完成过一轮
+#### 那么「六个日志码零命中」到底能推出什么
 
-`AppMaintenanceJob.run()` 的四个步骤会留下这些日志码：
+`AppMaintenanceJob.run()` 会留下这些日志码。**但必须先把「这个码在用户那个构建里存不存在」
+查清楚** —— 否则「零命中」只能证明代码不在，证明不了路径没跑：
 
-| 码 | 触发条件 |
-|---|---|
-| `SEAL-STORAGE-005` | 孤儿目录清理有删除 |
-| `SEAL-STORAGE-006` | 作业在某个阶段被用户操作打断（`.aborted`） |
-| `SEAL-STORAGE-008` | 有导入事务目录被跳过 |
-| `SEAL-PROFILE-320` | **第 4 步跑到就写（无条件）** |
-| `SEAL-PROFILE-321` | 描述文件清理有删除 |
-| `SEAL-SELF-REG-001` | 自注册失败 |
+| 码 | 触发条件 | run#75 里存在？ | 19 份日志命中 |
+|---|---|---|---|
+| `SEAL-STORAGE-005` | 孤儿目录清理有删除 | ✅ | 0 |
+| `SEAL-STORAGE-006` | 作业被用户操作打断（`.aborted`） | ✅ | 0 |
+| `SEAL-STORAGE-008` | 有导入事务目录被跳过 | ✅ | 0 |
+| `SEAL-PROFILE-320` | 第 4 步跑到就写（无条件） | ❌ **不存在** | 0 |
+| `SEAL-PROFILE-321` | 描述文件清理有删除 | ❌ **不存在** | 0 |
+| `SEAL-SELF-REG-001` | 自注册失败 | ✅ | 0 |
 
-**全部 19 份日志里，这六个码零命中。** 而日志没有「滚动丢弃」提示（导出是完整的）。
+用 `git show <sha>:<file> | grep <码>` 核对 `aba93cc`(run#73) / `0c16174`(run#75) / `bc069e3`(run#79)：
 
-`320` 无条件 + `006` 也零命中 ⇒ 作业**从来没走到过第 4 步**，而且**也没在第 1–3 步被打断**
-⇒ 只剩两种可能：`gate.tryAcquire()` 每次都返回 nil（`.skipped`），
-或者第 1–3 步 `.failed` 了。而这两种原先**都不写日志**（`.skipped` 只有 `break`、
-`.failed` 只弹窗）—— 正是 §7.4 的 B 项要解决的。
+- **`SEAL-PROFILE-320` / `sweepStaleProfiles` / `profileSweeper` 在 run#73、run#75 里都是 0 处**
+  ⇒ **维护第 4 步在用户的构建里根本不存在**。它的零命中是**平凡结论**，不构成任何证据。
+- `SEAL-STORAGE-006` 在 run#75 里**存在**且零命中 ⇒ 维护作业**从未被打断**过（这一条有效）。
+- `SEAL-STORAGE-005` 在 run#75 里存在且零命中 ⇒ 只能推出「没有孤儿目录被删」，
+  **推不出「作业没跑过」** —— 作业完全可能每次都 `.completed`，只是恰好没有孤儿要清。
+
+> ⚠️ **上一轮在这里犯了本文件 §7.6 自己刚警告过的错**：拿一个**在旧构建里不存在的日志码**
+> 的零命中，去论证「这条路径没执行」。**判据：任何「零命中」结论，先确认那个字符串
+> 在对应构建里存在**（`git show <sha>:<file> | grep`），否则它只是平凡真。
+
+所以用户设备上 profile 堆积的完整解释是（**不需要额外的 bug**）：
+
+1. 那个构建里**只有**安装后清理一条路径，而它只覆盖**本次安装的那个 App**；
+2. Seal 的自更新不走 `installSignedIPA` ⇒ 安装后清理**轮不到 Seal 自己**；
+3. 维护第 4 步（唯一覆盖全部 App 的路径）在那个构建里**还不存在**；
+4. 唯一那条路径还撞过一次 `NoDevice` 且不重试（§7.1 的 16:59:28）。
+
+⇒ 16 份 Seal 的旧 profile 完全由此解释。
 
 ### 7.7 仍未解决（需要真机日志）
 
 | # | 现象 | 判断 |
 |---|---|---|
-| 1 | 维护作业为什么一轮都没完成 | 现在有了 `SEAL-STORAGE-009`（跳过）/ `010`（失败）就能区分。若长期只有 `009`，说明 `MaintenanceGate` 的抢占过于频繁（它在启动路径上、且**非阻塞**：拿不到就跳过、不排队），要把「跳过」改成「推迟」 |
-| 2 | `扫描 325，匹配 1，删除 0` | **上一轮把它当成泄漏信号是过度解读** —— 那是 run#75 之前的构建，`keep-map` 只有单条（`for: bundleID, keeping: uuid`），所以 `匹配 1` 是**正常表现**。当前版本改为「主 App + 全部扩展」的多条映射后，同一行会变成 `匹配 N`。这一条不再作为线索 |
+| 1 | 维护作业在本轮构建里到底跑不跑 | 现在有了 `SEAL-STORAGE-009`（跳过）/ `010`（失败）/ `320`（第 4 步无条件）就能区分。若长期只有 `009`，说明 `MaintenanceGate` 的抢占过于频繁（它在启动路径上、且**非阻塞**：拿不到就跳过、不排队），要把「跳过」改成「推迟」 |
+| 2 | `扫描 325，匹配 1，删除 0` | **上一轮把它当成泄漏信号是过度解读** —— 那是 run#75 之前的构建，`keep-map` 只有单条（`for: bundleID, keeping: uuid`），所以 `匹配 1` 是**正常表现**。当前版本改为「主 App + 全部扩展」的多条映射后，同一行会变成 `匹配 N`。**但「堆积没有结构性来源」这个引申结论也是错的** —— 见 §7.8：多 Apple ID 轮换会生成 36 个 Bundle ID，历史 Team 后缀的 profile 当前一份都回收不了 |
 | 3 | `自更新安装前清理` 的文案已不在源码里 | 09-14 那两条来自更早的构建（该文案被改过名），不影响现状 |
 | 4 | `扫描 325/326`（09-15）→ `扫描 23`（09-16） | 设备上的 profile 数从 325 掉到 23，**原因不明**。用户若在此期间用别的工具清过、或删过 App，请说明一下 —— 这会改变「堆积速度」的估算 |
 
-### 7.8 已做的配套改进：让日志自带构建号
+### 7.8 堆积的**结构性**来源：多 Apple ID 轮换 × Team 后缀（已量化）
+
+§7.7 第 2 条否掉了「`匹配 1` 是泄漏信号」，但**不等于堆积没有结构性来源**。
+2026-09-17 从 19 份日志里把所有 `.seal.<后缀>` 形态的 Bundle ID 全捞出来统计：
+
+| base | Team 后缀数 | 后缀 |
+|---|---|---|
+| `com.ss.iphone.ugc.Aweme` | **6** | `32746RUBTT` `49778Q7UWQ` `6T43967CCT` `JHW8PJBRJ2` `Q88QMP4DLM` `douyin` |
+| `com.mjorb`（Seal 自己） | **5** | `49778Q7UWQ` `6T43967CCT` `CT8QZ7352B` `KYRJV2U7WS` `TB95F327DS` |
+| `com.sollinplayer.leguan` | 4 | `3432ZHJUF9` `6T43967CCT` `JHW8PJBRJ2` `Q88QMP4DLM` |
+| `com.kdt.livecontainer` | 3 | `3432ZHJUF9` `KYRJV2U7WS` `TB95F327DS` |
+| `com.dao.lara` | 3 | `3432ZHJUF9` `9DNHBHSQDU` `JHW8PJBRJ2` |
+| （其余 13 个 base） | 1–2 | … |
+
+**合计：18 个真实 base × 13 个不同 Team 后缀 = 36 个 Seal 生成过的 Bundle ID。**
+
+（统计时需剔除 6 条假 base —— iOS 在 `SEAL-INSTALL-702l` 报错里用
+`<TeamID>.<BundleID>` 的格式罗列已装应用，例如
+`9DNHBHSQDU.com.javdb6.com.seal.9DNHBHSQDU` 里的 `9DNHBHSQDU.com.javdb6.com`
+是 iOS 加的前缀，不是套娃。真实 ID 是 `com.javdb6.com.seal.9DNHBHSQDU`。
+**注意别把它误判成「Team 后缀套娃」这个不存在的 bug。**）
+
+**为什么会换这么多 Team**：同一份日志的 `SEAL-INSTALL-702l` 写着
+`This device has reached the maximum number of installed apps using a free developer profile`，
+并列出 3 个同属 team `9DNHBHSQDU` 的应用 ⇒ 用户在用**多个 Apple ID 轮换**来突破
+免费账号「3 个自签应用」上限。每换一个账号（= 换 team），Seal 就会给每个 App 生成一个
+**新的 Bundle ID**（`BundleIDMapper` 强制附加当前 team 后缀）。
+
+**这直接决定了堆积的量级**：36 个 Bundle ID × (1 主 + 若干扩展) ≈ 至少 36–72 份 profile，
+再叠加每次重签换新 profile UUID，与实测「扫描 325」完全吻合。
+
+**而当前代码一份都回收不了这些**：`profileKeepMap` 的 key 只有**当前**在用的 Bundle ID
+（`mappedBundleIdentifier ?? preferredBundleIdentifier` + 已安装记录的扩展），
+`removeProfiles` 里 `guard let keepingUUID = keepingByBundleID[profileBundleID.lowercased()]
+else { continue }` —— **不在 key 集合里的一律跳过**。所以历史 Team 后缀的 profile
+永远不进 `matched`，`删除` 恒为 0。
+
+这不是 bug，是**有意的保守**（删错一份会让对应 App 立刻无法启动）。要放开它，
+必须先能回答「哪些 Bundle ID 是 Seal 生成的、且现在确实没在用」。→ §7.9
+
+### 7.9 回收旧 Team profile 的设计决策（待用户拍板）
+
+**可用的安全判据**：`Minimuxer.lookupApp(bundleId:)`（`Vendor/Minimuxer/RustBridge/
+MinimuxerBridgeIdevice.swift:314`，走 `instproxy_lookup`）能查某个 Bundle ID
+在设备上**是否已安装**。安装后校验已经在用它（`MinimuxerInstallChannel.swift:800`）。
+
+⇒ 一条**无懈可击**的删除条件：**该 Bundle ID 在设备上没有对应的已安装 App**。
+profile 只在 App 启动时被校验，App 没装 ⇒ 这份 profile 是死重量，删掉不可能破坏任何东西。
+
+**但只有这一条还不够，必须再加一条保守过滤**：`AppRecord.swift:275` 明确写着
+「不包含 `originalBundleIdentifier`：**同一原始 IPA 可用不同 Bundle ID 签出多个副本
+同时安装**」。也就是说用户**可以**故意把同一个 App 用两个 Team 各装一份 ——
+此时「同 base 的其他 Team 就是过期」是**错的**。所以：
+
+> 删除条件 = ①Bundle ID 不在当前 keep-map **且** ②形态上属于 Seal 生成
+> （`<base>.seal.<X>`，base 取自记录的 `originalBundleIdentifier`；Seal 自己单独处理，
+> 它是 `com.mjorb.seal.<team>` 而非 `com.mjorb.seal.seal.<team>`）
+> **且** ③`lookupApp` 返回 nil（设备上没装）。
+
+三个条件同时成立才删。①②限定爆炸半径，③保证正确性。
+
+**代价**：每个候选 Bundle ID 一次 installation_proxy 往返（本例约 30 个候选）。
+跑在后台维护作业里，不阻塞前台。
+
+**待决策**：见本轮向用户提出的选项（实现 / 只加诊断日志 / 维持现状）。
+
+### 7.10 已做的配套改进：让日志自带构建号
 
 上面那轮取证绕了很大一圈，根因是**导出的日志里没有任何构建标识**。
 `SealLogTextFormatter.exportText` 的表头现在多一行：

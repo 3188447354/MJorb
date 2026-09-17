@@ -33,15 +33,18 @@ struct SigningProgressView: View {
         .interactiveDismissDisabled(isRunning)
         // Seal 自续签=覆盖安装运行中的自己：进入 .installing（上传完成）后自动切到后台，
         // 让 iOS 用新版替换旧进程，无需人手按 Home；安装续由重新打开的新进程对账确认。
-        // 先用 withAnimation 把「正在退回主屏幕」这一帧渲染出来，再触发系统转场，
+        //
+        // 这里**只负责视觉**：先用 withAnimation 把「正在退回主屏幕」这一帧渲染出来，
         // 用户看到的是有交代的退场，而不是界面凭空消失。
+        // 真正的「回主页」动作由 AppsViewModel.updateSigningStage 在状态层触发 ——
+        // 挂在界面上的话，用户一点「取消」关掉抽屉，触发点就跟着消失了，
+        // 而安装早已交给 installd，Seal 的替换会静默失败。
         .onChange(of: viewModel.signingSession?.status) { _, newStatus in
             if case .running(.installing)? = newStatus,
                viewModel.signingSession?.app.isSeal == true {
                 withAnimation(.easeInOut(duration: 0.45)) {
                     isReturningHome = true
                 }
-                SelfInstallAutoBackground.returnToHomeAfterSealUpload()
             }
         }
     }

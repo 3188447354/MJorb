@@ -159,19 +159,46 @@ private static func waitUntilExitIsSafe(_ app: UIApplication) async -> Bool {
 
 **为什么抽成纯函数**：这段判断原先直接读 `UIApplication.shared.applicationState` 并就地 `return`，没有任何测试覆盖，而它的 `.inactive` 分支正是问题 1 的根因。这类「错了不崩、只会在真机上卡死」的分支必须能单测，所以把「状态 → 动作」的映射独立出来（见 §4 的 `SelfInstallAutoBackgroundTests`）。
 
+### 3.6 触发点从界面搬到状态层（本轮补修）
+
+「回主页」的动作原先挂在 `SigningProgressView` 的 `.onChange(of: viewModel.signingSession?.status)` 上。这在**加了「取消」按钮之后**变成了一个真实缺陷：
+
+- 「取消」是软取消 —— 立即关界面、`signingSession = nil`，但**已经下发的安装由 installd 跑完**；
+- 用户在 Seal 自续签的安装阶段点「取消」⇒ `SigningProgressView` 消失 ⇒ 挂在它上面的触发点收不到后续阶段推进 ⇒ **「回主页」永远不会发生**；
+- iOS 只有在旧进程让出前台后才完成替换 ⇒ Seal 的替换**静默失败**：旧版本继续跑，用户以为更新没生效。
+
+修复：触发点搬到状态层 `AppsViewModel.updateSigningStage`，与批量续签那条链路（`consumeBatchEvent`）对齐；界面上的 `.onChange` **只保留视觉转场**（`withAnimation` 渲染「正在退回主屏幕」）。
+
+```swift
+// AppsViewModel.updateSigningStage
+let tick = InstallStageTimeline.tick(entering: stage, currentStage: currentStage)
+...
+signingSession?.status = .running(stage)
+// `.restart` = 只在**首次**进入安装阶段触发一次（同一阶段会被重复推送：
+// 安装通道的 >1.0 哨兵 + 签名侧补发），不设闸门会排出多个「回主页」任务。
+if stage == .installing,
+   tick == .restart,
+   signingSession?.app.isSeal == true {
+    SelfInstallAutoBackground.returnToHomeAfterSealUpload()
+}
+```
+
+守卫同时断言**界面里不得再出现** `SelfInstallAutoBackground.returnToHomeAfterSealUpload()` —— 两处都触发会排出两个系统转场和两个 `exit(0)` 兜底。
+
 ---
 
 ## 4. 守卫与测试
 
 `Scripts/verify-release-safety.py`：
 
-- 新增 **R10**（安装阶段「看得见、退得出」）：16 条断言 + 11 个变异锚点，覆盖
+- 新增 **R10**（安装阶段「看得见、退得出」）：19 条断言 + 13 个变异锚点，覆盖
   - 哨兵必须排他（`>` 而非 `>=`）；
   - **两个**安装分支都要走 `bridgedInstallProgress`，且包装里真的发 `.installing`；
   - 批量事件流必须带真实百分比（`onInstallProgress` 订阅 + `.appInstallProgress` 事件）；
   - 两个界面必须有 `InstallWaitNote` 与取消按钮；
   - 运行中不得隐藏 footer；
   - `step(for:)` 必须是**可测纯函数**，`.inactive → .waitForForeground`、`.background → .standDown`、`@unknown default` 不放弃，且等待循环**真的走** `step()` 并真的 `sleep`（结构还在 ≠ 还在用）；
+  - **「回主页」的触发点在状态层**（`AppsViewModel`，且用 `.restart` 闸门只触发一次），界面里**不得**再出现调用（两处都触发 = 两个转场 + 两个 `exit(0)` 兜底）；
   - 安装计时起点规则只有一份：`AppsViewModel` 与 `BatchRefreshSession` 都必须调 `InstallStageTimeline.tick`；
   - 两个新单测文件里的**关键断言确实存在** —— 源码断言守「形状」，单测守「行为」，测试被删空不能仍然全绿。
 - **R09 通用化**：把「实参标签顺序必须与声明一致」做成可复用校验，覆盖 `AppRecord` / `signAndInstall` / `installSignedIPA` / `installCachedSignedIPAIfPossible`，并**断言扫到的调用点数下限** —— 本轮第一版正则把真实调用点（`coordinator.signAndInstall(`，前一个字符是 `.`）全部排除，变成「零调用点 ⇒ 零错误 ⇒ 绿」。
@@ -186,7 +213,7 @@ private static func waitUntilExitIsSafe(_ app: UIApplication) async -> Bool {
 - `SealTests/Apps/SelfInstallAutoBackgroundTests.swift`（5 条）：`.inactive` 必须 `.waitForForeground`（问题 1 的根因回归）、只有 `.background` 允许 `.standDown`、未知状态按「还在前台」处理、穷举「全部已知状态里恰好一个走 `.standDown`」。
 - `SealTests/Signing/InstallStageTimelineTests.swift`（5 条）：首次进入安装阶段记起点、重复推送不重置、其它阶段一律清空、`.keep` 不会凭空补一个起点、批量链路与共享规则一致。
 
-结果：**186 源码断言 + 80 变异 PASS**。
+结果：**189 源码断言 + 82 变异 PASS**。
 
 ---
 
@@ -197,6 +224,7 @@ private static func waitUntilExitIsSafe(_ app: UIApplication) async -> Bool {
 3. 运行中点「取消」/「取消续签」：界面立即关闭，日志出现 `SEAL-SIGN-012` / `SEAL-RENEW-011`，列表刷新后能看到真实结果。
 4. Seal 自续签：在下拉控制中心（`.inactive`）之后仍能完成替换，不再停在 93%。
 5. 批量续签普通 App：确认不再出现长时间停在「传输中」的项。
+6. Seal 自续签：进入安装阶段后点「取消」关掉抽屉，Seal **仍能完成替换**（触发点已在状态层，不随界面消失）—— 这条正是本轮补修的缺陷（§3.6）。
 
 ---
 
@@ -205,5 +233,6 @@ private static func waitUntilExitIsSafe(_ app: UIApplication) async -> Bool {
 | 项 | 现状 | 需要的动作 |
 | --- | --- | --- |
 | 安装/上传超时预算偏长 | `mergedTimeout = min(1800, 180 + ipaMB×5) + 600`，20MB 包 ≈ 878 秒 | 是否缩短需用户拍板。缩短的代价是慢设备上的假超时：超时按**确定性拒绝**处理且不重试，但底层安装可能仍在跑 ⇒ 「装上了却记为失败」 |
-| 问题 1 的真机证据 | 已从代码确认两条可能路径（`.inactive` 早退 / 安装期无反馈），但缺少卡住那一刻的日志 | 用户导出「我的 → 日志」中卡住前后 1 分钟的记录 |
+| 批量链路的「回主页」没有 `.restart` 闸门 | `consumeBatchEvent` 里 `if stage == .installing` 未按首次进入过滤，`.installing` 被重复推送时会排出多个「回主页」任务 | 已知且**良性**（第一个任务触发转场后进程被挂起，后续任务不会执行；转场失败时第一个 `exit(0)` 已结束进程），故本轮未动。若要统一，让 `BatchRefreshSession.advanceStage` 返回 `Tick` 即可 |
+| 问题 1 的真机证据 | 已从代码确认三条可能路径（`.inactive` 早退 / 安装期无反馈 / 界面触发点可被取消带走），但缺少卡住那一刻的日志 | 用户导出「我的 → 日志」中卡住前后 1 分钟的记录 |
 | 问题 6 | 用户消息被截断（「6、签名、续签」） | 待用户补完 |

@@ -501,6 +501,21 @@ def violations(load=read):
           "R10: a real background transition must not kill the process")
     check("exit(0)" in return_home,
           "R10: the exit fallback must stay reachable on every non-background path")
+    # 「回主页」的触发点必须在**状态层**，不能挂在界面上。
+    # 抽屉现在有「取消」按钮（软取消：立即关界面，已下发的安装由 installd 跑完），
+    # 用户一旦在 Seal 安装期间点取消，SigningProgressView 就没了 ——
+    # 挂在它 `.onChange` 上的触发点收不到后续阶段推进，「回主页」永远不会发生，
+    # Seal 的替换**静默失败**（旧版本继续跑，用户以为更新没生效）。
+    # 批量续签那条链路本来就在状态层触发（见 consumeBatchEvent），单签与它对齐。
+    apps_view = squash(strip_comments(load("Seal/Features/Apps/AppsViewModel.swift")))
+    check("if stage == .installing, tick == .restart, signingSession?.app.isSeal == true {"
+          in apps_view,
+          "R10: single signing must trigger the return-home from the state layer, once")
+    check("SelfInstallAutoBackground.returnToHomeAfterSealUpload()" in apps_view,
+          "R10: the state layer must actually call the return-home action")
+    # 界面自己再触发一次 = 双重「回主页」（两个系统转场 + 两个 exit(0) 兜底）。
+    check("SelfInstallAutoBackground.returnToHomeAfterSealUpload()" not in progress_view,
+          "R10: the view must not trigger the return-home — it can be dismissed mid-install")
     # 源码断言守的是「形状」，单测守的是「行为」。`.inactive` 这条分支必须真的有单测 ——
     # 否则重构可以改掉它的返回值而守卫只看见「函数还在」（本轮把这段抽成纯函数就是为了它）。
     auto_bg_tests = load("SealTests/Apps/SelfInstallAutoBackgroundTests.swift")
@@ -1401,6 +1416,16 @@ def main():
          "        return currentStage == .installing ? .keep : .restart",
          "        return currentStage == .installing ? .restart : .restart",
          "R10: repeated .installing pushes must not reset the install clock"),
+        # 让单签的「回主页」永不触发：Seal 的替换静默失败（旧版本继续跑）。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "        if stage == .installing,\n           tick == .restart,\n           signingSession?.app.isSeal == true {",
+         "        if stage == .installing,\n           tick == .restart,\n           signingSession?.app.isSeal == false {",
+         "R10: single signing must trigger the return-home from the state layer"),
+        # 界面又自己触发一次 = 双重「回主页」（两个转场 + 两个 exit(0) 兜底）。
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         "                withAnimation(.easeInOut(duration: 0.45)) {\n                    isReturningHome = true\n                }",
+         "                withAnimation(.easeInOut(duration: 0.45)) {\n                    isReturningHome = true\n                }\n                SelfInstallAutoBackground.returnToHomeAfterSealUpload()",
+         "R10: the view must not trigger the return-home"),
         # 批量链路自己再抄一份规则：漂移不会编译失败，只会让抽屉的计时变成假象。
         ("Seal/Core/Renewal/BatchRefreshSession.swift",
          "        let tick = InstallStageTimeline.tick(entering: stage, currentStage: currentStage)",

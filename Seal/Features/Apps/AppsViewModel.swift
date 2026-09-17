@@ -1937,6 +1937,23 @@ final class AppsViewModel: ObservableObject {
             startedAt: signingSession?.installStartedAt
         )
         signingSession?.status = .running(stage)
+        // Seal 自续签 = 覆盖安装运行中的自己：iOS 只有在旧进程让出前台后才完成替换，
+        // 所以必须由 Seal 主动「回主页」。
+        //
+        // 触发点刻意放在**状态层**，而不是 SigningProgressView 的 `.onChange`：
+        // 抽屉现在有「取消」按钮（软取消：立即关界面，已下发的安装由 installd 跑完），
+        // 用户一旦在 Seal 安装期间点取消，界面就没了 —— 挂在界面上的触发点收不到
+        // 后续阶段推进，「回主页」永远不会发生，Seal 的替换会**静默失败**
+        //（旧版本继续跑，用户以为更新没生效）。批量续签那条链路本来就是在状态层触发的
+        //（见 consumeBatchEvent），这里与它对齐。
+        //
+        // `.restart` 保证只在**首次**进入安装阶段触发一次：同一阶段会被重复推送
+        //（安装通道的 >1.0 哨兵 + 签名侧补发），不设闸门会排出多个「回主页」任务。
+        if stage == .installing,
+           tick == .restart,
+           signingSession?.app.isSeal == true {
+            SelfInstallAutoBackground.returnToHomeAfterSealUpload()
+        }
     }
 
     // 安装通道 AFC 上传阶段的真实进度（0-1）→ 刷新进度 UI。

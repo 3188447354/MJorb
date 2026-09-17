@@ -1430,6 +1430,37 @@ def violations(load=read):
           "R31: 证书列表拉取失败必须记下**原因与耗时** —— 原先 `try?` 把错误吞了，"
           "日志只有「暂不可用」，分不出是限流、超时还是网络")
 
+    # R32: 2026-09-18 真机（构建 118）—— **进度文案撒谎，把用户推进了死循环**。
+    #
+    # 抖音（779.7 MB）在 `signingWorkspace.prepare()`（解压 / 改写 Bundle / 重签二进制 / 重新打包，
+    # **完全不碰 Apple**）上花了 **112 秒**，而它原先被算进 `.preparingAccount`
+    # （文案「正在验证 Apple ID」、进度固定 **16%**）⇒ 用户盯着「正在验证 Apple ID 16%」
+    # 等了 2 分钟，判断「Apple ID 验证卡住了」，**于是去重新验证 Apple ID** ——
+    # 正是「重新验证 → 又被限流」死循环的**入口**。
+    # 同一次日志里 3105（4.3 MB）/ LiveContainer（4.9 MB）是秒级 ⇒「只有抖音卡」的真正原因是**包大**。
+    #
+    # ⇒ 给它单独一个阶段。下面五条断言，每一条漏了都会**静默错**：
+    signing_stage_source = strip_comments(load("Seal/Core/Signing/SigningStage.swift"))
+    check("case preparingBundle" in signing_stage_source
+          and "正在准备应用文件" in signing_stage_source,
+          "R32: `preparingBundle` 阶段必须存在，且文案不能是「正在验证 Apple ID」")
+    progress_view_source = strip_comments(load("Seal/Features/Apps/SigningProgressView.swift"))
+    check(progress_view_source.count(".preparingBundle") >= 3,
+          "R32: `SigningProgressView` 的三处 switch（segmentFraction / overallProgress / "
+          "timelinePosition）都必须处理 `preparingBundle`")
+    check("case .preparingBundle: .signing" in strip_comments(
+              load("Seal/Core/Signing/SigningCoordinator.swift")),
+          "R32: `SigningStage.appState` 必须处理 `preparingBundle`")
+    check("case preparingBundle" not in strip_comments(load("Seal/Core/Apps/AppState.swift")),
+          "R32: **不要**给 `AppState` 加 case —— 它是 `Codable` 且被持久化，加 case 会波及"
+          "所有 switch 与旧数据；这里只需要一个正确的**文案**，不需要新状态")
+    check(0 <= portal_source.find("await progress(.preparingBundle)")
+          < portal_source.find("let prepared = try signingWorkspace.prepare("),
+          "R32: `progress(.preparingBundle)` 必须发在 `signingWorkspace.prepare(` **之前** —— "
+          "顺序错了文案就还是「正在验证 Apple ID」")
+    check("应用文件准备完成（解压/改写/重签/打包），耗时" in portal_source,
+          "R32: 这段准备必须记耗时 —— 原先它一行日志都没有，「等了 2 分钟」无法归因")
+
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
     # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
@@ -3478,6 +3509,31 @@ def main():
          "                await diagnostic(\"证书列表拉取失败：耗时 \\(fetchSeconds) 秒；\\(fetchReason)\")",
          "                _ = fetchReason",
          "R31: 证书列表拉取失败必须记下**原因与耗时**"),
+        # ── R32：2026-09-18 真机 —— 进度文案撒谎（解压 780 MB 却说「正在验证 Apple ID」）──
+        # 把新阶段的文案改回「正在验证 Apple ID」：用户又会以为是 Apple ID 卡住。
+        ("Seal/Core/Signing/SigningStage.swift",
+         "            return \"正在准备应用文件\"",
+         "            return \"正在验证 Apple ID\"",
+         "R32: `preparingBundle` 阶段必须存在，且文案不能是「正在验证 Apple ID」"),
+        # 抽掉一处 switch 的分支：穷尽 switch 会编译不过，但非穷尽写法会静默错。
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         "        case .preparingBundle: return 0.23\n",
+         "",
+         "R32: `SigningProgressView` 的三处 switch"),
+        # 把 `progress(.preparingBundle)` 撤掉：文案又变回「正在验证 Apple ID」。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "            await progress(.preparingBundle)\n"
+         "            let prepareStartedAt = Date()",
+         "            let prepareStartedAt = Date()",
+         "R32: `progress(.preparingBundle)` 必须发在"),
+        # 给 `AppState` 加 case：它 Codable 且持久化，会波及所有 switch 与旧数据。
+        ("Seal/Core/Apps/AppState.swift",
+         "enum AppState: String, Codable, CaseIterable, Equatable, Sendable {\n"
+         "    case imported",
+         "enum AppState: String, Codable, CaseIterable, Equatable, Sendable {\n"
+         "    case preparingBundle\n"
+         "    case imported",
+         "R32: **不要**给 `AppState` 加 case"),
         # 去掉 1100 的专门文案：又落回「没有返回明确失败原因」，
         # 用户不知道账号可能已经被清空、需要立刻重新创建一张证书。
         ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",

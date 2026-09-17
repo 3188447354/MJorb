@@ -1679,6 +1679,10 @@ private extension SigningStage {
         switch self {
         case .waitingForChannel: .waitingForInstallChannel
         case .preparingAccount: .waitingForAccount
+        // 解压 / 重签 / 重新打包属于「签名工作」本身，复用 `.signing`。
+        // ⚠️ 刻意**不**给 `AppState` 加新 case —— 它是 `Codable` 且被持久化，
+        // 加 case 会波及所有 switch 与旧数据；这里只需要一个正确的**文案**。
+        case .preparingBundle: .signing
         case .preparingCertificate: .preparingCertificate
         case .preparingAppID, .preparingProfiles: .preparingProfiles
         case .signing: .signing

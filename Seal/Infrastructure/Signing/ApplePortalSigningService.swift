@@ -636,6 +636,19 @@ actor ApplePortalSigningService {
             }
 
             stage = .packaging
+            // ⚠️ **这一步单独占一个进度阶段**（2026-09-18 真机，构建 118）。
+            //
+            // 它只做本地工作（解压 / 改写 Bundle 结构 / 重签所有二进制 / 重新打包），
+            // **完全不碰 Apple**，但抖音（**779.7 MB**）在这一步花了 **112 秒**。
+            // 原先它被算进 `.preparingAccount`（文案「正在验证 Apple ID」、进度固定 **16%**）
+            // ⇒ 用户盯着「正在验证 Apple ID 16%」等了 2 分钟，判断「Apple ID 验证卡住了」，
+            // **于是去重新验证 Apple ID** —— 正是「重新验证 → 又被限流」死循环的入口。
+            // 同一次日志里 3105（4.3 MB）与 LiveContainer（4.9 MB）是秒级
+            // ⇒「只有抖音卡」的真正原因是**包大**，不是账号、不是限流。
+            //
+            // 顺带把耗时写进日志：「等了多久、花在哪一步」从此可归因（原来这段一行都没有）。
+            await progress(.preparingBundle)
+            let prepareStartedAt = Date()
             let prepared = try signingWorkspace.prepare(
                 ipaURL: originalIPAURL,
                 workspaceRoot: workspaceRoot,
@@ -644,6 +657,9 @@ actor ApplePortalSigningService {
                 targetMainBundleID: targetBundleIdentifier,
                 preferredDisplayName: app.preferredDisplayName,
                 preferredIconData: preferredIconData
+            )
+            await diagnostic(
+                "签名：应用文件准备完成（解压/改写/重签/打包），耗时 \(Int(Date().timeIntervalSince(prepareStartedAt))) 秒"
             )
             try Task.checkCancellation()
 

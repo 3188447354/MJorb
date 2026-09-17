@@ -154,6 +154,7 @@ struct SigningProgressView: View {
         switch stage {
         case .waitingForChannel: return 0.5
         case .preparingAccount: return 0.33
+        case .preparingBundle: return 0.5
         case .preparingCertificate: return 0.67
         case .preparingAppID: return 0.33
         case .preparingProfiles: return 0.67
@@ -215,6 +216,7 @@ struct SigningProgressView: View {
         switch stage {
         case .waitingForChannel: return 0.06
         case .preparingAccount: return 0.16
+        case .preparingBundle: return 0.23
         case .preparingCertificate: return 0.30
         case .preparingAppID: return 0.42
         case .preparingProfiles: return 0.54
@@ -461,7 +463,7 @@ struct SigningProgressView: View {
     private func timelinePosition(for stage: SigningStage) -> Int {
         switch stage {
         case .waitingForChannel: 0
-        case .preparingAccount, .preparingCertificate: 1
+        case .preparingAccount, .preparingBundle, .preparingCertificate: 1
         case .preparingAppID, .preparingProfiles: 2
         case .signing: 3
         case .pushing, .installing, .verifying: 4

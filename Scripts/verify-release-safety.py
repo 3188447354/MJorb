@@ -226,6 +226,26 @@ def swift_sources():
         )
     return _SWIFT_SOURCES
 
+_LOG_CODES = None
+
+def all_log_codes():
+    """源码里出现过的全部 `SEAL-XXX-NNN` 码（进程内只算一次）。
+
+    只服务「日志码索引与源码一致」这一条断言 —— 它守的是**文档漂移**，不是运行时行为，
+    所以刻意**不**走每遍的 `load`（否则每遍要读 165 个文件，变异检查会慢一个量级）。
+    """
+    global _LOG_CODES
+    if _LOG_CODES is None:
+        codes = set()
+        for path in swift_sources():
+            try:
+                text = read(path)
+            except OSError:
+                continue
+            codes.update(re.findall(r'"(SEAL-[A-Z]+-[0-9]+[a-z]?)"', text))
+        _LOG_CODES = codes
+    return _LOG_CODES
+
 
 def violations(load=read):
     failures = []
@@ -1151,6 +1171,33 @@ def violations(load=read):
     check("重新验证" in rotation_failure,
           "R21: recovery 不能只说「稍后重试」 —— 失败原因常常是会话失效，"
           "那种情况下重试无效，必须先重新验证账号")
+
+    # R22: 日志码索引必须与源码一致（2026-09-17 加）。
+    #
+    # 用户发来日志时靠 `docs/qa/log-code-index.md` 把 `[SEAL-XXX-NNN]` 翻译成人话。
+    # **手工维护的索引一定会漂移** —— 真实踩到：`SEAL-APPID-305`（刻意去掉的本地硬拦）
+    # 与 `SEAL-CERT-224` 已不在源码里，而旧日志里还留着它们，很容易误判成「现在还在报」。
+    # ⇒ 两侧都断言：主表里的码必须仍在源码里；「已移除」表里的码必须**确实**不在。
+    index_source = load("docs/qa/log-code-index.md")
+    live_part, separator, removed_part = index_source.partition("## 已从源码移除")
+    check(separator != "", "R22: 日志码索引必须有「已从源码移除」一节（旧日志会看到历史码）")
+    # ⚠️ 只从**表格行**取码：前言里会引用历史码（用来解释「防的就是这种漂移」），
+    # 把前言也算进来会让这条断言永远红（2026-09-17 实际踩到）。
+    def table_codes(part):
+        rows = "\n".join(
+            line for line in part.splitlines() if line.lstrip().startswith("|")
+        )
+        return set(re.findall(r"`(SEAL-[A-Z]+-[0-9]+[a-z]?)`", rows))
+    live_codes = table_codes(live_part)
+    removed_codes = table_codes(removed_part)
+    known_codes = all_log_codes()
+    stale = sorted(live_codes - known_codes)
+    check(len(live_codes) >= 20 and not stale,
+          "R22: 索引里这些码在源码里已不存在（文档漂移，会误导排查）：" + "、".join(stale[:6]))
+    resurrected = sorted(removed_codes & known_codes)
+    check(not resurrected,
+          "R22: 「已移除」表里的码又回到源码里了（要么删掉该行、要么它其实没被移除）："
+          + "、".join(resurrected[:6]))
 
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
@@ -2989,6 +3036,23 @@ def main():
          '            recovery: "先确认这个 Apple ID 的登录仍然有效（必要时到「我的」重新验证），再重试",',
          '            recovery: "稍后重试",',
          "R21: recovery 不能只说「稍后重试」"),
+        # ── R22：日志码索引必须与源码一致（2026-09-17 加）──
+        # 往主表塞一个源码里没有的码：正是「文档漂移」的样子，会误导排查。
+        ("docs/qa/log-code-index.md",
+         "| `SEAL-VPN-001` | 签名完成后仍无法连接设备完成安装 | `SigningCoordinator.swift` |",
+         "| `SEAL-VPN-001` | 签名完成后仍无法连接设备完成安装 | `SigningCoordinator.swift` |\n"
+         "| `SEAL-GHOST-999` | 这条码源码里并不存在 | 无 |",
+         "R22: 索引里这些码在源码里已不存在"),
+        # 把「已移除」表里的一行换成**仍然存在**的码：两侧断言都要能发现。
+        ("docs/qa/log-code-index.md",
+         "| `SEAL-CERT-224` | 源码里已不存在（历史码） |",
+         "| `SEAL-VPN-001` | 源码里已不存在（历史码） |",
+         "R22: 「已移除」表里的码又回到源码里了"),
+        # 去掉「已从源码移除」这一节：旧日志里的历史码就没有归处了。
+        ("docs/qa/log-code-index.md",
+         "## 已从源码移除（旧日志里还会看到，**别当成现在还在报**）",
+         "## 历史码",
+         "R22: 日志码索引必须有「已从源码移除」一节"),
         # 把结算单测改名：证明「单测文件里有这几个字」的断言真的会红。
         ("SealTests/Renewal/RefreshQueueStoreTests.swift",
          "    func recoverInterruptedSettlesItemsThatAlreadyHaveAResult() async throws {",

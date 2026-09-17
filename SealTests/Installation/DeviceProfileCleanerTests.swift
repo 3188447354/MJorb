@@ -125,6 +125,47 @@ struct DeviceProfileCleanerTests {
         #expect(summary.logMessage.contains(" 等"))
     }
 
+    /// **受保护集合的规模**必须进日志 —— 它是「候选为什么这么多」的第一归因。
+    ///
+    /// 2026-09-17 真机（构建 97）的日志里只有 `候选 4，回收 3`，看不出那一刻
+    /// 受保护集合里到底有没有那个 App 的 ID；事后只能靠推断。
+    /// 有了这个数，下次一眼就能分辨「设备上真有这么多孤儿」与「记录没读全」。
+    @Test
+    func protectedSetSizeIsReported() {
+        var summary = ProfileCleanupSummary()
+        summary.reclaimCandidates = 4
+        summary.protectedCount = 7
+
+        #expect(summary.logMessage.contains("，受保护 7"))
+    }
+
+    /// 因「父 App 已装」而保留的扩展要单独计数，**不能**混进 `已装保留` ——
+    /// 那条是「这个 Bundle ID 自己装着」，这条是「它自己是扩展、装不了，但父 App 装着」。
+    /// 归因不同，排查时该看的下一处也不同。
+    @Test
+    func extensionKeptCountIsReportedSeparately() {
+        var summary = ProfileCleanupSummary()
+        summary.reclaimCandidates = 4
+        summary.reclaimed = 1
+        summary.reclaimKeptInstalled = 1
+        summary.reclaimKeptExtension = 2
+
+        let message = summary.logMessage
+
+        #expect(message.contains("，已装保留 1"))
+        #expect(message.contains("，扩展随父保留 2"))
+    }
+
+    /// 没有扩展被保留时不写这一段 —— 绝大多数清理都不需要，加了只是噪音。
+    @Test
+    func extensionKeptTextIsOmittedWhenZero() {
+        var summary = ProfileCleanupSummary()
+        summary.reclaimCandidates = 3
+        summary.reclaimed = 3
+
+        #expect(summary.logMessage.contains("扩展随父保留") == false)
+    }
+
     /// 中止必须显眼，且**不能被误读成「整轮清理失败」**：
     /// 路径 1（保留集合内去重）的结果仍然有效，所以不能借用 `中断于`。
     @Test

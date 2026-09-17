@@ -81,12 +81,37 @@ actor MinimuxerInstallChannel: InstallChannel {
     /// `clearFailureCooldown()`，只有**同一轮批量内部**的连续调用才吃熔断。
     private static let failureCooldownSeconds: TimeInterval = 60
 
-    /// 自替换等待的心跳间隔。
+    /// 安装等待的心跳间隔。
     ///
     /// 安装阶段 installd **不回报任何进度**，所以「等待中」和「已死」在日志上
     /// 本来长得一模一样。心跳是这段唯一的活性信号（普通 App 安装实测 7 秒，
     /// 心跳通常不会触发；真机 93 秒静默就是缺了它）。
-    private static let selfReplacementHeartbeatNanoseconds: UInt64 = 15_000_000_000
+    ///
+    /// ⚠️ **两条安装路径共用这一个常量与同一个 `beginInstallHeartbeat`**。
+    /// 2026-09-17 真机（构建 97）：普通安装卡了 **9 分多钟**，日志里从「开始安装」
+    /// 到用户导出日志**一行都没有** —— 因为心跳当时只加在**自替换**那条路径上。
+    /// 同一条规则只落在两条链路中的一条，正是本仓库反复踩到的形态。
+    private static let installHeartbeatNanoseconds: UInt64 = 15_000_000_000
+
+    /// 等待安装返回期间的活性心跳。
+    ///
+    /// - Parameter label: 进日志的前缀，例如 `安装` / `自替换安装`。
+    /// - Returns: 需要在等待结束后 `cancel()` 的任务。
+    ///
+    /// 刻意做成「返回任务、由调用方 `defer { cancel() }`」而不是包住一段闭包：
+    /// 两条路径的等待原语不同（`offThread` 返回 `Result?`，自替换走 `HardTimeout.run`），
+    /// 包闭包会把它们各自的语义压平。共用的是**心跳本身**，不是等待方式。
+    private func beginInstallHeartbeat(_ label: String) -> Task<Void, Never> {
+        let startedAt = Date()
+        return Task.detached(priority: .utility) { [weak self] in
+            while Task.isCancelled == false {
+                try? await Task.sleep(nanoseconds: Self.installHeartbeatNanoseconds)
+                if Task.isCancelled { return }
+                let waited = Int(Date().timeIntervalSince(startedAt))
+                await self?.log("\(label)仍在等待：已等待 \(waited) 秒（installd 安装阶段不回报进度）")
+            }
+        }
+    }
 
     init(
         pairingStore: PairingStore,
@@ -539,14 +564,7 @@ actor MinimuxerInstallChannel: InstallChannel {
     ) async throws {
         let startedAt = Date()
         await log("开始自替换安装：\(bundleID)，\(context)，等待上限 \(Int(budget)) 秒")
-        let heartbeat = Task.detached(priority: .utility) { [weak self] in
-            while Task.isCancelled == false {
-                try? await Task.sleep(nanoseconds: Self.selfReplacementHeartbeatNanoseconds)
-                if Task.isCancelled { return }
-                let waited = Int(Date().timeIntervalSince(startedAt))
-                await self?.log("自替换安装仍在等待：已等待 \(waited) 秒（installd 安装阶段不回报进度）")
-            }
-        }
+        let heartbeat = beginInstallHeartbeat("自替换安装")
         defer { heartbeat.cancel() }
         do {
             // 返回值刻意用 Bool 而不是 Void：`HardTimeout.run` 的 T 需要 Sendable，
@@ -732,6 +750,11 @@ actor MinimuxerInstallChannel: InstallChannel {
                         + "第 \(attempt)/\(maxAttempts) 次，等待上限 \(Int(mergedTimeout)) 秒"
                     )
                     let startedAt = Date()
+                    // 与自替换共用同一个心跳：安装阶段 installd 不回报进度，
+                    // 没有它，一次卡住的普通安装在日志上就是一段**完全空白**
+                    // （2026-09-17 真机卡了 9 分多钟，导出的日志里一行都没有）。
+                    let heartbeat = beginInstallHeartbeat("安装")
+                    defer { heartbeat.cancel() }
                     let outcome = await offThread(seconds: mergedTimeout) {
                         try Minimuxer.stageAndInstall(bundleId: bundleID, ipaBytes: ipaData, progress: syncProgress)
                     }

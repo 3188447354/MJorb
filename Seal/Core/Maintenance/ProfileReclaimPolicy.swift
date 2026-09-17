@@ -97,6 +97,52 @@ enum ProfileReclaimPolicy {
         bundleID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
+    /// 该候选是否属于「本轮已确认安装的某个候选」的扩展。
+    ///
+    /// ## 为什么需要这一条
+    ///
+    /// 扩展不是独立安装的 App，`isAppInstalled` 对它**恒为 `false`**
+    /// ⇒ 设备端核验对扩展完全瞎。此前扩展**只**靠 `protectedBundleIDs` 保护，
+    /// 而那个集合来自 Seal 的记录 —— 于是「主 App 不在记录里」时扩展失去全部保护，
+    /// 主 App 却能靠设备核验活下来。
+    ///
+    /// 真机实证（2026-09-17，构建 97）：维护清理 `候选 4，回收 3，已装保留 1`，
+    /// 示例里主 App 与它的三个扩展并列 —— 主 App 被核验救下，**三个扩展全删**。
+    ///
+    /// ## 判据
+    ///
+    /// iOS 给扩展分配的 Bundle ID 是 `<父 App 的 Bundle ID>.<扩展名>`。
+    /// 所以「父 App 已确认安装」⇒「这份扩展 profile 是随它一起装上去的」⇒ 必须保留。
+    /// 复用同一轮**已经问过**的探测结果，不需要额外查询设备。
+    ///
+    /// ## ⚠️ `installedBundleIDs` 必须来自**本轮候选**的探测结果
+    ///
+    /// 不能传「设备上所有已装 App」。因为判据是前缀匹配，任意已装 App 都可能成为
+    /// 某个孤儿的前缀 —— 例如原始 LiveContainer（`com.kdt.livecontainer`）若被算进来，
+    /// 那么**全部** `com.kdt.livecontainer.seal.*` 主 App 孤儿都会被误判成「它的扩展」
+    /// ⇒ 回收功能整体失效。
+    ///
+    /// 而候选本身都含 `.seal.` 中缀（`isReclaimableOrphan` 的门槛），所以从候选里
+    /// 取出来的「已装父」一定也是 Seal 生成的 ID，前缀匹配不会跨到普通 App 上。
+    ///
+    /// - Parameters:
+    ///   - bundleID: 待判定的候选。
+    ///   - installedBundleIDs: 本轮候选中**探测结果为已安装**的那些。
+    static func isExtensionBundleID(
+        _ bundleID: String,
+        ofAnyOf installedBundleIDs: Set<String>
+    ) -> Bool {
+        let lowered = normalized(bundleID)
+        guard lowered.isEmpty == false else { return false }
+        for installed in installedBundleIDs {
+            let parent = normalized(installed)
+            guard parent.isEmpty == false else { continue }
+            // 必须以「点」为边界：`com.foo` 不是 `com.foobar` 的父。
+            if lowered.hasPrefix(parent + ".") { return true }
+        }
+        return false
+    }
+
     /// 「记录里哪个字段代表生效的 Bundle ID」—— **唯一**出处。
     ///
     /// `mappedBundleIdentifier` 优先，为空/全空白时回退 `preferredBundleIdentifier`。

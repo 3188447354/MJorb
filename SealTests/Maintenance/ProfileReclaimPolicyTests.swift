@@ -434,3 +434,103 @@ struct ProfileReclaimDecisionTests {
         #expect(names.allSatisfy { $0.isEmpty == false })
     }
 }
+
+/// 「扩展随父 App 一起保留」的判据。
+///
+/// ## 这一条修的是什么（2026-09-17 真机，构建 97）
+///
+/// 维护清理报了 `候选 4，回收 3，已装保留 1`，示例里主 App 与它的三个扩展并列 ——
+/// 主 App 被设备端核验救下，**三个扩展全删**。
+///
+/// 根因：扩展不是独立安装的 App，`isAppInstalled` 对它**恒为 `false`** ⇒
+/// 设备端核验对扩展完全瞎。此前扩展**只**靠 `protectedBundleIDs`（Seal 记录里出现过的
+/// ID）保护，而那一刻主 App 不在记录里（重新安装 Seal 后记录被清空）——
+/// 于是扩展失去全部保护。
+///
+/// 判据：iOS 给扩展分配的 Bundle ID 是 `<父 App 的 Bundle ID>.<扩展名>`，
+/// 所以「父 App 已确认安装」⇒「这份扩展 profile 是随它一起装上去的」⇒ 必须保留。
+@Suite("扩展随父 App 保留：前缀判据")
+struct ProfileReclaimExtensionTests {
+    private let installedParent: Set<String> = ["com.kdt.livecontainer.seal.3432ZHJUF9"]
+
+    @Test
+    func extensionOfAnInstalledCandidateIsRecognised() {
+        let shareExtension = ProfileReclaimPolicy.isExtensionBundleID(
+            "com.kdt.livecontainer.seal.3432ZHJUF9.ShareExtension",
+            ofAnyOf: installedParent
+        )
+        #expect(shareExtension)
+
+        let liveProcess = ProfileReclaimPolicy.isExtensionBundleID(
+            "com.kdt.livecontainer.seal.3432ZHJUF9.LiveProcess",
+            ofAnyOf: installedParent
+        )
+        #expect(liveProcess)
+    }
+
+    /// 前缀必须在**点**边界上：`...3432ZHJUF9` 不是 `...3432ZHJUF99` 的父。
+    /// 少了这一条，同一个 Team 下的兄弟变体会互相「保护」，回收功能就废了。
+    @Test
+    func prefixMustEndOnADotBoundary() {
+        let sibling = ProfileReclaimPolicy.isExtensionBundleID(
+            "com.kdt.livecontainer.seal.3432ZHJUF99",
+            ofAnyOf: installedParent
+        )
+        #expect(sibling == false)
+    }
+
+    /// 父 App 没装 ⇒ 它那份扩展 profile 是死重量，照旧可回收。
+    /// 这条是「别把回收功能整个废掉」的护栏。
+    @Test
+    func extensionOfANonInstalledParentIsNotProtected() {
+        let orphan = ProfileReclaimPolicy.isExtensionBundleID(
+            "com.kdt.livecontainer.seal.OLD_TEAM.ShareExtension",
+            ofAnyOf: installedParent
+        )
+        #expect(orphan == false)
+    }
+
+    /// 大小写不敏感 —— 设备端返回的形态不受我们控制。
+    @Test
+    func matchingIsCaseInsensitive() {
+        let mixedCase = ProfileReclaimPolicy.isExtensionBundleID(
+            "COM.KDT.LiveContainer.Seal.3432zhjuf9.ShareExtension",
+            ofAnyOf: installedParent
+        )
+        #expect(mixedCase)
+    }
+
+    /// 空的「已装候选」集合 ⇒ 谁都不算扩展 ⇒ 一个都不多留。
+    /// 方向必须是这样：集合为空时**不多留**，否则一次记录读取失败就会让回收整体失效。
+    @Test
+    func emptyInstalledSetProtectsNothing() {
+        let nothingProtected = ProfileReclaimPolicy.isExtensionBundleID(
+            "com.kdt.livecontainer.seal.3432ZHJUF9.ShareExtension",
+            ofAnyOf: []
+        )
+        #expect(nothingProtected == false)
+    }
+
+    /// 候选自己不能算自己的扩展（父 App 自己就是候选时，它该走 `installed` 那条分支）。
+    @Test
+    func aBundleIdentifierIsNotItsOwnExtension() {
+        let itself = ProfileReclaimPolicy.isExtensionBundleID(
+            "com.kdt.livecontainer.seal.3432ZHJUF9",
+            ofAnyOf: installedParent
+        )
+        #expect(itself == false)
+    }
+
+    /// 空字符串不该匹配上任何东西（否则空串会成为所有人的「父」）。
+    @Test
+    func blankIdentifiersNeverMatch() {
+        let blankCandidate = ProfileReclaimPolicy.isExtensionBundleID("   ", ofAnyOf: installedParent)
+        #expect(blankCandidate == false)
+
+        let blankParent = ProfileReclaimPolicy.isExtensionBundleID(
+            "com.kdt.livecontainer.seal.3432ZHJUF9.ShareExtension",
+            ofAnyOf: ["  "]
+        )
+        #expect(blankParent == false)
+    }
+}

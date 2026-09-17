@@ -551,10 +551,14 @@ def violations(load=read):
           "R11: the positive control must run before any candidate is probed or deleted")
     # ⑤ `.abortPass` 必须**中止整轮**，而不是只跳过当前这一条。
     #    只跳过的话，后面的候选会继续被一条已经不可信的通道「判定」，等于没有保护。
-    #    断言写成「循环外统一收尾」这个形状：`break` 那一句没了就等于失去保护。
+    #
+    #    2026-09-17 改成「先问完所有候选、再决定」之后，中止的形状变成
+    #    「循环外 `guard … else { 记录原因; return }`」—— 语义比原来更强：
+    #    **连已经问过的那几条也不删**（半路删掉一部分再中止，等于用一条已判定不可信的
+    #    通道做了一半不可逆的事）。所以断言也跟着改成这个形状。
     check("case .abortPass:" in reclaim_body
-          and "if reclaimAbortReason != nil { break }" in reclaim_body
-          and "summary.reclaimAborted = reclaimAbortReason" in reclaim_body
+          and "guard reclaimAbortReason == nil else { summary.reclaimAborted = "
+              "reclaimAbortReason return summary }" in reclaim_body
           and reclaim_body.count("summary.reclaimAborted =") >= 2,
           "R11: .abortPass must record why and stop the whole pass")
     # ⑥ 中止必须进日志，且不能借用 `中断于`（那会让人以为整轮清理白跑了，
@@ -783,6 +787,86 @@ def violations(load=read):
           "the routing itself needs an end-to-end assertion")
     check("func twoFactorFailureIsNotClassifiedAsCredentialsRejected()" in diagnosis_tests,
           "R13: the 'not credentials-rejected' boundary needs a unit test")
+
+    # R14: 两条安装路径共用同一个心跳 + 扩展随父 App 保留（2026-09-17 真机，构建 97）。
+    #
+    # ① 普通安装卡了 **9 分多钟**，日志里从「开始安装」到用户导出日志**一行都没有** ——
+    #    因为心跳当时只加在**自替换**那条路径上。同一条规则只落在两条链路中的一条，
+    #    是本仓库反复踩到的形态（`InstallStageTimeline` 那次也是）。
+    #    判据：心跳必须是一个共用实现，两条路径都走它。
+    install_source = strip_comments(
+        load("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift")
+    )
+    check("private func beginInstallHeartbeat(" in install_source,
+          "R14: the install heartbeat must be ONE shared helper — two copies drift, "
+          "and only one of them gets fixed")
+    check(install_source.count("beginInstallHeartbeat(") == 3,
+          "R14: BOTH install paths must use the shared heartbeat "
+          "(1 definition + 2 call sites). A normal install that hangs logs nothing without it")
+    check('let heartbeat = beginInstallHeartbeat("安装")' in install_source
+          and 'beginInstallHeartbeat("自替换安装")' in install_source,
+          "R14: each path needs its own label, and the normal path must start the "
+          "heartbeat before it blocks on the synchronous FFI")
+    check("selfReplacementHeartbeatNanoseconds" not in install_source,
+          "R14: the old inline heartbeat must stay gone — a second copy is exactly how "
+          "the two paths drifted apart")
+
+    # ② 扩展随父 App 保留。扩展不是独立安装的 App，`isAppInstalled` 对它恒为 false ⇒
+    #    设备端核验对扩展完全瞎。此前扩展**只**靠 `protectedBundleIDs`（记录里出现过的 ID）
+    #    保护，于是「主 App 不在记录里」时扩展失去全部保护 —— 主 App 却被核验救下。
+    #    真机：`候选 4，回收 3，已装保留 1`，示例里主 App 与它的三个扩展并列。
+    reclaim_source = strip_comments(
+        load("Seal/Core/Maintenance/ProfileReclaimPolicy.swift")
+    )
+    check("static func isExtensionBundleID(" in reclaim_source,
+          "R14: extensions of an installed app must be recognised via the parent prefix")
+    check('if lowered.hasPrefix(parent + ".") { return true }' in reclaim_source,
+          "R14: the parent prefix must end on a DOT boundary — without it sibling "
+          "variants would 'protect' each other and reclaim would stop working entirely")
+    cleaner_source = strip_comments(
+        load("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift")
+    )
+    check("installedCandidates.insert(ProfileReclaimPolicy.normalized(entry.bundleID))"
+          in cleaner_source,
+          "R14: the 'installed parent' set must be built from THIS pass's candidates — "
+          "a general installed-app list would let an ordinary app's ID prefix-match "
+          "every orphan and silently disable reclaim")
+    # 「先问完所有候选、再决定」是这条规则的**结构前提**：扩展要等父 App 的探测结果。
+    # 顺序断言用相对位置，不是「文件里有没有这几个字符串」。
+    reclaim_pass = section(
+        cleaner_source,
+        "var probes: [(uuid: String, bundleID: String, probe: ProfileReclaimPolicy.InstallProbe)] = []",
+        "extension DeviceProfileCleaner: StaleProfileSweeping"
+    )
+    probe_at = reclaim_pass.find("probes.append(")
+    abort_at = reclaim_pass.find("guard reclaimAbortReason == nil else {")
+    installed_at = reclaim_pass.find("var installedCandidates: Set<String> = []")
+    remove_at = reclaim_pass.find("removeProfile(entry.uuid)")
+    check(probe_at != -1 and abort_at != -1 and installed_at != -1 and remove_at != -1
+          and probe_at < abort_at < installed_at < remove_at,
+          "R14: the reclaim pass must probe EVERY candidate before deleting any — "
+          "the extension rule needs the complete 'which candidates are installed' set, "
+          "and an abort must land before anything irreversible")
+    check("ofAnyOf: installedCandidates" in reclaim_pass,
+          "R14: the pass must consult the parent rule with the real candidate set — "
+          "passing an empty set leaves the call in place while protecting nothing")
+    # 受保护集合的规模是「候选为什么这么多」的第一归因：记录读不到时它会是 0/极小。
+    # 2026-09-17 的日志里只有 `候选 4，回收 3`，看不出那一刻保护范围到底有多大。
+    check('，受保护 \\(protectedCount)' in cleaner_source,
+          "R14: the protected-set size must be in the log — without it, 'many candidates' "
+          "cannot be told apart from 'the records were not read'")
+
+    # 两个新的归因计数必须有单测：源码断言证明不了「值真的被算出来了」。
+    extension_tests = load("SealTests/Maintenance/ProfileReclaimPolicyTests.swift")
+    check("func extensionOfAnInstalledCandidateIsRecognised()" in extension_tests
+          and "func prefixMustEndOnADotBoundary()" in extension_tests
+          and "func extensionOfANonInstalledParentIsNotProtected()" in extension_tests,
+          "R14: the parent-prefix rule needs real unit tests — source assertions cannot "
+          "prove the boundary behaviour")
+    cleaner_tests = load("SealTests/Installation/DeviceProfileCleanerTests.swift")
+    check("func protectedSetSizeIsReported()" in cleaner_tests
+          and "func extensionKeptCountIsReportedSeparately()" in cleaner_tests,
+          "R14: the new attribution counters need real unit tests")
 
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
@@ -1142,8 +1226,13 @@ def violations(load=read):
     check('await log("开始自替换安装：' in self_replace
           and 'await log("自替换安装调用已返回：' in self_replace,
           "R10: a self-replacement install must log both start and return")
-    check("自替换安装仍在等待：" in self_replace
-          and "Self.selfReplacementHeartbeatNanoseconds" in self_replace,
+    # 心跳必须是**共用实现**，两条路径都走它。
+    # 2026-09-17 真机（构建 97）：普通安装卡了 9 分多钟，日志里从「开始安装」到
+    # 用户导出日志**一行都没有** —— 因为当时心跳只加在自替换这条路径上，
+    # 而这条断言也只钉住了那条路径，所以它一直是绿的（R14 补上了双路径）。
+    check("private func beginInstallHeartbeat(" in self_replace
+          and 'beginInstallHeartbeat("自替换安装")' in self_replace
+          and "仍在等待：已等待" in self_replace,
           "R10: the install wait needs a heartbeat — installd reports no progress")
     # 5) 只声明可选依赖、容器不传 = 永远静默。
     #    必须限定在 installChannel 的构造段里：`logStore: logStore` 在同一个文件里
@@ -2231,11 +2320,17 @@ def main():
          "let positiveControlPassed = await probeInstalled(bundleID: controlBundleID) == .installed",
          "let positiveControlPassed = true",
          "R11: the positive control must be an actual probe of a definitely-installed app"),
-        # 中止改成「只跳过当前这一条」：后面每条候选继续被一条已经不可信的通道判定，
-        # 保护等于没有 —— 但代码看起来仍然「有中止逻辑」，是最容易漏掉的一种退化。
+        # 中止改成「只记原因、继续往下删」：后面的候选（以及已经问过的那几条）
+        # 继续被一条已经不可信的通道判定并删除 —— 但代码看起来仍然「有中止逻辑」，
+        # 是最容易漏掉的一种退化。
         ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
-         "            if reclaimAbortReason != nil { break }",
-         "            // abort no longer stops the pass",
+         "        guard reclaimAbortReason == nil else {\n"
+         "            summary.reclaimAborted = reclaimAbortReason\n"
+         "            return summary\n"
+         "        }",
+         "        if reclaimAbortReason != nil {\n"
+         "            summary.reclaimAborted = reclaimAbortReason\n"
+         "        }",
          "R11: .abortPass must record why and stop the whole pass"),
         # 中止不落日志：`回收 0` 会被读成「形态没匹配上」，而实际是通道不可信 ——
         # 两者的后续动作完全不同（前者要查判据，后者要查设备连接）。
@@ -2402,6 +2497,34 @@ def main():
          "    func twoFactorFailureNeverTellsTheUserToCheckThePassword() {",
          "    func twoFactorFailureNeverTellsTheUserToCheckThePasswordRenamed() {",
          "R13: the 'never send the user to check the password' rule"),
+        # ── R14：安装心跳双路径 + 扩展随父保留（2026-09-17 真机，构建 97）──
+        # 只给自替换路径留心跳、普通路径退回静默：真机上普通安装卡住时日志重新一片空白，
+        # 「在装」与「死了」再次分不开。这是本轮最直接的成因。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         '                    let heartbeat = beginInstallHeartbeat("安装")',
+         "                    // heartbeat removed",
+         "R14: BOTH install paths must use the shared heartbeat"),
+        # 前缀不在点边界上收口：同一 Team 下的兄弟变体会互相「保护」，回收功能整体失效。
+        ("Seal/Core/Maintenance/ProfileReclaimPolicy.swift",
+         'if lowered.hasPrefix(parent + ".") { return true }',
+         "if lowered.hasPrefix(parent) { return true }",
+         "R14: the parent prefix must end on a DOT boundary"),
+        # 调用还在、但传空集合：代码看起来「有父 App 判定」，实际一份都不保护 ——
+        # 正是真机上丢掉三个扩展 profile 的那条路径。
+        ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
+         "                    ofAnyOf: installedCandidates",
+         "                    ofAnyOf: []",
+         "R14: the pass must consult the parent rule with the real candidate set"),
+        # 受保护集合规模不进日志：下次再看到「候选很多」又只能靠推断。
+        ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
+         '            text += "，受保护 \\(protectedCount)"',
+         "            // protected count removed",
+         "R14: the protected-set size must be in the log"),
+        # 把新计数的单测改名：证明「单测文件里有这几个字」的断言真的会红。
+        ("SealTests/Installation/DeviceProfileCleanerTests.swift",
+         "    func protectedSetSizeIsReported() {",
+         "    func protectedSetSizeIsReportedRenamed() {",
+         "R14: the new attribution counters need real unit tests"),
         ("SealTests/Maintenance/AppMaintenanceJobTests.swift",
          "            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",\n            signedArtifactStatus: signedArtifactStatus,",
          "            signedArtifactStatus: signedArtifactStatus,\n            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",",
@@ -2545,9 +2668,10 @@ def main():
          "            selfReplacementGate.release(timedOut: Self.isTimeoutInstallError(error))",
          "            selfReplacementGate.release(timedOut: false)",
          "R10: a timeout must keep the self-replacement gate closed (the FFI is still running)"),
-        # 去掉等待心跳：真机上重新变成「卡住时一片空白」，无法区分在装和死了。
+        # 去掉共用心跳里的日志：两条路径同时重新变成「卡住时一片空白」，
+        # 无法区分在装和死了。
         ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
-         '                await self?.log("自替换安装仍在等待：已等待 \\(waited) 秒（installd 安装阶段不回报进度）")',
+         '                await self?.log("\\(label)仍在等待：已等待 \\(waited) 秒（installd 安装阶段不回报进度）")',
          "                _ = waited",
          "R10: the install wait needs a heartbeat — installd reports no progress"),
         # 容器不再把日志出口交给安装通道 = 日志通道永远静默（只声明依赖不等于接上了）。

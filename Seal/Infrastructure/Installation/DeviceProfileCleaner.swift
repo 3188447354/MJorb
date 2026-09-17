@@ -52,6 +52,18 @@ struct ProfileCleanupSummary: Sendable, Equatable {
     /// 见 `ProfileReclaimPolicy.decision` —— 第一次 `unavailable` 就中止整轮，
     /// 不再拿剩下的候选去问一条已经不可信的通道。
     var reclaimUnverified = 0
+    /// 因为「它的父 App 已确认安装」而**保留**的份数（即扩展 profile）。
+    ///
+    /// 与 `reclaimKeptInstalled` 分开记：那条是「这个 Bundle ID 自己装着」，
+    /// 这条是「它自己是扩展、装不了，但父 App 装着」——
+    /// 归因不同，排查时该看的下一处也不同（见 `ProfileReclaimPolicy.isExtensionBundleID`）。
+    var reclaimKeptExtension = 0
+    /// 本轮**受保护集合**（宽松集合）的规模 —— 只用来归因，不参与删除判定。
+    ///
+    /// 「候选 N」偏大时第一个要看的就是它：受保护集合为空或过小，
+    /// 说明记录没读全（重新安装 Seal 后记录被清空是真实场景），
+    /// 此时候选多并不代表设备上真有那么多孤儿。
+    var protectedCount = 0
     /// 回收被中止的原因（`nil` ⇒ 没中止）。中止后**不再删任何一份**。
     ///
     /// 单列字段而不是复用 `stage`：`stage` 表示「整个清理流水线断在哪一步」，
@@ -73,6 +85,10 @@ struct ProfileCleanupSummary: Sendable, Equatable {
         if reclaimCandidates > 0 {
             text += "；旧 Team 变体：候选 \(reclaimCandidates)，回收 \(reclaimed)"
             text += "，已装保留 \(reclaimKeptInstalled)，未能核验 \(reclaimUnverified)"
+            if reclaimKeptExtension > 0 { text += "，扩展随父保留 \(reclaimKeptExtension)" }
+            // 受保护集合的规模是「候选为什么这么多」的第一归因：
+            // 记录读不到时它会是 0/极小，而设备上其实没有那么多孤儿。
+            text += "，受保护 \(protectedCount)"
             if reclaimSample.isEmpty == false {
                 text += "，示例 \(reclaimSample.joined(separator: "、"))"
                 if reclaimCandidates > reclaimSample.count { text += " 等" }
@@ -331,6 +347,8 @@ struct DeviceProfileCleaner: Sendable {
         if reclaimSealOrphans && protectedBundleIDs.isEmpty {
             summary.reclaimAborted = "无受保护集合（记录为空或未传入）"
         }
+        // 只用于归因：候选偏大时第一个要看的就是它（记录读不全时它会很小）。
+        summary.protectedCount = protectedBundleIDs.count
         var handledUUIDs = Set<String>()
         var reclaimCandidates: [(uuid: String, bundleID: String)] = []
         for fileURL in profileURLs {
@@ -399,30 +417,67 @@ struct DeviceProfileCleaner: Sendable {
         // 写成「先记原因、循环外统一收尾」而不是在 `case` 里直接 `return`，
         // 是为了让「中止影响整个 pass」这件事在代码形状上就看得出来 ——
         // 守卫断言的就是这一句（改成 `continue` 只跳过当前这条，保护等于没有）。
+        //
+        // ⚠️ 探测与删除**必须分成两轮**。扩展的判定要复用「本轮哪些候选确实装着」
+        // （见 `ProfileReclaimPolicy.isExtensionBundleID`），而那个集合只有**问完
+        // 所有候选**之后才完整。边问边删时，只要父 App 排在子扩展后面，扩展就会先被删掉。
+        var probes: [(uuid: String, bundleID: String, probe: ProfileReclaimPolicy.InstallProbe)] = []
         var reclaimAbortReason: String?
         for candidate in reclaimCandidates {
             let probe = await probeInstalled(bundleID: candidate.bundleID)
+            if probe == .unavailable {
+                summary.reclaimUnverified += 1
+                reclaimAbortReason = "核验通道不可信（\(candidate.bundleID)：\(probe.logName)）"
+                if summary.firstError == nil {
+                    summary.firstError = "核验中止: \(candidate.bundleID) (\(probe.logName))"
+                }
+                break
+            }
+            probes.append((uuid: candidate.uuid, bundleID: candidate.bundleID, probe: probe))
+        }
+        // 中止 ⇒ **一份都不删**，连已经问过的那几条也不删。
+        // 半路删掉一部分再中止，等于「用一条已判定不可信的通道做了一半不可逆的事」，
+        // 而且删掉的那些收不回来。代价只是本轮不回收，下次维护再来。
+        guard reclaimAbortReason == nil else {
+            summary.reclaimAborted = reclaimAbortReason
+            return summary
+        }
+
+        // 本轮候选中**确认装着**的那些，只用来回答「谁的扩展」。
+        // 它们的 ID 一定也含 `.seal.` 中缀（候选门槛），所以前缀匹配不会跨到普通 App 上。
+        var installedCandidates: Set<String> = []
+        for entry in probes where entry.probe == .installed {
+            installedCandidates.insert(ProfileReclaimPolicy.normalized(entry.bundleID))
+        }
+
+        for entry in probes {
             switch ProfileReclaimPolicy.decision(
-                probe: probe,
+                probe: entry.probe,
                 positiveControlPassed: positiveControlPassed
             ) {
             case .keepInstalled:
                 // 「同一个 App 用两个 Team 各装一份」时走这里 —— 那份 profile 不能删。
                 summary.reclaimKeptInstalled += 1
             case .reclaim:
-                if removeProfile(candidate.uuid) { summary.reclaimed += 1 } else { summary.removeFailed += 1 }
-            case .abortPass:
-                // 走到这里只可能是 `probe == .unavailable`（阳性对照已在上面通过），
-                // 但仍按实际 probe 记，避免将来重构后计数失去意义。
-                if probe == .unavailable { summary.reclaimUnverified += 1 }
-                reclaimAbortReason = "核验通道不可信（\(candidate.bundleID)：\(probe.logName)）"
-                if summary.firstError == nil {
-                    summary.firstError = "核验中止: \(candidate.bundleID) (\(probe.logName))"
+                // 扩展不是独立安装的 App，设备核验对它恒为「没装」⇒
+                // 只能靠「父 App 确实装着」把它救回来。
+                if ProfileReclaimPolicy.isExtensionBundleID(
+                    entry.bundleID,
+                    ofAnyOf: installedCandidates
+                ) {
+                    summary.reclaimKeptExtension += 1
+                    continue
                 }
+                if removeProfile(entry.uuid) { summary.reclaimed += 1 } else { summary.removeFailed += 1 }
+            case .abortPass:
+                // 走不到这里：`unavailable` 在上面就已经 break 并整轮返回了。
+                // 保留这个分支是为了让「决策函数的三个分支都被显式处理」在形状上成立 ——
+                // 将来有人把 unavailable 的拦截挪走时，不会静默漏掉一种结果。
+                summary.reclaimUnverified += 1
+                summary.reclaimAborted = "核验通道不可信（\(entry.bundleID)：\(entry.probe.logName)）"
+                return summary
             }
-            if reclaimAbortReason != nil { break }
         }
-        summary.reclaimAborted = reclaimAbortReason
         return summary
     }
 }

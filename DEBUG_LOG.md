@@ -31,6 +31,8 @@
 - **两条恢复机制**都对**、但互不知情 ⇒ 同一件事给出三份互相矛盾的结论**。批量续签包含 Seal 自己时，进程必然在队列项还是 `running` 的时候被杀；队列恢复盲目把 `running` 降级为 `unknown`（「1 个应用的结果未知，需要重新核验」），而**结果其实已经写进持久化载荷**了（`succeeded: 2`）—— 于是假警报 + 队列幽灵条目 + 界面同时显示「成功 2/2」。⇒ **降级前先问「有没有更权威的数据源已经给出结论」**；有的话按结论**结算**，只有真没结论的才降级。**顺序也是修复的一部分**：必须先恢复载荷、再结算队列，否则那个 `running` 项在载荷被读之前就被标成未知了。⚠️ 这是「两条链路各说各话」的又一例（此前：`InstallStageTimeline`、错误映射的 `detail` 构造、安装心跳），区别是这次**两条都对**。
 - **把判据从「只能内部用」的地方挪出来时，先确认访问级别够不够**。把 `settledQueueStates` 挪到新文件后，它依赖的 `BatchRefreshSession.Item.State` 状态↔字符串映射当时是 **`private extension`（file 级）** ⇒ 新文件**和它的单测**都编译不过（`initializer is inaccessible due to 'fileprivate' protection level`），云构建直接红。**修法不是抄一份**（那就成了「同一条规则两份实现」，迟早漂移成「写进去是 completed、读出来当未知」），而是**把映射搬到类型自己的文件并放开为 `internal`**，让写入侧、读取侧、单测共用一份。⚠️ 顺带：守卫断言别写成 `"extension X {" in ...` —— 它是 `"private extension X {"` 的**子串**，抓不到「被收回成 file 级」；两个条件都要落在**新文件**上。
 - **异常日志也要幂等**。只写「异常」不够，还要保证同一条异常**不会每次轮询重复写** —— 重复会把真警报埋掉。实际踩到：`SEAL-RENEW-021` 的判据是「载荷还在 + 会话开着」，而载荷要等抽屉关闭才清 ⇒ 这中间每次 `load()` 都报同一条警告。⇒ 判据里要能区分「**已经处理过**」与「**真的被跳过**」（加显式标志）。
+- **加变异锚点时要检查 `old` 在文件里是否唯一**。同一文件里 `let lowered = normalized(bundleID)` + 紧随的 guard 出现了**两次**（`isReclaimableOrphan` 与 `isExtensionBundleID`），只写这两行的锚点会**打到别处**（变异照旧「被抓住」，但抓它的是别的断言 —— 这条锚点其实没在守它想守的东西）。⇒ 锚点带上**函数签名**那一行才唯一。判据：锚点的 `old` 在文件里 `count == 1`。
+- **「两份同名」本身就是危害**。设备上长期留着一份陈旧的「Seal」profile，不只是「多一份垃圾」：用户手动清理时会**删错正在用的那一份**（对应 App 立刻无法启动）。⇒ 判断某个「清不掉的东西」要不要修时，除了「占多少空间」，还要问「**它会不会让人做错事**」。
 - **统计字段的文案要跟字段语义对齐**。`usedBundleIDCount` 是「已注册存活数量」，却被渲染成「N 个可用 App ID」——日志里 `10 个可用 App ID` 的真实含义是**已用满 10 个**。这直接导致用户「id 有足够的名额」的误判，把排查方向带偏。同一字段在别处（`已签名 n / 10`）写法是对的，**两处口径不一致时以字段定义为准，并统一**。
 - **查「某字段有没有被写入」必须同时搜 `字段:` 与 `字段 = ` 两种形式**。只搜 `provisioningProfileUUID:`（构造器标签）会得出「扩展 UUID 从未落库」的错误结论，而真实写入是 `app.extensions[index].provisioningProfileUUID = binding.profileUUID`。**结论依赖 grep 完备性时，先确认搜索模式覆盖了赋值 / 解构 / 下标三条路径**，否则会基于假前提写错修复方案。
 - **设备端 profile 的清理范围要按「本次安装实际装上的那一组」算，不能按主 Bundle ID**。一次安装会为**每个扩展**各装一份 profile（抖音 8 扩展 = 9 份）。只按主 Bundle ID 匹配 ⇒ 扩展的旧 profile 从头到尾没人清理（真机：LiveContainer 的 ShareExtension 一天堆 6 份）。反过来也不能把 `Frameworks/*.framework/embedded.mobileprovision` 算进保留集合 —— 它不会被 installd 装成设备 profile，算进去等于给那个 Bundle ID 发免死金牌。
@@ -140,6 +142,54 @@
 ---
 
 ## 历史记录
+
+### 2026-09-17 · Seal 早期的**裸** Bundle ID 也能回收了（`com.mjorb.seal`）
+
+**怎么发现的**：用户发来的 App Expiry 截图里，设备上**同时存在两份都叫「Seal」的 profile**：
+
+```
+CT8QZ7352B / com.mjorb.seal.CT8QZ7352B   ← 正在用的
+CT8QZ7352B / com.mjorb.seal              ← 早期的，2026-09-23 到期，一直没被清
+```
+
+**根因**：那份遗留的 Bundle ID 是 Seal **早期的裸形态** `com.mjorb.seal`，它两头不沾：
+
+| 路径 | 为什么漏掉它 |
+|---|---|
+| 保留集合内去重（路径 1） | keep-map 的 key 是**当前**形态 `com.mjorb.seal.<team>` ⇒ 不同 key |
+| 孤儿回收（路径 2） | 形态判据要求 **`.seal.` 中缀**，而 `com.mjorb.seal` 里没有（结尾无点） |
+
+⇒ **永远回收不掉**。而危害不只是「多一份垃圾」：**两份同名**会让用户手动清理时
+**删错正在用的那一份** —— 那对应 Seal 立刻无法启动。
+
+**修法**：在 `isReclaimableOrphan` 里加一条**精确相等**判断
+（引用 `SelfManagedSealMigrationPolicy.canonicalBundleIdentifier`，不抄第二份字面量）。
+
+**为什么安全**（两条，缺一不可）：
+
+1. `SelfManagedSealMigrationPolicy.recommendedBundleIdentifier` 只会产出
+   `com.mjorb.seal.self` / `com.mjorb.seal.t<team>`（**都含中缀**）
+   ⇒ 裸 ID **不是** Seal 当前的 Bundle ID，所以「正在用的那份」不会被这条判成候选
+   （何况 keep-map 的守卫先跑）。
+2. 它仍要过 `decision` 的**设备端核验** —— 万一那个旧 App 还装着，
+   `isAppInstalled` 会答「装了」并保留它。
+
+⚠️ 必须**精确相等**，不能 `hasPrefix`：`com.mjorb.sealX` 不是 Seal 生成过的任何形态，
+前缀匹配会把它也放进来（那才是真的会删错东西）。
+
+#### 守卫
+
+**317→322 源码断言、162→166 变异**（R19 段 5 条断言 / 4 个变异锚点）。
+其中**最关键的是顺序断言**：用 `section_or_empty` 取 `isReclaimableOrphan` 的函数体，
+比 `keepingByBundleID.keys.contains` < `protectedBundleIDs.contains` <
+裸 ID 分支的**相对位置** —— 裸 ID 分支若跑到守卫之前，
+「正在用的那一份」会被判成候选 ⇒ **删掉 Seal 自己**。
+
+⚠️ 写这条锚点时踩到一个坑：`let lowered = normalized(bundleID)` + 那句 guard 在
+**同文件的 `isExtensionBundleID` 里也有一份**，只写这两行**不唯一**（变异会打到别处）。
+⇒ 锚点带上函数签名才唯一。**加变异锚点时要检查 `old` 在文件里是否唯一。**
+
+---
 
 ### 2026-09-17 · 安装等待「明显超常」时留一条**可判读**的记录
 

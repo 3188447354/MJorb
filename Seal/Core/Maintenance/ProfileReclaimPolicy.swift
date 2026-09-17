@@ -39,6 +39,10 @@ enum ProfileReclaimPolicy {
     /// 两种形态都会命中：
     /// - 普通 App：`com.kdt.livecontainer.seal.3432ZHJUF9`
     /// - Seal 自己：`com.mjorb.seal.TB95F327DS`
+    ///
+    /// ⚠️ 还有**第三种**形态不含这个中缀：Seal 早期用过的裸 ID `com.mjorb.seal`。
+    /// 它由 `isReclaimableOrphan` 里单独一条**精确相等**判断处理（见那里的说明）——
+    /// 别把它并进这个常量（`.seal.` 前后都要有内容，裸 ID 天然不匹配）。
     static let sealGeneratedMarker = ".seal."
 
     /// 是否为「可回收候选」。
@@ -86,6 +90,27 @@ enum ProfileReclaimPolicy {
         guard protectedBundleIDs.contains(where: { normalized($0) == lowered }) == false else {
             return false
         }
+        // ③ Seal 自己的**规范（无后缀）Bundle ID**：`com.mjorb.seal`。
+        //
+        // 早期 Seal 用这个裸 ID 直接签名安装过，那批 profile 现在两头不沾：
+        // keep-map 的 key 是**当前**形态（`com.mjorb.seal.<team>`），形态上又不含 `.seal.` 中缀
+        // ⇒ **永远回收不掉**（2026-09-17 真机截图实测：设备上同时存在两份都叫「Seal」的
+        // profile，一份在用、一份是这份遗留）。
+        //
+        // ⚠️ 这不只是「多一份垃圾」：两份同名会让用户手动清理时**删错正在用的那一份**，
+        // 对应 Seal 立刻无法启动。所以把它纳入候选是有实际收益的。
+        //
+        // 安全性（两条，缺一不可）：
+        // ① `SelfManagedSealMigrationPolicy.recommendedBundleIdentifier` 只会产出
+        //    `com.mjorb.seal.self` / `com.mjorb.seal.t<team>`（都含中缀）⇒ 裸 ID **不是**
+        //    Seal 当前的 Bundle ID，所以「正在用的那份」不会因为这条被当成候选
+        //    （何况上面 keep-map 的守卫先跑）。
+        // ② 它仍要过 `decision` 的**设备端核验** —— 万一那个旧 App 还装着，
+        //    `isAppInstalled` 会答「装了」并保留它。
+        //
+        // ⚠️ 必须**精确相等**，不能写成 `hasPrefix`：`com.mjorb.sealXYZ` 不是 Seal 生成过的
+        // 任何形态，前缀匹配会把它也放进来（那才是真的会删错东西）。
+        if lowered == SelfManagedSealMigrationPolicy.canonicalBundleIdentifier { return true }
         // 标记前后都必须有内容：`com.foo.seal.` 本身不是一个 Bundle ID。
         guard let range = lowered.range(of: sealGeneratedMarker) else { return false }
         return range.lowerBound > lowered.startIndex

@@ -1071,6 +1071,43 @@ def violations(load=read):
           "R18: the heartbeat must stay observation-only — turning it into a watchdog that "
           "gives up early would fail genuinely slow installs (上限按包大小算)")
 
+    # R19: Seal 早期的**裸** Bundle ID `com.mjorb.seal` 也要能回收（2026-09-17 真机截图）。
+    #
+    # 它不含 `.seal.` 中缀 ⇒ 旧实现下永远回收不掉：keep-map 的 key 是**当前**形态
+    # （`com.mjorb.seal.<team>`），形态判据又不认它。设备上会长期留着一份陈旧的「Seal」profile，
+    # 而**两份同名**会让用户手动清理时删错正在用的那一份（对应 Seal 立刻无法启动）。
+    policy_source = strip_comments(load("Seal/Core/Maintenance/ProfileReclaimPolicy.swift"))
+    check("if lowered == SelfManagedSealMigrationPolicy.canonicalBundleIdentifier { return true }"
+          in policy_source,
+          "R19: Seal 早期的裸 Bundle ID 也必须能回收 —— 否则那份陈旧 profile 永远清不掉，"
+          "而两份同名的「Seal」会让人删错正在用的那一份")
+    # 引用既有常量，不抄第二份字面量（同一条规则两份实现，迟早漂移）。
+    check('canonicalBundleIdentifier = "com.mjorb.seal"' not in policy_source,
+          "R19: 必须引用 SelfManagedSealMigrationPolicy.canonicalBundleIdentifier，"
+          "不要在回收策略里再抄一份字面量")
+    # ⚠️ 精确相等，不能前缀匹配：`com.mjorb.sealX` 不是 Seal 生成过的任何形态。
+    check("hasPrefix(SelfManagedSealMigrationPolicy.canonicalBundleIdentifier)" not in policy_source,
+          "R19: 裸 ID 必须精确相等 —— 前缀匹配会把 `com.mjorb.sealX` 这类无关 ID 也放进来")
+    # ⚠️ **顺序就是安全本身**：两条守卫（keep-map / 宽松受保护集合）必须先跑。
+    # 裸 ID 分支若跑到前面，「正在用的那一份」会被判成候选 ⇒ 删掉 Seal 自己。
+    orphan_body = squash(section_or_empty(
+        policy_source,
+        "static func isReclaimableOrphan(",
+        "static func normalized(_ bundleID: String) -> String {"
+    ))
+    keep_at = orphan_body.find("keepingByBundleID.keys.contains")
+    protect_at = orphan_body.find("protectedBundleIDs.contains")
+    bare_at = orphan_body.find("lowered == SelfManagedSealMigrationPolicy.canonicalBundleIdentifier")
+    check(keep_at != -1 and protect_at != -1 and bare_at != -1
+          and keep_at < bare_at and protect_at < bare_at,
+          "R19: the bare-ID branch must come AFTER both guards — otherwise the profile Seal "
+          "is actually using gets treated as a candidate, i.e. you delete Seal itself")
+    policy_tests = load("SealTests/Maintenance/ProfileReclaimPolicyTests.swift")
+    check("func sealCanonicalBareIdentifierIsACandidate()" in policy_tests
+          and "func sealCanonicalBareIdentifierRespectsTheKeepMap()" in policy_tests
+          and "func sealCanonicalBareIdentifierIsNotAPrefixMatch()" in policy_tests,
+          "R19: 三个方向都要有单测 —— 认得出、受 keep-map 保护、且不前缀匹配")
+
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
     # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
@@ -2845,6 +2882,37 @@ def main():
          "            await self?.reset()\n"
          "            var didReportAbnormal = false",
          "R18: the heartbeat must stay observation-only"),
+        # ── R19：Seal 早期的裸 Bundle ID 也要能回收（2026-09-17 加）──
+        # 去掉那条分支：那份陈旧的「Seal」profile 又变成永远清不掉。
+        ("Seal/Core/Maintenance/ProfileReclaimPolicy.swift",
+         "        if lowered == SelfManagedSealMigrationPolicy.canonicalBundleIdentifier { return true }",
+         "        // bare id removed",
+         "R19: Seal 早期的裸 Bundle ID 也必须能回收"),
+        # 把精确相等改成前缀匹配：`com.mjorb.sealX` 这类无关 ID 也会被当成候选。
+        ("Seal/Core/Maintenance/ProfileReclaimPolicy.swift",
+         "        if lowered == SelfManagedSealMigrationPolicy.canonicalBundleIdentifier { return true }",
+         "        if lowered.hasPrefix(SelfManagedSealMigrationPolicy.canonicalBundleIdentifier) { return true }",
+         "R19: 裸 ID 必须精确相等"),
+        # **顺序反了**（本修复最危险的方向）：裸 ID 分支插到两条守卫**之前**，
+        # 「正在用的那一份」就会被判成候选 ⇒ 删掉 Seal 自己。
+        # ⚠️ 锚点带上函数签名：`let lowered = normalized(...)` + 那句 guard 在
+        # `isExtensionBundleID` 里也有一份（同文件两处），只写这两行不唯一。
+        ("Seal/Core/Maintenance/ProfileReclaimPolicy.swift",
+         "        protectedBundleIDs: Set<String>\n"
+         "    ) -> Bool {\n"
+         "        let lowered = normalized(bundleID)\n"
+         "        guard lowered.isEmpty == false else { return false }",
+         "        protectedBundleIDs: Set<String>\n"
+         "    ) -> Bool {\n"
+         "        let lowered = normalized(bundleID)\n"
+         "        if lowered == SelfManagedSealMigrationPolicy.canonicalBundleIdentifier { return true }\n"
+         "        guard lowered.isEmpty == false else { return false }",
+         "R19: the bare-ID branch must come AFTER both guards"),
+        # 把单测改名：证明「单测文件里有这几个字」的断言真的会红。
+        ("SealTests/Maintenance/ProfileReclaimPolicyTests.swift",
+         "    func sealCanonicalBareIdentifierIsACandidate() {",
+         "    func sealCanonicalBareIdentifierIsACandidateRenamed() {",
+         "R19: 三个方向都要有单测"),
         # 把结算单测改名：证明「单测文件里有这几个字」的断言真的会红。
         ("SealTests/Renewal/RefreshQueueStoreTests.swift",
          "    func recoverInterruptedSettlesItemsThatAlreadyHaveAResult() async throws {",

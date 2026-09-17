@@ -41,6 +41,60 @@ struct ProfileReclaimPolicyTests {
         )
     }
 
+    /// **Seal 早期的裸 ID `com.mjorb.seal` 也要认出来**（2026-09-17 真机截图实测）。
+    ///
+    /// 它两头不沾：keep-map 的 key 是**当前**形态 `com.mjorb.seal.<team>`，形态上又不含
+    /// `.seal.` 中缀 ⇒ 旧实现下**永远回收不掉**，设备上会长期留着一份陈旧的「Seal」profile。
+    /// 危害不只是多一份垃圾：两份同名会让用户手动清理时**删错正在用的那一份**。
+    @Test
+    func sealCanonicalBareIdentifierIsACandidate() {
+        #expect(
+            ProfileReclaimPolicy.isReclaimableOrphan(
+                bundleID: "com.mjorb.seal",
+                keepingByBundleID: ["com.mjorb.seal.KYRJV2U7WS": "LIVE-UUID"],
+                protectedBundleIDs: []
+            )
+        )
+    }
+
+    /// ⚠️ 裸 ID 必须是**精确相等**，不能写成 `hasPrefix`：
+    /// `com.mjorb.sealX` 不是 Seal 生成过的任何形态，前缀匹配会把它也放进来。
+    @Test
+    func sealCanonicalBareIdentifierIsNotAPrefixMatch() {
+        #expect(
+            ProfileReclaimPolicy.isReclaimableOrphan(
+                bundleID: "com.mjorb.sealX",
+                keepingByBundleID: [:],
+                protectedBundleIDs: []
+            ) == false
+        )
+    }
+
+    /// 裸 ID 一旦**就是**当前在用的那一份（keep-map 里），绝不许当候选 ——
+    /// 那正是「删了 Seal 自己」的场景。
+    @Test
+    func sealCanonicalBareIdentifierRespectsTheKeepMap() {
+        #expect(
+            ProfileReclaimPolicy.isReclaimableOrphan(
+                bundleID: "com.mjorb.seal",
+                keepingByBundleID: ["com.mjorb.seal": "LIVE-UUID"],
+                protectedBundleIDs: []
+            ) == false
+        )
+    }
+
+    /// 裸 ID 在宽松受保护集合里时同样不许当候选（记录里出现过就保留）。
+    @Test
+    func sealCanonicalBareIdentifierRespectsTheProtectedSet() {
+        #expect(
+            ProfileReclaimPolicy.isReclaimableOrphan(
+                bundleID: "com.mjorb.seal",
+                keepingByBundleID: [:],
+                protectedBundleIDs: ["com.mjorb.seal"]
+            ) == false
+        )
+    }
+
     /// 当前在用的那一份绝不能是候选 —— 删了 Seal 自己（或任何 App）就起不来了。
     @Test
     func currentBundleIdentifierIsNeverACandidate() {

@@ -166,7 +166,8 @@ static func decision(probe: InstallProbe, positiveControlPassed: Bool) -> Decisi
 **改动**：`ProfileReclaimPolicy`（新增）、`DeviceProfileCleaner`（阶段 A 本地筛候选 /
 阶段 B 设备端核验）、`AppMaintenanceJob` 与 `SigningCoordinator` 两处显式开启、
 `ProfileCleanupSummary` 新增四个计数 + `reclaimAborted`。
-守卫 **228→243 源码断言、107→114 变异**（7 个新锚点专打这条边界）。
+守卫 **228→244 源码断言、107→116 变异**（8 个新锚点专打这条边界）。
+提交 `647bde3`（CI **run#93**）。
 
 **流程教训**：本仓在 OneDrive 里，这一轮又出现两次「Edit 报成功、内容没落盘」。
 改完立刻回读校验，别等测试或提交才发现。

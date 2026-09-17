@@ -1,7 +1,7 @@
 # 真机回归清单
 
 > 对应 `codex/certificate-handoff` 分支上**包含 §3.11 + §7.4 修复 + 日志构建号
-> + 旧 Team profile 回收**的构建 —— 即本轮推送后的包（**构建号 ≥ 93**）或更新。
+> + 旧 Team profile 回收**的构建 —— 即 `647bde3`（CI **run#93**）或更新的包。
 > 排查记录与根因分析见 `2026-09-16-install-stage-feedback-and-self-replacement-freeze.md`
 > 与 `2026-09-16-profile-pileup-and-ui-row-layout.md` §七。
 > **操作顺序有讲究**：先做第 0 步（装上正确的构建），否则后面全是白测；

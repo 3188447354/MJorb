@@ -1227,24 +1227,41 @@ def violations(load=read):
     check('recovery: "前往「我的」页面重新登录该 Apple ID"' not in cert_failure,
           "R23: 不能退回「只让用户去重新验证」这一条路（那正是死循环的成因）")
 
-    # R24: 三个 portal 变更都必须过 `withSessionRecovery`（2026-09-17 补）。
+    # R24: **跑在 per-bundle-ID 循环里的**每一个 portal 写入都必须过 `withSessionRecovery`。
     #
-    # 另外两个（创建 App ID、申请描述文件）早就有它，**只有证书创建漏了** ——
-    # 而同一条「遇 1100 退避重试」的规则漏在一条链路上，正是本仓反复踩的坑（第 5 次）。
-    # 为什么这条最要紧：**证书是整条流程里第一个真正落到 Apple 侧的变更**，
-    # 多扩展 App 的上一次尝试刚连发过一批请求，这次一上来就可能撞上短时限流 ⇒
-    # 返回 1100 ⇒ 被归类成「账号需要重新验证」⇒ 用户去重新验证、再签、又被限流（死循环）。
-    check('withSessionRecovery("创建 App ID \\(mappedBundleID)")' in portal_source,
-          "R24: 创建 App ID 必须过退避重试")
-    check('withSessionRecovery("申请描述文件 \\(preparedAppID.mapped)")' in portal_source,
-          "R24: 申请描述文件必须过退避重试")
-    check('withSessionRecovery("创建证书")' in portal_source,
-          "R24: 创建证书也必须过退避重试 —— 它是整条流程里第一个真正落到 Apple 侧的变更，"
-          "最容易撞上限流；漏掉它会让限流被误报成「账号需要重新验证」")
+    # 为什么这条最要紧：多扩展 App 的 Phase 1 每个 bundle ID 要发**两次**写请求，
+    # 抖音（主 App + 8 扩展）就是 18 次突发 ⇒ 撞上 Apple 的短时限流返回 1100 ⇒
+    # 被归类成「账号需要重新验证」⇒ 用户去重新验证、再签、又被限流（死循环）。
+    #
+    # ⚠️ **2026-09-17 修正：原来的断言是 `count(...) == 3`，而那个 3 是从当时的代码里数出来的**
+    # —— 它把「覆盖不全」固化成了期望值，于是 `updateFeatures`（`ALTAppleAPI.shared.update`）
+    # 一直没接退避重试，守卫却全绿。漏掉它的两种后果**都不报错**：
+    # ① 主 App 撞 1100 ⇒ `guard ... else { throw error }` ⇒ **整个签名失败**；
+    # ② 扩展撞 1100 ⇒ 走降级分支把 entitlements **清空**继续签 ⇒ 签名「成功」但扩展缺权限。
+    #
+    # ⇒ 期望值改为**按操作逐个点名**（缺哪个报哪个），再用计数兜住「新增了第 6 类写入」。
+    # 刻意**不**覆盖的：`revoke`（证书轮换时单发一次）、`registerDevice`、`fetch*` 系列 ——
+    # 它们不在 per-bundle-ID 循环里，不构成突发。
+    for label, why in (
+        ('withSessionRecovery("创建 App ID \\(mappedBundleID)")',
+         "创建 App ID"),
+        ('withSessionRecovery("更新应用能力 \\(mappedBundleID)")',
+         "更新应用能力（updateFeatures）—— Phase 1 里每个 bundle ID 的第二次写请求，"
+         "与 addAppID 同等密集；主 App 撞 1100 会直接失败、扩展撞 1100 会被静默清空 entitlements"),
+        ('withSessionRecovery("申请描述文件 \\(preparedAppID.mapped)")',
+         "申请描述文件"),
+        ('withSessionRecovery("创建证书")',
+         "创建证书 —— 它是整条流程里第一个真正落到 Apple 侧的变更，最容易撞上限流；"
+         "漏掉它会让限流被误报成「账号需要重新验证」"),
+        ('withSessionRecovery("分配 App Group \\(mappedBundleID)")',
+         "分配 App Group（付费账号才走，但同一条规则不该只落在免费路径上）"),
+    ):
+        check(label in portal_source, "R24: " + why + " 必须过退避重试")
     # 注意：定义写的是 `withSessionRecovery<T>(`，不带 `<` 的计数只数得到**调用点**。
-    check(portal_source.count("withSessionRecovery(") == 3,
-          "R24: 退避重试的调用点数量变了（应为 3 个 portal 变更）—— "
-          "新增/删除 portal 调用时请同步这里")
+    check(portal_source.count("withSessionRecovery(") == 5,
+          "R24: 退避重试的调用点数量变了（应为 5 个 per-bundle-ID 的 portal 写入："
+          "创建 App ID / 更新应用能力 / 申请描述文件 / 创建证书 / 分配 App Group）—— "
+          "新增或删除 portal 写入时请同步这里，别只改这个数字、先确认新写入是不是也在循环里")
 
     # R25: 同步阻塞 FFI 的**每一处**等待都要有界（2026-09-17 审计出来的）。
     #
@@ -3208,7 +3225,47 @@ def main():
          '                session: session,\n'
          '                deviceName: deviceName\n'
          '            )',
-         "R24: 创建证书也必须过退避重试"),
+         # ⚠️ 期望文案必须与**真实断言文案前缀一致**。R24 的检查已改成「按操作逐个点名 + 理由」，
+         # 所以这里也要跟着改 —— 不同步的话会报成 `Guard failed mutation check`，
+         # 看着像「变异没被抓到」，其实是断言已触发、只是消息对不上。
+         "R24: 创建证书 —— 它是整条流程里第一个真正落到 Apple 侧的变更"),
+        # 把 updateFeatures 退回「直接请求」：它是 Phase 1 里每个 bundle ID 的**第二次**写请求，
+        # 与 addAppID 同等密集。主 App 撞 1100 会直接让整个签名失败、扩展撞 1100 会被静默清空 entitlements。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "                        let updatedAppID: ALTAppID =\n"
+         "                            try await withSessionRecovery(\"更新应用能力 \\(mappedBundleID)\") {\n"
+         "                                try await updateFeatures(\n"
+         "                                    appID: appID,\n"
+         "                                    application: application,\n"
+         "                                    team: team,\n"
+         "                                    session: session\n"
+         "                                )\n"
+         "                            }\n"
+         "                        appID = updatedAppID",
+         "                        appID = try await updateFeatures(\n"
+         "                            appID: appID,\n"
+         "                            application: application,\n"
+         "                            team: team,\n"
+         "                            session: session\n"
+         "                        )",
+         "R24: 更新应用能力（updateFeatures）"),
+        # 把 App Group 分配退回「直接请求」：同一条规则不该只落在免费路径上。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "                            try await withSessionRecovery(\"分配 App Group \\(mappedBundleID)\") {\n"
+         "                                try await assignAppGroups(\n"
+         "                                    appID: appID,\n"
+         "                                    application: application,\n"
+         "                                    team: team,\n"
+         "                                    session: session\n"
+         "                                )\n"
+         "                            }",
+         "                            try await assignAppGroups(\n"
+         "                                appID: appID,\n"
+         "                                application: application,\n"
+         "                                team: team,\n"
+         "                                session: session\n"
+         "                            )",
+         "R24: 分配 App Group（付费账号才走"),
         # ── R25：同步阻塞 FFI 的每一处等待都要有界（2026-09-17 审计）──
         # 把设备核验退回「只 Task.detached、无超时」：死会话上它会永久阻塞。
         ("Seal/Features/Apps/InstalledAppDeviceVerifier.swift",

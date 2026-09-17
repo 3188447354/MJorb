@@ -1603,19 +1603,39 @@ actor ApplePortalSigningService {
                     requestedEntitlements[mappedBundleID] = entitlementValues
                     // 扩展 features 更新失败时降级为空 features 重试，主 App 失败则直接报错
                     do {
-                        appID = try await updateFeatures(
-                            appID: appID,
-                            application: application,
-                            team: team,
-                            session: session
-                        )
+                        // ⚠️ **`updateFeatures` 也必须过退避重试**（2026-09-17 补）。
+                        //
+                        // 它是 Phase 1 里每个 bundle ID 的**第二次**门户写入（第一次是 addAppID），
+                        // 所以抖音这种 9 扩展 App 一次签名要连发 **9 次** —— 与 addAppID 同等密集，
+                        // 却一直没有退避重试。漏掉它有两种后果，而且**都不报错**：
+                        // ① 主 App 的 updateFeatures 撞上 1100 ⇒ 落到下面那句
+                        //    `guard mappedBundleID != mappedMainBundleID else { throw error }`
+                        //    ⇒ **整个签名失败**，用户看到的只是「Apple ID 失效」；
+                        // ② 扩展的 updateFeatures 撞上 1100 ⇒ 走降级分支把 entitlements **清空**继续签
+                        //    ⇒ 签名「成功」，但扩展在真机上缺权限（静默降级比失败更难查）。
+                        // 退避重试把这两种「把限流当成事实」的结局变回「等一会儿就好了」。
+                        let updatedAppID: ALTAppID =
+                            try await withSessionRecovery("更新应用能力 \(mappedBundleID)") {
+                                try await updateFeatures(
+                                    appID: appID,
+                                    application: application,
+                                    team: team,
+                                    session: session
+                                )
+                            }
+                        appID = updatedAppID
                         if team.type != .free {
-                            try await assignAppGroups(
-                                appID: appID,
-                                application: application,
-                                team: team,
-                                session: session
-                            )
+                            // 同上：App Group 的分配也是 per-bundle-ID 的门户写入（付费账号才走）。
+                            // 免费账号走不到这里，所以它不是「只有抖音签不上」的成因，
+                            // 但同一条「遇 1100 就退避」的规则不该只落在免费路径上。
+                            try await withSessionRecovery("分配 App Group \(mappedBundleID)") {
+                                try await assignAppGroups(
+                                    appID: appID,
+                                    application: application,
+                                    team: team,
+                                    session: session
+                                )
+                            }
                         }
                     } catch where mappedBundleID != mappedMainBundleID {
                         // 扩展降级：清空 features，用空 entitlements 继续签名

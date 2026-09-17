@@ -152,10 +152,79 @@
   另一个是「等几分钟重试」。判据要写成「本次需 N 个 / 账号已有 M 个 / 需新注册 K 个」——
   **K 大于剩余名额 = 名额问题，K 很小却仍报 1100 = 限流**。
   缺了这条，「用户把日志发给我，我能看出它失败了吗」的答案是「不能」。
+- **⚠️ `count(...) == N` 里的 N 必须从「设计」推导，绝不能从「当时的代码」数出来**
+  （2026-09-17，一天内踩到的第二种「守卫把缺陷固化」）。R24 曾断言
+  `portal_source.count("withSessionRecovery(") == 3`，那个 **3 就是数出来的** ——
+  于是它把「覆盖不全」变成了期望值：`updateFeatures`（`ALTAppleAPI.shared.update`）
+  同样是**跑在每个 bundle ID 循环里**的门户写入，却一直没有退避重试，而守卫**全绿**。
+  **判据：写下 `== N` 时问一句「这个 N 是怎么来的」—— 答不出「设计上应该有几个」，
+  就改成逐个点名**（`for label, why in (...)`），让失败信息直接说出**少的是哪一个**。
+  只数个数的话，删掉任意一个都只是「N 变了」，看不出缺谁。
+- **改断言文案时，必须同步改变异锚点的「期望文案」**。R24 的检查改成「按操作逐个点名 + 理由」
+  之后，变异锚点里那句 `"R24: 创建证书也必须过退避重试"` 就不再是真实断言消息的前缀 ⇒
+  守卫报 `FAIL: Guard failed mutation check: R24: 创建证书也必须过退避重试`。
+  **这个报错看着像「变异没被抓到」，其实是断言已经触发了、只是消息对不上** ——
+  别去改实现或删锚点，先把期望文案对齐。
+- **「同一规则覆盖一批对象」时，要数清这批对象有几个来源，而不是只数调用点**。
+  「遇 1100 退避重试」这条规则的适用对象是「**跑在 per-bundle-ID 循环里**的门户写入」——
+  Phase 1 每个 bundle ID 发 2 次写（`addAppID` + `updateFeatures`）、Phase 2 发 1 次
+  （`fetchProvisioningProfile`，内部还会 delete）、付费账号再发 App Group 的 3 次。
+  只覆盖了其中 3 类时，抖音（9 个 bundle ID）的突发仍有近一半没被保护。
+  ⇒ 加链路级规则时，**先把「这类操作」全部枚举出来**（`grep ALTAppleAPI.shared.` 是个好起点），
+  再逐个判断「它在不在循环里」。
 
 ---
 
 ## 历史记录
+
+### 2026-09-17 · 退避重试漏在第 4 类 portal 写入上：`updateFeatures` 没有 1100 重试
+
+**怎么发现的**：不是在真机上，而是顺着「抖音为什么特别容易撞限流」去**枚举门户写入**。
+`grep ALTAppleAPI.shared.` 列出 14 个调用点，其中 **9 个是写入**：
+
+| 原语 | 在哪 | 在 per-bundle-ID 循环里？ | 有 1100 退避重试？ |
+|---|---|---|---|
+| `addAppID` | Phase 1 | 是（抖音 9 次） | ✅ |
+| `update`（`updateFeatures` → `submitUpdatedAppID`） | Phase 1 | **是（抖音 9 次）** | ❌ **漏了** |
+| `fetchProvisioningProfile`（内部还会 delete） | Phase 2 | 是（9 次） | ✅ |
+| `addCertificate` | 证书阶段 | 否（1 次） | ✅ |
+| `addAppGroup` / `assign` / `fetchAppGroups` | `assignAppGroups` | 是（付费账号，每 ID 最多 3 次） | ❌ 漏了 |
+| `registerDevice` / `revoke` | 一次性 | 否 | 刻意不覆盖 |
+
+**为什么漏了却一直没被发现**：守卫 R24 的断言是
+`portal_source.count("withSessionRecovery(") == 3` —— 那个 **3 是从当时的代码数出来的**，
+于是它把「覆盖不全」固化成了期望值。R24 当轮补的是「创建证书」，而
+`updateFeatures` 从来没有被纳入过「portal 变更」这个清单。
+
+**漏掉它的两种后果都不报错**（这才是它值钱的地方）：
+
+1. **主 App** 的 `updateFeatures` 撞 1100 ⇒ 落到 `guard mappedBundleID != mappedMainBundleID
+   else { throw error }` ⇒ **整个签名失败**，用户看到的只是「Apple ID 失效」；
+2. **扩展** 的 `updateFeatures` 撞 1100 ⇒ 走 `catch where mappedBundleID != mappedMainBundleID`
+   的降级分支，把 `requestedEntitlements[mappedBundleID] = [:]` **清空**后继续签
+   ⇒ 签名「成功」，但扩展在真机上缺权限（静默降级比失败更难查）。
+
+**修复**：`updateFeatures` 与 `assignAppGroups` 的调用点各加一层
+`withSessionRecovery`（后者付费账号才走，但同一条规则不该只落在免费路径上）。
+副作用是另一条诊断：每次重试都会写
+`Apple 会话疑似被限流，退避 N 秒后重试 更新应用能力 <bundleID>（第 N 次重试）`
+—— 用户下次的日志能直接看出限流打在**哪个阶段**，而不只是「App ID 阶段」。
+
+**守卫改造**：R24 从「数个数」改成「**按操作逐个点名**」（5 个 label + 1 个计数兜底），
+并把「刻意不覆盖 `revoke` / `registerDevice` / `fetch*`」的理由写进守卫 ——
+因为「不在循环里、不构成突发」这个判断本身就是设计的一部分，不该只留在某个人脑子里。
+新增 2 个变异锚点。
+
+**涉及文件**：`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、
+`Scripts/verify-release-safety.py`（R24 重写 + 2 变异）。
+
+**验证状态**：守卫 **PASS（351 源码断言 + 189 变异）**；云构建 + 真机待验。
+
+**顺带踩到的坑**：改断言文案后忘了同步变异锚点的**期望文案** ⇒ 守卫报
+`Guard failed mutation check`，看着像「变异没被抓到」，其实是断言已触发、消息对不上。
+（见「常犯坑位」新增条。）
+
+---
 
 ### 2026-09-17 · 「只有抖音签不上」：App ID 创建顺序 + 缺一条能把两种成因分开的诊断
 

@@ -1048,6 +1048,29 @@ def violations(load=read):
           and "func sealItemIsSettledAsCompleted()" in payload_tests,
           "R17: the payload mapping needs real unit tests")
 
+    # R18: 安装等待「明显超常」的记录（2026-09-17 加，**只记日志、不改变行为**）。
+    #
+    # 普通安装 7–11 秒，而等待上限按包大小算（小包 804 秒、大包 2400 秒）。
+    # 等过 2 分钟已经远超正常值，但「慢」与「死」在没有设备端进度信号时**无法区分**
+    # ⇒ 不能据此提前放弃；能做的是把「卡在传输还是卡在 installd」写清楚，
+    # 让下一次真机日志可判读（界面还显示上传百分比 = 卡在传输；显示「设备正在安装」
+    # = 卡在 installd —— 两者要查的方向完全不同）。
+    check("private static let abnormalInstallWaitSeconds: Double = 120" in install_source,
+          "R18: the abnormal-wait threshold must stay at 2 minutes — 普通安装只要 7–11 秒，"
+          "阈值放大到几分钟这条记录就永远不会出现")
+    heartbeat_body = squash(section_or_empty(
+        install_source,
+        "private func beginInstallHeartbeat(",
+        "private static let cachedSessionProbeThresholdSeconds"
+    ))
+    check("didReportAbnormal == false, Double(waited) >= Self.abnormalInstallWaitSeconds"
+          in heartbeat_body,
+          "R18: the abnormal record must fire exactly ONCE — a 13-minute wait would "
+          "otherwise write six copies of the same warning and bury the real signal")
+    check("throw " not in heartbeat_body and "reset()" not in heartbeat_body,
+          "R18: the heartbeat must stay observation-only — turning it into a watchdog that "
+          "gives up early would fail genuinely slow installs (上限按包大小算)")
+
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
     # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
@@ -2801,6 +2824,27 @@ def main():
          "extension BatchRefreshSession.Item.State {",
          "private extension BatchRefreshSession.Item.State {",
          "R17: the payload mapping must be internal and live with the type"),
+        # ── R18：安装等待「明显超常」的记录（2026-09-17 加）──
+        # 把阈值放大到 100 分钟：这条记录永远不会出现，等于没加。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "private static let abnormalInstallWaitSeconds: Double = 120",
+         "private static let abnormalInstallWaitSeconds: Double = 6000",
+         "R18: the abnormal-wait threshold must stay at 2 minutes"),
+        # 去掉「只写一次」的门：13 分钟的等待会写出 6 条一模一样的警告，
+        # 把真实信号埋掉（本仓已有一次「脚手架占 30% 日志」的教训）。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "                if didReportAbnormal == false, Double(waited) >= Self.abnormalInstallWaitSeconds {",
+         "                if Double(waited) >= Self.abnormalInstallWaitSeconds {",
+         "R18: the abnormal record must fire exactly ONCE"),
+        # 把心跳改成「看门狗」（顺手重建连接）：真正的慢安装会被提前判死，
+        # 而上限本来就是按包大小算的。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "        return Task.detached(priority: .utility) { [weak self] in\n"
+         "            var didReportAbnormal = false",
+         "        return Task.detached(priority: .utility) { [weak self] in\n"
+         "            await self?.reset()\n"
+         "            var didReportAbnormal = false",
+         "R18: the heartbeat must stay observation-only"),
         # 把结算单测改名：证明「单测文件里有这几个字」的断言真的会红。
         ("SealTests/Renewal/RefreshQueueStoreTests.swift",
          "    func recoverInterruptedSettlesItemsThatAlreadyHaveAResult() async throws {",

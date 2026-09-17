@@ -101,14 +101,38 @@ actor MinimuxerInstallChannel: InstallChannel {
     /// 刻意做成「返回任务、由调用方 `defer { cancel() }`」而不是包住一段闭包：
     /// 两条路径的等待原语不同（`offThread` 返回 `Result?`，自替换走 `HardTimeout.run`），
     /// 包闭包会把它们各自的语义压平。共用的是**心跳本身**，不是等待方式。
+    /// 安装等待「明显超常」的阈值：超过它就在心跳里**多写一条可判读的记录**（只写一次）。
+    ///
+    /// 普通 App 安装实测 **7–11 秒**（2026-09-17 真机两次是 6.0 / 6.7 秒），
+    /// 所以等过 2 分钟已经远超正常值。这条记录的价值是把「卡在哪儿」从一句笼统的
+    /// 「没有进度回报」里区分出来 —— 两者的排查方向完全不同：
+    ///
+    /// - 界面**仍显示上传百分比** ⇒ 卡在**传输**（会话 / 隧道问题）
+    /// - 界面显示「**设备正在安装**」⇒ 卡在 **installd**（安装阶段）
+    ///
+    /// ⚠️ 这一条**只记日志、不改变行为**：普通安装的等待上限按包大小算（小包 804 秒、
+    /// 大包可到 2400 秒），而「慢」与「死」在没有设备端进度信号时无法区分，
+    /// 所以不能据此提前放弃。它只是让下一次真机日志可判读。
+    private static let abnormalInstallWaitSeconds: Double = 120
+
     private func beginInstallHeartbeat(_ label: String) -> Task<Void, Never> {
         let startedAt = Date()
         return Task.detached(priority: .utility) { [weak self] in
+            var didReportAbnormal = false
             while Task.isCancelled == false {
                 try? await Task.sleep(nanoseconds: Self.installHeartbeatNanoseconds)
                 if Task.isCancelled { return }
                 let waited = Int(Date().timeIntervalSince(startedAt))
                 await self?.log("\(label)仍在等待：已等待 \(waited) 秒（installd 安装阶段不回报进度）")
+                if didReportAbnormal == false, Double(waited) >= Self.abnormalInstallWaitSeconds {
+                    didReportAbnormal = true
+                    await self?.log(
+                        "\(label)等待已明显超常：已等待 \(waited) 秒（普通安装约 7–11 秒）。"
+                        + "判读：界面仍显示上传百分比 ⇒ 卡在传输；显示「设备正在安装」"
+                        + "⇒ 卡在 installd",
+                        level: .warning
+                    )
+                }
             }
         }
     }

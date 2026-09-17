@@ -103,19 +103,26 @@ actor MinimuxerInstallChannel: InstallChannel {
     /// 包闭包会把它们各自的语义压平。共用的是**心跳本身**，不是等待方式。
     /// 安装等待「明显超常」的阈值：超过它就在心跳里**多写一条可判读的记录**（只写一次）。
     ///
-    /// 普通 App 安装实测 **7–11 秒**（2026-09-17 真机两次是 6.0 / 6.7 秒），
-    /// 所以等过 2 分钟已经远超正常值。这条记录的价值是把「卡在哪儿」从一句笼统的
-    /// 「没有进度回报」里区分出来 —— 两者的排查方向完全不同：
+    /// 这条记录的价值是把「卡在哪儿」从一句笼统的「没有进度回报」里区分出来 ——
+    /// 两者的排查方向完全不同：
     ///
     /// - 界面**仍显示上传百分比** ⇒ 卡在**传输**（会话 / 隧道问题）
     /// - 界面显示「**设备正在安装**」⇒ 卡在 **installd**（安装阶段）
     ///
-    /// ⚠️ 这一条**只记日志、不改变行为**：普通安装的等待上限按包大小算（小包 804 秒、
-    /// 大包可到 2400 秒），而「慢」与「死」在没有设备端进度信号时无法区分，
-    /// 所以不能据此提前放弃。它只是让下一次真机日志可判读。
-    private static let abnormalInstallWaitSeconds: Double = 120
+    /// ⚠️ **只记日志、不改变行为**：等待上限按包大小算（小包 804 秒、大包 2400 秒），
+    /// 而「慢」与「死」在没有设备端进度信号时无法区分，所以不能据此提前放弃。
+    /// 它只是让下一次真机日志可判读。
+    ///
+    /// ⚠️ 阈值**按本次等待上限算**（2026-09-17 修正）：第一版写死 **120 秒** ——
+    /// 那是按「普通小包 7–11 秒」定的，但**大包本来就慢**（抖音 779 MB 的上限是 2400 秒，
+    /// 等两分钟完全正常）。写死阈值会对大包报**假警报**，而假警报会把真信号埋掉。
+    /// ⇒ 取上限的四分之一：小包 804/4 ≈ 201 秒、抖音 2400/4 = 600 秒。
+    private static func abnormalInstallWaitSeconds(budget: Double) -> Double {
+        max(120.0, budget / 4.0)
+    }
 
-    private func beginInstallHeartbeat(_ label: String) -> Task<Void, Never> {
+    private func beginInstallHeartbeat(_ label: String, budget: Double) -> Task<Void, Never> {
+        let threshold = Self.abnormalInstallWaitSeconds(budget: budget)
         let startedAt = Date()
         return Task.detached(priority: .utility) { [weak self] in
             var didReportAbnormal = false
@@ -124,10 +131,11 @@ actor MinimuxerInstallChannel: InstallChannel {
                 if Task.isCancelled { return }
                 let waited = Int(Date().timeIntervalSince(startedAt))
                 await self?.log("\(label)仍在等待：已等待 \(waited) 秒（installd 安装阶段不回报进度）")
-                if didReportAbnormal == false, Double(waited) >= Self.abnormalInstallWaitSeconds {
+                if didReportAbnormal == false, Double(waited) >= threshold {
                     didReportAbnormal = true
                     await self?.log(
-                        "\(label)等待已明显超常：已等待 \(waited) 秒（普通安装约 7–11 秒）。"
+                        "\(label)等待已明显超常：已等待 \(waited) 秒"
+                        + "（本次等待上限 \(Int(budget)) 秒；普通小包安装约 7–11 秒）。"
                         + "判读：界面仍显示上传百分比 ⇒ 卡在传输；显示「设备正在安装」"
                         + "⇒ 卡在 installd",
                         level: .warning
@@ -650,7 +658,7 @@ actor MinimuxerInstallChannel: InstallChannel {
     ) async throws {
         let startedAt = Date()
         await log("开始自替换安装：\(bundleID)，\(context)，等待上限 \(Int(budget)) 秒")
-        let heartbeat = beginInstallHeartbeat("自替换安装")
+        let heartbeat = beginInstallHeartbeat("自替换安装", budget: budget)
         defer { heartbeat.cancel() }
         do {
             // 返回值刻意用 Bool 而不是 Void：`HardTimeout.run` 的 T 需要 Sendable，
@@ -842,7 +850,7 @@ actor MinimuxerInstallChannel: InstallChannel {
                     // 与自替换共用同一个心跳：安装阶段 installd 不回报进度，
                     // 没有它，一次卡住的普通安装在日志上就是一段**完全空白**
                     // （2026-09-17 真机卡了 9 分多钟，导出的日志里一行都没有）。
-                    let heartbeat = beginInstallHeartbeat("安装")
+                    let heartbeat = beginInstallHeartbeat("安装", budget: mergedTimeout)
                     defer { heartbeat.cancel() }
                     let outcome = await offThread(seconds: mergedTimeout) {
                         try Minimuxer.stageAndInstall(bundleId: bundleID, ipaBytes: ipaData, progress: syncProgress)

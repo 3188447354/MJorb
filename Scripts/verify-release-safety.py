@@ -850,8 +850,8 @@ def violations(load=read):
     check(install_source.count("beginInstallHeartbeat(") == 3,
           "R14: BOTH install paths must use the shared heartbeat "
           "(1 definition + 2 call sites). A normal install that hangs logs nothing without it")
-    check('let heartbeat = beginInstallHeartbeat("安装")' in install_source
-          and 'beginInstallHeartbeat("自替换安装")' in install_source,
+    check('let heartbeat = beginInstallHeartbeat("安装", budget: mergedTimeout)' in install_source
+          and 'beginInstallHeartbeat("自替换安装", budget: budget)' in install_source,
           "R14: each path needs its own label, and the normal path must start the "
           "heartbeat before it blocks on the synchronous FFI")
     check("selfReplacementHeartbeatNanoseconds" not in install_source,
@@ -1070,26 +1070,34 @@ def violations(load=read):
 
     # R18: 安装等待「明显超常」的记录（2026-09-17 加，**只记日志、不改变行为**）。
     #
-    # 普通安装 7–11 秒，而等待上限按包大小算（小包 804 秒、大包 2400 秒）。
-    # 等过 2 分钟已经远超正常值，但「慢」与「死」在没有设备端进度信号时**无法区分**
-    # ⇒ 不能据此提前放弃；能做的是把「卡在传输还是卡在 installd」写清楚，
-    # 让下一次真机日志可判读（界面还显示上传百分比 = 卡在传输；显示「设备正在安装」
-    # = 卡在 installd —— 两者要查的方向完全不同）。
-    check("private static let abnormalInstallWaitSeconds: Double = 120" in install_source,
-          "R18: the abnormal-wait threshold must stay at 2 minutes — 普通安装只要 7–11 秒，"
-          "阈值放大到几分钟这条记录就永远不会出现")
+    # 普通小包安装 7–11 秒，而等待上限按包大小算（小包 804 秒、大包 2400 秒）。
+    # 「慢」与「死」在没有设备端进度信号时**无法区分** ⇒ 不能据此提前放弃；
+    # 能做的是把「卡在传输还是卡在 installd」写清楚，让下一次真机日志可判读
+    # （界面还显示上传百分比 = 卡在传输；显示「设备正在安装」= 卡在 installd）。
+    #
+    # ⚠️ 阈值**必须按本次等待上限算**（2026-09-17 修正）：第一版写死 120 秒 ——
+    # 那是按小包定的，而**大包本来就慢**（抖音 779 MB 等两分钟完全正常）
+    # ⇒ 写死会对大包报**假警报**，而假警报会把真信号埋掉。
+    check("private static func abnormalInstallWaitSeconds(budget: Double) -> Double" in install_source
+          and "max(120.0, budget / 4.0)" in install_source,
+          "R18: 阈值必须**按本次等待上限**算 —— 写死 120 秒会对大包报假警报"
+          "（抖音 779 MB 的上限是 2400 秒，等两分钟完全正常）")
     heartbeat_body = squash(section_or_empty(
         install_source,
         "private func beginInstallHeartbeat(",
         "private static let cachedSessionProbeThresholdSeconds"
     ))
-    check("didReportAbnormal == false, Double(waited) >= Self.abnormalInstallWaitSeconds"
-          in heartbeat_body,
+    check("didReportAbnormal == false, Double(waited) >= threshold" in heartbeat_body,
           "R18: the abnormal record must fire exactly ONCE — a 13-minute wait would "
           "otherwise write six copies of the same warning and bury the real signal")
     check("throw " not in heartbeat_body and "reset()" not in heartbeat_body,
           "R18: the heartbeat must stay observation-only — turning it into a watchdog that "
           "gives up early would fail genuinely slow installs (上限按包大小算)")
+    # ⚠️ 两个调用点必须**各自**传自己的预算：漏传一个会让那条链路退回写死阈值。
+    check('beginInstallHeartbeat("自替换安装", budget: budget)' in install_source
+          and 'beginInstallHeartbeat("安装", budget: mergedTimeout)' in install_source,
+          "R18: both install paths must pass their OWN budget to the heartbeat — "
+          "少传一个，那条链路就会用错阈值（自替换 892 秒 vs 普通 804 秒不是同一个数）")
 
     # R19: Seal 早期的**裸** Bundle ID `com.mjorb.seal` 也要能回收（2026-09-17 真机截图）。
     #
@@ -1562,7 +1570,7 @@ def violations(load=read):
     # 用户导出日志**一行都没有** —— 因为当时心跳只加在自替换这条路径上，
     # 而这条断言也只钉住了那条路径，所以它一直是绿的（R14 补上了双路径）。
     check("private func beginInstallHeartbeat(" in self_replace
-          and 'beginInstallHeartbeat("自替换安装")' in self_replace
+          and 'beginInstallHeartbeat("自替换安装", budget: budget)' in self_replace
           and "仍在等待：已等待" in self_replace,
           "R10: the install wait needs a heartbeat — installd reports no progress")
     # 5) 只声明可选依赖、容器不传 = 永远静默。
@@ -2840,7 +2848,7 @@ def main():
         # 只给自替换路径留心跳、普通路径退回静默：真机上普通安装卡住时日志重新一片空白，
         # 「在装」与「死了」再次分不开。这是本轮最直接的成因。
         ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
-         '                    let heartbeat = beginInstallHeartbeat("安装")',
+         '                    let heartbeat = beginInstallHeartbeat("安装", budget: mergedTimeout)',
          "                    // heartbeat removed",
          "R14: BOTH install paths must use the shared heartbeat"),
         # 前缀不在点边界上收口：同一 Team 下的兄弟变体会互相「保护」，回收功能整体失效。
@@ -2953,17 +2961,27 @@ def main():
          "private extension BatchRefreshSession.Item.State {",
          "R17: the payload mapping must be internal and live with the type"),
         # ── R18：安装等待「明显超常」的记录（2026-09-17 加）──
-        # 把阈值放大到 100 分钟：这条记录永远不会出现，等于没加。
+        # 把阈值退回写死 120 秒：**大包会报假警报**（抖音 779 MB 的上限是 2400 秒，
+        # 等两分钟完全正常）—— 假警报会把真信号埋掉。
         ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
-         "private static let abnormalInstallWaitSeconds: Double = 120",
-         "private static let abnormalInstallWaitSeconds: Double = 6000",
-         "R18: the abnormal-wait threshold must stay at 2 minutes"),
+         "    private static func abnormalInstallWaitSeconds(budget: Double) -> Double {\n"
+         "        max(120.0, budget / 4.0)\n"
+         "    }",
+         "    private static func abnormalInstallWaitSeconds(budget: Double) -> Double {\n"
+         "        120.0\n"
+         "    }",
+         "R18: 阈值必须**按本次等待上限**算"),
         # 去掉「只写一次」的门：13 分钟的等待会写出 6 条一模一样的警告，
         # 把真实信号埋掉（本仓已有一次「脚手架占 30% 日志」的教训）。
         ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
-         "                if didReportAbnormal == false, Double(waited) >= Self.abnormalInstallWaitSeconds {",
-         "                if Double(waited) >= Self.abnormalInstallWaitSeconds {",
+         "                if didReportAbnormal == false, Double(waited) >= threshold {",
+         "                if Double(waited) >= threshold {",
          "R18: the abnormal record must fire exactly ONCE"),
+        # 其中一条链路漏传自己的预算：它会用另一条链路的阈值（892 vs 804 不是同一个数）。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         '        let heartbeat = beginInstallHeartbeat("自替换安装", budget: budget)',
+         '        let heartbeat = beginInstallHeartbeat("自替换安装", budget: 804)',
+         "R18: both install paths must pass their OWN budget to the heartbeat"),
         # 把心跳改成「看门狗」（顺手重建连接）：真正的慢安装会被提前判死，
         # 而上限本来就是按包大小算的。
         ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",

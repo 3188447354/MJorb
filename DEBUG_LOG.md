@@ -70,9 +70,106 @@
   **正确用法**：先定版（见下一条），再用「同一个作业里所有相关日志码一起数」区分
   「没跑到」与「跑到了但中途退出」；但每个码都要先确认它在该构建里存在。
 
+- **`Optional` 返回值把「失败」和「没有」折叠成同一个 `nil` 时，绝不能拿它当删除/覆盖的判据**。
+  `Minimuxer.lookupApp(bundleId:) -> String?` 就是这样：`try?` 吞掉错误、
+  `Device.getFirstDevice()` 失败也 `return nil` ⇒「没装」与「查询失败」无法区分。
+  用它当「没装就删 profile」的判据，隧道一抖动就会把**正在用**的读成「没装」，
+  删掉对应 profile，那个 App 立刻起不来。
+  **判据**：凡是「返回可选值」的查询，先看它的实现里有没有 `try?` / `guard let … else { return nil }`
+  —— 有就说明这个 `nil` 是双重含义，必须换成会**抛错**的变体
+  （这里对应 `Minimuxer.isAppInstalled(bundleId:) throws -> Bool`）。
+  **再加一层**：抛错只能抓到「报错的失败」，抓不到「静默返回 nil 的失败」。
+  所以删之前先做**阳性对照** —— 拿一个**确定存在**的对象去问
+  （这里用 Seal 自己：这段代码正在它里面跑），答错了就整轮不删。
+  纯函数 `ProfileReclaimPolicy.decision(probe:positiveControlPassed:)` 把这条规则钉住，
+  守卫另有 7 个变异锚点证明它真的会红。
+
+- **工具报「编辑成功」不等于内容落盘**。本仓在 OneDrive 同步目录里，
+  出现过两次「Edit 返回成功、文件内容却是旧的」（`if let reclaimAborted` 那段、
+  守卫里的 `sweep_clean` 定义）。**改完立刻回读校验**，别等跑测试或提交时才发现 ——
+  那时你已经基于错误的心智模型做了后面几步。
+  做法：改完用一段脚本把「本轮应该出现的字符串」逐个 `in text` 断言一遍
+  （注意一个文案在 check 与变异锚点里各出现一次，计数要按 **2** 而不是 **1**）。
+
 ---
 
 ## 历史记录
+
+### 2026-09-17 · 旧 Team 后缀的 profile 回收：差点用 `lookupApp` 把「查不通」当成「没装」
+
+**背景**：上一轮量化出堆积的结构性来源 —— 用户轮换多个 Apple ID 突破免费账号
+「3 个自签应用」上限，而 `BundleIDMapper` 强制附加**当前** team 后缀 ⇒ 每换一个账号，
+每个 App 就多一个 Bundle ID。实测 **19 个 base × 13 个 team = 39 个** Seal 生成过的
+Bundle ID，而 `profileKeepMap` 的 key 只有当前在用的那些 ⇒ 历史后缀的 profile
+永远进不了 `matched`，`删除` 恒为 0（真机 `扫描 325，匹配 1，删除 0`）。
+
+用户拍板实现回收。**写实现时才发现第一版设计建在一个错误假设上。**
+
+**第一版设计**（已写进 QA 文档）：删除条件 = ①不在 keep-map ②形态属于 Seal 生成
+③`Minimuxer.lookupApp` 返回 nil。当时以为 ③ 是「无懈可击」的一条 ——
+「App 没装 ⇒ 这份 profile 是死重量，删掉不可能破坏什么」。
+
+**实际读源码才发现**（`Vendor/Minimuxer/Sources/Minimuxer.swift:254`）：
+
+```swift
+public static func lookupApp(bundleId: String) -> String? {
+    if Muxer.isrppairing {
+        return try? RustIdevice.lookupApp(bundleId: bundleId)   // ← try? 吞掉错误
+    }
+    guard let device = try? Device.getFirstDevice(),            // ← 设备不可达也 nil
+          let inst = RustInstProxy.connect(...) else { return nil }
+    return inst.lookup(appId: bundleId)
+}
+```
+
+**「没装」与「查询失败」是同一个 `nil`。** 于是原设计在隧道抖动时会把**所有**候选
+读成「没装」⇒ 删掉正在用的 profile ⇒ 对应 App 立刻起不来。
+这恰好是整条功能最坏的失败方向，而且**不崩、不编译失败、只在真机上删数据**。
+
+**三处修正**：
+
+1. **换成会抛错的 API**：`Minimuxer.isAppInstalled(bundleId:) throws -> Bool`
+   （`InstalledAppDeviceVerifier` 一直用的就是它）。它把「设备/隧道不可达」表达成 throw。
+2. **加阳性对照**：抛错只能抓「报错的失败」；`RustInstProxy.lookup` 内部把 RPC 失败
+   也返回成 `nil`（`_rust_bridge_instproxy_lookup` 空指针），这种**静默**失败单条看不出来。
+   ⇒ 删任何一份之前，先拿 **Seal 自己**（这段代码正在它里面跑，必然装着）去问；
+   答错就整轮不删。
+3. **中止是整轮的**：第一次 `unavailable` 就停止，不再拿剩下的候选去问一条已经不可信的通道。
+   抛错点（`Device.getFirstDevice()` / `RustIdevice.lookupApp`）都是**全局性**的，
+   所以「继续问」没有意义。
+
+**决策抽成纯函数**（错法只在真机可见，只能靠单测 + 守卫钉住）：
+
+```swift
+static func decision(probe: InstallProbe, positiveControlPassed: Bool) -> Decision {
+    switch probe {
+    case .unavailable: return .abortPass
+    case .installed:   return .keepInstalled
+    case .notInstalled: return positiveControlPassed ? .reclaim : .abortPass
+    }
+}
+```
+
+`AppRecord.swift:275` 那条注释（「同一原始 IPA 可用不同 Bundle ID 签出多个副本同时安装」）
+决定了 `.installed ⇒ .keepInstalled` 必须是无条件的 —— 用户**可以**故意把同一个 App
+用两个 Team 各装一份，那份 profile 不是垃圾。
+
+**顺带**：形态判据用 `.seal.` 中缀而不是「与记录里的 base 比对」。因为
+「已从 Seal 列表删掉的 App」在记录里没有 base 可比对，而真机上这类占多数；
+其它工具（AltStore / SideStore）用 `<原始>.<teamID>`、**没有**这个中缀，天然不碰。
+
+**另一处刻意的不作为**：`InstalledAppDeviceVerifier` 查询前会 `Install.resetProvider()`
+（避免缓存里那条断开的 RSD 连接给出错误答案），这里**不**这么做 —— 本函数跑在
+「刚装完一个 App」与「自替换结算」两个时间点上，此刻可能有 installation_proxy 连接正在服务，
+重置会把它拆掉（R05）。缓存连接失效的代价已经由阳性对照兜住。
+
+**改动**：`ProfileReclaimPolicy`（新增）、`DeviceProfileCleaner`（阶段 A 本地筛候选 /
+阶段 B 设备端核验）、`AppMaintenanceJob` 与 `SigningCoordinator` 两处显式开启、
+`ProfileCleanupSummary` 新增四个计数 + `reclaimAborted`。
+守卫 **228→243 源码断言、107→114 变异**（7 个新锚点专打这条边界）。
+
+**流程教训**：本仓在 OneDrive 里，这一轮又出现两次「Edit 报成功、内容没落盘」。
+改完立刻回读校验，别等测试或提交才发现。
 
 ### 2026-09-17 · 日志无法定版：让表头带上构建号（= CI run number）
 

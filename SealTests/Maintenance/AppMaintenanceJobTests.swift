@@ -193,6 +193,31 @@ struct AppMaintenanceJobTests {
         #expect(maps.first == ["com.example.known": "AAAA-BBBB"])
     }
 
+    /// 维护作业必须**开启**孤儿回收。
+    ///
+    /// 这是个 Bool 开关，漏传（或将来被改成默认 `false` 而调用方没显式传）时
+    /// 编译不会失败、单测也不会红 —— 只会让「换 Apple ID 后旧 Team 后缀的 profile」
+    /// 永远清不掉，而这正是用户报的那个现象。所以必须钉住。
+    @Test
+    func maintenanceSweepEnablesSealOrphanReclaim() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let store = InMemoryAppStore(records: [
+            makeRecord(
+                appID: UUID(),
+                mappedBundleIdentifier: "com.example.known",
+                provisioningProfileUUID: "AAAA-BBBB"
+            )
+        ])
+        let sweeper = RecordingProfileSweeper()
+
+        let job = makeJob(fixture, store: store, profileSweeper: sweeper)
+        _ = await job.run()
+
+        let flags = await sweeper.receivedReclaimFlags
+        #expect(flags == [true])
+    }
+
     @Test
     func sealRunningProfileOverridesTheRecordedValue() async throws {
         let fixture = try makeFixture()
@@ -423,9 +448,16 @@ struct AppMaintenanceJobTests {
 /// 用 actor 而不是 class：协议要求 `Sendable`，而这里需要可变状态。
 private actor RecordingProfileSweeper: StaleProfileSweeping {
     private(set) var receivedKeepMaps: [[String: String]] = []
+    /// 同时记下「有没有要求回收孤儿」：这是「换 Apple ID 后旧 Team 后缀的 profile
+    /// 到底会不会被清」的唯一开关，漏传就整条功能静默失效（不会编译失败）。
+    private(set) var receivedReclaimFlags: [Bool] = []
 
-    func sweepStaleProfiles(keepingByBundleID: [String: String]) async -> ProfileCleanupSummary {
+    func sweepStaleProfiles(
+        keepingByBundleID: [String: String],
+        reclaimSealOrphans: Bool
+    ) async -> ProfileCleanupSummary {
         receivedKeepMaps.append(keepingByBundleID)
+        receivedReclaimFlags.append(reclaimSealOrphans)
         return ProfileCleanupSummary()
     }
 }

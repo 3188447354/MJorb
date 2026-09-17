@@ -355,10 +355,14 @@ def violations(load=read):
         "private static func removeProfiles(",
         "extension DeviceProfileCleaner: StaleProfileSweeping"
     )
-    # 用 find 而不是 index：变异把 guard 换掉时，这里要报「检查失败」而不是抛异常。
-    lookup_at = sweep_body.find("guard let keepingUUID = keepingByBundleID[")
-    remove_at = sweep_body.find("try Provision.removeProvisioningProfile(id: profileUUID)")
-    check(lookup_at != -1 and remove_at != -1 and lookup_at < remove_at,
+    sweep_clean = squash(strip_comments(sweep_body))
+    # 删除的**唯一**入口是局部函数 `removeProfile`（避免两条路径各写一遍 do/catch ——
+    # 那种重复迟早漂移成「修了一条、漏了另一条」）。两条路径都必须先取得「凭什么可以删」：
+    #   路径 1：keep-map 命中 ⇒ 知道该留哪一份；
+    #   路径 2：设备端核验通过 ⇒ 见 R11。
+    # 2026-09-17 重构成「先本地筛候选、再统一核验」之后，原「lookup 必须在 remove 之前」的
+    # **行序**断言不再成立（`removeProfile` 被抽成局部函数、定义在循环之前），改成守这个形状。
+    check("if let keepingUUID = keepingByBundleID[loweredBundleID]" in sweep_clean,
           "R08: a profile may only be deleted after its managed bundle-id lookup succeeded")
     coordinator_source = load("Seal/Core/Signing/SigningCoordinator.swift")
     check("SignedArtifactProfileReader.embeddedProfiles(in: signedData)" in coordinator_source,
@@ -396,7 +400,6 @@ def violations(load=read):
           and "Task.sleep(nanoseconds: dumpRetryDelayNanoseconds)" in dump_body,
           "R08: retrying the dump without resetting the cached provider retries the same dead link")
     # 调用点必须走这个带重试的包装。直接调 `Provision.dumpProfiles` 会让重试形同虚设。
-    sweep_clean = squash(strip_comments(sweep_body))
     check("try await dumpProfiles(docsPath: workingDir.path)" in sweep_clean
           and "Provision.dumpProfiles" not in sweep_clean,
           "R08: the sweep must go through the retrying dump wrapper")
@@ -446,6 +449,95 @@ def violations(load=read):
     check("func confirmedReplacementLogsCleanupSummary()" in handoff_tests
           and 'hasPrefix("自替换结算清理：")' in handoff_tests,
           "R08: the self-replacement cleanup log needs a real unit test")
+
+    # R11: 「换 Apple ID 后旧 Team 后缀」的 profile 回收（2026-09-17）。
+    #
+    # 起因：用户轮换多个 Apple ID 突破免费账号「3 个自签应用」上限，而 `BundleIDMapper`
+    # 强制附加**当前** team 后缀 ⇒ 每换一个账号，每个 App 就多一个 Bundle ID。
+    # 从 19 份真机日志量化：**19 个 base × 13 个 team = 39 个 Seal 生成过的 Bundle ID**，
+    # 而 keep-map 的 key 只有当前在用的那些 ⇒ 历史后缀的 profile 永远进不了 `matched`，
+    # `删除` 恒为 0（真机 `扫描 325，匹配 1，删除 0`）。
+    #
+    # 这是**设备端破坏性操作**：删错一份，对应 App 立刻无法启动（iOS 启动时校验 profile）。
+    # 所以判据必须钉死，而且要注意「绿着坏掉」的写法 —— 形态判据、单测、日志全都还在，
+    # 但安全性已经被悄悄抽掉的那种改法。
+    reclaim_source = strip_comments(load("Seal/Core/Maintenance/ProfileReclaimPolicy.swift"))
+    # ① 形态判据只认 `.seal.` 中缀。其它工具（AltStore / SideStore）用 `<原始>.<teamID>`，
+    #    没有这个中缀 ⇒ 天然不会碰别人的 App。
+    check('static let sealGeneratedMarker = ".seal."' in reclaim_source,
+          "R11: the orphan marker must stay the dotted form — '.seal' would also match xseal.y")
+    # ② 决策函数是**唯一**的安全边界，三个分支缺一不可。
+    #    `.notInstalled` 必须**问过阳性对照**才可能返回 `.reclaim` —— 这是最容易被
+    #    「简化」掉的一句：直接 `return .reclaim` 之后，形态判据与单测全都还在，
+    #    功能看起来完全正常，但「隧道抖动 ⇒ 全部答成未安装 ⇒ 全删」的路径就敞开了。
+    decision_parts = reclaim_source.split("static func decision(", 1)
+    decision_body = squash(decision_parts[1]) if len(decision_parts) > 1 else ""
+    check("case .unavailable: return .abortPass" in decision_body,
+          "R11: a failed probe must abort the pass — it must never be read as 'not installed'")
+    check("case .installed: return .keepInstalled" in decision_body,
+          "R11: an installed app's profile must always be kept")
+    check("return positiveControlPassed ? .reclaim : .abortPass" in decision_body,
+          "R11: .reclaim must require a passed positive control")
+    # ③ 设备层必须用会**抛错**的 `isAppInstalled`，而不是 `lookupApp`：
+    #    `Minimuxer.lookupApp` 返回 `String?`，把「没装」与「查询失败」**折叠成同一个 nil**
+    #    （`Minimuxer.swift:254` 里 `try?` 吞掉错误、`Device.getFirstDevice()` 失败也返回 nil）。
+    #    拿它当判据 ⇒ 隧道一抖动，所有候选都被读成「没装」⇒ 删掉正在用的 profile。
+    reclaim_body = squash(strip_comments(section(
+        cleaner_source,
+        "private static func probeInstalled(",
+        "extension DeviceProfileCleaner: StaleProfileSweeping"
+    )))
+    check("try Minimuxer.isAppInstalled(bundleId: bundleID)" in reclaim_body,
+          "R11: the reclaim path must use the throwing isAppInstalled")
+    check("Minimuxer.lookupApp(" not in reclaim_body,
+          "R11: lookupApp's nil means both 'not installed' and 'query failed' — "
+          "reading it as 'not installed' deletes profiles of installed apps")
+    # ④ 阳性对照必须**真的是设备查询**，且必须在删任何一份之前跑完。
+    #    把 `== .installed` 改成 `= true` 能让对照永远通过 —— 通道不可信时照样全删。
+    check("let positiveControlPassed = await probeInstalled(bundleID: controlBundleID) == .installed"
+          in reclaim_body,
+          "R11: the positive control must be an actual probe of a definitely-installed app")
+    control_at = reclaim_body.find("probeInstalled(bundleID: controlBundleID)")
+    candidate_at = reclaim_body.find("ProfileReclaimPolicy.decision(")
+    check(control_at != -1 and candidate_at != -1 and control_at < candidate_at,
+          "R11: the positive control must run before any candidate is probed or deleted")
+    # ⑤ `.abortPass` 必须**中止整轮**，而不是只跳过当前这一条。
+    #    只跳过的话，后面的候选会继续被一条已经不可信的通道「判定」，等于没有保护。
+    #    断言写成「循环外统一收尾」这个形状：`break` 那一句没了就等于失去保护。
+    check("case .abortPass:" in reclaim_body
+          and "if reclaimAbortReason != nil { break }" in reclaim_body
+          and "summary.reclaimAborted = reclaimAbortReason" in reclaim_body
+          and reclaim_body.count("summary.reclaimAborted =") >= 2,
+          "R11: .abortPass must record why and stop the whole pass")
+    # ⑥ 中止必须进日志，且不能借用 `中断于`（那会让人以为整轮清理白跑了，
+    #    而路径 1 的成绩其实仍然有效）。
+    check("if let reclaimAborted" in cleaner_source
+          and '"，回收中止：' in cleaner_source,
+          "R11: an aborted reclaim must be visible — otherwise '回收 0' is misread "
+          "as 'no candidate matched the marker'")
+    # ⑦ 两个调用点都必须**显式**开启回收；默认值必须仍是 false（默认删设备数据是不可接受的）。
+    check(cleaner_source.count("reclaimSealOrphans: Bool = false") == 2,
+          "R11: orphan reclaim must stay opt-in at every entry point")
+    check(squash(strip_comments(maintenance_source)).count("reclaimSealOrphans: true") == 1,
+          "R11: idle maintenance must opt in explicitly")
+    check(squash(strip_comments(coordinator_source)).count("reclaimSealOrphans: true") == 1,
+          "R11: post-install cleanup must opt in explicitly")
+    # ⑧ 源码断言只能证明「逻辑在」，证明不了每个分支**真的被测过** —— 那是单测的活。
+    reclaim_tests = load("SealTests/Maintenance/ProfileReclaimPolicyTests.swift")
+    check("func notInstalledWithHealthyChannelIsTheOnlyReclaimPath()" in reclaim_tests
+          and "func unavailableNeverReclaims()" in reclaim_tests
+          and "func failedPositiveControlAbortsTheWholePass()" in reclaim_tests
+          and "func noCandidateIsEverReclaimedWhenPositiveControlFails()" in reclaim_tests,
+          "R11: every branch of the reclaim decision needs a real unit test")
+    check("func reclaimAbortIsVisibleWithoutClaimingTheWholeRunFailed()" in profile_cleaner_tests,
+          "R11: the reclaim summary needs a real unit test")
+    # 「开关漏传」是这条功能最典型的静默失效：`reclaimSealOrphans` 是个 Bool，
+    # 漏传时编译不失败、别的单测也不红，只是旧 Team 的 profile 永远清不掉 ——
+    # 而这正是用户报的那个现象。所以要有一条专门断言「调用方真的开了」的单测。
+    maintenance_tests = load("SealTests/Maintenance/AppMaintenanceJobTests.swift")
+    check("func maintenanceSweepEnablesSealOrphanReclaim()" in maintenance_tests
+          and "receivedReclaimFlags" in maintenance_tests,
+          "R11: the opt-in flag must stay covered by a real unit test")
 
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
@@ -1747,9 +1839,12 @@ def main():
          'return container.hasSuffix(".app") || container.hasSuffix(".appex")',
          'return container.hasSuffix(".app")',
          "R08: extensions are .appex"),
+        # 把 keep-map 命中改成「恒真 + keeping 为空」⇒ 每个 profile 的 UUID 都 ≠ ""，
+        # 于是**全部**被当成旧份删掉，包括正在用的那一份（App 立刻起不来）。
+        # 2026-09-17 重构成两段式后锚点跟着改：原来那行 `guard let keepingUUID = ...` 已不存在。
         ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
-         "guard let keepingUUID = keepingByBundleID[profileBundleID.lowercased()] else {\n                continue\n            }",
-         "let keepingUUID = keepingByBundleID[profileBundleID.lowercased()] ?? \"\"",
+         "            if let keepingUUID = keepingByBundleID[loweredBundleID] {",
+         "            let keepingUUID = keepingByBundleID[loweredBundleID] ?? \"\"\n            if true {",
          "R08: a profile may only be deleted after its managed bundle-id lookup succeeded"),
         # 把 dump 重试次数改回 1：撞上瞬时 NoDevice 就整轮白丢 —— 原样重演 2026-09-16 真机
         # 的 `扫描 0，匹配 0，删除 0，中断于 dump`，而 profile 在此期间继续累积。
@@ -1837,6 +1932,58 @@ def main():
          "guard record.signedArtifactStatus == .installed else { continue }",
          "guard true else { continue }",
          "R08: extension profile ids are optimistic"),
+        # ── R11: 旧 Team 变体回收的安全边界 ──────────────────────────────────
+        # 把「查询失败」当成「没装」：这是最危险的一条 —— 隧道抖动时**所有**候选
+        # 都被读成「没装」，于是删掉正在用的 profile，对应 App 立刻无法启动。
+        ("Seal/Core/Maintenance/ProfileReclaimPolicy.swift",
+         "            return .abortPass\n        case .installed:",
+         "            return .notInstalled\n        case .installed:",
+         "R11: a failed probe must abort the pass"),
+        # 去掉阳性对照：`.reclaim` 变成只要「答未安装」就给，
+        # 而「答未安装」恰恰是通道不可信时最容易出现的答案。
+        ("Seal/Core/Maintenance/ProfileReclaimPolicy.swift",
+         "return positiveControlPassed ? .reclaim : .abortPass",
+         "return .reclaim",
+         "R11: .reclaim must require a passed positive control"),
+        # 用 `lookupApp` 替掉会抛错的 `isAppInstalled`：把「没装」与「查询失败」
+        # 折叠成同一个 `nil`，正是上面那条灾难的入口。
+        ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
+         "                try Minimuxer.isAppInstalled(bundleId: bundleID)",
+         "                Minimuxer.lookupApp(bundleId: bundleID) != nil",
+         "R11: the reclaim path must use the throwing isAppInstalled"),
+        # 让阳性对照永远通过：对照形同虚设，通道不可信时照样全删。
+        ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
+         "let positiveControlPassed = await probeInstalled(bundleID: controlBundleID) == .installed",
+         "let positiveControlPassed = true",
+         "R11: the positive control must be an actual probe of a definitely-installed app"),
+        # 中止改成「只跳过当前这一条」：后面每条候选继续被一条已经不可信的通道判定，
+        # 保护等于没有 —— 但代码看起来仍然「有中止逻辑」，是最容易漏掉的一种退化。
+        ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
+         "            if reclaimAbortReason != nil { break }",
+         "            // abort no longer stops the pass",
+         "R11: .abortPass must record why and stop the whole pass"),
+        # 中止不落日志：`回收 0` 会被读成「形态没匹配上」，而实际是通道不可信 ——
+        # 两者的后续动作完全不同（前者要查判据，后者要查设备连接）。
+        ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
+         "        if let reclaimAborted {\n",
+         "        if false, let reclaimAborted {\n",
+         "R11: an aborted reclaim must be visible"),
+        # 把决策分支的单测删掉：源码断言证明不了「每个分支真的被测过」。
+        ("SealTests/Maintenance/ProfileReclaimPolicyTests.swift",
+         "    func unavailableNeverReclaims() {",
+         "    func unavailableNeverReclaimsRenamed() {",
+         "R11: every branch of the reclaim decision needs a real unit test"),
+        # 维护作业不再开启孤儿回收：编译不失败、别的单测也不红，
+        # 只是「换 Apple ID 后旧 Team 后缀的 profile」永远清不掉 —— 正是用户报的现象。
+        ("Seal/Core/Maintenance/AppMaintenanceJob.swift",
+         "reclaimSealOrphans: true",
+         "reclaimSealOrphans: false",
+         "R11: idle maintenance must opt in explicitly"),
+        # 把「调用方真的开了回收」这条单测改名：证明「单测文件里有这几个字」的断言真的会红。
+        ("SealTests/Maintenance/AppMaintenanceJobTests.swift",
+         "    func maintenanceSweepEnablesSealOrphanReclaim() async throws {",
+         "    func maintenanceSweepEnablesSealOrphanReclaimRenamed() async throws {",
+         "R11: the opt-in flag must stay covered by a real unit test"),
         ("SealTests/Maintenance/AppMaintenanceJobTests.swift",
          "            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",\n            signedArtifactStatus: signedArtifactStatus,",
          "            signedArtifactStatus: signedArtifactStatus,\n            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",",

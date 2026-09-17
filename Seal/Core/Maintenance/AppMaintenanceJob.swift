@@ -150,7 +150,16 @@ final class AppMaintenanceJob {
                 records: records,
                 sealProfileUUID: sealRunningProfileUUID?()
             )
-            summary = await profileSweeper.sweepStaleProfiles(keepingByBundleID: keep)
+            summary = await profileSweeper.sweepStaleProfiles(
+                keepingByBundleID: keep,
+                // 顺带回收「换 Apple ID 后旧 Team 后缀」留下的孤儿 profile（实测 39 个
+                // Bundle ID 变体、33 份孤儿）。这条路径是**唯一**覆盖全部 Seal 管理 App
+                // 的批量清理点，也是唯一能清掉「已从 Seal 列表删掉的 App」的地方 ——
+                // 那种情况记录里没有 base 可比对，只有 `.seal.` 中缀规则能捞到。
+                // 每一条都要过设备端核验（会抛错的 `isAppInstalled` + 阳性对照），
+                // 见 `DeviceProfileCleaner.removeProfiles` 阶段 B。
+                reclaimSealOrphans: true
+            )
         } catch {
             // 读不到记录 ⇒ 保留集合不可信 ⇒ 什么都不删。绝不因为这一步失败就让整轮维护失败。
             summary = ProfileCleanupSummary(stage: "skipped-record-read-failed")

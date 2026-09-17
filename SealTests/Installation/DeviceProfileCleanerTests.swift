@@ -84,4 +84,59 @@ struct DeviceProfileCleanerTests {
 
         #expect(summary.logMessage.contains("，中断于 skipped-no-managed-bundle-ids"))
     }
+
+    // MARK: - 旧 Team 变体的回收（换 Apple ID 后堆积的那一批）
+
+    /// 没有候选时一个多余的字都不写 —— 绝大多数清理都走这条路，加前缀只是噪音。
+    @Test
+    func noReclaimTextWhenThereAreNoCandidates() {
+        let summary = ProfileCleanupSummary(scanned: 9, matched: 3, removed: 1)
+
+        #expect(summary.logMessage.contains("旧 Team 变体") == false)
+        #expect(summary.logMessage.contains("回收中止") == false)
+    }
+
+    /// 有候选就必须四个数都在：**只看「回收 0」分不清**
+    /// 「形态没匹配上」/「设备上确实还装着」/「核验查不通」—— 三者的后续动作完全不同。
+    @Test
+    func reclaimCountsAreAllReported() {
+        var summary = ProfileCleanupSummary(scanned: 40, matched: 20, removed: 3)
+        summary.reclaimCandidates = 18
+        summary.reclaimed = 7
+        summary.reclaimKeptInstalled = 9
+        summary.reclaimUnverified = 1
+        summary.reclaimSample = ["com.kdt.livecontainer.seal.3432ZHJUF9"]
+
+        let message = summary.logMessage
+
+        #expect(message.contains("；旧 Team 变体：候选 18，回收 7"))
+        #expect(message.contains("，已装保留 9"))
+        #expect(message.contains("，未能核验 1"))
+        #expect(message.contains("，示例 com.kdt.livecontainer.seal.3432ZHJUF9"))
+    }
+
+    /// 候选多于样本上限时要带「等」，否则会让人以为候选总共就这几个。
+    @Test
+    func sampleIsTruncatedWithSuffix() {
+        var summary = ProfileCleanupSummary()
+        summary.reclaimCandidates = 30
+        summary.reclaimSample = (1...ProfileCleanupSummary.reclaimSampleLimit).map { "com.x\($0).seal.T" }
+
+        #expect(summary.logMessage.contains(" 等"))
+    }
+
+    /// 中止必须显眼，且**不能被误读成「整轮清理失败」**：
+    /// 路径 1（保留集合内去重）的结果仍然有效，所以不能借用 `中断于`。
+    @Test
+    func reclaimAbortIsVisibleWithoutClaimingTheWholeRunFailed() {
+        var summary = ProfileCleanupSummary(scanned: 30, matched: 12, removed: 2)
+        summary.reclaimCandidates = 17
+        summary.reclaimAborted = "阳性对照未通过（com.mjorb.seal.TB95F327DS 被答成未安装）"
+
+        let message = summary.logMessage
+
+        #expect(message.contains("，回收中止：阳性对照未通过"))
+        #expect(message.contains("删除 2"), "路径 1 的成绩必须留着 —— 中止的只是回收")
+        #expect(message.contains("中断于") == false, "回收中止不是整轮中断，借用这个词会让人以为清理白跑了")
+    }
 }

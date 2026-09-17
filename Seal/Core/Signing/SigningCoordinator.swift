@@ -1356,6 +1356,12 @@ actor SigningCoordinator {
     ///
     /// 免费账号 7 天续签/反复重签会在设备端累积 profile，旧文件过期可能误导后续校验。
     /// 全程「最佳努力」：读不到产物内嵌 profile 或任何一步失败都静默跳过，绝不阻断安装结果。
+    ///
+    /// 顺带回收「换 Apple ID 后旧 Team 后缀」的孤儿 profile：换账号会给同一个 App 换一个
+    /// Bundle ID（`BundleIDMapper` 强制附加当前 team 后缀），而这次安装的保留集合只含
+    /// **新** ID ⇒ 旧 ID 的 profile 不在这条路径原本的覆盖范围内，会一直堆。
+    /// 每条都要过设备端核验（会抛错的 `isAppInstalled` + 阳性对照），
+    /// 见 `DeviceProfileCleaner.removeProfiles` 阶段 B。
     private func removeStaleProfiles(signedData: Data, effectiveBundleID: String) {
         let embeddedProfiles = SignedArtifactProfileReader.embeddedProfiles(in: signedData)
         guard embeddedProfiles.isEmpty == false else {
@@ -1367,7 +1373,8 @@ actor SigningCoordinator {
         }
         Task {
             let summary = await DeviceProfileCleaner.removeStaleProfiles(
-                keepingByBundleID: keepingByBundleID
+                keepingByBundleID: keepingByBundleID,
+                reclaimSealOrphans: true
             )
             try? await logStore?.append(
                 category: .installation,

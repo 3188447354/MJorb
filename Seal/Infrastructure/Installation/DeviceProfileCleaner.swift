@@ -28,12 +28,57 @@ struct ProfileCleanupSummary: Sendable, Equatable {
     /// dump 阶段实际尝试了几次（含首次）。> 1 说明前几次撞上了设备不可达。
     var dumpAttempts = 1
 
+    // ── 旧 Team 变体（孤儿）回收的计数 ────────────────────────────────────────
+    // 这四个数分开记，是为了让「一条都没删」能归因到具体原因：
+    // 分不清「形态没匹配上」「设备上确实还装着」「核验查不通」就只能猜。
+    /// 形态上像 Seal 生成的孤儿（`ProfileReclaimPolicy.isReclaimableOrphan`）的份数。
+    ///
+    /// 是**本地形态筛出来的总量**，不是「核验过的量」—— 中止时后面那些根本没问设备。
+    var reclaimCandidates = 0
+    /// 其中真正删掉的份数。
+    var reclaimed = 0
+    /// 因为「设备上确实装着对应 App」而**保留**的份数。
+    ///
+    /// 这个数 > 0 是**正常且必须的**：同一个 App 可以用两个 Team 各装一份
+    /// （`AppRecord.swift:275`），那份 profile 不能删。
+    var reclaimKeptInstalled = 0
+    /// 因为「查不出是否安装」而保守跳过的份数。
+    ///
+    /// **设计上只可能是 0 或 1**：核验抛错说明通道是全局性的不健康，
+    /// 见 `ProfileReclaimPolicy.decision` —— 第一次 `unavailable` 就中止整轮，
+    /// 不再拿剩下的候选去问一条已经不可信的通道。
+    var reclaimUnverified = 0
+    /// 回收被中止的原因（`nil` ⇒ 没中止）。中止后**不再删任何一份**。
+    ///
+    /// 单列字段而不是复用 `stage`：`stage` 表示「整个清理流水线断在哪一步」，
+    /// 而回收中止**不影响路径 1**（保留集合内去重）的结果 ——
+    /// 混在一起会让人以为整轮白跑，进而重复排查。
+    var reclaimAborted: String?
+    /// 候选 Bundle ID 的样本（最多 `reclaimSampleLimit` 个），进日志供人工核对。
+    var reclaimSample: [String] = []
+
+    /// 样本上限：日志行要能一眼看完，全量候选留给后续排查时再捞。
+    static let reclaimSampleLimit = 6
+
     var logMessage: String {
         var text = "描述文件清理：扫描 \(scanned)，匹配 \(matched)，删除 \(removed)"
         if removeFailed > 0 { text += "，删除失败 \(removeFailed)" }
         if stage != "done" { text += "，中断于 \(stage)" }
         if dumpAttempts > 1 { text += "，dump 尝试 \(dumpAttempts) 次" }
         if let firstError { text += "，首个错误：\(firstError)" }
+        if reclaimCandidates > 0 {
+            text += "；旧 Team 变体：候选 \(reclaimCandidates)，回收 \(reclaimed)"
+            text += "，已装保留 \(reclaimKeptInstalled)，未能核验 \(reclaimUnverified)"
+            if reclaimSample.isEmpty == false {
+                text += "，示例 \(reclaimSample.joined(separator: "、"))"
+                if reclaimCandidates > reclaimSample.count { text += " 等" }
+            }
+        }
+        if let reclaimAborted {
+            // 「中止」必须显眼：否则 `回收 0` 会被读成「形态没匹配上」，
+            // 而实际是通道不可信 —— 两者的后续动作完全不同。
+            text += "，回收中止：\(reclaimAborted)"
+        }
         return text
     }
 }
@@ -57,8 +102,16 @@ protocol SelfReplacementProfileCleaning: Sendable {
 /// 正在使用、必须保留的 profile UUID」。**key 集合之外的一律不碰** —— 设备上还有
 /// MDM 配置描述文件、企业证书签的 App、其它工具装的 App，它们不在 Seal 的记录里，
 /// 误删会让那些 App 直接无法启动。
+///
+/// - Parameter reclaimSealOrphans: 是否额外回收「Seal 生成过、但设备上已没有对应
+///   已安装 App」的 profile（换 Apple ID 后旧 Team 后缀留下的那一批，实测可达 30+ 份）。
+///   开启后每一条都要过设备端核验，**确认没装才删**；且核验通道要先通过阳性对照，
+///   任一环不通过就整轮不删。判据见 `ProfileReclaimPolicy`。
 protocol StaleProfileSweeping: Sendable {
-    func sweepStaleProfiles(keepingByBundleID: [String: String]) async -> ProfileCleanupSummary
+    func sweepStaleProfiles(
+        keepingByBundleID: [String: String],
+        reclaimSealOrphans: Bool
+    ) async -> ProfileCleanupSummary
 }
 
 struct DeviceProfileCleaner: Sendable {
@@ -73,10 +126,13 @@ struct DeviceProfileCleaner: Sendable {
     ///
     /// 这是「最佳努力」清理：任何一步失败都不阻断主安装 / 签名结果，失败细节进返回的摘要。
     /// 没有刚装 profile 的 UUID 就无法安全区分「旧」与「刚装」，此时直接放弃，避免误删。
+    ///
+    /// - Parameter reclaimSealOrphans: 同 `StaleProfileSweeping` 的说明。
     @discardableResult
     static func removeStaleProfiles(
         for bundleIdentifier: String,
-        keeping keepingProfileUUID: String?
+        keeping keepingProfileUUID: String?,
+        reclaimSealOrphans: Bool = false
     ) async -> ProfileCleanupSummary {
         guard let keepingProfileUUID,
               keepingProfileUUID.isEmpty == false,
@@ -84,7 +140,8 @@ struct DeviceProfileCleaner: Sendable {
             return ProfileCleanupSummary(stage: "skipped-no-keeping-uuid")
         }
         return await removeStaleProfiles(
-            keepingByBundleID: [bundleIdentifier: keepingProfileUUID]
+            keepingByBundleID: [bundleIdentifier: keepingProfileUUID],
+            reclaimSealOrphans: reclaimSealOrphans
         )
     }
 
@@ -93,9 +150,13 @@ struct DeviceProfileCleaner: Sendable {
     ///
     /// 空 map 或整份 map 都无效时**什么都不做**：没有明确「保留哪一份」就不删，
     /// 因为删掉正在用的那一份会让已安装的 App 立刻无法启动（iOS 启动时会校验 profile）。
+    ///
+    /// - Parameter reclaimSealOrphans: 见 `StaleProfileSweeping`。默认 `false` ——
+    ///   这条路径会删设备端数据，必须由调用方显式开启。
     @discardableResult
     static func removeStaleProfiles(
-        keepingByBundleID: [String: String]
+        keepingByBundleID: [String: String],
+        reclaimSealOrphans: Bool = false
     ) async -> ProfileCleanupSummary {
         var normalized: [String: String] = [:]
         for (bundleID, uuid) in keepingByBundleID {
@@ -107,7 +168,10 @@ struct DeviceProfileCleaner: Sendable {
         guard normalized.isEmpty == false else {
             return ProfileCleanupSummary(stage: "skipped-no-managed-bundle-ids")
         }
-        return await removeProfiles(keepingByBundleID: normalized)
+        return await removeProfiles(
+            keepingByBundleID: normalized,
+            reclaimSealOrphans: reclaimSealOrphans
+        )
     }
 
     /// dump 阶段的最大尝试次数（含首次）与重试间隔。
@@ -151,8 +215,37 @@ struct DeviceProfileCleaner: Sendable {
         throw MinimuxerError.NoDevice
     }
 
+    /// 设备端「该 Bundle ID 装了没」的**三态**核验。
+    ///
+    /// 用会**抛错**的 `Minimuxer.isAppInstalled` 而不是 `Minimuxer.lookupApp`：
+    /// 后者的 `nil` **同时**表示「没装」与「查询失败」，拿它当判据会在隧道抖动时
+    /// 把「正在用」读成「没装」⇒ 删掉正在用的 profile ⇒ 对应 App 立刻无法启动。
+    /// 详见 `ProfileReclaimPolicy.InstallProbe`。
+    ///
+    /// 放到 `Task.detached` 上：`isAppInstalled` 是同步阻塞 FFI，
+    /// 与 `InstalledAppDeviceVerifier` 的既有做法一致。
+    ///
+    /// **刻意不调 `Install.resetProvider()`**（虽然 `InstalledAppDeviceVerifier` 会调）：
+    /// 本函数跑在「刚装完一个 App」与「自替换结算」两个时间点上，此刻可能有
+    /// installation_proxy 连接正在服务，重置会把它拆掉（R05：同一个 Bundle ID 上
+    /// 不能有两个并发 installd 命令）。缓存连接失效的代价已经由**阳性对照**兜住 ——
+    /// 那种情况下对照会抛错或答错，直接中止整轮，方向是安全的。
+    private static func probeInstalled(
+        bundleID: String
+    ) async -> ProfileReclaimPolicy.InstallProbe {
+        do {
+            let installed = try await Task.detached(priority: .utility) {
+                try Minimuxer.isAppInstalled(bundleId: bundleID)
+            }.value
+            return installed ? .installed : .notInstalled
+        } catch {
+            return .unavailable
+        }
+    }
+
     private static func removeProfiles(
-        keepingByBundleID: [String: String]
+        keepingByBundleID: [String: String],
+        reclaimSealOrphans: Bool
     ) async -> ProfileCleanupSummary {
         var summary = ProfileCleanupSummary()
         let reader = ProvisioningProfileReader()
@@ -161,6 +254,22 @@ struct DeviceProfileCleaner: Sendable {
             .appendingPathComponent("seal-profile-clean-\(UUID().uuidString)", isDirectory: true)
 
         defer { try? fileManager.removeItem(at: workingDir) }
+
+        /// 删一份并记下首个错误。抽成局部函数，避免「保留集合」与「孤儿回收」
+        /// 两条路径各写一遍同样的 do/catch —— 那种重复迟早会漂移成
+        /// 「修了一条、漏了另一条」，本仓库反复踩过。
+        /// 返回是否删除成功；计数由调用方按自己的口径累加（`removed` / `reclaimed`）。
+        func removeProfile(_ uuid: String) -> Bool {
+            do {
+                try Provision.removeProvisioningProfile(id: uuid)
+                return true
+            } catch {
+                if summary.firstError == nil {
+                    summary.firstError = "remove失败: \(String(describing: error))"
+                }
+                return false
+            }
+        }
 
         let dump: (path: String, attempts: Int)
         do {
@@ -179,7 +288,13 @@ struct DeviceProfileCleaner: Sendable {
             options: [.skipsHiddenFiles]
         )) ?? []
 
+        // ── 阶段 A：本地判定（不需要问设备）────────────────────────────────
+        // 路径 1 只用本地知识（keep-map）就能决定去留；路径 2 只**收集候选**，
+        // 真正的删除要等阶段 B 的设备端核验。
+        // 拆成两段是为了能在删**任何一份**孤儿之前先做阳性对照 —— 否则对照失败时
+        // 已经删掉的那些收不回来。
         var handledUUIDs = Set<String>()
+        var reclaimCandidates: [(uuid: String, bundleID: String)] = []
         for fileURL in profileURLs {
             // 不按扩展名过滤：misagent 返回的是 CMS 签名包裹的二进制，
             // Rust 端解析不了会落成 unknown_N.plist；真正的识别靠 ProvisioningProfileReader 解 CMS。
@@ -195,31 +310,93 @@ struct DeviceProfileCleaner: Sendable {
             // LockDown 路径同一 profile 会落 raw + plist 两个文件，按 UUID 去重
             guard handledUUIDs.insert(profileUUID.lowercased()).inserted else { continue }
             summary.scanned += 1
-            // 只有 Seal 管理的 Bundle ID 才参与判定；其余一律不碰。
-            guard let keepingUUID = keepingByBundleID[profileBundleID.lowercased()] else {
+
+            let loweredBundleID = profileBundleID.lowercased()
+
+            // 路径 1：保留集合内的 Bundle ID，只留指定那一份。
+            if let keepingUUID = keepingByBundleID[loweredBundleID] {
+                summary.matched += 1
+                if profileUUID.lowercased() == keepingUUID { continue }
+                if removeProfile(profileUUID) { summary.removed += 1 } else { summary.removeFailed += 1 }
                 continue
             }
-            summary.matched += 1
-            if profileUUID.lowercased() == keepingUUID {
+
+            // 路径 2：集合外的「Seal 生成孤儿」（换 Apple ID 后的旧 Team 后缀）。
+            // 默认关闭；开启时也**只是候选**，要过阶段 B 才删。
+            guard reclaimSealOrphans,
+                  ProfileReclaimPolicy.isReclaimableOrphan(
+                      bundleID: profileBundleID,
+                      keepingByBundleID: keepingByBundleID
+                  ) else {
                 continue
             }
-            do {
-                try Provision.removeProvisioningProfile(id: profileUUID)
-                summary.removed += 1
-            } catch {
-                summary.removeFailed += 1
+            reclaimCandidates.append((profileUUID, profileBundleID))
+        }
+
+        guard reclaimCandidates.isEmpty == false else { return summary }
+        summary.reclaimCandidates = reclaimCandidates.count
+        // 用闭包而不是 `map(\.bundleID)`：**Swift 不支持元组元素的 key path**，
+        // 写了会编译失败，而本机没有 Swift 工具链，只能等云构建暴露。
+        summary.reclaimSample = reclaimCandidates
+            .prefix(ProfileCleanupSummary.reclaimSampleLimit)
+            .map { $0.bundleID }
+
+        // ── 阶段 B：设备端核验后才删 ───────────────────────────────────────
+        // 阳性对照：Seal 自己**一定**装着（这段代码正在它里面跑），
+        // 所以「连它都答未安装」只可能是通道不可信。没有可用的对照 Bundle ID
+        // 就证明不了通道可信 ⇒ 一份都不删。
+        guard let controlBundleID = Bundle.main.bundleIdentifier,
+              controlBundleID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            summary.reclaimAborted = "无阳性对照 Bundle ID"
+            return summary
+        }
+        let positiveControlPassed = await probeInstalled(bundleID: controlBundleID) == .installed
+        guard positiveControlPassed else {
+            summary.reclaimAborted = "阳性对照未通过（\(controlBundleID) 被答成未安装）"
+            return summary
+        }
+
+        // 中止是**整轮**的：一旦出现不可信的核验结果，后面每条都不再问设备。
+        // 写成「先记原因、循环外统一收尾」而不是在 `case` 里直接 `return`，
+        // 是为了让「中止影响整个 pass」这件事在代码形状上就看得出来 ——
+        // 守卫断言的就是这一句（改成 `continue` 只跳过当前这条，保护等于没有）。
+        var reclaimAbortReason: String?
+        for candidate in reclaimCandidates {
+            let probe = await probeInstalled(bundleID: candidate.bundleID)
+            switch ProfileReclaimPolicy.decision(
+                probe: probe,
+                positiveControlPassed: positiveControlPassed
+            ) {
+            case .keepInstalled:
+                // 「同一个 App 用两个 Team 各装一份」时走这里 —— 那份 profile 不能删。
+                summary.reclaimKeptInstalled += 1
+            case .reclaim:
+                if removeProfile(candidate.uuid) { summary.reclaimed += 1 } else { summary.removeFailed += 1 }
+            case .abortPass:
+                // 走到这里只可能是 `probe == .unavailable`（阳性对照已在上面通过），
+                // 但仍按实际 probe 记，避免将来重构后计数失去意义。
+                if probe == .unavailable { summary.reclaimUnverified += 1 }
+                reclaimAbortReason = "核验通道不可信（\(candidate.bundleID)：\(probe.logName)）"
                 if summary.firstError == nil {
-                    summary.firstError = "remove失败: \(String(describing: error))"
+                    summary.firstError = "核验中止: \(candidate.bundleID) (\(probe.logName))"
                 }
             }
+            if reclaimAbortReason != nil { break }
         }
+        summary.reclaimAborted = reclaimAbortReason
         return summary
     }
 }
 
 extension DeviceProfileCleaner: StaleProfileSweeping {
-    func sweepStaleProfiles(keepingByBundleID: [String: String]) async -> ProfileCleanupSummary {
-        await Self.removeStaleProfiles(keepingByBundleID: keepingByBundleID)
+    func sweepStaleProfiles(
+        keepingByBundleID: [String: String],
+        reclaimSealOrphans: Bool
+    ) async -> ProfileCleanupSummary {
+        await Self.removeStaleProfiles(
+            keepingByBundleID: keepingByBundleID,
+            reclaimSealOrphans: reclaimSealOrphans
+        )
     }
 }
 
@@ -227,6 +404,12 @@ extension DeviceProfileCleaner: SelfReplacementProfileCleaning {
     /// 结算后的精准清理：清理前重读当前运行身份，只有主程序 profile 仍等于
     /// 结算时确认的 `keepingProfileUUID` 才删除旧 profile；身份已变化或不可读
     /// 时整批放弃，绝不误删正在使用的 profile。清理失败只进摘要，不回滚已确认身份。
+    ///
+    /// 开启 `reclaimSealOrphans`：Seal 自己换过 Apple ID 后会留下
+    /// `com.mjorb.seal.<旧 team>` 的 profile（实测 5 个 team 变体），
+    /// 而**只有**这条路径能回收 Seal 自己那一批（Seal 的自更新不走普通安装）。
+    /// 当前正在运行的那一份由 keep-map（路径 1）保住，根本不会成为候选；
+    /// 其余变体要过设备端核验 —— 见 `removeProfiles` 阶段 B 的阳性对照。
     func removeStaleProfiles(_ request: ProfileCleanupRequest) async -> ProfileCleanupSummary {
         guard let readRunningIdentity else {
             return ProfileCleanupSummary(stage: "skipped-identity-unavailable")
@@ -248,7 +431,8 @@ extension DeviceProfileCleaner: SelfReplacementProfileCleaning {
         }
         return await Self.removeStaleProfiles(
             for: request.bundleIdentifier,
-            keeping: request.keepingProfileUUID
+            keeping: request.keepingProfileUUID,
+            reclaimSealOrphans: true
         )
     }
 }

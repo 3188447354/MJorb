@@ -31,6 +31,9 @@
 - **`build-package` 不编译测试 target，所以测试代码的编译错误会绕过它、只在 `swift-regression` 红**。本机无 Swift 工具链时，给 `SealTests/**` 加新调用（尤其是构造器）等于「盲写」，一轮 CI 白等 13 分钟。2026-09-16 实际踩到：`error: argument 'ipaRelativePath' must precede argument 'signedArtifactStatus'`（Swift 的 memberwise init **强制实参顺序与声明一致**，漏写中间的默认参数可以，但顺序不能颠倒）。**对策**：守卫 R09 用 Python 解析 `AppRecord` 声明的参数序列，逐个校验所有调用点的标签顺序；**同类坑当天咬了第二次**（给 `signAndInstall` 加 `onInstallProgress` 时写到了 `broadcastsInstallStage` 之后），现已把 R09 通用化为「声明文件 + 声明锚点 + 调用点正则 + 调用点数下限」的列表，覆盖 `AppRecord` / `signAndInstall` / `installSignedIPA` / `installCachedSignedIPAIfPossible`。加新调用前**逐字段对照声明顺序**，别凭记忆。
 - **「进度条停在 X% 不动」要先问「这个阶段到底有没有进度回调」**。iOS 安装阶段（installd 经 installation_proxy 安装）**完全不回报进度**：上传结束（1.01 哨兵）之后到安装完成之间，UI 拿不到任何数值。所以「停在 93%」「卡在传输中」往往不是进度 bug，而是**阶段推进缺失 + 缺少等待说明**。两个界面表现不同只是因为订阅的东西不同：单签订阅 Double 哨兵（能切到 `.installing` ⇒ 93%，然后静止），**批量只订阅 `SigningStage`、根本收不到哨兵**，于是整段停在「传输中」。判据：`SigningProgressView.overallProgress(.installing) == 0.93`、`BatchRefreshView.runningStageTitle(.pushing) == "传输中"`。
 - **`guard app.applicationState == .active else { return }` 出现在「自动切后台」流程里是危险的**。`.inactive` 是**瞬时**失焦（控制中心、通知横幅、来电、App 切换器预览、系统弹窗），进程仍在前台。Seal 自续签依赖「旧进程让出前台」才能被 iOS 完成替换，把 `.inactive` 当「用户已离开」直接 return，会连 `exit(0)` 兜底一起跳过 ⇒ 界面永久停在 93%。**只有 `.background` 才算用户真的切走了**；`.inactive` 要等它恢复，恢复不了就走兜底退出。
+- **`applicationState == .background` 时「什么都不做」同样会永久卡住 —— 这是 2026-09-16「续签卡在 93%」的真正根因**。上面那条把 `.inactive` 修好了，但 `.background` 被写成 `case .standDown: return false`，语义是「用户已切走、进程让出前台、iOS 会自己完成替换 ⇒ 不强杀」。**这个前提对「覆盖安装运行中的自己」不成立**：iOS 需要旧进程**终止**，而后台进程不会自己终止 —— 自续签还主动开了后台保活（日志「Seal 自续签事务：后台保活已启动」），等于把这个前提主动破坏掉。结果是进程既不转场也不退出、永久占着前台，installd 一直等它让位，`stageAndInstall` 永远不返回。**正确做法：有界等待（等用户回到前台走转场）+ 超时强杀**（后台强杀用户无感，而不终止进程 iOS 就完不成替换）。**判据：凡是「某个状态下就什么都不做」的分支，问一句「那谁来推进这件事」** —— 如果答案是「系统会自己搞定」，先验证这个假设对**覆盖安装自己**是否成立。
+- **用「什么没发生」反推代码路径（否证法）**。真机日志里自替换起点之后进程**既不转场也不退出**、照常写后台日志。把每个候选路径的**必然后果**列出来对照：`.triggerTransition` 必然调 `suspend`（生效 ⇒ 进程冻结 ⇒ 日志停止）、`.waitForForeground` 超时必然 `exit(0)`（⇒ 进程终止）。两者都没发生 ⇒ 动作在到达它们之前就被丢掉了 ⇒ 只剩 `.standDown` 的立即返回。**当「证据不足」时，先找那些「只要走到就必然留下痕迹」的路径，用痕迹的有无把候选集砍到只剩一个** —— 这比继续猜快得多，也不需要额外的埋点。
+- **`let x = x(...)` 会编译失败：局部变量名与函数名相同时，右侧解析到的是尚未初始化的局部变量**（`error: use of local variable 'x' before its declaration`）。写 `let step = step(for: state)` 这种「顺手同名」的写法必踩。改名（`currentStep`）即可。**这类错误只在 `swift-regression` 暴露**（本机无 Swift 工具链时是盲写），所以「变量名与它调用的函数同名」要在写完时立刻自查。
 - **运行中的模态抽屉必须有退出通道**。`showsFooter: !isRunning` 配合 `.interactiveDismissDisabled(isRunning)` = 运行中既没有按钮也不能下滑关闭。真卡住时用户被锁死在一个静止弹窗里，感受就是「怎么都没反应」——这跟进度显示是**两个独立**的体验缺口，修了进度也别把退出通道忘了。运行中至少留一个「取消」（**软取消**：立即关界面，已下发的安装由 installd 跑完，结果以列表刷新为准）。
 - **守卫里「扫到 0 个调用点」= 检查必然通过**。新写的实参顺序校验第一版正则用了 `(?<![A-Za-z0-9_.])signAndInstall\(`，而真实调用点全是 `coordinator.signAndInstall(`（前一个字符是 `.`），被反向断言全部排除 ⇒ 零调用点 ⇒ 零错误 ⇒ 绿。**凡是「遍历 + 断言」的守卫都必须一并断言「扫到了多少个」，并设下限**，否则改一个正则就能让它静默失效。
 - **变异检查的期望文案必须与真实断言文案对得上**。`any(item.startswith(expected))` 是按前缀匹配的：文案写错会报成 `Guard failed mutation check`，看起来像「变异没被抓到」，实际是断言已被触发但消息不匹配。看到这条失败先核对真实消息，再改锚点。
@@ -48,11 +51,30 @@
 - **`#expect(...)` 里不能出现 `mutating` 方法调用**。swift-testing 的 `#expect` 是**宏**：它把表达式重写成闭包、把子表达式绑成 `$0`/`$1`…，于是 `mutating` 成员作用在捕获值上编译不过 —— `error: cannot use mutating member on immutable value: '$0' is immutable`。修法是先把结果取到局部变量再断言：`let ok = gate.acquire(); #expect(ok)`。**这个错误同样只在 `swift-regression` 出现**（`build-package` 不编译测试 target），2026-09-16 紧随上一条之后踩到（`#expect(gate.acquire())`，95 条报错全是同一个宏展开）。守卫已加通用检查（`#expect must not call a mutating method ...`），mutating 方法名从 `Seal/` 里现取、不写死。
 - **守卫的耗时波动本身就是故障源**。变异检查每一遍都会把所有源文件重新读一遍（200+ 文件 × 90 多遍 ≈ 2 万次磁盘读），而本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 同一份代码整轮耗时实测在 **61–117 秒**之间波动，已经贴到命令默认 120 秒超时（超时会被 SIGTERM，且**没有任何输出**，极易误判成脚本崩了）。对策：在 `main()` 里按路径缓存**基准内容**（每遍只有**一个**文件被替换成变异版本，所以不会读到陈旧文本），耗时降到 53 秒。⚠️ **不要**顺手把 `strip_comments` 的结果也跨遍缓存 —— 那会让被替换的那个文件读到基准版的去注释结果，变异检查静默失效（守卫全绿但什么都没检查）。
 - **日志必须写在「挂起 / 退出」之前，并且立刻 `flush()`**。Seal 自替换的「回主屏」终点是 `suspend`（进程被冻结）或 `exit(0)`（进程结束）—— 这两条路之后写的任何日志都出不来。所以「即将触发转场」这条**必须在 `triggerHomeTransition` 之前落盘**，每条日志都要 `flush()` 而不是只 `append`（`SealLogStore` 的 `append` 只写内存缓冲）。顺序反了、或只 append 不 flush，等价于这条链路仍然静默：下次真机排查又只剩「一片空白」。**判据：给一条「会静默卡死」的链路加日志时，先问「这段代码的终点是什么，日志有没有机会落盘」。**
-- **守卫断言要断「语义」，不要断「拼出来的文案」**。`check("case .standDown: return false" in squashed)` 这种拼接式断言，只要在分支里插一条日志就失效 —— 而报出来的失败信息看着像「语义坏了」，实际只是文案挪了位置，很容易把人带偏。改成 `section(squashed, "case .standDown:", "case .triggerTransition:")` 切出分支，再断言里面的**语义**（`"return false" in branch and "exit(0)" not in branch`）。要断顺序时用 `branch.index(a) < branch.index(b)`，同样不依赖日志措辞。
+- **守卫断言要断「语义」，不要断「拼出来的文案」**。`check("case .standDown: return false" in squashed)` 这种拼接式断言，只要在分支里插一条日志就失效 —— 而报出来的失败信息看着像「语义坏了」，实际只是文案挪了位置，很容易把人带偏。改成 `section(squashed, "case .standDown:", "case .triggerTransition:")` 切出分支，再断言里面的**语义**（如 `"guard outcome == .wait else" in branch and "return }" in branch`）。要断顺序时用 `branch.index(a) < branch.index(b)`，同样不依赖日志措辞。
+- **「某字符串在分支里」不等于「那条控制流存在」—— 日志文案会伪装成代码**。给 `.standDown` 写断言时一度用了 `"exit(0)" in stand_down`，而这段的**日志文案**里正好含「强制 exit(0) 让 iOS 完成替换」几个字：有人删掉真正的 `return`（于是永远走不到 `exit(0)` 兜底）时，断言照样通过 —— 绿着坏掉。**断控制流要看结构**（`return }`、`guard ... else`），**不要看那几个字符在不在**；文案是给人看的，不是给守卫看的。
 
 ---
 
 ## 历史记录
+
+### 2026-09-17 · 「续签卡在 93%」的真正根因：`.background` 分支「什么都不做」
+
+**现象**：Seal 自续签进入安装阶段后永久停在 93%，「怎么都没反应」，同一天普通 App 安装 7 秒完成。
+
+**排查**（关键是用**否证**代替猜测）：两份真机日志（`Seal-log(7).txt` / `Seal-log(8).txt`，各含两次自续签）显示安装起点之后进程**既不转场也不退出**、照常写后台日志。把候选路径的**必然后果**对照一遍：`.triggerTransition` 必然调 `suspend`（生效 ⇒ 进程冻结 ⇒ 日志停止）、`.waitForForeground` 超时必然 `exit(0)`（⇒ 进程终止）—— **两者都没发生**，所以动作在到达它们之前就被丢掉了，只剩 `.standDown` 的立即返回这一种解释。
+
+**根因**：`SelfInstallAutoBackground` 里 `case .standDown: return false`（2026-09-16 那次修复只把 `.inactive` 修好了，`.background` 从「不退出」换成了另一种「不退出」）。前提「进程已让出前台 ⇒ iOS 会自己完成替换」对**覆盖安装运行中的自己**不成立 —— iOS 需要旧进程**终止**，而后台进程不会自己终止，自续签还主动开了后台保活。因果链：**进程不退出 ⇒ iOS 不完成替换 ⇒ installd 一直等 ⇒ `stageAndInstall` 一直不返回**。上一轮怀疑的「`suspend` 提前触发截断了 installation_proxy 连接」是**后果**不是原因。
+
+**修复**：`waitUntilExitIsSafe`（返回 `Bool`）→ `waitUntilItIsTimeToExit`（返回 `Void`，因为它总会返回）。`.background` 改为**有界等待 8 秒**（等用户回到前台走转场）+ **超时强杀**（后台强杀用户无感）。把「等多久 / 该不该动手」抽成可测纯函数 `poll(for:waited:rounds:)`，三个状态**全部有界**；日志只在第一轮写一次（否则 8 秒刷 16 行，把刚建立的可观测性淹没）。
+
+**涉及文件**：`Seal/Features/Apps/SigningProgressView.swift`、`SealTests/Apps/SelfInstallAutoBackgroundTests.swift`（5 → 10 条）、`Scripts/verify-release-safety.py`、`docs/qa/2026-09-16-…-freeze.md`（§2.3.1 / §3.11）、`docs/qa/device-regression-checklist.md`。
+
+**验证状态**：守卫 **214 源码断言 + 97 变异 PASS**（约 54 秒）。推理链完整但**仍需真机确认**：把 App 切到后台再等它自己完成替换，日志应出现「当前在后台，等待回到前台再触发转场（最多 8 秒）」→「触发回主屏转场」或「强制 exit(0)」。
+
+**顺带**：修掉两个会在 CI 才暴露的实现细节 —— `let step = step(for:)` 同名变量导致编译失败；`.standDown` 的守卫断言一度用 `"exit(0)" in stand_down`，而那是**日志文案**里的字（控制流删掉也照样通过）。
+
+---
 
 ### 2026-09-16（续 5）· 把「模拟器切片缺符号」做成守卫的通用检查：同类错误一天内咬了两次
 

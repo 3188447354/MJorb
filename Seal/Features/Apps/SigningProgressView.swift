@@ -643,14 +643,23 @@ private struct CurrentSegmentFill: View {
 /// 分支、以及 `exit(0)` 兜底都各留一条，且**每条立刻 `flush()`**：`suspend` 一旦生效
 /// 进程即被冻结，之后写的日志出不来。
 ///
-/// ⚠️ **仍未定论**：本类型的文档说「iOS 只有在旧进程退出前台后才会完成替换」，
-/// 而 `MinimuxerInstallChannel` 里写着「自替换也必须让 installation_proxy 完整返回；
-/// 提前 suspend 会冻结当前连接并留下旧 profile」。而本类型是在**上传完成**
-/// （`.installing`，即上传到 100% 的 1.01 哨兵）后 1.2 秒就触发转场 —— 那时
-/// `stageAndInstall` 显然还没返回。**这两套时序是冲突的，但缺设备侧证据无法判定谁对**：
-/// 加日志就是为了让下一次真机日志能直接读出顺序 ——
-/// `安装 开始自替换安装：…` → 心跳 → `Seal 自替换：触发回主屏转场（suspend）` →
-/// `安装 自替换安装调用已返回：…`（若这条**永远不出现**，说明 suspend 确实截断了安装）。
+/// ## 真机证据推翻了「suspend 截断安装」的假设（2026-09-17 补）
+///
+/// 上一条曾记着「未定论」：本类型说「iOS 只有在旧进程退出前台后才会完成替换」，
+/// 而 `MinimuxerInstallChannel` 说「提前 suspend 会冻结当前连接」。查两份真机日志
+/// （`Seal-log(7).txt` / `Seal-log(8).txt`，各自两次自续签）后结论变了：
+///
+/// - 自续签安装起点之后**没有任何安装结论**，界面永久停在 93%；
+/// - 但进程**既不转场也不退出**：起点之后照常写后台日志（`[BatchDebug]`、账号同步、
+///   `安装 LocalDevVPN 正常`），同一天普通 App（LiveContainer）**7 秒**装完。
+///
+/// 若 `suspend` 生效，进程会被冻结 ⇒ 日志停止；若 `exit(0)` 执行，进程会终止。
+/// 两者都没发生 ⇒ **动作在到达 `suspend` 之前就被丢掉了**。丢掉它的正是
+/// `.standDown` 分支的「立即放弃」（详见 `backgroundWaitSeconds`）。
+///
+/// 所以真正的因果链是：**进程不退出 ⇒ iOS 不完成替换 ⇒ installd 一直等 ⇒
+/// `stageAndInstall` 一直不返回**。`suspend` 时机不是原因，`MinimuxerInstallChannel`
+/// 那条注释描述的也是「别在安装返回前挂起」这个**后果**，与这里的修复方向一致。
 enum SelfInstallAutoBackground {
     /// 转场前的可感知停顿：既让 UI 的「正在退回主屏幕」渲染出来，也给 Rust 暂存落盘留余量。
     private static let transitionBeatNanoseconds: UInt64 = 1_200_000_000
@@ -663,17 +672,40 @@ enum SelfInstallAutoBackground {
     private static let inactiveRetryNanoseconds: UInt64 = 500_000_000
     private static let inactiveRetryLimit = 6
 
+    /// `.background`（用户切走了）等待「回到前台」的时长上限与轮询间隔。
+    ///
+    /// 旧实现在 `.background` 时**立即放弃**（`return false`），前提是「进程已让出前台，
+    /// iOS 会自己完成替换」。这个前提对**覆盖安装运行中的自己**不成立：iOS 需要旧进程
+    /// **终止**，而后台进程不会自己终止 —— 自续签还主动开了后台保活
+    ///（真机日志「续签 Seal 自续签事务：后台保活已启动，覆盖证书、描述文件、签名和安装」），
+    /// 等于主动把这个前提破坏掉了。
+    ///
+    /// 2026-09-16 两份真机日志是决定性证据：两次自续签（`16:53:57` / `19:43:50`）都停在 93%，
+    /// 而进程**既不转场也不退出**、照常写后台日志。`.triggerTransition` 必然调 `suspend`
+    /// （生效则进程冻结、日志停止），`.waitForForeground` 超时必然 `exit(0)`（进程终止）——
+    /// 两者都没发生，只剩「这条分支把动作丢掉了」一种解释。
+    ///
+    /// 取 8 秒：覆盖「切出去看一眼再回来」的常见情形；超时后强杀 —— 此时用户在别处，
+    /// 看不到闪退，而不终止进程 iOS 就永远完不成替换。
+    private static let backgroundWaitSeconds: TimeInterval = 8
+    private static let backgroundPollNanoseconds: UInt64 = 500_000_000
+
     /// 前台状态下该怎么走。抽成纯函数是为了**能单测** ——
     /// 这段判断原先直接读 `UIApplication.shared.applicationState`，没有任何测试覆盖，
-    /// 而它的 `.inactive` 分支正是「Seal 自续签永久停在 93%」的根因（2026-09-16 真机反馈）。
+    /// 而它的 `.inactive` 分支正是「Seal 自续签永久停在 93%」的根因（2026-09-16 真机反馈）；
+    /// `.background` 分支则是同一现象在 2026-09-17 被坐实的**另一个**根因。
     /// 这类「错了也不会崩、只会在真机上卡死」的分支必须有测试钉住。
     ///
     /// `@MainActor`：`UIApplication` 在 Swift 6 严格并发下是主 actor 隔离的，
-    /// 这里显式跟着走，避免「读它的枚举」被当成跨 actor 访问。它唯一的调用点
-    /// `waitUntilExitIsSafe` 本来就在主 actor 上。
+    /// 这里显式跟着走，避免「读它的枚举」被当成跨 actor 访问。它的调用点
+    /// `waitUntilItIsTimeToExit` 与 `poll(for:waited:rounds:)` 都在主 actor 上。
     enum ReturnHomeStep: Equatable {
-        /// `.background`：用户真的自己切走了，进程已让出前台，iOS 能完成替换。
-        /// 不重复触发转场（避免和用户操作打架），**也不强杀进程**。
+        /// `.background`：用户把 App 切走了（或自续签的后台保活生效）。
+        ///
+        /// **不再「立即放弃」** —— 见 `backgroundWaitSeconds`：先等用户回到前台走转场，
+        /// 等不到就强杀。旧实现在这里直接放弃（`return false`），是 2026-09-16 真机
+        /// 两次自续签都停在 93% 的直接原因：进程既不转场也不退出，永久占着前台，
+        /// iOS 永远等不到替换时机。
         case standDown
         /// `.active`：正常触发与「按 Home」等价的系统转场。
         case triggerTransition
@@ -697,13 +729,52 @@ enum SelfInstallAutoBackground {
         }
     }
 
+    /// 一轮轮询之后该做什么。抽成纯函数是为了**能单测**：
+    /// 「再等等」和「该动手了」的区别，在真机上就是「正常替换」和「永久停在 93%」，
+    /// 而这段判断本身不会崩、不会编译失败、也不会跑挂失败的单测。
+    enum PollOutcome: Equatable {
+        /// 执行该状态对应的动作：`.active` 触发转场，其余两个走 `exit(0)` 兜底。
+        case act
+        /// 再等一轮。
+        case wait
+    }
+
+    /// - Parameters:
+    ///   - step: 当前前台状态对应的走法。
+    ///   - waited: 从开始等待算起已经过了多少秒（总预算）。
+    ///   - rounds: `.inactive` 已经轮询过多少轮（次数预算）。
+    @MainActor
+    static func poll(
+        for step: ReturnHomeStep,
+        waited: TimeInterval,
+        rounds: Int
+    ) -> PollOutcome {
+        switch step {
+        case .triggerTransition:
+            return .act
+        case .waitForForeground:
+            // 瞬时失焦：进程仍占着前台，等够 3 秒（6 轮 × 0.5 秒）就自己退出 ——
+            // 否则 iOS 永远等不到替换时机。这里用**次数**而不是总时长：
+            // 这段等待的语义是「等系统浮层消失」，用轮数表达更贴切。
+            return rounds < inactiveRetryLimit ? .wait : .act
+        case .standDown:
+            // 后台：等用户回到前台（最多 8 秒），等不到就强杀。
+            // **绝不能像旧实现那样直接放弃** —— 不终止进程 iOS 就完不成替换，
+            // 而「iOS 会自己完成替换」这个前提对覆盖安装自己并不成立。
+            return waited < backgroundWaitSeconds ? .wait : .act
+        }
+    }
+
     @MainActor
     static func returnToHomeAfterSealUpload(logStore: SealLogStore? = nil) {
         Task { @MainActor in
             await log(logStore, "Seal 自替换：上传完成，1.2 秒后判断前台状态并回主屏")
             try? await Task.sleep(nanoseconds: transitionBeatNanoseconds)
             let app = UIApplication.shared
-            guard await waitUntilExitIsSafe(app, logStore: logStore) else { return }
+            // 这个调用**总会返回**（转场已触发，或等到该强杀为止），所以没有返回值可判。
+            // 旧实现返回 `false` 表示「用户已切到后台，交给 iOS 自己替换、不强杀进程」——
+            // 那条路会让进程永久占着前台，iOS 永远完不成替换（见 `backgroundWaitSeconds`）。
+            await waitUntilItIsTimeToExit(app, logStore: logStore)
             // 兜底：3 秒后进程还活着，说明转场没生效（会永久停在进度页），此时才强制退出。
             // 转场成功的话进程已被挂起，这行不会执行 —— 所以不会打断退场动画。
             await log(logStore, "Seal 自替换：3 秒内进程仍存活（转场未生效），强制 exit(0)")
@@ -712,37 +783,71 @@ enum SelfInstallAutoBackground {
         }
     }
 
-    /// 等到「可以安全退出」为止。
+    /// 阻塞到「该退出」为止：要么已经触发过转场，要么等到该强杀为止。
     ///
-    /// - 返回 `false` 表示用户已把 App 切到后台，iOS 自己会完成替换，**不该强杀进程**；
-    /// - 返回 `true` 表示该走 `exit(0)` 兜底：要么已经触发过转场，要么一直是 `.inactive`
-    ///   （进程仍占着前台，iOS 永远等不到替换时机 —— 只能自己退出）。
+    /// - `.active` ⇒ 触发转场后立即返回；
+    /// - `.inactive`（进程仍占着前台，此时强杀会闪退）⇒ 最多等 `inactiveRetryLimit` 轮；
+    /// - `.background`（用户切走了，进程不会自己终止）⇒ 最多等 `backgroundWaitSeconds`。
     ///
-    /// 旧实现把 `.inactive` 也当成「用户已离开」直接 `return`，连 `exit(0)` 兜底一起跳过，
-    /// 于是安装永远完不成、界面永久停在 93%。
+    /// **刻意没有「什么都不做就返回」的路径**：旧实现把 `.background` 当成
+    /// 「用户已离开、iOS 会自己完成替换」直接返回，结果进程既不转场也不退出、
+    /// 永久占着前台 —— 2026-09-16 真机两次自续签都停在 93% 正是这条路径造成的。
+    ///
+    /// 每个分支要么 `return`、要么 `sleep`，所以既不会忙循环，也一定有界。
     @MainActor
-    private static func waitUntilExitIsSafe(
+    private static func waitUntilItIsTimeToExit(
         _ app: UIApplication,
         logStore: SealLogStore?
-    ) async -> Bool {
-        for _ in 0...inactiveRetryLimit {
-            switch step(for: app.applicationState) {
-            case .standDown:
-                await log(logStore, "Seal 自替换：已切到后台，交给 iOS 完成替换（不强制退出）")
-                return false
+    ) async {
+        let startedAt = Date()
+        var didLogWaitingInBackground = false
+        var inactiveRounds = 0
+        while true {
+            // 刻意不叫 `step`：`let step = step(for:)` 会让右侧解析到尚未初始化的局部变量，
+            // 直接编译失败（`use of local variable 'step' before its declaration`）。
+            let currentStep = step(for: app.applicationState)
+            let outcome = poll(
+                for: currentStep,
+                waited: Date().timeIntervalSince(startedAt),
+                rounds: inactiveRounds
+            )
+            switch currentStep {
             case .triggerTransition:
                 // 这行必须在 `triggerHomeTransition` **之前**落盘：`suspend` 一旦生效，
                 // 本进程就被冻结，之后写的任何日志都出不来。
                 await log(logStore, "Seal 自替换：触发回主屏转场（suspend）")
                 triggerHomeTransition(app)
-                return true
+                return
+            case .standDown:
+                guard outcome == .wait else {
+                    await log(
+                        logStore,
+                        "Seal 自替换：在后台等待 \(Int(backgroundWaitSeconds)) 秒仍未回到前台，"
+                        + "强制 exit(0) 让 iOS 完成替换"
+                    )
+                    return
+                }
+                // 只写一次：这里每 0.5 秒轮询一轮，逐轮都写会把日志刷满，
+                // 反而把真机排查最需要的那几行淹掉。
+                if didLogWaitingInBackground == false {
+                    didLogWaitingInBackground = true
+                    await log(
+                        logStore,
+                        "Seal 自替换：当前在后台，等待回到前台再触发转场"
+                        + "（最多 \(Int(backgroundWaitSeconds)) 秒）"
+                    )
+                }
+                try? await Task.sleep(nanoseconds: backgroundPollNanoseconds)
             case .waitForForeground:
+                guard outcome == .wait else {
+                    await log(logStore, "Seal 自替换：一直未能回到前台，走 exit(0) 兜底")
+                    return
+                }
+                inactiveRounds += 1
                 await log(logStore, "Seal 自替换：当前为瞬时失焦，等待回到前台")
                 try? await Task.sleep(nanoseconds: inactiveRetryNanoseconds)
             }
         }
-        await log(logStore, "Seal 自替换：一直未能回到前台，走 exit(0) 兜底")
-        return true
     }
 
     /// 最佳努力日志：**每条都立刻 `flush()`**。

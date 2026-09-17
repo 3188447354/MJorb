@@ -549,29 +549,68 @@ def violations(load=read):
         "static func returnToHomeAfterSealUpload(logStore: SealLogStore? = nil)",
         "private static func triggerHomeTransition"
     )))
-    # 结构还在不等于还在用：等待循环必须真的走 step()，否则守卫守的是一个没人调的函数。
-    check("switch step(for: app.applicationState)" in return_home,
-          "R10: the wait loop must route through the tested step function")
-    check("case .waitForForeground: await log(logStore," in return_home
-          and "try? await Task.sleep(nanoseconds: inactiveRetryNanoseconds)" in return_home
-          and "for _ in 0...inactiveRetryLimit" in return_home,
+    # 结构还在不等于还在用：等待循环必须真的走 step()/poll()，否则守卫守的是没人调的函数。
+    #
+    # 局部变量刻意叫 `currentStep`：写成 `let step = step(for:)` 会让右侧解析到尚未
+    # 初始化的局部变量，直接编译失败（`use of local variable 'step' before its declaration`）。
+    check("let currentStep = step(for: app.applicationState)" in return_home
+          and "poll(" in return_home,
+          "R10: the wait loop must route through the tested step/poll functions")
+    check('await log(logStore, "Seal 自替换：当前为瞬时失焦，等待回到前台")' in return_home
+          and "try? await Task.sleep(nanoseconds: inactiveRetryNanoseconds)" in return_home,
           "R10: .inactive must actually be waited out, not merely skipped")
-    # `.standDown` 的语义是「不触发转场、也不强杀进程」：用户已经自己切走了，
-    # 再 exit(0) 会和用户的操作打架。
-    # 用 `section()` 切出这个分支再断言，而不是拼 `"case .standDown: return false"` ——
-    # 分支里插一条日志（本轮就插了）会让拼接式断言失效，那种失败看着像「语义坏了」，
-    # 其实只是文案挪了位置。这里断言的是**语义**：返回 false 且不 exit。
-    stand_down = section(return_home, "case .standDown:", "case .triggerTransition:")
-    check("return false" in stand_down and "exit(0)" not in stand_down,
-          "R10: a real background transition must not kill the process")
+    # `.standDown`（用户切走了）**绝不能再「立即放弃」** —— 这是 2026-09-16 真机
+    # 「续签卡在 93%」的直接原因。
+    #
+    # 旧实现的语义是「用户已切走了，进程已让出前台，iOS 会自己完成替换 ⇒ 返回 false、
+    # 不强杀进程」。这个前提对**覆盖安装运行中的自己**不成立：iOS 需要旧进程**终止**，
+    # 而后台进程不会自己终止（自续签还主动开了后台保活）。两份真机日志
+    #（`Seal-log(7).txt` / `Seal-log(8).txt`）里，两次自续签都停在 93%，而进程
+    # **既不转场也不退出**、照常写后台日志 —— 若 suspend 生效进程会被冻结、若 exit(0)
+    # 执行进程会终止，两者都没发生，只剩「这条分支把动作丢掉了」一种解释。
+    #
+    # 现在断言的是**语义**：这个分支既要「等」（guard outcome == .wait + 真的 sleep），
+    # 又必须在超时后 `return` 出去走 `exit(0)` 兜底。用 `section()` 切分支，不拼整句文案 ——
+    # 分支里插一条日志就会让拼接式断言失效，而那种失败看着像「语义坏了」。
+    #
+    # ⚠️ 刻意**不**断言 `"exit(0)" in stand_down`：这段的日志文案里正好含「强制 exit(0)」
+    # 字样，那是文本巧合，不是控制流。删掉真正的 `return` 时它照样通过（绿着坏掉）。
+    stand_down = section(return_home, "case .standDown:", "case .waitForForeground:")
+    check("guard outcome == .wait else" in stand_down
+          and "return }" in stand_down
+          and "try? await Task.sleep(nanoseconds: backgroundPollNanoseconds)" in stand_down,
+          "R10: .standDown must wait for the user to come back, then force exit — "
+          "giving up here strands the install at 93%")
     check("exit(0)" in return_home,
-          "R10: the exit fallback must stay reachable on every non-background path")
+          "R10: the exit fallback must stay reachable on every path")
+    # 轮询预算本身必须是**有界**的：无限等只是另一种形式的永久卡住。
+    # `poll` 是纯函数（有单测），这里守它的形状，防止有人把某个分支改成永远 `.wait`。
+    poll_body = squash(strip_comments(section(
+        progress_raw,
+        "static func poll(",
+        "static func returnToHomeAfterSealUpload"
+    )))
+    check("case .triggerTransition: return .act" in poll_body,
+          "R10: an active foreground must trigger the transition immediately")
+    check("case .waitForForeground: return rounds < inactiveRetryLimit ? .wait : .act" in poll_body,
+          "R10: the transient-blur wait must be bounded by rounds")
+    check("case .standDown: return waited < backgroundWaitSeconds ? .wait : .act" in poll_body,
+          "R10: the background wait must be bounded — waiting forever is another kind of freeze")
+    # 预算值也要钉住：改成 0 会让转场来不及触发，改成极大等于「永远等」。
+    check("private static let backgroundWaitSeconds: TimeInterval = 8" in progress_raw,
+          "R10: the background wait budget must stay a concrete, small value")
+    # 单测必须真的覆盖这些边界 —— 否则「测试被删空」后守卫仍然全绿。
+    background_tests = load("SealTests/Apps/SelfInstallAutoBackgroundTests.swift")
+    check("SelfInstallAutoBackground.poll(for: .standDown, waited: 0, rounds: 0) == .wait"
+          in background_tests
+          and "func everyStateEventuallyActs()" in background_tests,
+          "R10: the poll boundaries must stay covered by unit tests")
     # 「回主屏」这条链路必须留下日志，而且**挂起前那条必须先落盘**。
     #
     # 2026-09-16 真机：自替换卡在 93% 时这条链路一行日志都没有，于是「转场到底有没有
     # 触发、是在 installation_proxy 返回之前还是之后触发」只能靠猜。加日志是为了让它
     # **可观测**：`安装 开始自替换安装：…` → 心跳 → `Seal 自替换：触发回主屏转场（suspend）`
-    # → `安装 自替换安装调用已返回：…`（若这条永不出现 ⇒ suspend 确实截断了安装）。
+    # → `安装 自替换安装调用已返回：…`。
     #
     # `suspend` 一旦生效进程即被冻结，所以「触发转场」这条**必须写在 `triggerHomeTransition`
     # 之前**，且每条都 `flush()`：顺序反了、或只 append 不 flush，下次真机排查又会退回
@@ -580,7 +619,7 @@ def violations(load=read):
           and "await store.flush()" in progress_raw,
           "R10: the return-home path must log — silence is why the freeze was undiagnosable")
     # 断言「顺序」而不是「文案」：日志措辞可以改，但必须先落盘再挂起。
-    transition_branch = section(return_home, "case .triggerTransition:", "case .waitForForeground:")
+    transition_branch = section(return_home, "case .triggerTransition:", "case .standDown:")
     check("await log(logStore," in transition_branch
           and transition_branch.index("await log(logStore,")
           < transition_branch.index("triggerHomeTransition(app)"),
@@ -1664,7 +1703,8 @@ def main():
          "        case .inactive:\n            return .waitForForeground",
          "        case .inactive:\n            return .standDown",
          "R10: .inactive is a transient blur"),
-        # 把 `.background` 也接上转场：用户已经自己切走了，再去触发一次就是和用户的操作打架。
+        # 把 `.background` 也接上转场：后台状态下 `suspend` 不一定生效（进程本来就不在前台），
+        # 而 `.standDown` 这条路径承担的是「等用户回来、等不到就强杀」。
         ("Seal/Features/Apps/SigningProgressView.swift",
          "        case .background:\n            return .standDown",
          "        case .background:\n            return .triggerTransition",
@@ -1672,10 +1712,33 @@ def main():
         # `.inactive` 等够 3 秒改成直接放弃等待：控制中心一遮挡就会走到 exit(0)，
         # 在用户还在前台时把进程杀掉，安装永远完不成。
         ("Seal/Features/Apps/SigningProgressView.swift",
-         "                await log(logStore, \"Seal 自替换：当前为瞬时失焦，等待回到前台\")\n"
+         "                inactiveRounds += 1\n"
+         '                await log(logStore, "Seal 自替换：当前为瞬时失焦，等待回到前台")\n'
          "                try? await Task.sleep(nanoseconds: inactiveRetryNanoseconds)",
-         "                break",
+         "                return",
          "R10: .inactive must actually be waited out"),
+        # 让 `.standDown` 恢复旧实现那套「立即放弃」：进程既不转场也不退出、永久占着前台，
+        # iOS 永远等不到替换时机 —— 这正是 2026-09-16 真机两次自续签都停在 93% 的原因。
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         "            case .standDown:\n"
+         "                guard outcome == .wait else {",
+         "            case .standDown:\n"
+         "                guard false else {",
+         "R10: .standDown must wait for the user to come back, then force exit"),
+        # `.standDown` 的等待改成无限：不再是「放弃」，却变成了另一种永久卡住。
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         "            return waited < backgroundWaitSeconds ? .wait : .act",
+         "            return .wait",
+         "R10: the background wait must be bounded"),
+        # 把等待循环里 `poll` 的结果丢掉：函数还在、单测还在，约束已经失效。
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         "            let outcome = poll(\n"
+         "                for: currentStep,\n"
+         "                waited: Date().timeIntervalSince(startedAt),\n"
+         "                rounds: inactiveRounds\n"
+         "            )",
+         "            let outcome = SelfInstallAutoBackground.PollOutcome.wait",
+         "R10: the wait loop must route through the tested step/poll functions"),
         # 让「触发转场」的日志排在 `triggerHomeTransition` **之后**：`suspend` 生效即冻结
         # 进程，这行日志就永远出不来 —— 下次真机排查又只剩「一片空白」。
         ("Seal/Features/Apps/SigningProgressView.swift",
@@ -1697,9 +1760,9 @@ def main():
          "R10: a repeated .installing push must not spawn a second return-home"),
         # 让等待循环不再走被测过的 step()：函数还在，约束已经失效。
         ("Seal/Features/Apps/SigningProgressView.swift",
-         "            switch step(for: app.applicationState) {",
-         "            switch app.applicationState {",
-         "R10: the wait loop must route through the tested step function"),
+         "            let currentStep = step(for: app.applicationState)",
+         "            let currentStep = SelfInstallAutoBackground.ReturnHomeStep.triggerTransition",
+         "R10: the wait loop must route through the tested step/poll functions"),
         # 重复推送也重置起点 = 「已等待」永远停在 0:0x，比不显示更像卡死。
         ("Seal/Core/Signing/InstallStageTimeline.swift",
          "        return currentStage == .installing ? .keep : .restart",

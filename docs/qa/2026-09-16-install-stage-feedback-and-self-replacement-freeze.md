@@ -69,6 +69,34 @@ exit(0)
 
 `installSignedIPA` 的 Seal 分支走 `Task.detached { Minimuxer.stageAndInstall(...) }` + `try await installation.value`，**刻意没有超时**（提前退出会留下旧 profile）。所以这条路一旦卡住就是**无界等待**，唯一的出口就是上面这段「回主页」代码 —— 而它被 `guard` 静默关掉了。
 
+#### 2.3.1 2026-09-17 更新：真正命中的是 `.background`，不是 `.inactive`
+
+上面那段 `guard` 把**两个**状态一起关掉了（`.inactive` 与 `.background` 都不是 `.active`）。
+§3.5 的修复只把 `.inactive` 接回了「等待 ⇒ 兜底退出」，`.background` 换成了另一个写法
+`return false` —— **依然是不退出**。所以 `.background` 这条路径从始至终都是坏的。
+
+两份真机日志（`Seal-log(7).txt` / `Seal-log(8).txt`，各含两次自续签）证实命中的正是它：
+
+| 时间（`Seal-log(7)`） | 事件 |
+| --- | --- |
+| `16:53:36` | `续签 Seal 自续签事务：后台保活已启动，覆盖证书、描述文件、签名和安装` |
+| `16:53:57` | `安装 签名产物核验通过：…F81192E2 …`（自替换安装起点） |
+| `16:55:30` 起 | 进程**继续写日志**（`[BatchDebug]`、账号同步、`安装 LocalDevVPN 正常`） |
+| `16:58:20` → `16:59:13` | 批量续签 LiveContainer，**7 秒**装完 |
+
+判据是**否证**而非推测：
+
+- `.triggerTransition` 必然调 `suspend`。`suspend` 生效 ⇒ 进程冻结 ⇒ 日志停止。**日志没停。**
+- `.waitForForeground` 超时必然 `exit(0)`。执行了 ⇒ 进程终止。**进程活着。**
+- 两者都没发生 ⇒ 动作在到达它们之前就被丢掉了 ⇒ **只剩 `.standDown` 的 `return false`。**
+
+因果链因此是：**进程不退出 ⇒ iOS 不完成替换 ⇒ installd 一直等 ⇒ `stageAndInstall` 一直不返回。**
+`MinimuxerInstallChannel` 里那条「提前 suspend 会冻结当前连接」的注释描述的是这个**后果**，
+与修法方向一致 —— 不是它的原因。
+
+> 自续签还主动开了**后台保活**（第一行日志），等于把 `.standDown` 那个
+> 「进程已让出前台，iOS 会自己完成替换」的前提**主动破坏掉**：保活中的进程不会自己终止。
+
 ### 2.4 运行中的弹窗没有任何出口（「怎么都没反应」里最难受的一半）
 
 ```swift
@@ -194,6 +222,17 @@ private static func waitUntilExitIsSafe(_ app: UIApplication) async -> Bool {
 - `.inactive` ⇒ 等最多 3 秒等它恢复（覆盖控制中心/横幅/来电这类短暂遮挡）；恢复不了就照样走 `exit(0)` 兜底，**保证 iOS 一定能完成替换**。
 
 **为什么抽成纯函数**：这段判断原先直接读 `UIApplication.shared.applicationState` 并就地 `return`，没有任何测试覆盖，而它的 `.inactive` 分支正是问题 1 的根因。这类「错了不崩、只会在真机上卡死」的分支必须能单测，所以把「状态 → 动作」的映射独立出来（见 §4 的 `SelfInstallAutoBackgroundTests`）。
+
+> ⚠️ **2026-09-17 修正：这次只修了一半。**
+>
+> `.inactive` 确实修对了（等待 ⇒ 兜底退出）。但 `.background` 被写成
+> `case .standDown: return false` —— 语义是「交给 iOS 完成替换，不强杀进程」。
+> 而原实现里 `.background` 与 `.inactive` 一样是**不退出**的，所以这条路**依然坏着**，
+> 只是换了个写法。用户在这一版复测仍卡在 93%，命中的就是它（详见 §2.3.1）。
+>
+> 根子在于一个**错误前提**：「进程已让出前台 ⇒ iOS 会完成替换」。
+> 对覆盖安装运行中的自己，iOS 需要旧进程**终止**，而后台进程不会自己终止 ——
+> 自续签还主动开了后台保活。修法见 §3.11：`.background` 也改成「有界等待 + 超时强杀」。
 
 ### 3.6 触发点从界面搬到状态层（本轮补修）
 
@@ -370,11 +409,64 @@ if stage == .installing, tick == .restart {
 
 ---
 
+### 3.11 `.standDown` 不再「立即放弃」：有界等待 + 超时强杀（问题 1 的真正修复）
+
+这是 §2.3.1 那个坐实的根因的修复，也是问题 1 的**最后一块**。
+
+#### 改法
+
+`waitUntilExitIsSafe`（返回 `Bool`）改成 `waitUntilItIsTimeToExit`（返回 `Void`）——
+因为**它现在总会返回**（要么转场已触发，要么等到该强杀了），返回 `false` 表示
+「交给 iOS、不强杀」的那条路已经不存在。
+
+三个状态的语义：
+
+| 状态 | 动作 |
+| --- | --- |
+| `.active` | 立即触发转场（不变） |
+| `.inactive`（瞬时失焦，进程仍占前台，强杀会闪退） | 最多等 6 轮 × 0.5 秒 = 3 秒，然后走 `exit(0)` 兜底（不变） |
+| `.background`（用户切走了 / 保活中） | **最多等 8 秒**看用户是否回到前台；回来 ⇒ 转场；等不到 ⇒ **强杀**（新） |
+
+强杀在后台是安全的：用户在别处，看不到闪退；而**不终止进程 iOS 就永远完不成替换**。
+
+#### 把「等多久 / 该不该放弃」抽成可测纯函数
+
+这段判断是「再等等」与「该动手了」的分界，错了不崩、不编译失败，只在真机永久停在 93%
+—— 按项目纪律必须先抽成纯函数再写单测：
+
+```swift
+enum PollOutcome: Equatable { case act, wait }
+
+@MainActor
+static func poll(for step: ReturnHomeStep, waited: TimeInterval, rounds: Int) -> PollOutcome {
+    switch step {
+    case .triggerTransition: return .act
+    case .waitForForeground: return rounds < inactiveRetryLimit ? .wait : .act
+    case .standDown:         return waited < backgroundWaitSeconds ? .wait : .act
+    }
+}
+```
+
+- `.inactive` 用**轮数**预算：语义是「等系统浮层消失」。
+- `.standDown` 用**总时长**预算（8 秒）：语义是「等用户回来」。
+- **两条都有界** —— 无限等只是另一种形式的永久卡住。
+
+`waitUntilItIsTimeToExit` 每个分支要么 `return`、要么 `sleep`，所以既不会忙循环，也一定有界。
+
+#### 顺带修掉的两个实现细节
+
+- **日志不能逐轮刷**：`.standDown` 每 0.5 秒轮询一轮，8 秒就是 16 行。改成只写第一轮，
+  否则刚做的可观测性又被自己淹没。
+- **局部变量不能叫 `step`**：`let step = step(for:)` 会让右侧解析到尚未初始化的局部变量，
+  直接编译失败（`use of local variable 'step' before its declaration`）。改名 `currentStep`。
+
+---
+
 ## 4. 守卫与测试
 
 `Scripts/verify-release-safety.py`：
 
-- 新增 **R10**（安装阶段「看得见、退得出」）：19 条断言 + 13 个变异锚点，覆盖
+- 新增 **R10**（安装阶段「看得见、退得出」）：24 条断言 + 16 个变异锚点，覆盖
   - 哨兵必须排他（`>` 而非 `>=`）；
   - **两个**安装分支都要走 `bridgedInstallProgress`，且包装里真的发 `.installing`；
   - 批量事件流必须带真实百分比（`onInstallProgress` 订阅 + `.appInstallProgress` 事件）；
@@ -393,6 +485,9 @@ if stage == .installing, tick == .restart {
 - **新增通用检查 `#expect must not call a mutating method ...`**（见 §3.9）：mutating 方法名从 `Seal/` 里现取，再扫 `SealTests/**` 的 `#expect(...)` 实参。
 - **批量链路的「回主页」必须带 `.restart` 闸门**（见 §3.10）：`.installing` 重复推送时不得排出第二个「回主页」任务。
 - **「回主屏」链路的日志**（见 §3.10）：这条链路必须真的写日志且 `flush()`；「触发转场」的日志必须排在 `triggerHomeTransition` **之前**（断顺序，不断文案）；两条链路的调用点都必须传真实日志出口（`count(...) == 2`）。
+- **`.standDown` 不得「立即放弃」**（见 §3.11）：该分支必须同时有 `guard outcome == .wait else`、`return }` 与真的 `backgroundPollNanoseconds` sleep —— **刻意不断言 `"exit(0)" in stand_down`**：这段的日志文案里正好含「强制 exit(0)」字样，那是文本巧合不是控制流，删掉真正的 `return` 时它照样通过（绿着坏掉）。
+- **轮询预算 `poll` 必须三个分支都有界**（见 §3.11）：`.triggerTransition → .act`、`.waitForForeground` 按轮数、`.standDown` 按总时长；并钉住常量 `backgroundWaitSeconds = 8`（改成 0 会让转场来不及触发，改成极大等于「永远等」）。
+- **单测必须真的覆盖 `poll` 的边界**（`waited: 0 == .wait`、`everyStateEventuallyActs`）—— 否则「测试被删空」后守卫仍然全绿。
 - **R09 通用化**：把「实参标签顺序必须与声明一致」做成可复用校验，覆盖 `AppRecord` / `signAndInstall` / `installSignedIPA` / `installCachedSignedIPAIfPossible`，并**断言扫到的调用点数下限** —— 本轮第一版正则把真实调用点（`coordinator.signAndInstall(`，前一个字符是 `.`）全部排除，变成「零调用点 ⇒ 零错误 ⇒ 绿」。
 - 新增 `squash()`：把多行代码压成一行式断言，不再在守卫里拼换行符 + 数缩进空格（缩进一改守卫就会莫名其妙地红）。
 - 修掉守卫自身的性能问题：每遍（= 每个变异）内缓存 `load` / `strip_comments`，`rglob` 结果进程内只算一次。**2 分 47 秒 → 48 秒**（此前已慢到被默认命令超时 SIGTERM，表现为「无输出、exit 1」）。
@@ -402,12 +497,12 @@ if stage == .installing, tick == .restart {
 - `SealTests/Signing/InstallStageBridgeTests.swift`（2 条）：哨兵排他性、`enabled == false` 时不补发。
 - `SealTests/Renewal/BatchRefreshSessionTelemetryTests.swift`（5 条）：只在 `.pushing` 采信百分比、越界钳制、安装起点只记一次、离开安装阶段清空遥测。
 - `SealTests/DesignSystem/InstallWaitNoteTests.swift`（2 条）：`m:ss` 格式化与负数钳制。
-- `SealTests/Apps/SelfInstallAutoBackgroundTests.swift`（5 条）：`.inactive` 必须 `.waitForForeground`（问题 1 的根因回归）、只有 `.background` 允许 `.standDown`、未知状态按「还在前台」处理、穷举「全部已知状态里恰好一个走 `.standDown`」。
+- `SealTests/Apps/SelfInstallAutoBackgroundTests.swift`（10 条）：`.inactive` 必须 `.waitForForeground`（问题 1 的根因回归）、只有 `.background` 允许 `.standDown`、未知状态按「还在前台」处理、穷举「全部已知状态里恰好一个走 `.standDown`」；**`poll` 的边界**（见 §3.11）——`.standDown` 在 `waited == 0` 时必须是 `.wait`（**旧实现这里是「立即放弃」**）、8 秒处翻成 `.act`、`.inactive` 在 6 轮处翻成 `.act`、以及穷举「每个状态在预算耗尽后都必须 `.act`」。
 - `SealTests/Signing/InstallStageTimelineTests.swift`（5 条）：首次进入安装阶段记起点、重复推送不重置、其它阶段一律清空、`.keep` 不会凭空补一个起点、批量链路与共享规则一致。
 - `SealTests/Installation/SelfReplacementInstallGateTests.swift`（4 条）：已有安装在进行时第二笔必须被拒、安装结束后解锁、**超时不解锁**、连续超时永不重开。
 - `SealTests/Concurrency/HardTimeoutTests.swift` 补 1 条：`cancelsWorkOnTimeout: false` 时**工作所在任务**的 `Task.isCancelled` 仍为 `false`（断言必须打在 `HardTimeout` 自己创建的那个任务上 —— 在闭包里再套一层 `Task.detached` 就会测到新任务，测试会退化成永远通过）。
 
-结果：**209 源码断言 + 94 变异 PASS**，耗时约 50 秒。（旧断言 `count("if Self.isTimeoutInstallError(error) {") == 2` 因两个 `install` 重载合并成一份而降为 `1`，已同步改为「唯一的重试循环必须把超时当终态」。）
+结果：**214 源码断言 + 97 变异 PASS**，耗时约 54 秒。（旧断言 `count("if Self.isTimeoutInstallError(error) {") == 2` 因两个 `install` 重载合并成一份而降为 `1`，已同步改为「唯一的重试循环必须把超时当终态」。）
 
 ---
 
@@ -419,17 +514,25 @@ if stage == .installing, tick == .restart {
 4. Seal 自续签：在下拉控制中心（`.inactive`）之后仍能完成替换，不再停在 93%。
 5. 批量续签普通 App：确认不再出现长时间停在「传输中」的项。
 6. Seal 自续签：进入安装阶段后点「取消」关掉抽屉，Seal **仍能完成替换**（触发点已在状态层，不随界面消失）—— 这条正是上一轮补修的缺陷（§3.6）。
-7. Seal 自续签：导出日志应能看到**两条链路的完整轨迹**（§3.10 新增了「回主屏」那段）：
+7. Seal 自续签：导出日志应能看到**两条链路的完整轨迹**（§3.10 加了「回主屏」那段，§3.11 加了后台分支）：
    ```
    安装  开始自替换安装：…，第 1/3 次，等待上限 N 秒
    安装  自替换安装仍在等待：已等待 15 秒（installd 安装阶段不回报进度）
    Seal 自替换：上传完成，1.2 秒后判断前台状态并回主屏
-   Seal 自替换：触发回主屏转场（suspend）
+   ├─ 用户还在看 App：
+   │    Seal 自替换：触发回主屏转场（suspend）
+   └─ 用户已切走（保活中）：
+        Seal 自替换：当前在后台，等待回到前台再触发转场（最多 8 秒）
+        ├─ 回到前台 ⇒ Seal 自替换：触发回主屏转场（suspend）
+        └─ 没回来   ⇒ Seal 自替换：在后台等待 8 秒仍未回到前台，强制 exit(0) 让 iOS 完成替换
    安装  自替换安装调用已返回：…        ← 成功
    安装  自替换安装等待超时：…          ← 有界失败
    ```
-   **这条是下一轮排查的入口**：无论成功还是失败，日志都能指出卡在哪一段（上传 / installd / 回主页转场）。
-8. Seal 自续签：如果出现心跳但 `自替换安装调用已返回` **永不出现**，请把日志发回来 —— 这条日志的**有无**就能判定 §6 里那个未决问题（`suspend` 冻结了安装连接 vs AFC/installd 卡住）。
+   **这条是排查入口**：无论成功还是失败，日志都能指出卡在哪一段（上传 / installd / 回主页转场）。
+8. Seal 自续签（**本轮修复的主验证项**）：把 App 切到后台再等它自己完成替换。
+   修复前这条路径会「什么都不做」（§2.3.1），现在应该看到上面那条「当前在后台，等待回到前台…」，
+   并在 8 秒内出现「触发回主屏转场」或「强制 exit(0)」，随后 Seal 重新打开时已是新版。
+   如果仍然卡在 93%，把日志发回来 —— 里面有完整的判定依据。
 
 ---
 
@@ -440,5 +543,6 @@ if stage == .installing, tick == .restart {
 | 安装/上传超时预算偏长 | `mergedTimeout = min(1800, 180 + ipaMB×5) + 600`，20MB 包 ≈ 878 秒 | 是否缩短需用户拍板。缩短的代价是慢设备上的假超时：超时按**确定性拒绝**处理且不重试，但底层安装可能仍在跑 ⇒ 「装上了却记为失败」 |
 | ~~批量链路的「回主页」没有 `.restart` 闸门~~ | **已修（§3.10）**：`consumeBatchEvent` 里 `if stage == .installing` 未按首次进入过滤 | 原先评估为**良性**（第一个任务触发转场后进程被挂起，后续任务不会执行；转场失败时第一个 `exit(0)` 已结束进程），但**每个任务都会写一遍「上传完成 / 触发转场」日志**，把真机排查最关键的那段时序信息淹没。已让 `BatchRefreshSession.advanceStage` 返回 `Tick`，批量链路与单签对齐 |
 | 问题 1 的**调用侧**证据 | 已坐实：真机日志里普通 App 安装 7 秒完成（`16:59:06→16:59:13`），而 Seal 自替换在 `16:53:57` 之后 93 秒无任何安装结论、进程仍活着且从未被替换 ⇒ 自替换的 `stageAndInstall` **没有返回**（§2.5） | 已通过看门狗把「永久卡住」变成「有界失败 + 可查日志」。剩下的只是下一轮真机日志复核 |
-| 自替换的安装调用**为什么不返回** | 仍未知，但已从「靠猜」变成「可观测」（§3.10）。**代码里有一处明确矛盾**：`SelfInstallAutoBackground` 文档说「iOS 只有在旧进程退出前台后才完成替换」，而 `MinimuxerInstallChannel` 的自替换分支写着「自替换也必须让 `installation_proxy` 完整返回；**提前 suspend 会冻结当前连接并留下旧 profile**」—— 可实际触发时机是**上传完成后 1.2 秒**，那时 `stageAndInstall` 显然还没返回。次要嫌疑是无线链路下 AFC 暂存 / installd 解压卡住 | **下一份真机日志即可判定**：看 `安装 自替换安装调用已返回：…` 这条**有没有出现**、以及它相对 `Seal 自替换：触发回主屏转场（suspend）` 的先后。若「已返回」永不出现 ⇒ `suspend` 截断了安装（坐实矛盾），候选修法是把转场触发点从「进入 `.installing`」推迟到「安装调用返回之后」，或改为只 `exit(0)` 不 `suspend`，需真机 A/B；若它出现在转场之前 ⇒ 问题在 AFC / installd 一侧 |
+| 自替换的安装调用**为什么不返回** | **已定位并修复（§2.3.1 / §3.11）**：不是 `suspend` 截断了安装，而是 `.standDown` 分支在 App 处于后台时**直接放弃**，进程既不转场也不退出 ⇒ iOS 不完成替换 ⇒ installd 一直等 ⇒ `stageAndInstall` 一直不返回。已改成「有界等待 + 超时强杀」 | 推理链完整（两份真机日志的**否证**：`suspend` 生效会冻结进程、`exit(0)` 执行会终止进程，两者都没发生），但**仍需真机确认**：第 8 项那条路径跑通即坐实 |
+| ~~`MinimuxerInstallChannel` 与 `SelfInstallAutoBackground` 的时序矛盾~~ | **已澄清（§2.3.1）**：那条注释描述的是「进程不退出 ⇒ 安装不返回」的**后果**，不是原因。两者方向一致，不冲突 | 无需改动 |
 | 问题 6 | 用户消息被截断（「6、签名、续签」） | 待用户补完 |

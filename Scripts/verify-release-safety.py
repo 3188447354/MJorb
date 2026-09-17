@@ -373,6 +373,79 @@ def violations(load=read):
     # 拿它当保留集合会删掉真正在用的那一份，扩展当场失效。
     check("guard record.signedArtifactStatus == .installed else { continue }" in maintenance_source,
           "R08: extension profile ids are optimistic — only trust them after a verified install")
+    # R08: 清理链路的两个「静默失效」入口（2026-09-17 真机取证）。
+    #
+    # 真机日志：`描述文件清理：扫描 0，匹配 0，删除 0，中断于 dump，首个错误：NoDevice`。
+    # 15 秒正好是 `MuxerConstants.deviceFetchTimeoutMs`，说明 `Provision.dumpProfiles`
+    # 内部轮询超时后**一次都没重试**就整轮放弃。而两个触发点的时机都**不保证设备已连上**：
+    # 安装后清理紧随安装（RSD 连接可能正在重建），维护期清理在 App 启动时
+    #（LocalDevVPN 隧道可能还没起来）。同一账号的历史日志里清理是有成功记录的
+    #（`删除 1` / `删除 3`）—— 所以问题不是「清理不可用」，而是「撞上瞬时不可达就白丢一次
+    # 机会」，而下一次机会要等到下次安装或下次启动，profile 在此期间继续累积。
+    check("private static let dumpAttemptLimit = 3" in cleaner_source,
+          "R08: a transient NoDevice must not throw away the whole cleanup round")
+    # 重试必须真的「先重置 provider 再等一等」：provider 可能缓存着一条已经断开的 RSD 连接，
+    # 不重置的话三次重试全走同一条死路，等于没重试（函数还在、循环还在，约束已经失效）。
+    dump_body = squash(strip_comments(section(
+        cleaner_source,
+        "private static func dumpProfiles(",
+        "private static func removeProfiles("
+    )))
+    check("for attempt in 1...dumpAttemptLimit" in dump_body
+          and "Provision.resetProvider()" in dump_body
+          and "Task.sleep(nanoseconds: dumpRetryDelayNanoseconds)" in dump_body,
+          "R08: retrying the dump without resetting the cached provider retries the same dead link")
+    # 调用点必须走这个带重试的包装。直接调 `Provision.dumpProfiles` 会让重试形同虚设。
+    sweep_clean = squash(strip_comments(sweep_body))
+    check("try await dumpProfiles(docsPath: workingDir.path)" in sweep_clean
+          and "Provision.dumpProfiles" not in sweep_clean,
+          "R08: the sweep must go through the retrying dump wrapper")
+    # 试了几次必须进摘要 —— 否则下次真机还是「扫描 0，匹配 0，删除 0」，
+    # 看不出是设备没连上还是清理逻辑本身坏了。
+    check("summary.dumpAttempts = dump.attempts" in cleaner_source,
+          "R08: the retry count is the only evidence that the device was unreachable")
+    # 源码断言只能证明字段被赋值，证明不了它**真的出现在日志里** —— 那是单测的活。
+    # 同时断言「单测文件里的关键断言确实存在」，防止测试被删空后守卫仍然全绿。
+    profile_cleaner_tests = load("SealTests/Installation/DeviceProfileCleanerTests.swift")
+    check("dumpAttempts: 3" in profile_cleaner_tests
+          and 'contains("，dump 尝试 3 次")' in profile_cleaner_tests
+          and "func retriedDumpIsReported()" in profile_cleaner_tests,
+          "R08: the retry count must stay covered by a real unit test")
+    # R08: 「维护为什么没跑」必须可归因（同一次真机取证）。
+    #
+    # `AppMaintenanceJob` 第 4 步是**唯一覆盖全部 Seal 管理 App** 的描述文件清理路径，
+    # 它那条日志是无条件写的，但真机日志里一次都没出现过（而 `系统` 类别在导出里确实存在，
+    # 有 9 条）⇒ 维护要么根本没被调用，要么落在 `.skipped` / `.failed` 上。
+    # 而这两个分支原先一个只有 `break`、一个只弹窗，**都不写日志** ⇒ 完全无法归因，
+    # profile 堆积看起来像清理逻辑坏了（实际可能只是每轮都撞上前台操作）。
+    apps_clean = strip_comments(load("Seal/Features/Apps/AppsViewModel.swift"))
+    maintenance_body = section(apps_clean, "func runMaintenanceIfIdle()", "func fullEmail(for account:")
+    for case_start, case_end, code in (
+        ("case .skipped:", "case .completed(let report):", "SEAL-STORAGE-009"),
+        ("case .aborted(let stage, let reason):", "case .failed(let failure):", "SEAL-STORAGE-006"),
+        ("case .failed(let failure):", "return outcome", "SEAL-STORAGE-010"),
+    ):
+        branch = section(maintenance_body, case_start, case_end)
+        check("logStore?.append(" in branch and code in branch,
+              "R08: every non-.completed maintenance outcome must leave a trace — "
+              "otherwise profile buildup is unattributable (" + code + ")")
+    # R08: 自替换结算清理也必须落日志（同一次真机取证）。
+    #
+    # 这是**唯一**会回收 Seal 自己那份堆积的路径 —— Seal 的自更新不走 `installSignedIPA`，
+    # 所以「安装后旧描述文件清理」那条根本轮不到它。而它原先只把摘要写进**事务审计**
+    #（`finishCleanup` → `store.close(cleanupSummary:)`），事务审计只在 App 内部可读，
+    # 排障时能拿到的只有日志 ⇒ 真机上 Seal 堆了 16 份旧 profile，日志里查不出任何原因。
+    registrar_clean = squash(strip_comments(load("Seal/Core/Renewal/SelfAppRegistrar.swift")))
+    check("try? await logStore?.append(" in registrar_clean
+          and "自替换结算清理：" in registrar_clean
+          and registrar_clean.index("自替换结算清理：") < registrar_clean.index("finishCleanup(cleanup)"),
+          "R08: the self-replacement cleanup must log before closing the transaction — "
+          "the transaction audit is not readable during triage")
+    # 同上：源码断言证明不了「日志真的落下来了」（`logStore` 没注入 / 消息被脱敏吃掉都会静默失效）。
+    handoff_tests = load("SealTests/Renewal/SelfAppPendingHandoffTests.swift")
+    check("func confirmedReplacementLogsCleanupSummary()" in handoff_tests
+          and 'hasPrefix("自替换结算清理：")' in handoff_tests,
+          "R08: the self-replacement cleanup log needs a real unit test")
 
     # R09: 构造器实参顺序必须与声明顺序一致（2026-09-16 被 CI 拦下一次）。
     # 本机（Windows）没有 Swift 工具链，而 `build-package` **不编译测试 target** ——
@@ -1653,6 +1726,70 @@ def main():
          "guard let keepingUUID = keepingByBundleID[profileBundleID.lowercased()] else {\n                continue\n            }",
          "let keepingUUID = keepingByBundleID[profileBundleID.lowercased()] ?? \"\"",
          "R08: a profile may only be deleted after its managed bundle-id lookup succeeded"),
+        # 把 dump 重试次数改回 1：撞上瞬时 NoDevice 就整轮白丢 —— 原样重演 2026-09-16 真机
+        # 的 `扫描 0，匹配 0，删除 0，中断于 dump`，而 profile 在此期间继续累积。
+        ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
+         "    private static let dumpAttemptLimit = 3",
+         "    private static let dumpAttemptLimit = 1",
+         "R08: a transient NoDevice must not throw away the whole cleanup round"),
+        # 重试前不重置 provider：三条重试全走同一条已经断开的 RSD 连接，等于没重试
+        #（循环还在、次数还在，约束已经失效）。
+        ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
+         "                Provision.resetProvider()\n"
+         "                try? await Task.sleep(nanoseconds: dumpRetryDelayNanoseconds)",
+         "                try? await Task.sleep(nanoseconds: dumpRetryDelayNanoseconds)",
+         "R08: retrying the dump without resetting the cached provider retries the same dead link"),
+        # 绕过带重试的包装、直接调 FFI：重试形同虚设，函数与单测都还在。
+        ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
+         "dump = try await dumpProfiles(docsPath: workingDir.path)",
+         "dump = (path: try Provision.dumpProfiles(docsPath: workingDir.path), attempts: 1)",
+         "R08: the sweep must go through the retrying dump wrapper"),
+        # `.skipped` 退回「只有一句 break」：用户看到 profile 一直在堆，
+        # 却查不出「这一轮到底跑没跑」—— 真机排查直接断线。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "            try? await logStore?.append(\n"
+         "                category: .system,\n"
+         '                message: "维护作业本轮跳过：有前台操作正在进行（下次启动或空闲时再试）",\n'
+         '                code: "SEAL-STORAGE-009"\n'
+         "            )\n"
+         "        case .completed",
+         "            break\n"
+         "        case .completed",
+         "R08: every non-.completed maintenance outcome must leave a trace"),
+        # `.failed` 退回「只弹窗不写日志」：用户划掉弹窗后日志里什么都没留下，
+        # 事后完全查不出是哪一步失败。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "            try? await logStore?.append(\n"
+         "                category: .system,\n"
+         "                level: .warning,\n"
+         '                message: "维护作业失败：\\(failure.title)（\\(failure.code)）",\n'
+         '                code: "SEAL-STORAGE-010"\n'
+         "            )\n"
+         "            alertFailure = failure",
+         "            alertFailure = failure",
+         "R08: every non-.completed maintenance outcome must leave a trace"),
+        # 自替换结算清理退回「只写事务审计、不写日志」：排障时拿到的日志里永远看不到
+        # Seal 自己的旧 profile 有没有被回收，16 份堆积看起来像清理逻辑根本不存在。
+        ("Seal/Core/Renewal/SelfAppRegistrar.swift",
+         "            try? await logStore?.append(\n"
+         "                category: .installation,\n"
+         '                message: "自替换结算清理：\\(cleanup.logMessage)",\n'
+         '                code: "SEAL-PROFILE-322"\n'
+         "            )\n"
+         "            try await selfReplacement.finishCleanup(cleanup)",
+         "            try await selfReplacement.finishCleanup(cleanup)",
+         "R08: the self-replacement cleanup must log before closing the transaction"),
+        # 把单测里的关键判定改宽（`hasPrefix("自")` 什么都通过）：
+        # 「单测文件里有这几行」这类断言必须真的会红，否则测试被改宽后守卫照样绿。
+        ("SealTests/Renewal/SelfAppPendingHandoffTests.swift",
+         '$0.message.hasPrefix("自替换结算清理：")',
+         '$0.message.hasPrefix("自")',
+         "R08: the self-replacement cleanup log needs a real unit test"),
+        # 把重试次数的单测改回「只试一次」：断言「单测覆盖了重试」的那条必须真的会红。
+        ("SealTests/Installation/DeviceProfileCleanerTests.swift",
+         "dumpAttempts: 3",
+         "dumpAttempts: 1",
+         "R08: the retry count must stay covered by a real unit test"),
         ("Seal/Core/Maintenance/AppMaintenanceJob.swift",
          "guard let uuid = record.provisioningProfileUUID,",
          "let uuid = record.provisioningProfileUUID ?? \"\",",

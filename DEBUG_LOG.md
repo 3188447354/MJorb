@@ -53,10 +53,56 @@
 - **日志必须写在「挂起 / 退出」之前，并且立刻 `flush()`**。Seal 自替换的「回主屏」终点是 `suspend`（进程被冻结）或 `exit(0)`（进程结束）—— 这两条路之后写的任何日志都出不来。所以「即将触发转场」这条**必须在 `triggerHomeTransition` 之前落盘**，每条日志都要 `flush()` 而不是只 `append`（`SealLogStore` 的 `append` 只写内存缓冲）。顺序反了、或只 append 不 flush，等价于这条链路仍然静默：下次真机排查又只剩「一片空白」。**判据：给一条「会静默卡死」的链路加日志时，先问「这段代码的终点是什么，日志有没有机会落盘」。**
 - **守卫断言要断「语义」，不要断「拼出来的文案」**。`check("case .standDown: return false" in squashed)` 这种拼接式断言，只要在分支里插一条日志就失效 —— 而报出来的失败信息看着像「语义坏了」，实际只是文案挪了位置，很容易把人带偏。改成 `section(squashed, "case .standDown:", "case .triggerTransition:")` 切出分支，再断言里面的**语义**（如 `"guard outcome == .wait else" in branch and "return }" in branch`）。要断顺序时用 `branch.index(a) < branch.index(b)`，同样不依赖日志措辞。
 - **「某字符串在分支里」不等于「那条控制流存在」—— 日志文案会伪装成代码**。给 `.standDown` 写断言时一度用了 `"exit(0)" in stand_down`，而这段的**日志文案**里正好含「强制 exit(0) 让 iOS 完成替换」几个字：有人删掉真正的 `return`（于是永远走不到 `exit(0)` 兜底）时，断言照样通过 —— 绿着坏掉。**断控制流要看结构**（`return }`、`guard ... else`），**不要看那几个字符在不在**；文案是给人看的，不是给守卫看的。
+- **「最佳努力」的链路如果把失败只写进内存 / 事务审计，等于没写**。`DeviceProfileCleaner` 的摘要本来只 `return` 给调用方，调用方再决定写哪；而自替换结算那条路径只把摘要塞进**事务审计文件**（`SelfReplacementTransactionStore`），排障时导出的日志里一个字都没有。同理 `AppsViewModel.runMaintenanceIfIdle` 的 `.skipped` 只有一句 `break`、`.failed` 只弹窗。结果：真机上 Seal 自己堆了 16 份旧 profile，日志里**查不出这条清理跑没跑、是不是被判成身份已变化**。**判据：写「失败不影响主流程」的代码时，问一句「用户把日志发给我，我能看出它失败了吗」** —— 答案若是「不能」，就必须补日志（事务审计、内存缓冲都不算数，排障入口只有导出的日志）。
+- **「一次就放弃」的重试类逻辑，要先算清「底层等多久才失败」**。`Provision.dumpProfiles` 内部轮询 `MuxerConstants.deviceFetchTimeoutMs`（**15000 ms**）后抛 `NoDevice` —— 真机日志里那条 `扫描 0，匹配 0，删除 0，中断于 dump，首个错误：NoDevice` 的 15 秒间隔与它完全吻合，说明**一次都没重试**。而两个触发点的时机都不保证设备已连上（安装后 RSD 可能正在重建、启动时 LocalDevVPN 隧道可能还没起来）。**重试必须配「先重置连接再等一等」**：provider 缓存着一条已经断开的 RSD 连接时，不重置的话三次重试全走同一条死路，循环还在、次数还在，等于没重试（守卫要断言重试体里真的有 `resetProvider()`，不能只断言「有个 for 循环」）。
+- **摘要文案是排障通道，字段少一个就退回「一片空白」**。`ProfileCleanupSummary.logMessage` 是清理唯一的对外输出。历史上它没有「试了几次」这个字段，于是 `扫描 0，匹配 0，删除 0，中断于 dump` 这行看不出「是设备没连上，还是清理逻辑坏了」。**给这类摘要加字段时，同时想清楚「哪几种失败要用它区分」**；并且要给 `logMessage` 写单测 —— 源码断言只能证明字段被赋值，证明不了它**真的出现在日志里**（比如被脱敏吃掉、`logStore` 没注入）。
+- **同一模式出现多次时，「在不在」式断言会互相掩盖；反过来，给常量加断言前要先数它出现几次**。给 `.skipped` / `.failed` 补日志时，三个非 `.completed` 分支各有自己的日志码，断言必须**按分支切出来**再查（`section()` 逐个切），不能在整个 `switch` 上查一次 `logStore?.append(` —— 那样删掉其中一个分支的日志仍会被另外两个掩盖。
 
 ---
 
 ## 历史记录
+
+### 2026-09-17 · 问题 5 的修复**真机上一次都没跑**：dump 不重试 + 两条静默路径
+
+**现象**：用户反馈「描述文件每次申请，旧的和新的并存，Seal 已有 16 个 UUID 对应的文件」。
+上轮（09-16）已经加了 `DeviceProfileCleaner` + `AppMaintenanceJob` 第 4 步，标为「已修」。
+
+**排查**：把用户此前导出的 19 份 `Seal-log*.txt` 里所有「描述文件清理」相关行捞出来 ——
+**一共只有 8 条**，这个数量本身就反常。逐条归类后发现：
+
+- 8 条**全部**来自 `安装后旧描述文件清理（…）：…`，即 `SigningCoordinator` 的安装后路径；
+- 维护路径的 `设备端旧描述文件清理：`（`SEAL-PROFILE-320`，**无条件**写）**一次都没出现过** ——
+  而 `系统` 类别在导出里确实存在（9 条），所以不是导出过滤。⇒ **第 4 步从来没执行过**；
+- 失败那条是 `16:59:28 … 扫描 0，匹配 0，删除 0，中断于 dump，首个错误：NoDevice`，
+  15 秒间隔与 `MuxerConstants.deviceFetchTimeoutMs = 15000` 完全吻合 ⇒ **一次都没重试**。
+
+**根因（三条独立）**：
+
+1. `dumpProfiles` 撞上瞬时 `NoDevice` 就整轮放弃，而两个触发点的时机都不保证设备已连上。
+2. `AppsViewModel.runMaintenanceIfIdle` 的 `.skipped` 只有一句 `break`、`.failed` 只弹窗 ——
+   **都不写日志**，于是「维护为什么没跑」完全无法归因（而 `.skipped` 恰恰是最可能的分支：
+   `MaintenanceGate` 是非阻塞租约，有前台操作就返回 nil）。
+3. `SelfAppRegistrar.reconcileSelfReplacement` 的结算清理**只把摘要写进事务审计**
+   （`finishCleanup` → `store.close(cleanupSummary:)`），不写日志 —— 而这是**唯一**会回收
+   Seal 自己那份堆积的路径（Seal 的自更新不走 `installSignedIPA`）。
+
+**修复**：①`dumpProfiles` 有界重试 3 次，每次前 `Provision.resetProvider()` + 等 4 秒；
+②维护作业三个非 `.completed` 分支各自留痕（`SEAL-STORAGE-009` / `010`，`006` 已有）；
+③自替换结算清理落日志（`SEAL-PROFILE-322`，写在 `finishCleanup` **之前**）；
+④摘要新增 `dumpAttempts` 字段，`logMessage` 在 `> 1` 时输出「，dump 尝试 N 次」。
+
+**涉及文件**：`Seal/Infrastructure/Installation/DeviceProfileCleaner.swift`、
+`Seal/Features/Apps/AppsViewModel.swift`、`Seal/Core/Renewal/SelfAppRegistrar.swift`、
+`SealTests/Installation/DeviceProfileCleanerTests.swift`（**新文件，6 条**）、
+`SealTests/Renewal/SelfAppPendingHandoffTests.swift`（+1 条）、`Scripts/verify-release-safety.py`、
+`docs/qa/2026-09-16-profile-pileup-and-ui-row-layout.md`（§七）、`docs/qa/device-regression-checklist.md`（第 9/10 项）。
+
+**验证状态**：守卫 **224 源码断言 + 105 变异 PASS**（约 61 秒）。真机待验：见回归清单第 9/10 项。
+
+**仍未解决**：日志里有 `扫描 325 / 326，匹配 1，删除 0` —— 设备上有 325+ 份 profile，
+但只有 1 份的 Bundle ID 在保留集合里。**不在 Seal 记录里的 profile 一律不碰**是有意的保守
+（删错一份对应 App 立刻无法启动），但换过 Apple ID 后 Team 后缀变化会产生大量「旧 Bundle ID」
+的 profile，它们永远不会被回收。要处理得先回答「哪些 Bundle ID 算 Seal 的」，是设计决策。
 
 ### 2026-09-17 · 「续签卡在 93%」的真正根因：`.background` 分支「什么都不做」
 

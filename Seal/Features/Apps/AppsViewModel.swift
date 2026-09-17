@@ -467,13 +467,23 @@ final class AppsViewModel: ObservableObject {
     /// 互斥由 `MaintenanceGate` 保证：非空闲（用户正在签名 / 安装 / 续签，或已有维护作业在跑）
     /// 时直接跳过本轮，**不做任何写入或删除**，也不阻塞用户操作。
     /// 调用方在拿到 `.completed` 之后应当重新 `load()` —— 恢复与自注册可能新增或更新了记录。
+    ///
+    /// **每个非 `.completed` 的结果都要留痕**：真机日志里「设备端旧描述文件清理」一次都没出现过
+    /// （`AppMaintenanceJob` 那条日志是**无条件**写的），而 `.skipped` 原先只有一句 `break`、
+    /// `.failed` 只弹窗不写日志 —— 于是「profile 为什么一直在堆」完全无法归因。
     @discardableResult
     func runMaintenanceIfIdle() async -> AppMaintenanceJob.Outcome {
         guard let maintenanceJob else { return .skipped }
         let outcome = await maintenanceJob.run()
         switch outcome {
         case .skipped:
-            break
+            // 非空闲就跳过是**设计意图**（低优先级、可抢占，永不阻塞用户操作），
+            // 但必须能回答「这一轮到底跑没跑」—— 否则 profile 堆积看起来像清理逻辑坏了。
+            try? await logStore?.append(
+                category: .system,
+                message: "维护作业本轮跳过：有前台操作正在进行（下次启动或空闲时再试）",
+                code: "SEAL-STORAGE-009"
+            )
         case .completed(let report):
             if report.orphans.removedTotal > 0 {
                 try? await logStore?.append(
@@ -505,6 +515,13 @@ final class AppsViewModel: ObservableObject {
                 code: "SEAL-STORAGE-006"
             )
         case .failed(let failure):
+            // 原先只弹窗：用户划掉弹窗后日志里什么都没留下，事后完全查不出是哪一步失败。
+            try? await logStore?.append(
+                category: .system,
+                level: .warning,
+                message: "维护作业失败：\(failure.title)（\(failure.code)）",
+                code: "SEAL-STORAGE-010"
+            )
             alertFailure = failure
         }
         return outcome

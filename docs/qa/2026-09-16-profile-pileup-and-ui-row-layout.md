@@ -201,3 +201,149 @@ HStack(alignment: .firstTextBaseline, spacing: 14) {
 
 另外两个可选改进待用户决定：
 ① 安装超时 600s → 180s；② 传输阶段加进度停滞检测。
+
+---
+
+## 七、2026-09-17 复查：上轮的修复**没有生效**，而且原因不止一个
+
+重新读了用户此前导出的全部 `Seal-log*.txt`（19 份），把「描述文件清理」相关的日志行全部捞出来，
+一共只有 8 条 —— 数量少得反常，正好说明了问题。
+
+### 7.1 全部 8 条日志（原文）
+
+| 时间 | 日志 | 链路 |
+|---|---|---|
+| 09-14 20:43:32 | `安装后旧描述文件清理（com.sollinplayer.leguan.seal.Q88QMP4DLM）：扫描 30，匹配 2，删除 1` | 安装后 |
+| 09-14 20:43:52 | `自更新安装前清理：扫描 29，匹配 3，删除 3` | 旧构建（该文案现已不在源码里） |
+| 09-14 20:45:14 | `自更新安装前清理：扫描 28，匹配 1，删除 1` | 旧构建 |
+| 09-15 11:46:02 | `安装后旧描述文件清理（com.kdt.livecontainer…）：扫描 325，匹配 1，删除 0` | 安装后 |
+| 09-15 11:46:55 | `安装后旧描述文件清理（com.stik.stikdebug…）：扫描 326，匹配 1，删除 0` | 安装后 |
+| **09-16 16:59:28** | `安装后旧描述文件清理（com.kdt.livecontainer…）：扫描 0，匹配 0，删除 0，中断于 dump，首个错误：NoDevice` | 安装后 |
+| 09-16 20:55:42 | `安装后旧描述文件清理（com.sollinplayer.leguan…）：扫描 23，匹配 2，删除 1` | 安装后 |
+| 09-16 21:07:38 | `安装后旧描述文件清理（com.example.kazumi…）：扫描 23，匹配 1，删除 0` | 安装后 |
+
+**关键否定证据：`设备端旧描述文件清理：` 一次都没出现过。**
+
+这条日志是 `AppMaintenanceJob` 第 4 步（`SEAL-PROFILE-320`）**无条件**写的，
+而 `系统` 类别在导出里确实存在（9 条）⇒ 不是导出过滤掉了。
+所以结论只能是：**维护期的第 4 步从来没有执行过**。
+
+而第 4 步恰恰是 §3.3 里说的「清掉历史堆积的关键」—— 它是唯一覆盖**全部** Seal 管理 App 的路径。
+也就是说：上轮加的这条路径，真机上一次都没跑。
+
+### 7.2 为什么没跑，原先查不出来
+
+`AppsViewModel.runMaintenanceIfIdle()` 的 `switch outcome` 里：
+
+- `.completed` → 有日志（`SEAL-STORAGE-005` / `008` / `SEAL-PROFILE-321`）
+- `.aborted` → 有日志（`SEAL-STORAGE-006`）
+- **`.skipped` → 只有一句 `break`，不写日志**
+- **`.failed` → 只弹窗（`alertFailure = failure`），不写日志**
+
+`.skipped` 的成因是 `MaintenanceGate` 返回 nil（有前台操作在进行）—— 这是**设计意图**
+（低优先级、可抢占、永不阻塞用户操作），但代价是「这一轮到底跑没跑」完全无法回答。
+用户看到的就是「profile 一直在堆」，而日志里连一行都找不到，看起来像清理逻辑根本不存在。
+
+### 7.3 第二条静默路径：自替换结算清理只写事务、不写日志
+
+`SelfAppRegistrar.reconcileSelfReplacement` 里，结算成功后调用
+`profileCleaner.removeStaleProfiles(request)`，摘要交给
+`selfReplacement.finishCleanup(cleanup)` → `store.close(cleanupSummary:)`，
+**只落进事务审计文件**。
+
+这是**唯一**会回收 Seal 自己那份堆积的路径 —— Seal 的自更新不走 `installSignedIPA`，
+所以 §7.1 那 8 条「安装后旧描述文件清理」根本轮不到它。
+而截图里 Seal 自己堆了 17 份（1 最新 + 16 旧）。
+
+事务审计只在 App 内部可读；真机排障时能拿到的只有**导出的日志**。
+所以「自替换清理有没有跑、是不是被判成 `skipped-identity-changed`」在日志里查不到任何线索。
+
+### 7.4 三处修复
+
+**A. dump 阶段有界重试**（`DeviceProfileCleaner`）
+
+`Provision.dumpProfiles` 内部走 `Device.getFirstDevice()`，轮询
+`MuxerConstants.deviceFetchTimeoutMs`（**15000 ms**）后抛 `NoDevice`。
+`16:59:28` 那条的 15 秒间隔与它完全吻合 ⇒ **一次都没重试**就整轮放弃。
+
+而两个触发点的时机都不保证设备已连上：安装后清理紧随安装（RSD 连接可能正在重建），
+维护期清理在 App 启动时（LocalDevVPN 隧道可能还没起来）。
+
+```swift
+private static let dumpAttemptLimit = 3
+private static let dumpRetryDelayNanoseconds: UInt64 = 4_000_000_000
+
+private static func dumpProfiles(docsPath: String) async throws -> (path: String, attempts: Int) {
+    for attempt in 1...dumpAttemptLimit {
+        if attempt > 1 {
+            // 先重置再等：重置拆掉缓存的死连接，等待让 RSD / 隧道有时间恢复。
+            Provision.resetProvider()
+            try? await Task.sleep(nanoseconds: dumpRetryDelayNanoseconds)
+        }
+        do {
+            return (try Provision.dumpProfiles(docsPath: docsPath), attempt)
+        } catch {
+            if attempt == dumpAttemptLimit { throw error }
+        }
+    }
+    throw MinimuxerError.NoDevice
+}
+```
+
+最坏耗时 ≈ 3 × 15 + 2 × 4 ≈ 53 秒，但整段在后台任务里，不阻塞任何前台操作。
+
+**`Provision.resetProvider()` 不能省**：provider 可能缓存着一条已经断开的 RSD 连接，
+不重置的话三次重试全走同一条死路，等于没重试。
+
+**B. 维护作业每个非 `.completed` 结果都留痕**
+
+| 分支 | 新增日志码 |
+|---|---|
+| `.skipped` | `SEAL-STORAGE-009` — 「维护作业本轮跳过：有前台操作正在进行」 |
+| `.failed` | `SEAL-STORAGE-010` — 「维护作业失败：…」 |
+
+**C. 自替换结算清理落日志**（`SelfAppRegistrar`）
+
+```swift
+try? await logStore?.append(
+    category: .installation,
+    message: "自替换结算清理：\(cleanup.logMessage)",
+    code: "SEAL-PROFILE-322"
+)
+```
+
+写在 `finishCleanup(cleanup)` **之前**：摘要进事务审计只是副作用，日志才是排障入口。
+
+**D. 摘要新增 `dumpAttempts` 字段**
+
+```swift
+/// dump 阶段实际尝试了几次（含首次）。> 1 说明前几次撞上了设备不可达。
+var dumpAttempts = 1
+```
+
+`logMessage` 里只在 `> 1` 时输出「，dump 尝试 N 次」—— 绝大多数清理一次就成功，
+逐条都带「尝试 1 次」只是噪音。
+
+### 7.5 守卫与测试（本轮增量）
+
+- `Scripts/verify-release-safety.py`：**222 源码断言 + 102 变异**（此前 214 + 97），约 69 秒
+  - 新增 R08 断言：重试预算值、重试体必须含 `resetProvider` + `sleep`、
+    调用点必须走包装（`Provision.dumpProfiles` 不得出现在 `removeProfiles` 里）、
+    `summary.dumpAttempts = dump.attempts`、维护三个非 `.completed` 分支各自的日志码、
+    自替换清理日志必须排在 `finishCleanup` 之前
+  - 新增 7 个变异锚点：重试次数改回 1 / 去掉 `resetProvider` / 绕过包装直接调 FFI /
+    `.skipped` 改回 `break` / `.failed` 去掉日志 / 自替换去掉日志 / 两处「单测被改宽」
+- 新增单测：
+  - `SealTests/Installation/DeviceProfileCleanerTests.swift`（**新文件，6 条**）——
+    摘要文案的信息量。这是清理唯一的排障通道，字段少一个就退回「一片空白」。
+  - `SelfAppPendingHandoffTests.confirmedReplacementLogsCleanupSummary`（1 条）——
+    断言日志**真的落下来了**（源码断言证明不了 `logStore` 被注入、消息没被脱敏吃掉）。
+
+### 7.6 仍未解决（需要真机日志）
+
+| # | 现象 | 判断 |
+|---|---|---|
+| 1 | `扫描 325 / 326，匹配 1，删除 0` | 设备上有 325+ 份 profile，但只有 1 份的 Bundle ID 在保留集合里。**其余不在 Seal 记录里的 profile 一律不碰**（§3.2 的有意保守）—— 换过 Apple ID 后 Team 后缀变化会产生大量「旧 Bundle ID」的 profile，它们永远不会被回收。要处理需要先回答「哪些 Bundle ID 算 Seal 的」，是设计决策，不是 bug 修复 |
+| 2 | `自更新安装前清理` 的文案已不在源码里 | 09-14 那两条来自旧构建，不影响现状，但说明这段文案被改过名 |
+| 3 | 维护第 4 步是否真的会因为 `.skipped` 而长期跑不到 | 本轮加了 `SEAL-STORAGE-009` 后可统计。若日志里长期只有 `009` 而没有 `320`，说明 `MaintenanceGate` 的抢占过于频繁，需要改成「推迟」而不是「跳过」 |
+

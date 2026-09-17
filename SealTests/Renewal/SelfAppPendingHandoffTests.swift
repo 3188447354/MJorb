@@ -93,6 +93,34 @@ struct SelfAppPendingHandoffTests {
         #expect(try await fixture.transactionStore.loadPending() == nil)
     }
 
+    /// 自替换结算清理是**唯一**会回收 Seal 自己那份 profile 堆积的路径（Seal 的自更新不走
+    /// `installSignedIPA`，所以「安装后旧描述文件清理」根本轮不到它）。而它原先只把摘要写进
+    /// **事务审计** —— 排障时能拿到的只有日志，于是真机上 Seal 堆了 16 份旧 profile，
+    /// 日志里却查不出这条清理到底跑没跑、是不是被判成了身份已变化。
+    ///
+    /// 这里守的是「日志真的落下来了」：源码断言只能证明调用了 `logStore?.append`，
+    /// 证明不了消息内容真的进得去（比如 `logStore` 没被注入、或消息被脱敏吃掉）。
+    @Test
+    func confirmedReplacementLogsCleanupSummary() async throws {
+        let logDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "SealCleanupLog-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: logDirectory) }
+        let logStore = SealLogStore(
+            fileURL: logDirectory.appending(path: "Logs.json"),
+            fileProtector: MarkerFileProtector()
+        )
+        let fixture = try await ReplacementRegistrarFixture.make(action: .settle, logStore: logStore)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        try await fixture.registrar.ensureRegistered()
+
+        let entries = try await logStore.entries()
+        // 判定写在 `#expect` 外面：`#expect` 是宏，会把表达式重写成闭包、子表达式绑成 `$0`，
+        // 把 `contains(where:)` 这类带闭包的调用塞进去容易被改写出意料之外的形状。
+        let logged = entries.contains { $0.message.hasPrefix("自替换结算清理：") }
+        #expect(logged, "结算清理必须在日志里留痕，否则 Seal 自己的 profile 堆积无法归因")
+    }
+
     @Test
     func interruptedSelfRenewalRemainsUnknownAfterRestart() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "SealQueueHandoff-\(UUID())")
@@ -244,7 +272,10 @@ private struct ReplacementRegistrarFixture {
     let replacement: StubSelfReplacement
     let profileCleaner: RecordingProfileCleaner
 
-    static func make(action: SelfReplacementReconcileAction) async throws -> ReplacementRegistrarFixture {
+    static func make(
+        action: SelfReplacementReconcileAction,
+        logStore: SealLogStore? = nil
+    ) async throws -> ReplacementRegistrarFixture {
         let root = FileManager.default.temporaryDirectory
             .appending(path: "SealReplacementRegistrar-\(UUID().uuidString)", directoryHint: .isDirectory)
         let documents = root.appending(path: "Documents", directoryHint: .isDirectory)
@@ -329,7 +360,8 @@ private struct ReplacementRegistrarFixture {
             accountRepository: HandoffEmptyAccountRepository(),
             fileStore: fileStore,
             selfReplacement: replacement,
-            profileCleaner: profileCleaner
+            profileCleaner: profileCleaner,
+            logStore: logStore
         )
         return ReplacementRegistrarFixture(
             root: root,

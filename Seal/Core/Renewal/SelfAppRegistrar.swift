@@ -256,6 +256,16 @@ actor SelfAppRegistrar {
             )
             let cleanup = await profileCleaner?.removeStaleProfiles(request)
                 ?? ProfileCleanupSummary(stage: "skipped-no-cleaner")
+            // 自替换结算清理是**唯一**会回收 Seal 自己那份堆积的路径 —— Seal 的自更新
+            // 不走 `installSignedIPA`，所以「安装后旧描述文件清理」那条根本轮不到它。
+            // 而它原先只把摘要写进事务审计、**不写日志**：真机上 Seal 堆了 16 份旧 profile，
+            // 日志里却完全查不出这条清理到底跑没跑、是不是被判成了身份已变化。
+            // 事务审计只在 App 内部可读，排障时拿到的只有日志 —— 所以必须同时落日志。
+            try? await logStore?.append(
+                category: .installation,
+                message: "自替换结算清理：\(cleanup.logMessage)",
+                code: "SEAL-PROFILE-322"
+            )
             try await selfReplacement.finishCleanup(cleanup)
             return true
         }

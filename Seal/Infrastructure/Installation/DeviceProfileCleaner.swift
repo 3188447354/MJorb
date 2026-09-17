@@ -25,11 +25,14 @@ struct ProfileCleanupSummary: Sendable, Equatable {
     var removeFailed = 0
     var stage: String = "done"
     var firstError: String?
+    /// dump 阶段实际尝试了几次（含首次）。> 1 说明前几次撞上了设备不可达。
+    var dumpAttempts = 1
 
     var logMessage: String {
         var text = "描述文件清理：扫描 \(scanned)，匹配 \(matched)，删除 \(removed)"
         if removeFailed > 0 { text += "，删除失败 \(removeFailed)" }
         if stage != "done" { text += "，中断于 \(stage)" }
+        if dumpAttempts > 1 { text += "，dump 尝试 \(dumpAttempts) 次" }
         if let firstError { text += "，首个错误：\(firstError)" }
         return text
     }
@@ -107,6 +110,47 @@ struct DeviceProfileCleaner: Sendable {
         return await removeProfiles(keepingByBundleID: normalized)
     }
 
+    /// dump 阶段的最大尝试次数（含首次）与重试间隔。
+    ///
+    /// 最坏耗时 ≈ 3 × 15 秒（每次 dump 内部自己的 `deviceFetchTimeoutMs` 轮询）+ 2 × 4 秒 ≈ 53 秒，
+    /// 但整段都在后台任务里，不阻塞任何前台操作 —— 而 profile 堆积是免费账号下唯一会
+    /// 持续累积、且会误导后续校验的问题，值得多花这点时间。
+    private static let dumpAttemptLimit = 3
+    private static let dumpRetryDelayNanoseconds: UInt64 = 4_000_000_000
+
+    /// dump 设备端 profile，带**有界重试**。
+    ///
+    /// `Provision.dumpProfiles` 内部走 `Device.getFirstDevice()`，它会轮询
+    /// `MuxerConstants.deviceFetchTimeoutMs`（15 秒）后抛 `NoDevice`。而两个触发点的时机
+    /// 都**不保证设备已经连上**：
+    ///   - 安装后清理紧随安装，RSD 连接可能正在重建；
+    ///   - 维护期清理在 App 启动时，LocalDevVPN 隧道可能还没起来。
+    ///
+    /// 真机证据（2026-09-16 16:59:28）：`扫描 0，匹配 0，删除 0，中断于 dump，首个错误：NoDevice`
+    /// —— 15 秒正好是 `deviceFetchTimeoutMs`，说明**一次都没重试**就整轮放弃了。
+    /// 而同一账号的历史日志里清理是有成功记录的（`删除 1` / `删除 3`），所以问题不是
+    /// 「清理不可用」，而是「撞上瞬时不可达就白丢一次机会」—— 下一次机会要等到下次安装
+    /// 或下次启动，而 profile 在此期间继续累积。
+    ///
+    /// 每次重试前 `Provision.resetProvider()`：provider 可能缓存着一条已经断开的 RSD 连接，
+    /// 不重置的话重试还是走同一条死路。
+    private static func dumpProfiles(docsPath: String) async throws -> (path: String, attempts: Int) {
+        for attempt in 1...dumpAttemptLimit {
+            if attempt > 1 {
+                // 先重置再等：重置拆掉缓存的死连接，等待让 RSD / 隧道有时间恢复。
+                Provision.resetProvider()
+                try? await Task.sleep(nanoseconds: dumpRetryDelayNanoseconds)
+            }
+            do {
+                return (try Provision.dumpProfiles(docsPath: docsPath), attempt)
+            } catch {
+                if attempt == dumpAttemptLimit { throw error }
+            }
+        }
+        // 循环内必然 return 或 throw；这行只为让编译器满意。
+        throw MinimuxerError.NoDevice
+    }
+
     private static func removeProfiles(
         keepingByBundleID: [String: String]
     ) async -> ProfileCleanupSummary {
@@ -118,16 +162,17 @@ struct DeviceProfileCleaner: Sendable {
 
         defer { try? fileManager.removeItem(at: workingDir) }
 
-        let dumpDir: String
+        let dump: (path: String, attempts: Int)
         do {
-            dumpDir = try Provision.dumpProfiles(docsPath: workingDir.path)
+            dump = try await dumpProfiles(docsPath: workingDir.path)
         } catch {
             summary.stage = "dump"
             summary.firstError = String(describing: error)
             return summary
         }
+        summary.dumpAttempts = dump.attempts
 
-        let dumpURL = URL(fileURLWithPath: dumpDir)
+        let dumpURL = URL(fileURLWithPath: dump.path)
         let profileURLs = (try? fileManager.contentsOfDirectory(
             at: dumpURL,
             includingPropertiesForKeys: nil,

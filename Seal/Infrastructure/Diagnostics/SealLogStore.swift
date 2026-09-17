@@ -71,7 +71,14 @@ actor SealLogStore {
         let notice = droppedSinceClear > 0
             ? "（自上次清空以来已有 \(droppedSinceClear) 条更早日志被滚动丢弃）"
             : nil
-        return SealLogTextFormatter.exportText(buffer.reversed(), capacity: maximumEntries, notice: notice)
+        // 构建标识显式传下去（而不是靠默认参数）：这条依赖是「日志能不能定版」的关键，
+        // 要能被守卫的源码断言看见 —— 删掉它守卫就该红。
+        return SealLogTextFormatter.exportText(
+            buffer.reversed(),
+            capacity: maximumEntries,
+            notice: notice,
+            buildLabel: SealLogTextFormatter.currentBuildLabel
+        )
     }
 
     private static func redacted(_ entry: SealLogEntry) -> SealLogEntry {

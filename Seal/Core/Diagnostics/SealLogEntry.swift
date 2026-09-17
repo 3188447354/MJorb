@@ -67,12 +67,39 @@ extension SealLogEntry.Level {
 
 /// 日志导出统一排版：北京时间 + 中文固定宽度栏目，便于阅读。
 enum SealLogTextFormatter {
-    static func exportText(_ entries: [SealLogEntry], capacity: Int = 1000, notice: String? = nil) -> String {
+    /// 当前构建标识，形如 `1.1.16 (91)`。
+    ///
+    /// **为什么构建号必须进日志表头**：`CURRENT_PROJECT_VERSION` 由
+    /// `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，所以它**唯一对应一次 CI 构建**、
+    /// 进而唯一对应一个提交。没有它就无法判断「这份日志来自哪个构建」——
+    /// 2026-09-17 实际踩到：拿着一份**旧构建**的日志去分析早就改过的代码，
+    /// 从日志文案反推出「修复没生效」的结论，其实那个修复根本还没进到那份构建里。
+    /// 有了这一行，`grep 构建` 就能一眼定版，不用再去比对日志文案的措辞。
+    static var currentBuildLabel: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        switch (version, build) {
+        case let (version?, build?): return "\(version) (\(build))"
+        case let (version?, nil): return version
+        case let (nil, build?): return "(\(build))"
+        default: return "未知"
+        }
+    }
+
+    static func exportText(
+        _ entries: [SealLogEntry],
+        capacity: Int = 1000,
+        notice: String? = nil,
+        buildLabel: String = SealLogTextFormatter.currentBuildLabel
+    ) -> String {
         let formatter = DateFormatter()
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        var lines = ["Seal 日志 · 北京时间 · 保留最近 \(capacity) 条"]
+        var lines = [
+            "Seal 日志 · 北京时间 · 保留最近 \(capacity) 条",
+            "构建 \(buildLabel) · 构建号取自 CI run number，可用于定位对应提交"
+        ]
         if let notice {
             lines.append(notice)
         }

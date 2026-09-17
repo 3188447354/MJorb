@@ -57,10 +57,64 @@
 - **「一次就放弃」的重试类逻辑，要先算清「底层等多久才失败」**。`Provision.dumpProfiles` 内部轮询 `MuxerConstants.deviceFetchTimeoutMs`（**15000 ms**）后抛 `NoDevice` —— 真机日志里那条 `扫描 0，匹配 0，删除 0，中断于 dump，首个错误：NoDevice` 的 15 秒间隔与它完全吻合，说明**一次都没重试**。而两个触发点的时机都不保证设备已连上（安装后 RSD 可能正在重建、启动时 LocalDevVPN 隧道可能还没起来）。**重试必须配「先重置连接再等一等」**：provider 缓存着一条已经断开的 RSD 连接时，不重置的话三次重试全走同一条死路，循环还在、次数还在，等于没重试（守卫要断言重试体里真的有 `resetProvider()`，不能只断言「有个 for 循环」）。
 - **摘要文案是排障通道，字段少一个就退回「一片空白」**。`ProfileCleanupSummary.logMessage` 是清理唯一的对外输出。历史上它没有「试了几次」这个字段，于是 `扫描 0，匹配 0，删除 0，中断于 dump` 这行看不出「是设备没连上，还是清理逻辑坏了」。**给这类摘要加字段时，同时想清楚「哪几种失败要用它区分」**；并且要给 `logMessage` 写单测 —— 源码断言只能证明字段被赋值，证明不了它**真的出现在日志里**（比如被脱敏吃掉、`logStore` 没注入）。
 - **同一模式出现多次时，「在不在」式断言会互相掩盖；反过来，给常量加断言前要先数它出现几次**。给 `.skipped` / `.failed` 补日志时，三个非 `.completed` 分支各有自己的日志码，断言必须**按分支切出来**再查（`section()` 逐个切），不能在整个 `switch` 上查一次 `logStore?.append(` —— 那样删掉其中一个分支的日志仍会被另外两个掩盖。
+- **分析真机日志之前，先确定它来自哪个构建**。2026-09-17 白跑了一整轮：拿一份日志去分析「修复为什么没生效」，比对到最后才发现那份日志来自**比修复更早的构建**，前提根本不成立。判据是**构建号 = CI run number**（`Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`），所以构建号唯一对应一个提交。没有构建号时只能**比对日志文案的措辞**去反推（本轮就是用 `安装后旧描述文件清理（<bundleID>）` vs `（主 <bundleID>，共 N 个 Bundle ID）` 定位到分界线在 run#79）。**这是不可接受的取证成本**，所以日志表头现在自带构建号 —— 以后先 `grep 构建` 定版，再开始分析。
+- **「某个无条件日志零命中」是极强的否定证据，但要先排除两个干扰**：①导出时被类别过滤（确认该类别在导出里确实存在）；②被环形缓冲滚动丢弃（导出文本里会有「滚动丢弃」提示）。两者都排除后，零命中就等价于「这条路径从未执行」。配合「**同一个作业里所有相关日志码都零命中**」可以进一步区分「没跑到」和「跑到了但中途退出」—— 本轮就是靠 `SEAL-PROFILE-320`（无条件）+ `SEAL-STORAGE-006`（被打断）**双双零命中**，推出「维护作业从未完成过一轮，且不是被打断」。
 
 ---
 
 ## 历史记录
+
+### 2026-09-17 · 日志无法定版：让表头带上构建号（= CI run number）
+
+**现象**：复查「描述文件堆积」时，日志文案是
+`安装后旧描述文件清理（com.kdt.livecontainer…）：…`，
+而当前源码是 `安装后旧描述文件清理（主 …，共 N 个 Bundle ID）：…`。**`主 ` 与 `共 N 个` 零命中。**
+
+**排查**：`Scripts/build-unsigned-ipa.sh:33` 里
+`CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER:-${SEAL_BUILD_NUMBER:-1}}"` ——
+**构建号就是 GitHub Actions 的 run number**，因此唯一对应一个提交。
+拿文案去比对历史提交，得到分界线：
+
+| CI run | 提交 | 构建时间（北京） | 文案 |
+|---|---|---|---|
+| run#73 | `aba93cc` | 09-16 19:23 | 旧（无 `主 `） |
+| run#75 | `0c16174` | 09-16 22:49 | 旧（无 `主 `） |
+| **run#79** | **`bc069e3`** | **09-17 00:48** | **新（含 `主 …，共 N 个 Bundle ID`）** |
+
+而用户最新那份日志最后一条是 **09-16 21:56** ⇒ **用户的构建 ≤ run#75**。
+
+**结论**：§3.1/§3.2（扩展 profile 覆盖）与 09-17 的三处修复**从未在真机上运行过**。
+上一轮那句「上轮的修复没生效」要改成「上轮的修复用户还没装上」。
+
+**顺带的决定性证据**：维护作业的六个日志码
+（`SEAL-STORAGE-005/006/008`、`SEAL-PROFILE-320/321`、`SEAL-SELF-REG-001`）
+在 19 份日志里**全部零命中**，且导出无「滚动丢弃」提示（内容完整）。
+`320` 是无条件写的、`006` 覆盖「被打断」—— 两者都没有 ⇒
+作业**从未走到第 4 步，也没在第 1–3 步被打断** ⇒ 只剩「每轮都被 `MaintenanceGate` 跳过」
+或「第 1–3 步 `.failed`」，而这两种原先都不写日志。
+
+**修复**（让这类取证不再需要比对文案）：
+
+```swift
+static var currentBuildLabel: String {
+    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+    let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+    ...
+}
+```
+
+表头多一行：`构建 1.1.16 (91) · 构建号取自 CI run number，可用于定位对应提交`。
+`SealLogStore.exportText()` **显式**透传（不靠默认参数），让守卫的源码断言看得见这条依赖。
+
+**涉及文件**：`Seal/Core/Diagnostics/SealLogEntry.swift`、
+`Seal/Infrastructure/Diagnostics/SealLogStore.swift`、
+`SealTests/Diagnostics/SealLogTextFormatterTests.swift`（**新文件，5 条**）、
+`Scripts/verify-release-safety.py`、`docs/qa/2026-09-16-profile-pileup-and-ui-row-layout.md`（§7.6–§7.8）、
+`docs/qa/device-regression-checklist.md`（新增「第 0 步」）。
+
+**顺带修正一处过度解读**：`扫描 325，匹配 1，删除 0` 曾被当成「旧 Bundle ID 的 profile
+永远回收不掉」的线索 —— 但那也是 run#75 之前的构建，当时 `keep-map` 只有单条
+（`for: bundleID, keeping: uuid`），`匹配 1` 是**正常表现**，不是泄漏信号。
 
 ### 2026-09-17 · 问题 5 的修复**真机上一次都没跑**：dump 不重试 + 两条静默路径
 

@@ -447,6 +447,31 @@ def violations(load=read):
           and 'hasPrefix("自替换结算清理：")' in handoff_tests,
           "R08: the self-replacement cleanup log needs a real unit test")
 
+    # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
+    #
+    # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
+    # 所以它唯一对应一次 CI 构建、进而唯一对应一个提交。没有这一行时，
+    # 「这份日志来自哪个构建」只能靠**比对日志文案的措辞**去反推 ——
+    # 2026-09-17 实际踩到：一份日志的文案与当前源码不一致，顺着它去比对历史提交，
+    # 才发现那份日志来自比修复更早的构建，整轮分析的前提都不成立。
+    formatter_source = strip_comments(load("Seal/Core/Diagnostics/SealLogEntry.swift"))
+    check("static var currentBuildLabel: String" in formatter_source
+          and 'CFBundleShortVersionString' in formatter_source
+          and 'CFBundleVersion' in formatter_source,
+          "R08: the log header must identify the build it came from")
+    check('"构建 \\(buildLabel)' in formatter_source,
+          "R08: the build label must actually be rendered into the export header")
+    # 真实导出路径必须**显式**透传：靠默认参数虽然也能工作，但这条依赖
+    # 「日志能不能定版」，要能被源码断言看见 —— 删掉它守卫就该红。
+    store_source = squash(strip_comments(load("Seal/Infrastructure/Diagnostics/SealLogStore.swift")))
+    check("buildLabel: SealLogTextFormatter.currentBuildLabel" in store_source,
+          "R08: the store must pass the build label through — otherwise exports silently lose it")
+    # 源码断言只能证明「渲染逻辑在」，证明不了导出文本里真有这一行。
+    formatter_tests = load("SealTests/Diagnostics/SealLogTextFormatterTests.swift")
+    check("func storeExportIncludesBuildLabel()" in formatter_tests
+          and "func buildLabelComesBeforeEntries()" in formatter_tests,
+          "R08: the build label in the export needs a real unit test")
+
     # R09: 构造器实参顺序必须与声明顺序一致（2026-09-16 被 CI 拦下一次）。
     # 本机（Windows）没有 Swift 工具链，而 `build-package` **不编译测试 target** ——
     # 所以测试里 `AppRecord(...)` 的参数顺序写错会顺利通过 build-package，
@@ -1790,6 +1815,20 @@ def main():
          "dumpAttempts: 3",
          "dumpAttempts: 1",
          "R08: the retry count must stay covered by a real unit test"),
+        # 导出时不透传构建标识：表头还在，但「这份日志来自哪个构建」重新变成靠猜 ——
+        # 正是 2026-09-17 那轮白跑的成因。
+        ("Seal/Infrastructure/Diagnostics/SealLogStore.swift",
+         "            notice: notice,\n"
+         "            buildLabel: SealLogTextFormatter.currentBuildLabel\n"
+         "        )",
+         "            notice: notice\n"
+         "        )",
+         "R08: the store must pass the build label through"),
+        # 表头不再渲染构建号（字段还在、属性还在，只是没进文本）。
+        ("Seal/Core/Diagnostics/SealLogEntry.swift",
+         '"构建 \\(buildLabel)',
+         '"构建"',
+         "R08: the build label must actually be rendered into the export header"),
         ("Seal/Core/Maintenance/AppMaintenanceJob.swift",
          "guard let uuid = record.provisioningProfileUUID,",
          "let uuid = record.provisioningProfileUUID ?? \"\",",

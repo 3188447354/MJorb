@@ -339,11 +339,92 @@ var dumpAttempts = 1
   - `SelfAppPendingHandoffTests.confirmedReplacementLogsCleanupSummary`（1 条）——
     断言日志**真的落下来了**（源码断言证明不了 `logStore` 被注入、消息没被脱敏吃掉）。
 
-### 7.6 仍未解决（需要真机日志）
+### 7.6 更关键的一层：**那份日志来自一个比修复更早的构建**
+
+上面 §7.1–§7.5 的分析有个隐含前提 —— 「日志反映的是当前代码的行为」。这个前提**不成立**。
+
+线索是日志文案与源码对不上：日志里是
+
+```
+安装后旧描述文件清理（com.kdt.livecontainer.seal.3432ZHJUF9）：描述文件清理：…
+```
+
+而当前源码（`SigningCoordinator.swift`）是
+
+```swift
+message: "安装后旧描述文件清理（主 \(effectiveBundleID)，共 \(keepingByBundleID.count) 个 Bundle ID）：\(summary.logMessage)"
+```
+
+**`主 ` 与 `共 N 个 Bundle ID` 在所有日志里一次都没出现过。**
+
+#### 怎么把「文案差异」变成「构建号」
+
+`Scripts/build-unsigned-ipa.sh:33`：
+
+```bash
+CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER:-${SEAL_BUILD_NUMBER:-1}}"
+```
+
+**构建号 = GitHub Actions 的 run number** ⇒ 唯一对应一次 CI 构建 ⇒ 唯一对应一个提交。
+而安装失败时的诊断信息里本来就会打 `Seal构建\(CFBundleVersion)`（如 `Seal构建61`）。
+
+拿文案去比对历史提交，得到一条清晰的分界线：
+
+| CI run | 提交 | 构建时间（北京） | `安装后旧描述文件清理` 的文案 |
+|---|---|---|---|
+| run#73 | `aba93cc` | 09-16 19:23 | `（<bundleID>）` ← 旧 |
+| run#75 | `0c16174` | 09-16 22:49 | `（<bundleID>）` ← 旧 |
+| **run#79** | **`bc069e3`** | **09-17 00:48** | `（主 <bundleID>，共 N 个 Bundle ID）` ← **新** |
+
+而用户最新的一份日志（`Seal-log(2) (1).txt`）**最后一条是 09-16 21:56**。
+
+> **结论：用户的构建 ≤ run#75，早于 run#79。**
+> 也就是说 §3.1/§3.2（扩展 profile 覆盖）**从未在真机上运行过**，
+> 今天（09-17）的三处修复更是无从谈起。
+
+这解释了为什么 §7.1 里那些「修复没生效」的观察会那么干净 —— 因为那些修复**根本不在那个构建里**。
+
+#### 顺带得到一个决定性证据：维护作业从未完成过一轮
+
+`AppMaintenanceJob.run()` 的四个步骤会留下这些日志码：
+
+| 码 | 触发条件 |
+|---|---|
+| `SEAL-STORAGE-005` | 孤儿目录清理有删除 |
+| `SEAL-STORAGE-006` | 作业在某个阶段被用户操作打断（`.aborted`） |
+| `SEAL-STORAGE-008` | 有导入事务目录被跳过 |
+| `SEAL-PROFILE-320` | **第 4 步跑到就写（无条件）** |
+| `SEAL-PROFILE-321` | 描述文件清理有删除 |
+| `SEAL-SELF-REG-001` | 自注册失败 |
+
+**全部 19 份日志里，这六个码零命中。** 而日志没有「滚动丢弃」提示（导出是完整的）。
+
+`320` 无条件 + `006` 也零命中 ⇒ 作业**从来没走到过第 4 步**，而且**也没在第 1–3 步被打断**
+⇒ 只剩两种可能：`gate.tryAcquire()` 每次都返回 nil（`.skipped`），
+或者第 1–3 步 `.failed` 了。而这两种原先**都不写日志**（`.skipped` 只有 `break`、
+`.failed` 只弹窗）—— 正是 §7.4 的 B 项要解决的。
+
+### 7.7 仍未解决（需要真机日志）
 
 | # | 现象 | 判断 |
 |---|---|---|
-| 1 | `扫描 325 / 326，匹配 1，删除 0` | 设备上有 325+ 份 profile，但只有 1 份的 Bundle ID 在保留集合里。**其余不在 Seal 记录里的 profile 一律不碰**（§3.2 的有意保守）—— 换过 Apple ID 后 Team 后缀变化会产生大量「旧 Bundle ID」的 profile，它们永远不会被回收。要处理需要先回答「哪些 Bundle ID 算 Seal 的」，是设计决策，不是 bug 修复 |
-| 2 | `自更新安装前清理` 的文案已不在源码里 | 09-14 那两条来自旧构建，不影响现状，但说明这段文案被改过名 |
-| 3 | 维护第 4 步是否真的会因为 `.skipped` 而长期跑不到 | 本轮加了 `SEAL-STORAGE-009` 后可统计。若日志里长期只有 `009` 而没有 `320`，说明 `MaintenanceGate` 的抢占过于频繁，需要改成「推迟」而不是「跳过」 |
+| 1 | 维护作业为什么一轮都没完成 | 现在有了 `SEAL-STORAGE-009`（跳过）/ `010`（失败）就能区分。若长期只有 `009`，说明 `MaintenanceGate` 的抢占过于频繁（它在启动路径上、且**非阻塞**：拿不到就跳过、不排队），要把「跳过」改成「推迟」 |
+| 2 | `扫描 325，匹配 1，删除 0` | **上一轮把它当成泄漏信号是过度解读** —— 那是 run#75 之前的构建，`keep-map` 只有单条（`for: bundleID, keeping: uuid`），所以 `匹配 1` 是**正常表现**。当前版本改为「主 App + 全部扩展」的多条映射后，同一行会变成 `匹配 N`。这一条不再作为线索 |
+| 3 | `自更新安装前清理` 的文案已不在源码里 | 09-14 那两条来自更早的构建（该文案被改过名），不影响现状 |
+| 4 | `扫描 325/326`（09-15）→ `扫描 23`（09-16） | 设备上的 profile 数从 325 掉到 23，**原因不明**。用户若在此期间用别的工具清过、或删过 App，请说明一下 —— 这会改变「堆积速度」的估算 |
+
+### 7.8 已做的配套改进：让日志自带构建号
+
+上面那轮取证绕了很大一圈，根因是**导出的日志里没有任何构建标识**。
+`SealLogTextFormatter.exportText` 的表头现在多一行：
+
+```
+Seal 日志 · 北京时间 · 保留最近 1000 条
+构建 1.1.16 (91) · 构建号取自 CI run number，可用于定位对应提交
+```
+
+`currentBuildLabel` 读 `CFBundleShortVersionString` + `CFBundleVersion`；
+`SealLogStore.exportText()` **显式**透传（不靠默认参数），这样守卫的源码断言看得见这条依赖。
+新增 `SealTests/Diagnostics/SealLogTextFormatterTests.swift`（5 条），
+其中 `storeExportIncludesBuildLabel` 走真实导出路径 —— 源码断言证明不了它真的进了文本。
 

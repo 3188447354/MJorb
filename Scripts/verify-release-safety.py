@@ -1246,6 +1246,31 @@ def violations(load=read):
           "R24: 退避重试的调用点数量变了（应为 3 个 portal 变更）—— "
           "新增/删除 portal 调用时请同步这里")
 
+    # R25: 同步阻塞 FFI 的**每一处**等待都要有界（2026-09-17 审计出来的）。
+    #
+    # 本仓明文规则：「同步阻塞 FFI 的等待必须带超时」。而 `Minimuxer.isAppInstalled`
+    # 有两处**只放到 `Task.detached`、没有任何超时** —— 那只把它挪出主线程，
+    # **阻塞本身仍然无界**：死会话上不报错、只阻塞到操作系统放弃。
+    # 其中一处跑在维护期 ⇒ 一次无界阻塞会让**整轮维护永远完不成**（日志里毫无线索）。
+    #
+    # ⇒ 抽出共用的 `BlockingCall.bounded`，三处共用；通道里那份重复实现改为委托。
+    blocking_source = strip_comments(load("Seal/Infrastructure/Installation/BlockingCall.swift"))
+    check("enum BlockingCall {" in blocking_source
+          and "static func bounded<T: Sendable>(" in blocking_source,
+          "R25: 必须有一个共用的「有界同步 FFI」包装 —— 每处各抄一份迟早漂移")
+    check("HardTimeout.run(seconds: seconds)" in blocking_source,
+          "R25: 有界包装必须真的走硬超时")
+    verifier_source = strip_comments(load("Seal/Features/Apps/InstalledAppDeviceVerifier.swift"))
+    check("BlockingCall.bounded(seconds: BlockingCall.queryTimeoutSeconds" in verifier_source
+          and "Task.detached" not in verifier_source,
+          "R25: 设备核验的同步 FFI 必须有界 —— 只 Task.detached 不够，阻塞本身仍然无界")
+    check("BlockingCall.bounded(seconds: BlockingCall.queryTimeoutSeconds" in cleaner_source,
+          "R25: 维护期的设备探测必须有界 —— 一次无界阻塞会让整轮维护永远完不成")
+    # 通道那份重复实现必须**委托**，不能再抄一遍（「同一条规则两份实现」已踩过五次）。
+    check("await BlockingCall.bounded(seconds: seconds, work)" in install_source
+          and "OffThreadOutcome" not in install_source,
+          "R25: 安装通道的 offThread 必须委托给共用实现，不要保留第二份")
+
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
     # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
@@ -2691,9 +2716,10 @@ def main():
          "R11: .reclaim must require a passed positive control"),
         # 用 `lookupApp` 替掉会抛错的 `isAppInstalled`：把「没装」与「查询失败」
         # 折叠成同一个 `nil`，正是上面那条灾难的入口。
+        # ⚠️ 缩进跟着实现走：`probeInstalled` 现在把它包在 `BlockingCall.bounded` 的闭包里（12 空格）。
         ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
-         "                try Minimuxer.isAppInstalled(bundleId: bundleID)",
-         "                Minimuxer.lookupApp(bundleId: bundleID) != nil",
+         "            try Minimuxer.isAppInstalled(bundleId: bundleID)",
+         "            Minimuxer.lookupApp(bundleId: bundleID) != nil",
          "R11: the reclaim path must use the throwing isAppInstalled"),
         # 让阳性对照永远通过：对照形同虚设，通道不可信时照样全删。
         ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
@@ -3140,6 +3166,37 @@ def main():
          '                deviceName: deviceName\n'
          '            )',
          "R24: 创建证书也必须过退避重试"),
+        # ── R25：同步阻塞 FFI 的每一处等待都要有界（2026-09-17 审计）──
+        # 把设备核验退回「只 Task.detached、无超时」：死会话上它会永久阻塞。
+        ("Seal/Features/Apps/InstalledAppDeviceVerifier.swift",
+         "        let outcome = await BlockingCall.bounded(seconds: BlockingCall.queryTimeoutSeconds) {\n"
+         "            // 查询前重置连接，避免使用已断开的 RSD 缓存连接导致误判\n"
+         "            Install.resetProvider()\n"
+         "            return try Minimuxer.isAppInstalled(bundleId: identifier)\n"
+         "        }",
+         "        let outcome = await Task.detached(priority: .userInitiated) {\n"
+         "            Install.resetProvider()\n"
+         "            return Result { try Minimuxer.isAppInstalled(bundleId: identifier) }\n"
+         "        }.value",
+         "R25: 设备核验的同步 FFI 必须有界"),
+        # 把维护期探测退回「只 Task.detached、无超时」：一次无界阻塞会让整轮维护永远完不成。
+        ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
+         "        guard let outcome = await BlockingCall.bounded(seconds: BlockingCall.queryTimeoutSeconds, {\n"
+         "            try Minimuxer.isAppInstalled(bundleId: bundleID)\n"
+         "        }) else {\n"
+         "            return .unavailable\n"
+         "        }",
+         "        guard let outcome = await Task.detached(priority: .utility, {\n"
+         "            Result { try Minimuxer.isAppInstalled(bundleId: bundleID) }\n"
+         "        }).value as Result<Bool, Error>? else {\n"
+         "            return .unavailable\n"
+         "        }",
+         "R25: 维护期的设备探测必须有界"),
+        # 让通道不再委托：又变成两份实现，迟早漂移。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "        await BlockingCall.bounded(seconds: seconds, work)",
+         "        return Result { try await work() }",
+         "R25: 安装通道的 offThread 必须委托给共用实现"),
         # 把结算单测改名：证明「单测文件里有这几个字」的断言真的会红。
         ("SealTests/Renewal/RefreshQueueStoreTests.swift",
          "    func recoverInterruptedSettlesItemsThatAlreadyHaveAResult() async throws {",

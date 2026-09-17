@@ -144,6 +144,51 @@
 
 ## 历史记录
 
+### 2026-09-17 · 审计「保护性包装」的覆盖：同步 FFI 有两处**无界阻塞**
+
+**做法**（比逐个碰运气更系统）：把仓库里的保护性包装全列出来，检查**哪些危险原语的调用点
+没被包住** —— 前五次「漏一条链路」都是这么发现的。
+
+| 包装 | 用途 | 用了多少次 |
+|---|---|---|
+| `withAppleTimeout` | Apple 网络请求超时 | 26 |
+| `withSessionRecovery` | 遇 1100 退避重试 | 3 个 portal 变更 |
+| `offThread` / `HardTimeout.run` | 同步 FFI 挪出主线程 + 硬超时 | 16 / 11 |
+
+**审计出来的问题**：`Minimuxer.isAppInstalled` 有**两处只有 `Task.detached`、没有任何超时**：
+
+| 位置 | 之前 |
+|---|---|
+| `InstalledAppDeviceVerifier` | `Task.detached` ⚠️ 无超时 |
+| `DeviceProfileCleaner.probeInstalled` | `Task.detached` ⚠️ 无超时 |
+
+**这违反了本仓的明文规则**：「同步阻塞 FFI 的等待必须带超时」。
+**`Task.detached` 不等于有界** —— 它只是把调用挪出主线程，**阻塞本身仍然无界**：
+死会话上不报错、只阻塞到操作系统放弃（与安装路径同一个失败模式）。
+
+⚠️ 其中 `probeInstalled` 跑在**维护期** ⇒ 一次无界阻塞会让**整轮维护永远完不成**，
+而且**日志里毫无线索**（`扫描 N，匹配 M` 之后什么都没有）。
+
+**修法**：把 `offThread` 的实现抽成共用的 `BlockingCall.bounded(seconds:_:)`（新增
+`Seal/Infrastructure/Installation/BlockingCall.swift`），三处共用：
+
+1. `InstalledAppDeviceVerifier` —— 超时按「不知道」抛错，调用方本来就 fail closed（保守跳过）；
+2. `DeviceProfileCleaner.probeInstalled` —— 超时归 `unavailable` ⇒ 按既有约定**整轮中止**；
+3. `MinimuxerInstallChannel.offThread` —— 改为**委托**给共用实现（不再保留第二份）。
+
+超时取 **15 秒**（与 `dumpProfiles` 内部的 `deviceFetchTimeoutMs` 同量级）——
+查询正常是亚秒级，15 秒已经非常宽松，唯一用途是把「永久阻塞」变成「有界失败」。
+
+> ⚠️ **超时的语义是「本次放弃等待」，不是「取消工作」**：同步 FFI 响应不了取消，
+> 它会在后台跑完、结果被丢弃。所以对**查询类**调用安全（没有副作用要撤销），
+> 对**有副作用的调用**要按 R05 另行判断。
+
+#### 守卫
+
+**337→342 源码断言、178→181 变异**（R25 段 5 条断言 / 3 个变异锚点）。
+
+---
+
 ### 2026-09-17 · 证书创建漏了「遇 1100 退避重试」——这是「只有抖音签不上」的直接成因
 
 **用户反馈**：Apple ID「失效」**只在签抖音时**发生；重新添加该 ID 再签**还是不行**；

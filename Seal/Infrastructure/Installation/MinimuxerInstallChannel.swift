@@ -489,27 +489,18 @@ actor MinimuxerInstallChannel: InstallChannel {
         }
     }
 
-    /// Result 的 Failure 侧（any Error）不保证 Sendable，用 @unchecked 包装穿过竞速边界
-    private struct OffThreadOutcome<T: Sendable>: @unchecked Sendable {
-        let result: Result<T, Error>
-    }
-
     /// 在后台线程执行可能长时间阻塞的同步 Minimuxer FFI；
     /// 超过 `seconds` 未返回则返回 nil（本次放弃），FFI 在后台自行结束后结果被丢弃，
     /// 避免同步调用把整个通道拖成“假死”。
+    ///
+    /// ⚠️ 实现已抽到 `BlockingCall.bounded` —— 本仓还有另外几处同步 FFI
+    /// （`isAppInstalled` 等）也需要同一个有界语义，**不要在这里再抄一份**
+    /// （「同一条规则两份实现」已经踩过五次）。
     private func offThread<T: Sendable>(
         seconds: Double,
         _ work: @Sendable @escaping () throws -> T
     ) async -> Result<T, Error>? {
-        // 抛错只可能是超时（工作结果/错误都装在 Result 里返回），统一映射为 nil
-        do {
-            let outcome: OffThreadOutcome<T> = try await HardTimeout.run(seconds: seconds) {
-                OffThreadOutcome(result: Result(catching: work))
-            }
-            return outcome.result
-        } catch {
-            return nil
-        }
+        await BlockingCall.bounded(seconds: seconds, work)
     }
 
     // MARK: - 安装等待预算与日志

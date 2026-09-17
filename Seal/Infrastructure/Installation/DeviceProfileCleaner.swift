@@ -275,11 +275,18 @@ struct DeviceProfileCleaner: Sendable {
     private static func probeInstalled(
         bundleID: String
     ) async -> ProfileReclaimPolicy.InstallProbe {
+        // ⚠️ **必须有界**（2026-09-17 补）：`isAppInstalled` 是同步阻塞 FFI，在一条已死的
+        // RSD 缓存会话上**不报错、只阻塞到操作系统放弃** —— 与安装路径同一个失败模式。
+        // 只放到 `Task.detached` 是不够的：那只是挪出主线程，**阻塞本身仍然无界**，
+        // 而这条路径跑在维护期，一次无界阻塞会让**整轮维护永远完不成**（且日志里毫无线索）。
+        // 超时按 `unavailable` 处理 ⇒ 按 `ProfileReclaimPolicy` 的既有约定**整轮中止**（fail closed）。
+        guard let outcome = await BlockingCall.bounded(seconds: BlockingCall.queryTimeoutSeconds, {
+            try Minimuxer.isAppInstalled(bundleId: bundleID)
+        }) else {
+            return .unavailable
+        }
         do {
-            let installed = try await Task.detached(priority: .utility) {
-                try Minimuxer.isAppInstalled(bundleId: bundleID)
-            }.value
-            return installed ? .installed : .notInstalled
+            return try outcome.get() ? .installed : .notInstalled
         } catch {
             return .unavailable
         }

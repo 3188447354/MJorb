@@ -57,10 +57,11 @@ struct RefreshQueueStoreTests {
         let done = RefreshQueueItem(appID: UUID(), accountID: UUID(), state: .completed)
 
         try await store.replace(with: [interrupted, untouched, done])
-        let recovered = try await store.recoverInterrupted()
+        let outcome = try await store.recoverInterrupted()
         let reloaded = try await store.load()
 
-        #expect(recovered == 1)
+        #expect(outcome.downgraded == 1)
+        #expect(outcome.settledFromResult == 0)
         #expect(reloaded.first(where: { $0.appID == interrupted.appID })?.state == .unknown)
         // 非 running 的项一律不许被碰
         #expect(reloaded.first(where: { $0.appID == untouched.appID })?.state == .pending)
@@ -72,7 +73,61 @@ struct RefreshQueueStoreTests {
         let store = makeStore()
         try await store.replace(with: [RefreshQueueItem(appID: UUID(), accountID: UUID(), state: .pending)])
 
-        #expect(try await store.recoverInterrupted() == 0)
+        #expect(try await store.recoverInterrupted().downgraded == 0)
+    }
+
+    /// **本文件最重要的一条**：有**已定论**的结果时不许降级（2026-09-17 真机实测）。
+    ///
+    /// Seal 自己替换自己时，进程必然在队列项还是 `running` 的时候被杀 —— 但那一项的结果
+    /// 其实已经写进持久化载荷了。旧实现盲目降级，于是同一个批次出现两份互相矛盾的结论：
+    /// 日志报「1 个应用的结果未知，需要重新核验」（假警报）、队列里留下幽灵条目，
+    /// 而结果抽屉同时显示 `succeeded: 2, failed: 0`。
+    @Test
+    func recoverInterruptedSettlesItemsThatAlreadyHaveAResult() async throws {
+        let store = makeStore()
+        let succeeded = RefreshQueueItem(appID: UUID(), accountID: UUID(), state: .running)
+        let failed = RefreshQueueItem(appID: UUID(), accountID: UUID(), state: .running)
+        let stillUnknown = RefreshQueueItem(appID: UUID(), accountID: UUID(), state: .running)
+
+        try await store.replace(with: [succeeded, failed, stillUnknown])
+        let outcome = try await store.recoverInterrupted(settled: [
+            succeeded.appID: .completed,
+            failed.appID: .failed,
+        ])
+        let reloaded = try await store.load()
+
+        #expect(outcome.settledFromResult == 2)
+        #expect(outcome.downgraded == 1)
+        #expect(reloaded.first(where: { $0.appID == succeeded.appID })?.state == .completed)
+        #expect(reloaded.first(where: { $0.appID == failed.appID })?.state == .failed)
+        // 没有结论的那一项仍然要降级 —— 否则它会永久停在 running（幽灵条目）
+        #expect(reloaded.first(where: { $0.appID == stillUnknown.appID })?.state == .unknown)
+    }
+
+    /// 结算过的项**不能**再留在 `outstanding()` 里：否则恢复流程会重做已经成功的应用。
+    @Test
+    func settledItemsLeaveOutstanding() async throws {
+        let store = makeStore()
+        let succeeded = RefreshQueueItem(appID: UUID(), accountID: UUID(), state: .running)
+
+        try await store.replace(with: [succeeded])
+        _ = try await store.recoverInterrupted(settled: [succeeded.appID: .completed])
+
+        #expect(try await store.outstanding().isEmpty)
+    }
+
+    /// 传了「已定论」的集合但队列里没有对应项时不该崩，也不该凭空造项。
+    @Test
+    func settledMapWithUnknownAppIDsIsIgnored() async throws {
+        let store = makeStore()
+        let running = RefreshQueueItem(appID: UUID(), accountID: UUID(), state: .running)
+
+        try await store.replace(with: [running])
+        let outcome = try await store.recoverInterrupted(settled: [UUID(): .completed])
+
+        #expect(outcome.settledFromResult == 0)
+        #expect(outcome.downgraded == 1)
+        #expect(try await store.load().count == 1)
     }
 
     /// `outstanding()` 是「只重试失败与未完成项」的落点：已完成的绝不能出现在里面，

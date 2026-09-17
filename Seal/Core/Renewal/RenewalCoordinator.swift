@@ -97,13 +97,20 @@ actor RenewalCoordinator {
 
     /// 启动恢复：把上一轮被中断留下的 `running` 项降级为 `unknown`。
     ///
-    /// 进程被杀（崩溃 / 被系统回收）时正在跑的项，签名+安装可能已落地、也可能只做了一半，
-    /// **既不能当成功也不能当失败**。不做这一步它就会永久停在 `running`：
+    /// 进程被杀（崩溃 / 被系统回收 / **自己替换自己**）时正在跑的项，签名+安装可能已落地、
+    /// 也可能只做了一半，**既不能当成功也不能当失败**。不做这一步它就会永久停在 `running`：
     /// 既不在失败列表（不会被重试），也不是 `completed`（不会被清理）。
-    /// 返回被降级的条数，供启动日志与 UI 说明使用。
+    ///
+    /// ⚠️ 但**已经拿到结论的项不许降级**：Seal 自替换时那一项的结果已经写进持久化载荷了，
+    /// 盲目降级会让日志报假警报、队列留幽灵条目，而结果抽屉同时显示成功。
+    /// 调用方负责把已知结论传进来（见 `AppsViewModel.recoverInterruptedQueueIfNeeded`）。
+    ///
+    /// - Parameter settled: 已经从持久化载荷拿到结论的项（appID → 状态）。
     @discardableResult
-    func recoverInterruptedQueue() async throws -> Int {
-        try await queueStore.recoverInterrupted()
+    func recoverInterruptedQueue(
+        settled: [UUID: RefreshQueueItem.State] = [:]
+    ) async throws -> RefreshQueueStore.RecoveryOutcome {
+        try await queueStore.recoverInterrupted(settled: settled)
     }
 
     /// 本轮结束后仍需处理的项（失败 / 未执行 / 结果未知），保持持久化顺序。

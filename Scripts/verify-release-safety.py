@@ -712,6 +712,9 @@ def violations(load=read):
           "the log ring buffer and pushed real signal out")
     # 但「**确实有待恢复的数据、却被跳过**」是异常，仍要留痕 —— 那才是「结果丢了」的
     # 征兆。两条一起断言：正常路径静默（裸 `return`）＋ 异常路径有条件日志。
+    # 2026-09-17 又加了第二个条件 `hasRestoredPendingBatchResult == false`：
+    # 「已经恢复进会话」不是跳过（载荷要等抽屉关闭才清），否则每次 `load()` 轮询
+    # 都会重复报同一条警告 —— 真机实测就是 1 条真警报 + 若干条重复。
     restore_body = squash(section(
         view_model_code,
         "private func restorePendingBatchResultIfNeeded()",
@@ -719,9 +722,14 @@ def violations(load=read):
     ))
     check(restore_body != ""
           and "guard let payload = pendingPayload else { return }" in restore_body
-          and "if pendingPayload != nil {" in restore_body,
+          and "if pendingPayload != nil, hasRestoredPendingBatchResult == false {"
+              in restore_body,
           "R12: the restore poll path must stay silent on the normal path — only "
-          "'pending data exists but the restore was skipped' deserves a log line")
+          "'pending data exists and the restore was genuinely skipped' deserves a log line")
+    check("hasRestoredPendingBatchResult = true" in restore_body
+          and "hasRestoredPendingBatchResult = false" in view_model_code,
+          "R12: the already-restored flag must be set on restore and cleared on dismiss, "
+          "otherwise the skip warning either repeats or goes missing")
 
     # R13: 「Apple 要求双重认证」必须走专门的分类与提示（2026-09-17 真机取证，构建 95）。
     #
@@ -969,6 +977,63 @@ def violations(load=read):
     check("fetchUDIDDetailed()" in probe_body,
           "R16: the probe must use a real round-trip that throws — a cached/flag-based "
           "check cannot tell a dead session from a live one")
+
+    # R17: 「批量续签被自己替换中断」不许自相矛盾（2026-09-17 真机，构建 102）。
+    #
+    # Seal 自己替换自己时，进程**必然**在队列项还是 `running` 的时候被杀 —— 但那一项的
+    # 结果其实已经写进持久化载荷了（`SEAL-RENEW-023`，Seal 那一项被显式记成 completed）。
+    # 旧实现盲目把 running 降级为 unknown，于是同一个批次给出三份互相矛盾的结论：
+    #   日志「上次续签被中断，1 个应用的结果未知，需要重新核验」   ← 假警报
+    #   队列文件里留下一个幽灵条目（其实成功的那一项）
+    #   结果抽屉同时显示 completed(total: 2, succeeded: 2, failed: 0)
+    # ⇒ 先恢复载荷、再结算队列；载荷里已定论的项按结果结算，只有真没结论的才降级。
+    payload_source = strip_comments(
+        load("Seal/Core/Renewal/PendingBatchResultPayload.swift")
+    )
+    # 这里自己加载一份（`store` 要到后面 G 段才定义）。
+    queue_store_source = strip_comments(
+        load("Seal/Infrastructure/Renewal/RefreshQueueStore.swift")
+    )
+    check("static func settledQueueStates(from payload: [String: Any]?)" in payload_source,
+          "R17: the pending payload must be mappable to queue states — that mapping is "
+          "what lets the queue recovery settle instead of guessing")
+    # 只映射「已定论」的两态。把 `running` 也映射上就等于「替那个正在被杀死的项宣布结果」。
+    check("case .completed: return .completed" in view_model_code
+          and "case .failed: return .failed" in view_model_code
+          and "case .waiting, .running, .preparingSealUpdate: return nil" in view_model_code,
+          "R17: only settled states may be mapped — mapping `running` would claim a result "
+          "for the very item that was killed mid-flight")
+    check("if let known = settled[items[index].appID] {" in queue_store_source
+          and "items[index].state = known" in queue_store_source,
+          "R17: an interrupted item with a known result must be SETTLED, not downgraded")
+    check("outcome.settledFromResult > 0" in view_model_code
+          and "outcome.downgraded > 0" in view_model_code,
+          "R17: the two outcomes must be reported separately — `settledFromResult` is a "
+          "normal path (info), `downgraded` deserves the user-facing re-verification warning")
+    # ⚠️ **顺序就是这条修复本身**：先恢复载荷、读出已定论的项，再结算队列。
+    # 顺序反了的话，队列里那个 running 项会在载荷被读之前就被标成 unknown。
+    recovery_body = squash(section_or_empty(
+        view_model_code,
+        "func recoverInterruptedQueueIfNeeded() async {",
+        "private func settledQueueStates(from payload:"
+    ))
+    restore_at = recovery_body.find("restorePendingBatchResultIfNeeded()")
+    settle_at = recovery_body.find("settledQueueStates(from:")
+    recover_at = recovery_body.find("recoverInterruptedQueue(settled:")
+    check(restore_at != -1 and settle_at != -1 and recover_at != -1
+          and restore_at < settle_at < recover_at,
+          "R17: the payload must be restored and read BEFORE the queue is settled — "
+          "Seal kills itself mid-batch, so the running item's result only exists in the "
+          "payload; settling first marks it 'unknown'")
+    queue_tests = load("SealTests/Renewal/RefreshQueueStoreTests.swift")
+    check("func recoverInterruptedSettlesItemsThatAlreadyHaveAResult()" in queue_tests
+          and "func settledItemsLeaveOutstanding()" in queue_tests,
+          "R17: settling instead of downgrading needs real unit tests — source assertions "
+          "cannot prove the state that comes out")
+    payload_tests = load("SealTests/Renewal/PendingBatchResultPayloadTests.swift")
+    check("func onlySettledStatesAreMapped()" in payload_tests
+          and "func sealItemIsSettledAsCompleted()" in payload_tests,
+          "R17: the payload mapping needs real unit tests")
 
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
@@ -1534,10 +1599,12 @@ def violations(load=read):
     check("state: .requiresAction" in planner and "missingAccountReason" in planner,
           "G: apps without an account must enter the queue as requiresAction with a reason")
     store = load("Seal/Infrastructure/Renewal/RefreshQueueStore.swift")
-    check("func recoverInterrupted()" in store
+    # 2026-09-17 起签名带 `settled:`：有已定论结果的项按结果结算，不再一律降级。
+    check("func recoverInterrupted(settled:" in store
           and "state == .running" in store
           and "state = .unknown" in store,
-          "G: launch recovery must downgrade interrupted running items to unknown")
+          "G: launch recovery must downgrade interrupted running items that have no "
+          "result to unknown")
     check("func outstanding()" in store,
           "G: outstanding() is required so recovery never redoes completed work")
     coordinator = load("Seal/Core/Renewal/RenewalCoordinator.swift")
@@ -2539,8 +2606,14 @@ def main():
         # 把「有待恢复数据才留痕」改回无条件留痕：`load()` 每 9 秒一次，
         # 立刻回到「三成日志是噪音、真实信号被挤出环形缓冲」的状态。
         ("Seal/Features/Apps/AppsViewModel.swift",
-         "            if pendingPayload != nil {\n",
+         "            if pendingPayload != nil, hasRestoredPendingBatchResult == false {\n",
          "            if true {\n",
+         "R12: the restore poll path must stay silent on the normal path"),
+        # 去掉「已经恢复进会话」这个条件：载荷要等抽屉关闭才清，于是每次 `load()` 轮询
+        # 都会重复报同一条「被跳过」警告 —— 真警报被自己的重复埋掉。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "            if pendingPayload != nil, hasRestoredPendingBatchResult == false {\n",
+         "            if pendingPayload != nil {\n",
          "R12: the restore poll path must stay silent on the normal path"),
         # 重新引入临时脚手架：证明「[BatchDebug] 已清干净」这条 not-in 断言真的会红。
         ("Seal/Features/Apps/AppsViewModel.swift",
@@ -2684,6 +2757,36 @@ def main():
          "            return\n"
          "        }",
          "R16: the probe must stay observation-only"),
+        # ── R17：批量续签被自己替换中断，不许自相矛盾（2026-09-17 真机，构建 102）──
+        # 退回「一律降级为 unknown」：同一个批次会同时说「成功 2/2」和「1 个结果未知」。
+        ("Seal/Infrastructure/Renewal/RefreshQueueStore.swift",
+         "            if let known = settled[items[index].appID] {",
+         "            if false {",
+         "R17: an interrupted item with a known result must be SETTLED, not downgraded"),
+        # **顺序反了**（本修复的核心）：先结算队列、再恢复载荷 ⇒ 那个 running 项在载荷被读
+        # 之前就变成了 unknown，假警报与幽灵条目原样回来。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "        restorePendingBatchResultIfNeeded()\n"
+         "        let settled = settledQueueStates(from: loadPendingBatchResultPayload())",
+         "        let settled = settledQueueStates(from: loadPendingBatchResultPayload())\n"
+         "        restorePendingBatchResultIfNeeded()",
+         "R17: the payload must be restored and read BEFORE the queue is settled"),
+        # 忘了先恢复载荷：`settled` 永远是空的，等于这条修复不存在。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "        restorePendingBatchResultIfNeeded()\n"
+         "        let settled = settledQueueStates(from: loadPendingBatchResultPayload())",
+         "        let settled: [UUID: RefreshQueueItem.State] = [:]",
+         "R17: the payload must be restored and read BEFORE the queue is settled"),
+        # 把 `running` 也映射成已定论：等于替那个**正在被杀死**的项宣布结果。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "        case .completed: return .completed",
+         "        case .completed, .running: return .completed",
+         "R17: only settled states may be mapped"),
+        # 把结算单测改名：证明「单测文件里有这几个字」的断言真的会红。
+        ("SealTests/Renewal/RefreshQueueStoreTests.swift",
+         "    func recoverInterruptedSettlesItemsThatAlreadyHaveAResult() async throws {",
+         "    func recoverInterruptedSettlesItemsThatAlreadyHaveAResultRenamed() async throws {",
+         "R17: settling instead of downgrading needs real unit tests"),
         ("SealTests/Maintenance/AppMaintenanceJobTests.swift",
          "            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",\n            signedArtifactStatus: signedArtifactStatus,",
          "            signedArtifactStatus: signedArtifactStatus,\n            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",",

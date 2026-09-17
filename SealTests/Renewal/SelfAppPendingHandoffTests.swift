@@ -179,7 +179,8 @@ struct SelfAppPendingHandoffTests {
         try await store.replace(with: [item])
         try await store.markRunning(appID: item.appID)
         let restarted = RefreshQueueStore(fileURL: fileURL, fileProtector: MarkerFileProtector())
-        #expect(try await restarted.recoverInterrupted() == 1)
+        // 没有「已定论的结果」可传 ⇒ 仍然按「结果未知」处理（这是正确的保守行为）
+        #expect(try await restarted.recoverInterrupted().downgraded == 1)
         let outstanding = try await restarted.outstanding()
         #expect(outstanding.count == 1)
         #expect(outstanding.first?.state == .unknown)

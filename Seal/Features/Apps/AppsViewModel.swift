@@ -1439,13 +1439,33 @@ final class AppsViewModel: ObservableObject {
     /// 第二次安装或误删新 profile。此处只让用户知情，由用户决定下一步。
     func recoverInterruptedQueueIfNeeded() async {
         guard let renewalCoordinator else { return }
+        // ⚠️ **顺序：先恢复批量续签结果，再结算队列。**
+        //
+        // Seal 自己替换自己时，进程必然在队列项还是 `running` 的时候被杀 —— 但那一项的
+        // 结果其实已经写进持久化载荷了（`SEAL-RENEW-023`，Seal 那一项被显式记成 completed）。
+        // 若先降级，同一个批次会给出两份互相矛盾的结论（2026-09-17 真机实测）：
+        // 日志报「1 个应用的结果未知，需要重新核验」、队列里留下幽灵条目，
+        // 而结果抽屉同时显示 `succeeded: 2, failed: 0`。
+        restorePendingBatchResultIfNeeded()
+        let settled = settledQueueStates(from: loadPendingBatchResultPayload())
         do {
-            let recovered = try await renewalCoordinator.recoverInterruptedQueue()
-            guard recovered > 0 else { return }
+            let outcome = try await renewalCoordinator.recoverInterruptedQueue(settled: settled)
+            if outcome.settledFromResult > 0 {
+                // 正常路径也要留痕：否则下次只看到「0 个未知」，
+                // 无法判断是「本来就没有被中断的项」还是「被结果结算掉了」。
+                try? await logStore?.append(
+                    category: .renewal,
+                    level: .info,
+                    message: "上次续签被中断，但 \(outcome.settledFromResult) 个应用的结果"
+                        + "已从持久化载荷结算（不再标为未知）",
+                    code: "SEAL-RENEW-026"
+                )
+            }
+            guard outcome.downgraded > 0 else { return }
             try? await logStore?.append(
                 category: .renewal,
                 level: .warning,
-                message: "上次续签被中断，\(recovered) 个应用的结果未知，需要重新核验",
+                message: "上次续签被中断，\(outcome.downgraded) 个应用的结果未知，需要重新核验",
                 code: "SEAL-RENEW-007"
             )
         } catch {
@@ -1457,6 +1477,14 @@ final class AppsViewModel: ObservableObject {
                 code: "SEAL-RENEW-008"
             )
         }
+    }
+
+    /// 从持久化载荷里取出**已经有结论**的项（appID → 队列状态）。
+    ///
+    /// 判据本体在 `PendingBatchResultPayload`（那里可单测 —— 本类是 `@MainActor`、
+    /// 依赖一大堆、测试构造不出来）；这里只留一层转调，免得「同一条规则两份实现」。
+    private func settledQueueStates(from payload: [String: Any]?) -> [UUID: RefreshQueueItem.State] {
+        PendingBatchResultPayload.settledQueueStates(from: payload)
     }
 
     private func runBatchRefresh(appIDs: [UUID]? = nil) async {
@@ -1700,6 +1728,18 @@ final class AppsViewModel: ObservableObject {
     /// 恢复「批量续签结果」。
     ///
     /// ⚠️ **这里刻意不写轮询日志。** 本函数由 `load()` 每 ~9 秒调用一次，而
+    /// 本次启动是否已经把「待恢复的批量续签结果」装进会话。
+    ///
+    /// 021 的判据是「**确实有待恢复的数据、却被跳过**」—— 那才是「结果丢了」的征兆。
+    /// 但「已经恢复进会话」不是跳过：载荷要等抽屉关闭（`dismissBatchRefresh`）才清，
+    /// 这中间每次 `load()` 轮询都会看到「载荷还在 + 会话开着」，于是**反复报同一条警告**
+    /// （2026-09-17 真机实测）。用这个标志把「已恢复」与「真被跳过」分开。
+    private var hasRestoredPendingBatchResult = false
+
+    /// 启动时把上一轮持久化的批量续签结果装回会话。
+    ///
+    /// 见 `AppsViewModel` 顶部关于「没有成功日志 ≠ 没成功」的说明：
+    /// 这条路径是「Seal 自替换把自己杀掉」之后，用户还能看到结果**唯一**的途径。
     /// 「没有待恢复的数据」与「当前有会话在进行」都是**正常路径**。
     /// 2026-09-17 真机日志实测：原先这两条轮询日志占了全部日志的 **30%**（73/244 行），
     /// 把真实信号挤出了只保留 1000 条的环形缓冲。
@@ -1707,7 +1747,7 @@ final class AppsViewModel: ObservableObject {
     private func restorePendingBatchResultIfNeeded() {
         let pendingPayload = loadPendingBatchResultPayload()
         guard batchRefreshSession == nil, batchRefreshTask == nil else {
-            if pendingPayload != nil {
+            if pendingPayload != nil, hasRestoredPendingBatchResult == false {
                 Task { try? await logStore?.append(category: .renewal, level: .warning, message: "待恢复的批量续签结果被跳过：当前有进行中的会话或结果抽屉仍开着", code: "SEAL-RENEW-021") }
             }
             return
@@ -1738,10 +1778,12 @@ final class AppsViewModel: ObservableObject {
             }
         }
         batchRefreshSession = restored
+        hasRestoredPendingBatchResult = true
         Task { try? await logStore?.append(category: .renewal, level: .info, message: "批量续签结果已从持久化载荷恢复（共 \(total)，成功 \(succeeded)，失败 \(failed)，明细 \(restored.items.count) 项）", code: "SEAL-RENEW-024") }
     }
 
     private func clearPendingBatchResult() {
+        hasRestoredPendingBatchResult = false
         UserDefaults.standard.removeObject(forKey: Self.pendingBatchResultKey)
         try? FileManager.default.removeItem(at: Self.pendingBatchResultFileURL)
     }
@@ -2275,6 +2317,18 @@ private extension BatchRefreshSession.Item.State {
         case .completed: return "completed"
         case .failed: return "failed"
         case .preparingSealUpdate: return "preparingSealUpdate"
+        }
+    }
+
+    /// 映射到**续签队列项**的状态；只有「已定论」的两态有值。
+    ///
+    /// `waiting` / `running` / `preparingSealUpdate` 都没有结论（`running` 尤其：
+    /// 进程就是在这个状态下被杀的），返回 `nil` 让调用方按「结果未知」处理。
+    var settledQueueState: RefreshQueueItem.State? {
+        switch self {
+        case .completed: return .completed
+        case .failed: return .failed
+        case .waiting, .running, .preparingSealUpdate: return nil
         }
     }
 

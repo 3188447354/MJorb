@@ -1570,7 +1570,9 @@ def violations(load=read):
     for budget_symbol, budget_why in (
         ("SigningProgressBudget.bucketCount", "轨道格数"),
         ("SigningProgressBudget.bucketFill(", "轨道每一格的填充"),
-        ("SigningProgressBudget.overallProgress(", "进度环的数值"),
+        # ⚠️ 2026-09-19：`overallProgress`（**估算**）**不再**被视图使用 ——
+        # 用户明确要求「圈圈不要假预估」⇒ 环与数字只取 `confirmedProgress` ✓。
+        # 估算函数本身**保留**（`bucketFill` 仍在用），但不再要求视图消费它 ✓。
         ("SigningProgressBudget.confirmedProgress(", "进度环的「已确认」那一段"),
         ("SigningProgressBudget.isEstimated(", "估算态（决定扫光与呼吸点）"),
         ("SigningProgressBudget.showsOwnElapsed(", "长阶段的「本阶段已用时」"),
@@ -3874,10 +3876,12 @@ def main():
          "            return Plan(\n",
          "R36: 阶段 `preparingCertificate` 没有进度预算"),
         # 界面不再走预算表、自己算一个数：数值来源不再唯一，「跳着走」会回来。
-        ("Seal/Features/Apps/SigningProgressView.swift",
-         "        let progress = SigningProgressBudget.overallProgress(",
-         "        let progress = 0.93 + 0 * Double(",
-         "R36: `SigningProgressView` 必须用 SigningProgressBudget.overallProgress("),
+         # ⚠️ 2026-09-19：锚点从 `overallProgress(`（估算，已被用户要求移除）
+         # 改成 `confirmedProgress(` —— 意图不变：**界面不许自己写死一个进度数** ✓。
+         ("Seal/Features/Apps/SigningProgressView.swift",
+          "        let confirmed = SigningProgressBudget.confirmedProgress(",
+          "        let confirmed = 0.93 + 0 * Double(",
+          "R36: `SigningProgressView` 必须用 SigningProgressBudget.confirmedProgress("),
         # 界面里重新写死一个进度常数（死代码也一样算）：这是「跳着走」的原样重演。
         ("Seal/Features/Apps/SigningProgressView.swift",
          "    private func stageElapsed(_ now: Date) -> TimeInterval {",

@@ -221,60 +221,33 @@ struct SigningProgressView: View {
         if case .installing = stage, sealRenewal {
             return AnyView(selfReplacementInstallingRing(now: now))
         }
-        let elapsed = stageElapsed(now)
-        let progress = SigningProgressBudget.overallProgress(
-            stage: stage,
-            elapsed: elapsed,
-            realProgress: session?.installProgress
-        )
+        // ⚠️ **只画已确认的进度，不画估算**（2026-09-19，用户明确要求「圈圈不要假预估」）。
+        //
+        // 之前这里画两段弧：深色 = 已确认、浅色 = 按 τ 指数收敛的**估算**，数字也取估算值。
+        // 问题在于：**阶段内部我们并不知道真实进度** —— 让环和数字跟着一个推测值爬，
+        // 就是在**编数字**，用户看久了会当成真进度（这正是「假预估」）。
+        //
+        // ⇒ 现在环与数字都只反映 `confirmedProgress`：
+        //   - **没有**真实进度信号的阶段（大多数）：环**停在原地不动** —— 这是**诚实**的，
+        //     我们确实不知道；
+        //   - **有**真实信号的阶段（`.pushing` 的 AFC 上传回调、`.installing` 的 installd 进度）：
+        //     环跟着真实值走 ✓。
+        //
+        // ⚠️ 「还在动」这个信号**不靠圈**表达，而由「**本阶段已用时 m:ss**」的秒数跳动承担 ✓
+        //（`SigningProgressBudget.showsOwnElapsed`，守卫 R36 钉着它必须存在）。
         let confirmed = SigningProgressBudget.confirmedProgress(
             stage: stage,
             realProgress: session?.installProgress
         )
-        let estimated = SigningProgressBudget.isEstimated(stage: stage)
         return AnyView(
             ZStack {
                 Circle()
                     .stroke(Color.sealTextSecondary.opacity(0.18), lineWidth: 5)
-                // 深色弧 = **已确认**到达的位置。它不随时间变化：本阶段估算爬到哪里，
-                // 深色弧都停在进入本阶段时的位置，直到阶段真正完成。
                 Circle()
                     .trim(from: 0, to: max(0.03, confirmed / 100))
                     .stroke(Color.sealAccent, style: StrokeStyle(lineWidth: 5, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                // 浅色弧 = 本阶段的**估算**。它永远不会自己爬到终点（上界就是天花板），
-                // 所以「浅色还在长」本身就是「还有活没干完」的信号 ——
-                // 这是「不编造确定百分比」在视觉上的落点。
-                //
-                // ⚠️ 刻意**不**加 `.animation(...)`：卡片已由 `TimelineView` 逐帧驱动，
-                // 再挂一层 0.45 秒补间会让每个 tick 触发一次动画，观感是黏滞 + 抖动。
-                if progress > confirmed {
-                    Circle()
-                        .trim(from: confirmed / 100, to: progress / 100)
-                        .stroke(
-                            // 0.34 → **0.5**（2026-09-18）：0.34 在深色卡片上读起来像**灰白**，
-                            // 用户反馈「中间都灰白了」。加深后仍保留「浅蓝 ≠ 深蓝」的
-                            // 「估算 vs 已确认」区分，但不会再被读成「没填上」。
-                            Color.sealAccent.opacity(0.5),
-                            style: StrokeStyle(lineWidth: 5, lineCap: .round)
-                        )
-                        .rotationEffect(.degrees(-90))
-                }
-                // 估算期间，弧的前端加一个呼吸点：数字可能几十秒不变，但这一点始终在动。
-                if estimated {
-                    // 角度先取出来再算坐标：`cos` / `sin` 返回 Double，而 `offset` 收 CGFloat，
-                    // 写在同一个表达式里要靠字面量的类型推断，不如显式转换稳。
-                    let angle = leadingAngle(progress)
-                    Circle()
-                        .fill(Color.sealAccent)
-                        .frame(width: 6, height: 6)
-                        .offset(x: CGFloat(25 * cos(angle)), y: CGFloat(25 * sin(angle)))
-                        // ⚠️ 由**呼吸闪烁**改为**常亮**（2026-09-18，用户反馈「圆点…不好看」）。
-                        // 呼吸（0.3↔1.0）在逐帧重绘下会显得在闪；
-                        // 「还在动」已由秒数跳动承担（见 `CurrentSegmentFill` 里的同一条说明）。
-                        .opacity(0.9)
-                }
-                Text("\(Int(progress))%")
+                Text("\(Int(confirmed))%")
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .foregroundStyle(Color.sealAccent)
                     .monospacedDigit()
@@ -283,19 +256,11 @@ struct SigningProgressView: View {
         )
     }
 
-    /// 进度弧前端在圆环上的角度（弧度）。
-    ///
-    /// 12 点方向为 0%、顺时针增加；屏幕坐标 y 轴向下，所以 12 点是 −90°。
-    private func leadingAngle(_ progress: Double) -> Double {
-        let clamped = max(0, min(100, progress))
-        return (clamped / 100 * 360 - 90) * Double.pi / 180
-    }
-
-    /// 前端呼吸点的透明度。同样用 `now` 直接算，理由见 `sweepPhase`。
-    private func leadingPulse(_ now: Date) -> Double {
-        let phase = sweepPhase(now)
-        return 0.3 + 0.7 * (0.5 + 0.5 * sin(phase * 2 * Double.pi))
-    }
+    // ⚠️ 2026-09-19：`leadingAngle` 与 `leadingPulse` 已删除。
+    //
+    // 它们是「估算弧 + 弧前端呼吸点」的辅助函数，随用户要求的「圈圈不要假预估」
+    // 一起去掉（估算弧与呼吸点都不再画）。
+    // `sweepPhase` **保留**：Seal 自替换的「替换中」转圈仍在用它 ✓。
 
     /// Seal 自续签的「替换中」转圈。
     ///

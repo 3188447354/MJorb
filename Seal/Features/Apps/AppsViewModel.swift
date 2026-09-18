@@ -2029,6 +2029,28 @@ final class AppsViewModel: ObservableObject {
             previous: signingSession?.stageStartedAt
         )
         signingSession?.status = .running(stage)
+        // ⚠️ **每个阶段真正进入时记一行**（2026-09-18）—— 这是「**分段耗时**」的唯一来源。
+        //
+        // 背景：`SigningProgressBudget` 的 τ（每阶段时长）现在是**估的**，要靠真机日志里
+        // 各阶段的时间戳差来校准。而在此之前 `updateSigningStage` **只改状态、一行都不落**
+        // ⇒ 阶段切换在日志里没有任何时间戳 ⇒ 那份数据**根本拿不到**，
+        // 三条线（进度 τ 校准 / 大包耗时归因 / 请求量判据）都在等它。
+        //
+        // ⚠️ **只在 `tick == .restart`（真正的阶段切换）时记** —— 同一阶段会被**重复推送**
+        //（安装通道的 >1.0 哨兵 + 签名侧补发），不加闸门会刷屏，把真信号埋掉。
+        // ⚠️ 用 `Task` 是因为本函数是**同步**的（改完 `status` 要立刻返回，不能为了记日志
+        // 改成 async 去波及所有调用点）；日志晚几毫秒不影响「算时间戳差」。
+        if tick == .restart {
+            let entered = stage
+            Task { [logStore] in
+                try? await logStore?.append(
+                    category: .signing,
+                    level: .info,
+                    message: "阶段进入：\(entered)",
+                    code: "SEAL-STAGE-001"
+                )
+            }
+        }
         // Seal 自续签 = 覆盖安装运行中的自己：iOS 只有在旧进程让出前台后才完成替换，
         // 所以必须由 Seal 主动「回主页」。
         //

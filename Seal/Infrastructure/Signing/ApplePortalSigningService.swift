@@ -2347,7 +2347,7 @@ actor ApplePortalSigningService {
         //（写 Info.plist 是毫秒级，可忽略）。
         let resignStartedAt = Date()
         // rork-sign 是 CPU 密集型同步操作，丢到后台线程，避免长时间占用 actor
-        try await Task.detached(priority: .userInitiated) {
+        let cacheStats = try await Task.detached(priority: .userInitiated) {
             // 对齐 AltStore：签名前把每个描述文件的 appGroups 写入对应 bundle 的 Info.plist
             let reader = ProvisioningProfileReader()
             for material in materials {
@@ -2416,7 +2416,7 @@ actor ApplePortalSigningService {
                 appGroups = []
             }
 
-            try RorkAppSigner.signAppBundle(
+            return try RorkAppSigner.signAppBundle(
                 at: appURL,
                 certificateData: certificateData,
                 privateKeyData: privateKeyData,
@@ -2425,8 +2425,13 @@ actor ApplePortalSigningService {
                 appGroupIdentifiers: appGroups
             )
         }.value
+        // ⚠️ 命中数一起报（2026-09-18）：续签同一个 App 时证书/entitlements/内容都没变
+        // ⇒ 缓存 key 不变 ⇒ 那 30 多个 Mach-O 应当**全部命中**。
+        // 「命中 0」本身也是信息：说明 key 的某个输入变了（证书轮换 / entitlements 变了 / 包变了）。
         await diagnostic(
-            "签名：重签完成（逐 Mach-O 串行），耗时 \(Int(Date().timeIntervalSince(resignStartedAt))) 秒"
+            "签名：重签完成（逐 Mach-O 串行），耗时 \(Int(Date().timeIntervalSince(resignStartedAt))) 秒；"
+                + "新算 \(cacheStats.signed) 个 / 缓存命中 \(cacheStats.cached) 个"
+                + "（续签同一个 App 时命中数应当接近总数）"
         )
     }
 

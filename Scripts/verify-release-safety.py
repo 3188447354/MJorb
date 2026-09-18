@@ -1673,6 +1673,46 @@ def violations(load=read):
           "（5053 个文件 / 1.46 GB）把每个文件都读进内存，非 Mach-O 的那些纯属浪费，"
           "且有 jetsam 风险")
 
+    # R38: 签名缓存必须**接上、放对地方、有上限、且不许把签名搞失败**（2026-09-18）。
+    #
+    # 引擎的 `SigningCacheOptions` 按**内容寻址**缓存「已签名的 Mach-O」：key 覆盖
+    # **证书哈希 + entitlements 哈希 + Mach-O 内容 + CD 哈希模式**，**不含描述文件字节**
+    # ⇒ 续签同一个 App（证书不变、entitlements 不变、包不变）时 key 不变
+    # ⇒ 那 30 多个 Mach-O **全部命中** ⇒ 这正是主场景（7 天续签）省掉全部重签的杠杆。
+    signer_source = strip_comments(load("Seal/Infrastructure/Signing/RorkAppSigner.swift"))
+    check("signingCache: SigningCacheStore.preparedOptions()" in signer_source,
+          "R38: 签名缓存必须真的传进 `AppSigningOptions` —— 引擎早就实现了缓存，"
+          "而本仓一直没接（「实现了但没启用」本仓已有前科）")
+    check("for: .cachesDirectory" in signer_source
+          and "for: .applicationSupportDirectory" not in signer_source,
+          "R38: 缓存目录必须在 **Caches** 下 —— 缓存**可再生**，不该进 iCloud 备份"
+          "（放 ApplicationSupport 会被备份 ✗）")
+    check("static let byteLimit" in signer_source
+          and "func pruneIfNeeded" in signer_source,
+          "R38: 缓存必须有**上限 + 淘汰** —— 引擎没有 prune API，而缓存里存的是"
+          "已签名 Mach-O 的副本，不设上限会无界增长")
+    check("static func preparedOptions(fileManager: FileManager = .default) -> SigningCacheOptions?" in signer_source,
+          "R38: 取不到缓存目录必须返回 **nil**（而不是抛错）—— 缓存是「有更好、没有也能签」"
+          "的东西，**绝不允许它把签名搞失败**")
+
+    # R39: **每个阶段真正进入时必须落一行日志**（2026-09-18）—— 这是「分段耗时」的唯一来源。
+    #
+    # `SigningProgressBudget` 的 τ（每阶段时长）现在是**估的**，要靠真机日志里各阶段的
+    # 时间戳差来校准；而此前 `updateSigningStage` **只改状态、一行都不落**
+    # ⇒ 阶段切换在日志里没有任何时间戳 ⇒ 三条线（进度 τ 校准 / 大包耗时归因 / 请求量判据）
+    # 都在等的**那份数据根本拿不到**。
+    #
+    # ⚠️ 且必须**只在真正的阶段切换时**记（`tick == .restart`）—— 同一阶段会被重复推送
+    #（安装通道的 >1.0 哨兵 + 签名侧补发），不加闸门会刷屏（与「轮询型日志不许写」同一条理由）。
+    apps_view_source = strip_comments(load("Seal/Features/Apps/AppsViewModel.swift"))
+    check("阶段进入：" in apps_view_source and 'code: "SEAL-STAGE-001"' in apps_view_source,
+          "R39: 阶段进入必须落日志 —— 否则「每阶段耗时」拿不到，τ 只能永远靠估，"
+          "三条线都在等的数据也就永远拿不到")
+    check(0 <= apps_view_source.find("if tick == .restart {")
+          < apps_view_source.find("阶段进入："),
+          "R39: 阶段日志必须**只在真正的阶段切换时**记（`tick == .restart`）—— "
+          "同一阶段会被重复推送，不加闸门会刷屏，把真信号埋掉")
+
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
     # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
@@ -3869,6 +3909,28 @@ def main():
          "        guard data.withUnsafeBytes({ $0.loadUnaligned(fromByteOffset: 0, as: UInt32.self) })\n"
          "            == 0xfeedfacf else { return }\n",
          "R37: 判 Mach-O magic 必须"),
+        # ── R38：签名缓存（2026-09-18）──
+        # 不传缓存：退化成「每次全量重签」，续签白等。
+        ("Seal/Infrastructure/Signing/RorkAppSigner.swift",
+         "            signingCache: SigningCacheStore.preparedOptions()\n",
+         "",
+         "R38: 签名缓存必须真的传进"),
+        # ── R39：阶段进入落日志（2026-09-18）──
+        # 删掉它：阶段切换在日志里又没了时间戳 ⇒ 「每阶段耗时」拿不到。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "        if tick == .restart {\n"
+         "            let entered = stage\n"
+         "            Task { [logStore] in\n"
+         "                try? await logStore?.append(\n"
+         "                    category: .signing,\n"
+         "                    level: .info,\n"
+         "                    message: \"阶段进入：\\(entered)\",\n"
+         "                    code: \"SEAL-STAGE-001\"\n"
+         "                )\n"
+         "            }\n"
+         "        }\n",
+         "",
+         "R39: 阶段进入必须落日志"),
         # 去掉 1100 的专门文案：又落回「没有返回明确失败原因」，
         # 用户不知道账号可能已经被清空、需要立刻重新创建一张证书。
         ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",

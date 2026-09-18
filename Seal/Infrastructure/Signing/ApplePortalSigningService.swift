@@ -1892,8 +1892,8 @@ actor ApplePortalSigningService {
                     }
                     throw Self.failure(
                         title: "签名失败",
-                        reason: "Apple 返回：扩展无法创建 App ID",
-                        recovery: "移除扩展后重试",
+                        reason: "Apple 返回：扩展无法创建 App ID。这通常是因为免费账号的 App ID 名额已满（7 天内最多 10 个），而抖音这类多扩展 App 需要占用多个名额。\n\n你可以选择：① 移除部分扩展（会丢失对应功能）；② 等待 7 天窗口滚动后重试；③ 使用付费开发者账号。",
+                        recovery: "移除扩展并重试",
                         code: "SEAL-EXT-401"
                     )
                 }
@@ -1942,8 +1942,8 @@ actor ApplePortalSigningService {
                 guard allowDroppingExtensions else {
                     throw Self.failure(
                         title: "签名失败",
-                        reason: "Apple 返回：扩展无法生成描述文件",
-                        recovery: "移除扩展后重试",
+                        reason: "Apple 返回：扩展无法生成描述文件。这通常是因为免费账号的 App ID 名额已满（7 天内最多 10 个），而抖音这类多扩展 App 需要占用多个名额。\n\n你可以选择：① 移除部分扩展（会丢失对应功能）；② 等待 7 天窗口滚动后重试；③ 使用付费开发者账号。",
+                        recovery: "移除扩展并重试",
                         code: "SEAL-EXT-401a"
                     )
                 }

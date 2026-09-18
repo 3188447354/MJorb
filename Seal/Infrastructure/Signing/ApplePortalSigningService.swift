@@ -1614,6 +1614,24 @@ actor ApplePortalSigningService {
                 + "账号上已有 \(existing.count) 个、其中可复用 \(reusableAppIDCount) 个，"
                 + "需新注册 \(mappings.count - reusableAppIDCount) 个"
         )
+        // ⚠️ **取证：`fetchAppIDs` 到底会不会回填 `features`**（2026-09-18）。
+        //
+        // 为什么值得单独埋一条：一次抖音签名要发 32–41 次 Apple 请求，其中**一半**是 Phase 1 的
+        // `updateFeatures`（每个 bundle ID 一次）。如果 App ID 已存在、且远端 features 与本次
+        // 要设置的一致，这次请求就是**冗余**的 —— 而**减少请求量**正是「扩展多的 App 签不上」
+        // （Apple 限流）最直接的解法。
+        //
+        // 但**绝不能盲改**：`ALTAppID.features` 在本仓代码里**只被写入、从未被读取**，
+        // 无法证明 `fetchAppIDs` 会把它填上。若它恒为空，靠它跳过会**静默丢掉 entitlements**
+        // （比现状更糟）⇒ 先取证，拿到真机日志确认后再决定要不要做这个优化。
+        let featureBearingAppIDs = existing.filter { $0.features.isEmpty == false }
+        let featureSample = featureBearingAppIDs.first.map {
+            "样例 \($0.bundleIdentifier) 有 \($0.features.count) 项"
+        } ?? "全部为空"
+        await diagnostic(
+            "App ID features 诊断：账号已有 \(existing.count) 个 App ID，"
+                + "其中 \(featureBearingAppIDs.count) 个带回非空 features（\(featureSample)）"
+        )
 
         // 不做「existing.count >= 10 就硬拦」的本地预检（原 SEAL-APPID-305）：
         // Apple 的真实上限是「7 天内最多注册 10 个 App ID」（滑动窗口），不是「当前存活 App ID ≤ 10」。

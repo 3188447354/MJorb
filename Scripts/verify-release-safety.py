@@ -1490,6 +1490,22 @@ def violations(load=read):
         check(write_label not in portal_source,
               "R33: **写操作绝不允许重试超时**（会多占证书名额 / 重复写）：" + write_label)
 
+    # R34: 取证点 —— `fetchAppIDs` 是否回填 `features`（2026-09-18）。
+    #
+    # 这条诊断是「跳过冗余 `updateFeatures`」这个优化的**前置条件**。那个优化能砍掉
+    # 一次抖音签名里**一半**的 Apple 请求（Phase 1 每个 bundle ID 一次 `updateFeatures`），
+    # 而减少请求量正是「扩展多的 App 签不上」（Apple 限流）最直接的解法。
+    #
+    # 但不能盲改：`ALTAppID.features` 在本仓代码里**只被写入、从未被读取**，
+    # 无法证明 `fetchAppIDs` 会填充它。若它恒为空，靠它跳过会**静默丢掉 entitlements**
+    # （比现状更糟）⇒ 先取证。守卫钉住「诊断存在」且「排在 updateFeatures 之前」。
+    check("App ID features 诊断：" in portal_source,
+          "R34: 必须保留 `fetchAppIDs` 是否回填 `features` 的取证诊断 —— "
+          "它是「跳过冗余 updateFeatures」这个减请求优化的前置条件，删了就只能盲改")
+    check(0 <= portal_source.find("App ID features 诊断：")
+          < portal_source.find('withSessionRecovery("更新应用能力'),
+          "R34: 取证诊断必须排在 Phase 1 的 `updateFeatures` 之前（否则拿不到「复用前」的观测）")
+
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
     # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
@@ -3579,6 +3595,12 @@ def main():
          "withSessionRecovery(\"读取 App ID 列表\", retriesOnTimeout: true)",
          "withSessionRecovery(\"读取 App ID 列表\")",
          "R33: 读操作必须允许重试超时"),
+        # ── R34：features 取证点（2026-09-18）──
+        # 删掉它：减请求优化就只能靠猜（盲改会静默丢掉 entitlements）。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "            \"App ID features 诊断：账号已有 \\(existing.count) 个 App ID，\"\n",
+         "",
+         "R34: 必须保留 `fetchAppIDs` 是否回填 `features` 的取证诊断"),
         # 去掉 1100 的专门文案：又落回「没有返回明确失败原因」，
         # 用户不知道账号可能已经被清空、需要立刻重新创建一张证书。
         ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",

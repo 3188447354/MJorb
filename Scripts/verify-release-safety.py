@@ -1732,6 +1732,16 @@ def violations(load=read):
           < apps_view_source.find("阶段进入："),
           "R39: 阶段日志必须**只在真正的阶段切换时**记（`tick == .restart`）—— "
           "同一阶段会被重复推送，不加闸门会刷屏，把真信号埋掉")
+    # ⚠️ 日志还必须排在 `guard signingSession != nil` **之前**（2026-09-18 真机，构建 133）。
+    # 批量续签走的是 `BatchRefreshSession`，`signingSession` 可能为空 ⇒ 原来那个 guard
+    # 会让整段 return、**日志一条都不落** ⇒ 实测整份日志只有 **2 条** `SEAL-STAGE-001`
+    #（而且都是 `installing`）✗。而「每阶段耗时」的样本**恰恰主要来自批量续签**
+    #（用户最常用的入口）⇒ 日志必须与 session 状态**解耦**。
+    check(0 <= apps_view_source.find("阶段进入：")
+          < apps_view_source.find("guard signingSession != nil else { return }"),
+          "R39: 阶段日志必须排在 `guard signingSession != nil` **之前** —— "
+          "批量续签时 `signingSession` 可能为空，排在后面会导致整段 return、"
+          "日志不落（真机实测只有 2 条）")
 
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #

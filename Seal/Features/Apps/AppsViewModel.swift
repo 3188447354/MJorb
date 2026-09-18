@@ -2005,7 +2005,6 @@ final class AppsViewModel: ObservableObject {
     }
 
     private func updateSigningStage(_ stage: SigningStage) {
-        guard signingSession != nil else { return }
         let currentStage: SigningStage?
         if case .running(let running) = signingSession?.status {
             currentStage = running
@@ -2015,26 +2014,18 @@ final class AppsViewModel: ObservableObject {
         // 起点规则与批量续签共用 InstallStageTimeline：同一阶段被重复推送时不重置，
         // 每次都重置会让「已等待 m:ss」永远停在 0:0x，反而更像卡死。
         let tick = InstallStageTimeline.tick(entering: stage, currentStage: currentStage)
-        signingSession?.installStartedAt = InstallStageTimeline.applied(
-            tick,
-            startedAt: signingSession?.installStartedAt
-        )
-        // 当前阶段的起点：进度不再只随阶段跳变，阶段内部要按「已过时间」估算
-        // （见 `SigningProgressBudget`），所以每个阶段都要有一个起点。
-        // 规则同样抽在 `InstallStageTimeline` 里，理由与上面那条一样：
-        // 「起点该不该重置」只许有一处答案。
-        signingSession?.stageStartedAt = InstallStageTimeline.stageStart(
-            entering: stage,
-            currentStage: currentStage,
-            previous: signingSession?.stageStartedAt
-        )
-        signingSession?.status = .running(stage)
         // ⚠️ **每个阶段真正进入时记一行**（2026-09-18）—— 这是「**分段耗时**」的唯一来源。
         //
         // 背景：`SigningProgressBudget` 的 τ（每阶段时长）现在是**估的**，要靠真机日志里
         // 各阶段的时间戳差来校准。而在此之前 `updateSigningStage` **只改状态、一行都不落**
         // ⇒ 阶段切换在日志里没有任何时间戳 ⇒ 那份数据**根本拿不到**，
         // 三条线（进度 τ 校准 / 大包耗时归因 / 请求量判据）都在等它。
+        //
+        // ⚠️ **必须排在下面那个 `guard signingSession != nil` 之前**（2026-09-18 真机，构建 133）：
+        // **批量续签走的是 `BatchRefreshSession`，`signingSession` 可能为空** ⇒ 原来那个 guard
+        // 会让整段直接 return、日志不落 ⇒ 实测整份日志只有 **2 条** `SEAL-STAGE-001`
+        //（而且都是 `installing`）✗。而「每阶段耗时」的样本**恰恰主要来自批量续签**
+        //（用户最常用的入口）⇒ 日志必须与 session 状态**解耦**。
         //
         // ⚠️ **只在 `tick == .restart`（真正的阶段切换）时记** —— 同一阶段会被**重复推送**
         //（安装通道的 >1.0 哨兵 + 签名侧补发），不加闸门会刷屏，把真信号埋掉。
@@ -2051,6 +2042,22 @@ final class AppsViewModel: ObservableObject {
                 )
             }
         }
+
+        guard signingSession != nil else { return }
+        signingSession?.installStartedAt = InstallStageTimeline.applied(
+            tick,
+            startedAt: signingSession?.installStartedAt
+        )
+        // 当前阶段的起点：进度不再只随阶段跳变，阶段内部要按「已过时间」估算
+        // （见 `SigningProgressBudget`），所以每个阶段都要有一个起点。
+        // 规则同样抽在 `InstallStageTimeline` 里，理由与上面那条一样：
+        // 「起点该不该重置」只许有一处答案。
+        signingSession?.stageStartedAt = InstallStageTimeline.stageStart(
+            entering: stage,
+            currentStage: currentStage,
+            previous: signingSession?.stageStartedAt
+        )
+        signingSession?.status = .running(stage)
         // Seal 自续签 = 覆盖安装运行中的自己：iOS 只有在旧进程让出前台后才完成替换，
         // 所以必须由 Seal 主动「回主页」。
         //

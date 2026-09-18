@@ -1577,6 +1577,17 @@ def violations(load=read):
           "anisette 的一次性码有效期只有几十秒，而本地准备要 105–120 秒 ⇒ "
           "不重建就是拿过期 anisette 去请求，Apple 判会话异常返回 1100")
 
+    # R44: 阳性对照失败时必须输出**判别性诊断**（2026-09-19 真机，构建 141）。
+    #
+    # 真机：「阳性对照未通过（com.mjorb.seal.CT8QZ7352B 被答成未安装）」✗ ——
+    # Seal 正在运行、它**一定**装着 ⇒ 核验通道在撒谎 ✓
+    # 但「通道整体不可信」与「只有 Seal 自己的 ID 查不到」**现象完全相同** ✗
+    # ⇒ 失败时必须再问两个**系统 App** 来判别，否则下一次真机日志仍然分不出来 ✓
+    cleaner_source = strip_comments(load("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift"))
+    check("com.apple.Preferences" in cleaner_source and "com.apple.mobilesafari" in cleaner_source,
+          "R44: 阳性对照失败时必须输出**判别性诊断**（拿系统 App 再问一次）—— "
+          "否则「通道不可信」与「只有 Seal 自己查不到」在日志里分不开")
+
     # R36: 进度条与阶段轨道的数值只许来自 `SigningProgressBudget`（2026-09-18）。
     #
     # 起因：用户反馈「百分比进度条和底部 5 个横杠都是跳着走的，不像 0→100 的丝滑」。
@@ -4057,6 +4068,11 @@ def main():
          "            let refreshedAnisette = try await anisetteProvider.fetch()\n",
          "",
          "R43: `prepare` 之后必须**重建会话**"),
+        # ── R44：阳性对照的判别性诊断（2026-09-19）──
+        ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
+         "            for sample in [\"com.apple.Preferences\", \"com.apple.mobilesafari\"] {\n",
+         "",
+         "R44: 阳性对照失败时必须输出**判别性诊断**"),
         # ── R40：102c 不得标失效（2026-09-18 真机）──
         # 删掉排除：账号又会在「紧接 3 次限流退避之后」被标成失效 ⇒ 死循环。
         ("Seal/Core/Accounts/AppleServiceFailurePolicy.swift",

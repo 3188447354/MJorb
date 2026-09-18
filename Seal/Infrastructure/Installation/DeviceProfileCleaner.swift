@@ -416,7 +416,27 @@ struct DeviceProfileCleaner: Sendable {
         }
         let positiveControlPassed = await probeInstalled(bundleID: controlBundleID) == .installed
         guard positiveControlPassed else {
-            summary.reclaimAborted = "阳性对照未通过（\(controlBundleID) 被答成未安装）"
+            // ⚠️ **判别性诊断**（2026-09-19 真机，构建 141）：
+            // 真机日志出现「阳性对照未通过（com.mjorb.seal.CT8QZ7352B 被答成未安装）」✗
+            // —— Seal 正在运行，它**一定**装着，所以核验通道在撒谎。
+            //
+            // 但**两种原因**会给出完全相同的现象，必须分开：
+            //   ① **通道整体不可信**（`isAppInstalled` 对谁都答 false）；
+            //   ② **只有 Seal 自己的 ID 查不到**（ID 改写 / 比较相关）。
+            //
+            // 再问两个**系统 App** 就能判别（它们在任何 iOS 设备上都装着）：
+            //   - 系统 App 也是 `notInstalled` ⇒ **通道不可信** ✗（该重建连接）；
+            //   - 系统 App 是 `installed` ⇒ **只有 Seal 自己查不到** ✓（该查 ID 比较）。
+            //
+            // 结果写进 `reclaimAborted` —— 它已经会出现在摘要日志里（「回收中止：…」），
+            // 不需要给这个类型新增 logger ✓。
+            var channelDiagnostics: [String] = []
+            for sample in ["com.apple.Preferences", "com.apple.mobilesafari"] {
+                let sampleProbe = await probeInstalled(bundleID: sample)
+                channelDiagnostics.append("\(sample)=\(sampleProbe)")
+            }
+            summary.reclaimAborted = "阳性对照未通过（\(controlBundleID) 被答成未安装）；"
+                + "通道判别（系统 App）：" + channelDiagnostics.joined(separator: "、")
             return summary
         }
 

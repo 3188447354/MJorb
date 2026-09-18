@@ -1649,6 +1649,24 @@ actor ApplePortalSigningService {
         for (original, mapped) in mappings {
             desiredKeysByMapped[mapped] = desiredFeatureKeys(original: original)
         }
+        // ⚠️ **值类型也必须报出来**（2026-09-18）—— 判据「键集相等 ⇒ 值也相等」
+        // **只在所有值都是布尔开关时成立**。若某个能力的值是列表
+        // （App Group / Associated Domains 之类），键集相等**不代表**值相等，
+        // 跳过会**静默丢掉那个能力** ⇒ 那时这条优化就**不能做**。
+        // 只报**类型名**（`Bool` / `Array<String>`…），不报值 —— 类型名不含任何凭据。
+        func desiredFeatureTypeSummary(original: String) -> String? {
+            guard let application = applications[original] else { return nil }
+            var pairs: [(String, String)] = []
+            for (entitlement, value) in filteredAppIDEntitlements(from: application, team: team) {
+                guard let feature = ALTFeature(entitlement: entitlement) else { continue }
+                pairs.append((String(describing: feature), String(describing: type(of: value))))
+            }
+            guard pairs.isEmpty == false else { return nil }
+            return pairs.sorted { $0.0 < $1.0 }.map { "\($0.0)=\($0.1)" }.joined(separator: " ")
+        }
+        let typeSample = mappings.keys
+            .compactMap { desiredFeatureTypeSummary(original: $0) }
+            .first
         var observedWithFeatures = 0
         var skipCandidates = 0
         var firstMismatch: String?
@@ -1675,6 +1693,7 @@ actor ApplePortalSigningService {
                 + "与本次要设置**完全一致**的有 \(skipCandidates) 个"
                 + "（一致的那些理论上可跳过 updateFeatures ⇒ 能省 \(skipCandidates) 次请求）"
                 + (firstMismatch.map { "；首个不一致样例 \($0)" } ?? "")
+                + (typeSample.map { "；本次要设置的能力与值类型 \($0)" } ?? "")
         )
 
         // 不做「existing.count >= 10 就硬拦」的本地预检（原 SEAL-APPID-305）：

@@ -147,6 +147,13 @@
 | 「映射后的 Bundle ID 变长到 Apple 不接受，且没人管」 | ❌ **已经查了长度**（≤255）＋字符集＋分段规则；扩展 ID 还有哈希缩短兜底 | `BundleIDPolicy.validated`（`identifier.count <= 255`）；`BundleIDMapper.extensionBundleID` 的 `.e<10 位哈希>` |
 | 「安装大包会超时（等待上限写死）」 | ❌ **按包大小算**：小包 804 秒、**抖音 779 MB = 2400 秒**，心跳阈值按上限的 1/4 | `abnormalInstallWaitSeconds(budget:)` = `max(120, budget/4)` |
 | 「`sign()` 里还有别的 catch 会覆盖好文案」 | ❌ R31 修完后**没有**覆盖文案的分支（其余两个是「重试」不是「改写」） | `sign()` 的 catch 链 463–558 |
+| 「Seal 的自定义图标会**搞坏**被签 App 的深色/着色变体」 | ❌ 不是 bug：`replacePrimaryAppIcon` 写 4 张散图并**删掉 `CFBundleIconName`** ⇒ iOS 改走散图、不再读 `Assets.car`。**这是「覆盖」功能的必然结果**，不是破坏 | `SigningWorkspace.replacePrimaryAppIcon`（430–463） |
+
+**⇒ 但上面最后一条带出一个真实的「已知限制」**（不是缺口、也不是能修的 bug）：
+**自定义图标在深色模式下不会被系统压暗** —— 因为散图（`CFBundleIconFiles`）**没有**深色变体机制，
+深色变体**只能**通过资源目录（`CFBundleIconName` + `Assets.car`）提供，
+而签名期在设备上**无法编译资源目录**（需要 `actool`）。
+⇒ 设了自定义图标的 App，深色模式下会显示原样（偏亮）。**记在这里，避免以后当成 bug 反复查。**
 
 ⇒ **教训（已写进技能）**：**猜一个「缺口」之后，第一件事是去代码里找它是否已经存在。**
 引擎比记忆/直觉里完整，**猜出来的缺口有一半是假的**；而每次猜错都要白读一轮代码。

@@ -1522,6 +1522,13 @@ def violations(load=read):
           and "func desiredFeatureKeys(original: String) -> Set<String>" in portal_source,
           "R34: 取证诊断必须把「远端 features 与本次要设置一致」的**个数**算出来 —— "
           "只说「features 非空」判断不了能不能跳过 updateFeatures")
+    # ⚠️ 还**必须报出值类型**：判据「键集相等 ⇒ 值也相等」只在**所有值都是布尔开关**时成立。
+    # 若某个能力的值是列表（App Group / Associated Domains 之类），键集相等**不代表**值相等，
+    # 跳过会**静默丢掉那个能力** ⇒ 那时这条优化就**不能做**。这是能否落地的最后一块判据。
+    check("desiredFeatureTypeSummary" in portal_source
+          and "本次要设置的能力与值类型" in portal_source,
+          "R34: 取证诊断必须报出**值类型** —— 有列表值时「键集相等」不等于「值相等」，"
+          "跳过会静默丢能力，那时这条优化不能做")
 
     # R35: 解压**之前**按「解压后」体积判空间（2026-09-18）。
     #
@@ -3659,6 +3666,11 @@ def main():
          "                + \"（一致的那些理论上可跳过 updateFeatures ⇒ 能省 \\(skipCandidates) 次请求）\"\n",
          "",
          "R34: 取证诊断必须把"),
+        # 抽掉「值类型」那一段：判据就缺了最后一块（有列表值时不能跳过）。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "                + (typeSample.map { \"；本次要设置的能力与值类型 \\($0)\" } ?? \"\")\n",
+         "",
+         "R34: 取证诊断必须报出**值类型**"),
         # ── R35：解压前按解压后体积判空间（2026-09-18）──
         # 删掉这次检查：高压缩比的包又会被低估，可能在签名中途写满磁盘。
         ("Seal/Infrastructure/Signing/SigningWorkspace.swift",

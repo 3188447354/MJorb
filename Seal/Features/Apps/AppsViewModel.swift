@@ -1043,7 +1043,10 @@ final class AppsViewModel: ObservableObject {
               signingTask == nil,
               batchRefreshTask == nil,
               let signingCoordinator else { return }
-        signingSession?.status = .running(.preparingCertificate)
+        // 走同一条阶段推进路径（而不是直接赋值 `status`）：阶段与「本阶段起点」一起落。
+        // 绕过 `updateSigningStage` 的话，进度估算的起点会停在**上一个**阶段 ——
+        // 表现是进度从旧阶段的数值开始爬，而不是从本阶段的地板值起。
+        updateSigningStage(.preparingCertificate)
         signingTask = Task { [weak self] in
             guard let self else { return }
             var retrySession: SigningSession?
@@ -1855,7 +1858,8 @@ final class AppsViewModel: ObservableObject {
               batchRefreshTask == nil,
               signingCoordinator != nil else { return }
         signingSession?.allowsDroppingExtensions = allowDroppingExtensions
-        signingSession?.status = .running(.waitingForChannel)
+        // 同上：阶段推进统一走 `updateSigningStage`，让「本阶段起点」与阶段一起落。
+        updateSigningStage(.waitingForChannel)
         signingTask = Task { [weak self] in
             await self?.runSigning(
                 app: session.app,
@@ -2014,6 +2018,15 @@ final class AppsViewModel: ObservableObject {
         signingSession?.installStartedAt = InstallStageTimeline.applied(
             tick,
             startedAt: signingSession?.installStartedAt
+        )
+        // 当前阶段的起点：进度不再只随阶段跳变，阶段内部要按「已过时间」估算
+        // （见 `SigningProgressBudget`），所以每个阶段都要有一个起点。
+        // 规则同样抽在 `InstallStageTimeline` 里，理由与上面那条一样：
+        // 「起点该不该重置」只许有一处答案。
+        signingSession?.stageStartedAt = InstallStageTimeline.stageStart(
+            entering: stage,
+            currentStage: currentStage,
+            previous: signingSession?.stageStartedAt
         )
         signingSession?.status = .running(stage)
         // Seal 自续签 = 覆盖安装运行中的自己：iOS 只有在旧进程让出前台后才完成替换，

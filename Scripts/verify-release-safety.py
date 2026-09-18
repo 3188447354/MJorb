@@ -1368,6 +1368,25 @@ def violations(load=read):
           "R28: 切 tab 的断言必须落在**确定性的选中态**（`button.isSelected`）上 —— "
           "断言「目标页文字出现」依赖 `TabView(.page)` 翻页，会间歇性红")
 
+    # R28b: **滑动**路径也要有同样的保护（2026-09-18 实测）。
+    #
+    # 上面那条规则原先只落在**点击**这条路径上：`tapStage` 已改成「点 → 等 → 没到就再点 +
+    # 断言选中态」，而**滑动**那条仍在断言「目标页文字出现」—— 2026-09-18 构建 131 因此红：
+    # `ImportFlowUITests.swift:63`（滑左之后 5 秒内「已安装应用」没出现）。
+    # 而该提交**只有 8 张 PNG 删除、0 个 Swift 改动**，同一份测试代码在构建 130 是绿的
+    # ⇒ 抖动，不是回归。**这是本仓第 7 次「规则只覆盖两条链路中的一条」**，所以守卫也要覆盖两条。
+    #
+    # 计数 1 = 裸滑动只允许出现在 `swipeStage` 内部（裸滑动会撞上程序化翻页的动画尾部被吞掉）。
+    # 断言用 `squash` 写成一行式，避免数缩进空格（缩进一改守卫就莫名其妙地红）。
+    check("private func swipeStage(" in ui_tests
+          and ui_tests.count("pager.swipeLeft()") == 1
+          and ui_tests.count("pager.swipeRight()") == 1,
+          "R28b: 滑动路径也必须走 swipeStage —— 裸滑动会撞上程序化翻页的动画尾部被吞掉，"
+          "而这类抖动只在 CI 上间歇性暴露")
+    check("XCTAssertTrue( selected.isSelected," in squash(ui_tests),
+          "R28b: 滑动路径的断言必须落在**确定性的选中态**（`selected.isSelected`）上 —— "
+          "断言「目标页文字出现」依赖 `TabView(.page)` 翻页，会间歇性红")
+
     # R29: 证书轮换路径的「创建证书」也要过退避重试，且**共用**判据与间隔（2026-09-17）。
     #
     # `ApplePortalCertificateService`（证书轮换 / 孤儿证书清理）与
@@ -1459,10 +1478,11 @@ def violations(load=read):
     check("case preparingBundle" in signing_stage_source
           and "正在准备应用文件" in signing_stage_source,
           "R32: `preparingBundle` 阶段必须存在，且文案不能是「正在验证 Apple ID」")
-    progress_view_source = strip_comments(load("Seal/Features/Apps/SigningProgressView.swift"))
-    check(progress_view_source.count(".preparingBundle") >= 3,
-          "R32: `SigningProgressView` 的三处 switch（segmentFraction / overallProgress / "
-          "timelinePosition）都必须处理 `preparingBundle`")
+    # ⚠️ 2026-09-18：这里原先断言「`SigningProgressView` 的三处 switch
+    #（segmentFraction / overallProgress / timelinePosition）都必须处理 `preparingBundle`」。
+    # 那三处 switch 已合并成 `SigningProgressBudget` 的**唯一一张表**，
+    # 「每个阶段都被进度界面接住」改由 R36 逐个阶段点名 —— 比原来的 `count >= 3` 更强：
+    # 后者只能证明「`.preparingBundle` 出现了 3 次」，证明不了「10 个阶段都在」。
     check("case .preparingBundle: .signing" in strip_comments(
               load("Seal/Core/Signing/SigningCoordinator.swift")),
           "R32: `SigningStage.appState` 必须处理 `preparingBundle`")
@@ -1489,6 +1509,66 @@ def violations(load=read):
           and "签名：重签完成（逐 Mach-O 串行），耗时" in portal_source,
           "R32: 打包与重签必须各有独立耗时埋点 —— 它们是本地耗时的大头候选，"
           "原先完全没有埋点 ⇒ 「大包签名慢」只能靠猜")
+
+    # R36: 进度条与阶段轨道的数值只许来自 `SigningProgressBudget`（2026-09-18）。
+    #
+    # 起因：用户反馈「百分比进度条和底部 5 个横杠都是跳着走的，不像 0→100 的丝滑」。
+    # 根因不是动效 —— 是**进度只是 `SigningStage` 的纯函数**（10 个阶段 → 10 个写死的
+    # 常数、没有任何时间项），于是两次阶段推送之间界面只能冻结、阶段一变就跳一格；
+    # 而同一套语义还写在**三处 switch** 里（`segmentFraction` / `overallProgress` /
+    # `timelinePosition`），改一处漏两处也不会报错。
+    #
+    # 现在收敛成一张表 + 一组纯函数，所以这里守两件事：
+    #   ① 每个阶段都必须有预算 —— 漏一个，界面上那个阶段会停在上一阶段的数值上；
+    #   ② 表的连续性 `ceiling_i == floor_{i+1}` —— 破了它，阶段切换时进度会跳一下或往回退。
+    # 两条都属于「不崩、不报错、只在真机上看得见」，只能靠守卫 + 单测钉住。
+    budget_source = strip_comments(load("Seal/Core/Signing/SigningProgressBudget.swift"))
+    stage_source = strip_comments(load("Seal/Core/Signing/SigningStage.swift"))
+    stage_names = re.findall(r"^    case (\w+)$", stage_source, re.M)
+    # 这条是**正则漂移**的哨兵：取不到阶段名时下面那个循环会变成空集 ⇒ 永远绿。
+    check(len(stage_names) >= 10,
+          "R36: 没能从 `SigningStage` 里取到阶段名（正则漂移 ⇒ 「每个阶段都有预算」会退化成空检查）")
+    for stage_name in stage_names:
+        check("case .%s:" % stage_name in budget_source,
+              "R36: 阶段 `%s` 没有进度预算 —— 界面上它会停在上一阶段的数值上" % stage_name)
+    budget_rows = re.findall(r"floor: ([0-9.]+), ceiling: ([0-9.]+),", budget_source)
+    check(len(budget_rows) == len(stage_names),
+          "R36: 预算表行数（%d）与阶段数（%d）不一致" % (len(budget_rows), len(stage_names)))
+    for row_index in range(len(budget_rows) - 1):
+        check(budget_rows[row_index][1] == budget_rows[row_index + 1][0],
+              "R36: 阶段预算必须首尾相接（ceiling_i == floor_{i+1}）—— "
+              "破了它，阶段切换时进度会跳一下或往回退")
+    budget_view = strip_comments(load("Seal/Features/Apps/SigningProgressView.swift"))
+    for budget_symbol, budget_why in (
+        ("SigningProgressBudget.bucketCount", "轨道格数"),
+        ("SigningProgressBudget.bucketFill(", "轨道每一格的填充"),
+        ("SigningProgressBudget.overallProgress(", "进度环的数值"),
+        ("SigningProgressBudget.confirmedProgress(", "进度环的「已确认」那一段"),
+        ("SigningProgressBudget.isEstimated(", "估算态（决定扫光与呼吸点）"),
+        ("SigningProgressBudget.showsOwnElapsed(", "长阶段的「本阶段已用时」"),
+    ):
+        check(budget_symbol in budget_view,
+              "R36: `SigningProgressView` 必须用 " + budget_symbol + "（" + budget_why + "）")
+    # 界面里不许再出现写死的进度常数 —— 那正是「跳着走」的来源。
+    for stale_progress in (
+        "case .preparingBundle: return 0.23",
+        "case .preparingCertificate: return 0.30",
+        "case .installing: return 0.93",
+        "case .verifying: return 0.99",
+        "segmentFraction(for stage: SigningStage)",
+        "timelinePosition(for stage: SigningStage)",
+    ):
+        check(stale_progress not in budget_view,
+              "R36: `SigningProgressView` 不许再写死进度（%s）—— "
+              "数值只许来自 `SigningProgressBudget`" % stale_progress)
+    # 单测必须真的在守这两条性质：测试被删空或改宽之后，上面的源码断言照样全绿。
+    budget_tests = strip_comments(load("SealTests/Signing/SigningProgressBudgetTests.swift"))
+    check("func everyStageBudgetMeetsTheNextOne()" in budget_tests
+          and "current.ceiling == next.floor" in budget_tests,
+          "R36: 单测必须断言「阶段预算首尾相接」")
+    check("func theTwoLongStagesNoLongerStandStill()" in budget_tests
+          and "#expect(bundle > 30)" in budget_tests,
+          "R36: 单测必须断言「两个长阶段不再一动不动」")
 
     # R33: 「**读**可重试超时、**写**绝不可」是硬规则（2026-09-18）。
     #
@@ -3610,6 +3690,16 @@ def main():
          "        XCTAssertTrue(\n            button.isSelected,",
          "        XCTAssertTrue(\n            app.staticTexts[\"已安装应用\"].waitForExistence(timeout: 5),",
          "R28: 切 tab 的断言必须落在**确定性的选中态**"),
+        # 把滑动退回裸手势：滑动的抖动又会回来（只在 CI 上间歇性暴露，2026-09-18 构建 131 实测）。
+        ("SealUITests/ImportFlowUITests.swift",
+         "        swipeStage(pager, to: .left, expecting: app.buttons[\"已安装，0 个\"])",
+         "        pager.swipeLeft()",
+         "R28b: 滑动路径也必须走 swipeStage"),
+        # 把滑动断言退回「目标页文字出现」：依赖 TabView 翻页，CI 会间歇性红。
+        ("SealUITests/ImportFlowUITests.swift",
+         "        XCTAssertTrue(\n            selected.isSelected,",
+         "        XCTAssertTrue(\n            app.staticTexts[\"已安装应用\"].waitForExistence(timeout: 5),",
+         "R28b: 滑动路径的断言必须落在**确定性的选中态**"),
         # ── R29：证书轮换路径的「创建证书」也要过退避重试（2026-09-17）──
         # 退回「直接请求」：它前面刚 revoke 过，创建失败会让账号变成 0 张证书
         # ⇒ 用它签过的所有 App 立刻打不开。
@@ -3656,11 +3746,42 @@ def main():
          "            return \"正在准备应用文件\"",
          "            return \"正在验证 Apple ID\"",
          "R32: `preparingBundle` 阶段必须存在，且文案不能是「正在验证 Apple ID」"),
-        # 抽掉一处 switch 的分支：穷尽 switch 会编译不过，但非穷尽写法会静默错。
+        # ── R36：2026-09-18 用户反馈「进度条和底部 5 横杠跳着走」──
+        # 破坏预算表的首尾相接：阶段切换时进度会跳一下 / 数字往回退。
+        ("Seal/Core/Signing/SigningProgressBudget.swift",
+         "                floor: 14, ceiling: 38, timeConstant: 24,",
+         "                floor: 14, ceiling: 30, timeConstant: 24,",
+         "R36: 阶段预算必须首尾相接"),
+        # 把某个阶段的 case 标签写歪（`switch` 会编译不过，但守卫是文本检查）：
+        # 「每个阶段都必须有预算」这条就此失去约束力。
+        ("Seal/Core/Signing/SigningProgressBudget.swift",
+         "        case .preparingCertificate:\n"
+         "            return Plan(\n",
+         "        case .preparingCertificat:\n"
+         "            return Plan(\n",
+         "R36: 阶段 `preparingCertificate` 没有进度预算"),
+        # 界面不再走预算表、自己算一个数：数值来源不再唯一，「跳着走」会回来。
         ("Seal/Features/Apps/SigningProgressView.swift",
-         "        case .preparingBundle: return 0.23\n",
-         "",
-         "R32: `SigningProgressView` 的三处 switch"),
+         "        let progress = SigningProgressBudget.overallProgress(",
+         "        let progress = 0.93 + 0 * Double(",
+         "R36: `SigningProgressView` 必须用 SigningProgressBudget.overallProgress("),
+        # 界面里重新写死一个进度常数（死代码也一样算）：这是「跳着走」的原样重演。
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         "    private func stageElapsed(_ now: Date) -> TimeInterval {",
+         "    private func legacyHardcodedProgress(for stage: SigningStage) -> Double {\n"
+         "        switch stage {\n"
+         "        case .installing: return 0.93\n"
+         "        default: return 0\n"
+         "        }\n"
+         "    }\n"
+         "\n"
+         "    private func stageElapsed(_ now: Date) -> TimeInterval {",
+         "R36: `SigningProgressView` 不许再写死进度"),
+        # 把单测改宽：只断言「涨了」而不锁住「明显爬升」，约束就没了。
+        ("SealTests/Signing/SigningProgressBudgetTests.swift",
+         "        #expect(bundle > 30)",
+         "        #expect(bundle > 0)",
+         "R36: 单测必须断言「两个长阶段不再一动不动」"),
         # 把 `progress(.preparingBundle)` 撤掉：文案又变回「正在验证 Apple ID」。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "            await progress(.preparingBundle)\n"
@@ -3726,7 +3847,7 @@ def main():
          "    private func validate(_ entries: [Entry]) throws -> UInt64 {",
          "    private func validate(_ entries: [Entry]) throws {",
          "R35: `validate` 必须把解压后总量**返回出去**"),
-        # ── R37：先读 4 字节判 magic（2026-09-18）──
+        # ── R36：先读 4 字节判 magic（2026-09-18）──
         # 退回「先整体读入」：全树遍历会把 1.46 GB 读进内存，有 jetsam 风险。
         ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
          "        guard let handle = try? FileHandle(forReadingFrom: machOURL) else { return }\n"

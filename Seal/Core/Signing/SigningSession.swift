@@ -27,6 +27,19 @@ struct SigningSession: Identifiable, Equatable, Sendable {
     /// 进度环只能停在 93%（或显示「替换中」）。这里记下起点，让 UI 至少能给出
     /// 「已等待 X 分 Y 秒」——把「没反应」和「正在装」区分开（2026-09-16 真机反馈）。
     var installStartedAt: Date?
+    /// 进入**当前阶段**的时刻。
+    ///
+    /// 进度不再只随阶段跳变：阶段内部按「已过时间」做有上界的估算
+    /// （见 `SigningProgressBudget`），所以每个阶段都需要一个起点。
+    ///
+    /// 起点规则只有一条、且只落在 `InstallStageTimeline.stageStart` 里：
+    /// **阶段变化时重置，同一阶段被重复推送时保持**。后者不是优化 ——
+    /// `.pushing` / `.installing` 都会被推送不止一次（安装通道的 >1.0 哨兵 +
+    /// 签名侧补发），每次都重置会让估算永远停在阶段起点，比不显示更像卡死。
+    ///
+    /// 为 `nil` 时按「已过 0 秒」处理（回看历史会话、或起点丢失）——
+    /// 此时进度停在阶段地板值上，仍然是个**有效**的显示，不会出现负进度或跳变。
+    var stageStartedAt: Date?
 
     init(
         id: UUID = UUID(),
@@ -36,6 +49,7 @@ struct SigningSession: Identifiable, Equatable, Sendable {
         selectedCertificateSerialNumber: String? = nil,
         completionMode: SigningCompletionMode = .signAndInstall,
         allowsDroppingExtensions: Bool = false,
+        stageStartedAt: Date? = Date(),
         status: Status
     ) {
         self.id = id
@@ -45,6 +59,9 @@ struct SigningSession: Identifiable, Equatable, Sendable {
         self.selectedCertificateSerialNumber = selectedCertificateSerialNumber
         self.completionMode = completionMode
         self.allowsDroppingExtensions = allowsDroppingExtensions
+        // 默认「会话开始 = 当前阶段开始」：会话总是在一个运行中的阶段里被创建的，
+        // 起点留空会让进度停在阶段地板值上直到第一次阶段推进。
+        self.stageStartedAt = stageStartedAt
         self.status = status
     }
 }

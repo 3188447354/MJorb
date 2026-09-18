@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import UIKit
 
@@ -5,7 +6,6 @@ struct SigningProgressView: View {
     @ObservedObject var viewModel: AppsViewModel
     let onFinish: (SigningCompletionMode) -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var selfReplacementSpin = false
     /// Seal 自续签进入安装阶段后置 true：界面先做一次可感知的淡出转场并改文案，
     /// 再由 Seal 触发系统级回主屏，避免「静止数秒后瞬间消失」被误读成闪退。
     @State private var isReturningHome = false
@@ -64,12 +64,39 @@ struct SigningProgressView: View {
     }
 
     private func runningContent(_ stage: SigningStage) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        // 逐帧驱动。旧实现把进度写成 `SigningStage` 的纯函数（10 个阶段 → 10 个写死的
+        // 常数），两次阶段推送之间界面只能冻结、阶段一变就跳一格 —— 这就是用户说的
+        // 「跳着走 / 看着像卡住」。现在阶段内部按「已过时间」连续收敛
+        // （`SigningProgressBudget`），所以需要一个按帧走的时钟。
+        //
+        // 30Hz 而不是默认的 60Hz：这只是一张弹窗卡片，30Hz 已经看不出台阶，省一半重绘。
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { context in
+            runningBody(stage, now: context.date)
+        }
+    }
+
+    private func runningBody(_ stage: SigningStage, now: Date) -> some View {
+        let elapsed = stageElapsed(now)
+        return VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 14) {
-                progressRing(stage)
-                Text(stage.stageTitle(isRenewal: isRenewal))
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.primary)
+                progressRing(stage, now: now)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(stage.stageTitle(isRenewal: isRenewal))
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    if SigningProgressBudget.showsOwnElapsed(stage: stage, elapsed: elapsed) {
+                        // 只给明显偏长的阶段显示计时（门槛见 `elapsedDisplayThreshold`）。
+                        // 最关键的是 `preparingBundle`：抖音 780 MB 在那里要 112 秒，
+                        // 旧实现全程只显示「23%」，用户无法判断是在解压还是卡死了。
+                        //
+                        // `.installing` / `.verifying` 刻意排除：那两段由 `InstallWaitNote`
+                        // 统一报「已等待 m:ss」，同一个数字在一张卡片上出现两次会像故障。
+                        Text("本阶段已用时 \(InstallWaitNote.elapsedText(Int(elapsed)))")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color.sealTextSecondary)
+                            .monospacedDigit()
+                    }
+                }
                 Spacer()
             }
 
@@ -101,14 +128,15 @@ struct SigningProgressView: View {
                     .opacity(isReturningHome ? 0.72 : 1)
             }
 
-            // 上传完成 → installd 接管，进度环停在 93%（Seal 自替换显示「替换中」）。
-            // 这段时间安装通道不再回报任何数值，不给说明就会被读成「卡死」
-            //（2026-09-16 真机反馈）。计时让「还在走」变成可见事实。
+            // 上传完成 → installd 接管，进度进入「估算」区间（`installing` 的地板是 88%，
+            // 估算上界 95%，**永远不会声称装完**）。这段时间安装通道不再回报任何数值，
+            // 不给说明就会被读成「卡死」（2026-09-16 真机反馈）。
+            // 计时 + 扫光让「还在走」变成可见事实。
             if stage == .installing || stage == .verifying {
                 InstallWaitNote(startedAt: session?.installStartedAt)
             }
 
-            stageProgressSection(stage)
+            stageProgressSection(stage, now: now)
         }
         .padding(14)
         .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -118,72 +146,129 @@ struct SigningProgressView: View {
         }
     }
 
-    private func stageProgressSection(_ stage: SigningStage) -> some View {
-        let current = timelinePosition(for: stage)
+    /// 底部阶段轨道。
+    ///
+    /// 每一格的填充来自 `SigningProgressBudget.bucketFill`（格内已完成阶段数 +
+    /// 本阶段完成比例），**不再用写死的 0.33 / 0.5 / 0.67**。旧实现那三个常数与真实
+    /// 完成度无关，于是「当前格」看起来像随机卡在某个位置，而阶段一过又整条变绿 ——
+    /// 那是轨道上最大的一跳。
+    private func stageProgressSection(_ stage: SigningStage, now: Date) -> some View {
+        let elapsed = stageElapsed(now)
+        let sweep = sweepPhase(now)
         return VStack(alignment: .leading, spacing: 8) {
             Text(isRenewal ? "续签进度" : "签名进度")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color.sealTextSecondary)
             HStack(spacing: 6) {
-                ForEach(0..<5, id: \.self) { index in
-                    progressSegment(index: index, current: current, fraction: segmentFraction(for: stage))
+                ForEach(Array(0..<SigningProgressBudget.bucketCount), id: \.self) { bucket in
+                    progressSegment(bucket: bucket, stage: stage, elapsed: elapsed, sweepPhase: sweep)
                 }
             }
         }
     }
 
     @ViewBuilder
-    private func progressSegment(index: Int, current: Int, fraction: CGFloat) -> some View {
-        if index < current {
-            Capsule()
-                .fill(Color.sealSuccess)
-                .frame(height: 6)
-                .frame(maxWidth: .infinity)
-        } else if index == current {
-            CurrentSegmentFill(fraction: fraction)
-                .frame(maxWidth: .infinity)
+    private func progressSegment(
+        bucket: Int,
+        stage: SigningStage,
+        elapsed: TimeInterval,
+        sweepPhase: Double
+    ) -> some View {
+        let segmentFill = SigningProgressBudget.bucketFill(
+            bucket,
+            stage: stage,
+            elapsed: elapsed,
+            realProgress: session?.installProgress
+        )
+        if bucket == SigningProgressBudget.plan(for: stage).bucket {
+            CurrentSegmentFill(
+                fraction: CGFloat(segmentFill),
+                // 只有「估算中」的当前格才画扫光：有真实上传进度的格子本身就在动，
+                // 再叠一层扫光会像两个进度在打架。
+                showsSweep: SigningProgressBudget.isEstimated(stage: stage),
+                sweepPhase: sweepPhase
+            )
         } else {
             Capsule()
-                .fill(Color.sealTextSecondary.opacity(0.22))
+                .fill(segmentFill >= 1 ? Color.sealSuccess : Color.sealTextSecondary.opacity(0.22))
                 .frame(height: 6)
                 .frame(maxWidth: .infinity)
         }
     }
 
-    private func segmentFraction(for stage: SigningStage) -> CGFloat {
-        switch stage {
-        case .waitingForChannel: return 0.5
-        case .preparingAccount: return 0.33
-        case .preparingBundle: return 0.5
-        case .preparingCertificate: return 0.67
-        case .preparingAppID: return 0.33
-        case .preparingProfiles: return 0.67
-        case .signing: return 0.5
-        case .pushing:
-            let p = session?.installProgress ?? 0
-            return 0.3 + 0.3 * CGFloat(max(0, min(1, p)))
-        case .installing: return 0.8
-        case .verifying: return 1.0
-        }
+    /// 进入当前阶段到现在过了多少秒。
+    ///
+    /// 起点为 `nil` 时返回 0（回看历史会话、或起点丢失）—— 此时进度停在阶段地板值上，
+    /// 仍是个有效显示，不会出现负进度或跳变。
+    private func stageElapsed(_ now: Date) -> TimeInterval {
+        guard let startedAt = session?.stageStartedAt else { return 0 }
+        return max(0, now.timeIntervalSince(startedAt))
     }
 
-    private func progressRing(_ stage: SigningStage) -> some View {
-        // Seal 自续签的 .installing 是「覆盖运行中的自己」，进度停在 93% 直到 iOS 用
-        // 新版替换旧进程。这里用转圈动效给出「正在替换」反馈，而不是静止数字造成的“卡死”错觉。
+    /// 扫光相位（0–1）。周期固定 1.1 秒：比呼吸快一点，才像「在跑」而不是「在喘」。
+    ///
+    /// 用 `now` 直接算，而不是叠一个 `repeatForever` 动画 —— 卡片整体已经由
+    /// `TimelineView` 逐帧重绘，再挂一层隐式动画会互相打架（表现为黏滞或抖动）。
+    private func sweepPhase(_ now: Date) -> Double {
+        let period = 1.1
+        let remainder = now.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period)
+        return remainder / period
+    }
+
+    private func progressRing(_ stage: SigningStage, now: Date) -> some View {
+        // Seal 自续签的 .installing 是「覆盖运行中的自己」：这段进度**完全不可知**
+        //（进程随时可能被 iOS 替换掉），所以继续用不确定动效，不给数字。
         if case .installing = stage, sealRenewal {
-            return AnyView(selfReplacementInstallingRing)
+            return AnyView(selfReplacementInstallingRing(now: now))
         }
-        let progress = overallProgress(for: stage)
+        let elapsed = stageElapsed(now)
+        let progress = SigningProgressBudget.overallProgress(
+            stage: stage,
+            elapsed: elapsed,
+            realProgress: session?.installProgress
+        )
+        let confirmed = SigningProgressBudget.confirmedProgress(
+            stage: stage,
+            realProgress: session?.installProgress
+        )
+        let estimated = SigningProgressBudget.isEstimated(stage: stage)
         return AnyView(
             ZStack {
                 Circle()
                     .stroke(Color.sealTextSecondary.opacity(0.18), lineWidth: 5)
+                // 深色弧 = **已确认**到达的位置。它不随时间变化：本阶段估算爬到哪里，
+                // 深色弧都停在进入本阶段时的位置，直到阶段真正完成。
                 Circle()
-                    .trim(from: 0, to: max(0.03, progress))
+                    .trim(from: 0, to: max(0.03, confirmed / 100))
                     .stroke(Color.sealAccent, style: StrokeStyle(lineWidth: 5, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                    .animation(.easeInOut(duration: 0.45), value: progress)
-                Text("\(Int(progress * 100))%")
+                // 浅色弧 = 本阶段的**估算**。它永远不会自己爬到终点（上界就是天花板），
+                // 所以「浅色还在长」本身就是「还有活没干完」的信号 ——
+                // 这是「不编造确定百分比」在视觉上的落点。
+                //
+                // ⚠️ 刻意**不**加 `.animation(...)`：卡片已由 `TimelineView` 逐帧驱动，
+                // 再挂一层 0.45 秒补间会让每个 tick 触发一次动画，观感是黏滞 + 抖动。
+                if progress > confirmed {
+                    Circle()
+                        .trim(from: confirmed / 100, to: progress / 100)
+                        .stroke(
+                            Color.sealAccent.opacity(0.34),
+                            style: StrokeStyle(lineWidth: 5, lineCap: .round)
+                        )
+                        .rotationEffect(.degrees(-90))
+                }
+                // 估算期间，弧的前端加一个呼吸点：数字可能几十秒不变，但这一点始终在动。
+                if estimated {
+                    // 角度先取出来再算坐标：`cos` / `sin` 返回 Double，而 `offset` 收 CGFloat，
+                    // 写在同一个表达式里要靠字面量的类型推断，不如显式转换稳。
+                    let angle = leadingAngle(progress)
+                    Circle()
+                        .fill(Color.sealAccent)
+                        .frame(width: 6, height: 6)
+                        .offset(x: CGFloat(25 * cos(angle)), y: CGFloat(25 * sin(angle)))
+                        .opacity(leadingPulse(now))
+                }
+                Text("\(Int(progress))%")
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .foregroundStyle(Color.sealAccent)
                     .monospacedDigit()
@@ -192,41 +277,39 @@ struct SigningProgressView: View {
         )
     }
 
-    private var selfReplacementInstallingRing: some View {
-        ZStack {
+    /// 进度弧前端在圆环上的角度（弧度）。
+    ///
+    /// 12 点方向为 0%、顺时针增加；屏幕坐标 y 轴向下，所以 12 点是 −90°。
+    private func leadingAngle(_ progress: Double) -> Double {
+        let clamped = max(0, min(100, progress))
+        return (clamped / 100 * 360 - 90) * Double.pi / 180
+    }
+
+    /// 前端呼吸点的透明度。同样用 `now` 直接算，理由见 `sweepPhase`。
+    private func leadingPulse(_ now: Date) -> Double {
+        let phase = sweepPhase(now)
+        return 0.3 + 0.7 * (0.5 + 0.5 * sin(phase * 2 * Double.pi))
+    }
+
+    /// Seal 自续签的「替换中」转圈。
+    ///
+    /// 旋转角由 `now` 算出，**不再用 `repeatForever` 动画**：这张卡片已由
+    /// `TimelineView` 逐帧重绘，再挂一层隐式动画会互相打架
+    ///（表现为转速忽快忽慢，或者干脆停住）。
+    private func selfReplacementInstallingRing(now: Date) -> some View {
+        let spin = sweepPhase(now) * 360
+        return ZStack {
             Circle()
                 .stroke(Color.sealTextSecondary.opacity(0.18), lineWidth: 5)
             Circle()
                 .trim(from: 0, to: 0.72)
                 .stroke(Color.sealAccent, style: StrokeStyle(lineWidth: 5, lineCap: .round))
-                .rotationEffect(.degrees(selfReplacementSpin ? 360 : 0))
-                .animation(
-                    .linear(duration: 0.8).repeatForever(autoreverses: false),
-                    value: selfReplacementSpin
-                )
-                .onAppear { selfReplacementSpin = true }
+                .rotationEffect(.degrees(spin))
             Text("替换中")
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.sealAccent)
         }
         .frame(width: 50, height: 50)
-    }
-
-    private func overallProgress(for stage: SigningStage) -> CGFloat {
-        switch stage {
-        case .waitingForChannel: return 0.06
-        case .preparingAccount: return 0.16
-        case .preparingBundle: return 0.23
-        case .preparingCertificate: return 0.30
-        case .preparingAppID: return 0.42
-        case .preparingProfiles: return 0.54
-        case .signing: return 0.68
-        case .pushing:
-            let p = session?.installProgress ?? 0
-            return 0.78 + 0.12 * CGFloat(max(0, min(1, p)))
-        case .installing: return 0.93
-        case .verifying: return 0.99
-        }
     }
 
     private func successContent(_ installed: AppRecord) -> some View {
@@ -460,16 +543,6 @@ struct SigningProgressView: View {
         return false
     }
 
-    private func timelinePosition(for stage: SigningStage) -> Int {
-        switch stage {
-        case .waitingForChannel: 0
-        case .preparingAccount, .preparingBundle, .preparingCertificate: 1
-        case .preparingAppID, .preparingProfiles: 2
-        case .signing: 3
-        case .pushing, .installing, .verifying: 4
-        }
-    }
-
     private var successTitle: String {
         guard session != nil else { return "签名完成" }
         return isRenewal ? "续签并安装成功" : "签名并安装成功"
@@ -603,20 +676,53 @@ struct SigningProgressView: View {
     }
 }
 
+/// 底部阶段轨道里「当前格」的填充。
+///
+/// 旧实现只填一个**写死的常数**（0.33 / 0.5 / 0.67），与真实完成度无关 ——
+/// 于是这一格看起来像随机卡在某个位置，而阶段一过又整条变绿（轨道上最大的一跳）。
+/// 现在比例来自 `SigningProgressBudget.bucketFill`：格内已完成阶段数 + 本阶段完成比例。
+///
+/// ## 扫光
+///
+/// 「后端在干活、界面一动不动」是这次改版要解决的头号观感问题。扫光**不推进百分比**，
+/// 只表达「在动」—— 数字可能几十秒不变，但这条光一直在跑。它比任何假百分比都可信：
+/// iOS 自己的不确定进度用的就是这个信号。
+///
+/// 只在「估算中」的当前格才画：有真实上传进度的格子本身就在动，再叠一层会像两个进度打架。
 private struct CurrentSegmentFill: View {
     let fraction: CGFloat
+    let showsSweep: Bool
+    /// 扫光相位（0–1），由调用方按帧算好传进来 —— 这个 View 刻意不持有动画状态，
+    /// 否则会和 `TimelineView` 的逐帧重绘互相打架。
+    let sweepPhase: Double
+
+    private static let barHeight: CGFloat = 6
+    private static let sweepWidth: CGFloat = 18
 
     var body: some View {
         GeometryReader { geo in
+            let filled = max(0, geo.size.width) * clampedFraction
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Color.sealTextSecondary.opacity(0.22))
                 Capsule()
                     .fill(Color.sealAccent)
-                    .frame(width: geo.size.width * clampedFraction)
+                    .frame(width: filled, height: Self.barHeight)
+                    .overlay(alignment: .leading) {
+                        if showsSweep {
+                            Rectangle()
+                                .fill(Color.white.opacity(0.55))
+                                .frame(width: Self.sweepWidth, height: Self.barHeight)
+                                .offset(x: -Self.sweepWidth + CGFloat(sweepPhase) * (filled + Self.sweepWidth))
+                        }
+                    }
+                    // 把扫光裁进填充区内，否则它会跑到还没填的部分上、看起来像进度倒流。
+                    .clipShape(Capsule())
             }
+            .frame(height: Self.barHeight)
         }
-        .frame(height: 6)
+        .frame(height: Self.barHeight)
+        .frame(maxWidth: .infinity)
     }
 
     private var clampedFraction: CGFloat { max(0, min(1, fraction)) }

@@ -59,10 +59,20 @@ final class ImportFlowUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["待签名应用"].waitForExistence(timeout: 10))
         let pager = element("apps-stage-pager", in: app)
         XCTAssertTrue(pager.waitForExistence(timeout: 10))
-        pager.swipeLeft()
-        XCTAssertTrue(app.staticTexts["已安装应用"].waitForExistence(timeout: 5))
-        pager.swipeRight()
-        XCTAssertTrue(app.staticTexts["待签名应用"].waitForExistence(timeout: 5))
+
+        // ⚠️ 断言落在**确定性的选中态**上，理由与 `tapStage` 完全相同（2026-09-18 CI 实测）。
+        //
+        // 本测试原先断言「滑完目标页的文字出现」，而构建 131 因此红：
+        // `ImportFlowUITests.swift:63`（滑左之后 5 秒内「已安装应用」没出现）。
+        // 该提交**只有 8 张 PNG 删除、0 个 Swift 改动**，且同一份测试代码在构建 130 是绿的
+        // ⇒ 抖动，不是回归。机制同 `tapStage`：`apps-stage-pager` 是
+        // `TabView(selection: $mode)`，动画未结束时手势会被吞掉；也可能手势被接受了却不翻页。
+        // 两种都让「目标页文字出现」成为**不确定信号**。
+        //
+        // ⚠️ 同一轮 CI 里 `testTwoStageNavigationCanBeTappedWithoutChangingHeaderAlignment`（已改）是绿的，
+        // 只有这条滑动路径还在断言翻页 —— 这正是「同一条规则只落在两条链路中的一条」（本仓第 7 次）。
+        swipeStage(pager, to: .left, expecting: app.buttons["已安装，0 个"])
+        swipeStage(pager, to: .right, expecting: app.buttons["待签名，0 个"])
     }
 
     @MainActor
@@ -134,5 +144,51 @@ final class ImportFlowUITests: XCTestCase {
             file: file,
             line: line
         )
+    }
+
+    /// 在分页器上滑动并等**选中态**切换，**滑一次不一定生效**。
+    ///
+    /// 与 `tapStage` 同源：`apps-stage-pager` 是 `TabView(selection: $mode)`，
+    /// 初始 mode 由 `resolveInitialModeIfNeeded()` **程序化翻页**决定 ——
+    /// 动画未结束时手势会被吞掉；也可能手势被接受了、页面没翻。
+    /// 两者都让「目标页文字出现」变成**不确定信号**（2026-09-18 构建 131 实测）。
+    ///
+    /// ⇒ 断言落在 `modeButton` 的 `.isSelected`（直接反映 `mode`，手势一旦被接受就立刻成立），
+    /// 并「滑 → 等 → 没到就再滑」。**它不掩盖确定性缺陷**：真坏了 4 次之后照样断言失败。
+    @MainActor
+    private func swipeStage(
+        _ pager: XCUIElement,
+        to direction: SwipeDirection,
+        expecting selected: XCUIElement,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        for _ in 0..<4 {
+            if selected.isSelected { return }
+            switch direction {
+            case .left:
+                pager.swipeLeft()
+            case .right:
+                pager.swipeRight()
+            }
+            let becameSelected = expectation(
+                for: NSPredicate(format: "isSelected == true"),
+                evaluatedWith: selected
+            )
+            _ = XCTWaiter().wait(for: [becameSelected], timeout: 3)
+        }
+        XCTAssertTrue(
+            selected.isSelected,
+            "在分页器上滑动 4 次之后「\(selected.label)」仍未被选中"
+                + "（isEnabled=\(selected.isEnabled)）",
+            file: file,
+            line: line
+        )
+    }
+
+    /// 分页器的滑动方向。
+    private enum SwipeDirection {
+        case left
+        case right
     }
 }

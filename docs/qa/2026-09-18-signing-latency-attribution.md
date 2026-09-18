@@ -191,3 +191,39 @@ guard var data = try? Data(contentsOf: machOURL) else { return }
   第五节的三条推测**都未被验证**。
 - **没有改动任何 `Seal/**` / `SealTests/**` 文件**，因此没有触发守卫与 CI。
 - **没有测量各阶段的真实占比** —— 这正是本报告主张先补埋点的原因。
+
+---
+
+## 八、补充：同一轮里并行落地的部分（2026-09-18 12:10–12:20）
+
+本报告写完之后、提交之前，工作区里出现了**另一组并行改动**
+（`ApplePortalSigningService.swift` / `SigningWorkspace.swift` / `Scripts/verify-release-safety.py` 等）。
+它们把第六节 A 组的三项**都做了**，做法与本文的判断一致：
+
+| 本报告的建议 | 并行落地的实现 | 位置 |
+|---|---|---|
+| 修正 `:692` 文案（去掉并未包含的「重签/打包」） | ✅ 改成「解压 + 结构改写；重签与打包另计」，并同步更新了守卫断言 | `ApplePortalSigningService.swift:688-697` |
+| 给**重签**加耗时 | ✅ `resignStartedAt` 包住 `Task.detached { … }.value` —— 计时放在 detached **外面**，与本文的判断一致 | 同文件 `:2341-2345` / `:2425-2431` |
+| 给**打包**加耗时 | ✅ `packageStartedAt` 包住 `package(...)` | 同文件 `:778-790` |
+| 修第三节发现 2（先读 magic 再整体读入） | ✅ 读 4 字节判 `0xfeedfacf`，`defer` 关闭句柄，**行为不变** | `SigningWorkspace.swift:822-855` |
+
+⇒ **第三节的发现 1 与发现 2 已经修复**；第四节的对照表里「thinning 已落地」一条不变。
+
+### 仍然缺的：112 秒**仍未分段**
+
+并行改动修正了**文案**（不再声称包含重签/打包），但 `prepare(...)` 内部的 112 秒
+**仍然只有一个总数** —— 解压 / 结构改写 / 剥离 arm64e / 归一化 / 收尾各占多少，
+日志里依旧看不出来。发现 2 的修复会显著降低「归一化」那一段，但**降了多少、
+剩下的大头是解压还是别的，仍然回答不了**。
+
+⇒ 真正剩下的缺口是**分段计时**。落地形态（本轮已设计、未落地）：
+
+- 新增 `SigningPrepareTiming`（`scanSeconds` / `unzipSeconds` / `rewriteSeconds` /
+  `slimSeconds` / `finalizeSeconds`）；
+- 随 `PreparedSigningWorkspace` 返回（**给默认值**，避免破坏构造点 —— 全仓只有 1 处）；
+- 由 `:697` 那条日志一并打印，形如
+  `签名：应用文件准备完成…，耗时 112 秒（扫描 1 / 解压 45 / 结构改写 12 / 瘦身 30 / 收尾 24）`。
+
+⚠️ 分段计时**必须**在 `prepare` 内部打点（`ApplePortalSigningService` 看不到它内部的分段），
+而 `prepare` 是同步 `throws` 函数、`SigningWorkspace` 没有 logger
+⇒ 用返回值带出来是侵入最小的做法。

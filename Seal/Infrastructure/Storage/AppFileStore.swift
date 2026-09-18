@@ -234,12 +234,11 @@ actor AppFileStore {
         defer { try? fileManager.removeItem(at: tempDir) }
 
         let nestedIPATempURL = tempDir.appendingPathComponent("nested.ipa")
-        var nestedData = Data()
-        nestedData.reserveCapacity(Int(nestedIPAEntry.uncompressedSize))
-        _ = try archive.extract(nestedIPAEntry) { chunk in
-            nestedData.append(chunk)
-        }
-        try nestedData.write(to: nestedIPATempURL)
+        // 流式落盘，不再整份累积进内存：本文件 `extractSingleIPA` 用的就是同一条
+        // `extract(_:to:)` 接口。原先 `Data` + `reserveCapacity(uncompressedSize)` 会把
+        // 嵌套 IPA **全部**读进内存，而 uncompressedSize 是外层包里攻击者自填的声明值
+        // ⇒ 500MB+ 的包选完文件即被 jetsam 杀掉（表现为"点了没反应"）。
+        _ = try archive.extract(nestedIPAEntry, to: nestedIPATempURL)
 
         // 用解包后的 IPA 替换原文件
         try fileManager.removeItem(at: ipaURL)

@@ -446,9 +446,22 @@ struct IPAParserService: Sendable {
         }
 
         guard binaryData.count >= 32 else { return false }
+        return Self.isEncryptedMachOHeader(binaryData)
+    }
 
-        // 读取魔数（小端序）
-        let magic = binaryData.withUnsafeBytes { $0.load(as: UInt32.self) }
+    /// 从 Mach-O 头部前缀（≤4KB）判定是否带 FairPlay 加密段。
+    ///
+    /// 刻意做成纯函数：`cmdsize` 防呆与 `loadUnaligned` 这两条判据只有在能直接喂字节
+    /// 的前提下才可测 —— 走 `Archive` 就得先造一个能触发空转的恶意包。
+    static func isEncryptedMachOHeader(_ binaryData: Data) -> Bool {
+        guard binaryData.count >= 32 else { return false }
+
+        // 读取魔数（小端序）。一律用 `loadUnaligned`：这些读法的偏移量由包内
+        // `cmdsize` 累加而来，而 `cmdsize` 是**攻击者可控**的字段；`load(as:)` 要求
+        // 指针对齐，非对齐时是直接崩溃（同仓 `SigningWorkspace` 早已改用 loadUnaligned）。
+        let magic = binaryData.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 0, as: UInt32.self)
+        }
 
         // fat binary (0xCAFEBABE)：包含多架构，假设未加密（通常是砸壳后的）
         if magic == 0xCAFEBABE || magic.bigEndian == 0xCAFEBABE {
@@ -465,10 +478,10 @@ struct IPAParserService: Sendable {
         // 解析 64位 Mach-O 头部
         // struct mach_header_64 { magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags, reserved }
         let ncmds = binaryData.withUnsafeBytes {
-            $0.load(fromByteOffset: 16, as: UInt32.self)
+            $0.loadUnaligned(fromByteOffset: 16, as: UInt32.self)
         }
         let sizeofcmds = binaryData.withUnsafeBytes {
-            $0.load(fromByteOffset: 20, as: UInt32.self)
+            $0.loadUnaligned(fromByteOffset: 20, as: UInt32.self)
         }
 
         var offset = 32  // mach_header_64 大小
@@ -478,18 +491,21 @@ struct IPAParserService: Sendable {
         for _ in 0..<ncmds {
             guard offset + 8 <= endOffset else { break }
             let cmd = binaryData.withUnsafeBytes {
-                $0.load(fromByteOffset: offset, as: UInt32.self)
+                $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self)
             }
             let cmdsize = binaryData.withUnsafeBytes {
-                $0.load(fromByteOffset: offset + 4, as: UInt32.self)
+                $0.loadUnaligned(fromByteOffset: offset + 4, as: UInt32.self)
             }
+            // `cmdsize` 最小是 8（cmd + cmdsize 本身）。为 0 或小于 8 时 `offset` 不会前进，
+            // 而 `ncmds` 同样是包内自填值（可达 42 亿）⇒ 恶意/损坏包会把这里变成
+            // 长时间空转，表现为"导入卡死 + 耗光电量"。宁可判不出加密，也不能空转。
+            guard cmdsize >= 8 else { break }
 
             // LC_ENCRYPTION_INFO_64 = 0x2C
             if cmd == 0x2C || cmd.bigEndian == 0x2C {
-                // struct encryption_info_command_64 { cmd, cmdsize, cryptoff, cryptsize, cryptid, pad }
                 guard offset + 20 <= binaryData.count else { break }
                 let cryptid = binaryData.withUnsafeBytes {
-                    $0.load(fromByteOffset: offset + 16, as: UInt32.self)
+                    $0.loadUnaligned(fromByteOffset: offset + 16, as: UInt32.self)
                 }
                 return cryptid != 0
             }

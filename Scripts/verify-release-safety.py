@@ -1708,6 +1708,26 @@ def violations(load=read):
     check("阶段进入：" in apps_view_source and 'code: "SEAL-STAGE-001"' in apps_view_source,
           "R39: 阶段进入必须落日志 —— 否则「每阶段耗时」拿不到，τ 只能永远靠估，"
           "三条线都在等的数据也就永远拿不到")
+
+    # R40: **`SEAL-AUTH-102c` 不得把账号标成「失效」**（2026-09-18 真机，构建 133）。
+    #
+    # 它自己的文案写着「两种常见成因：登录真的失效，**或者被 Apple 限流**」、
+    # recovery 写着「**先等几分钟重试**」；而策略表把所有 `102*` 一律判成
+    # `.credentialsRejected` ⇒ **立刻标失效，与那段文案直接矛盾** ✗
+    #
+    # 真机证据：`3188447354@qq.com` 签抖音时，紧接 **3 次限流退避重试**之后报 102c，
+    # 账号随即显示「失效 + 已签名 0/10」⇒ 用户去重新验证 → 又撞限流 → **死循环**。
+    # 语义上：`107`（明确会话过期）已经不标 ✓，而 `102c` 是**二义**的，更不该标 ✓。
+    policy_source = strip_comments(load("Seal/Core/Accounts/AppleServiceFailurePolicy.swift"))
+    check('if code == "SEAL-AUTH-102c" { return nil }' in policy_source,
+          "R40: `SEAL-AUTH-102c` 不得标记账号失效 —— 它是**二义**错误（会话过期 or 限流），"
+          "文案自己写着「先等几分钟重试」；标失效会让用户陷入「重新验证 → 又限流」的死循环")
+    check(0 <= policy_source.find('SEAL-AUTH-102c')
+          < policy_source.find('hasPrefix("SEAL-AUTH-102")'),
+          "R40: `102c` 的排除必须排在 `hasPrefix(\"SEAL-AUTH-102\")` **之前** —— "
+          "排在后面等于没排除")
+    check('if code.hasPrefix("SEAL-AUTH-102") { return .credentialsRejected }' in policy_source,
+          "R40: 其余 `102*`（尤其 `102d`：Apple **明确**拒绝凭据）**必须保持**标记失效")
     check(0 <= apps_view_source.find("if tick == .restart {")
           < apps_view_source.find("阶段进入："),
           "R39: 阶段日志必须**只在真正的阶段切换时**记（`tick == .restart`）—— "
@@ -3931,6 +3951,12 @@ def main():
          "        }\n",
          "",
          "R39: 阶段进入必须落日志"),
+        # ── R40：102c 不得标失效（2026-09-18 真机）──
+        # 删掉排除：账号又会在「紧接 3 次限流退避之后」被标成失效 ⇒ 死循环。
+        ("Seal/Core/Accounts/AppleServiceFailurePolicy.swift",
+         "        if code == \"SEAL-AUTH-102c\" { return nil }\n",
+         "",
+         "R40: `SEAL-AUTH-102c` 不得标记账号失效"),
         # 去掉 1100 的专门文案：又落回「没有返回明确失败原因」，
         # 用户不知道账号可能已经被清空、需要立刻重新创建一张证书。
         ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",

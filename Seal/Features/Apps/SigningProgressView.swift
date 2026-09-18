@@ -252,7 +252,10 @@ struct SigningProgressView: View {
                     Circle()
                         .trim(from: confirmed / 100, to: progress / 100)
                         .stroke(
-                            Color.sealAccent.opacity(0.34),
+                            // 0.34 → **0.5**（2026-09-18）：0.34 在深色卡片上读起来像**灰白**，
+                            // 用户反馈「中间都灰白了」。加深后仍保留「浅蓝 ≠ 深蓝」的
+                            // 「估算 vs 已确认」区分，但不会再被读成「没填上」。
+                            Color.sealAccent.opacity(0.5),
                             style: StrokeStyle(lineWidth: 5, lineCap: .round)
                         )
                         .rotationEffect(.degrees(-90))
@@ -266,7 +269,10 @@ struct SigningProgressView: View {
                         .fill(Color.sealAccent)
                         .frame(width: 6, height: 6)
                         .offset(x: CGFloat(25 * cos(angle)), y: CGFloat(25 * sin(angle)))
-                        .opacity(leadingPulse(now))
+                        // ⚠️ 由**呼吸闪烁**改为**常亮**（2026-09-18，用户反馈「圆点…不好看」）。
+                        // 呼吸（0.3↔1.0）在逐帧重绘下会显得在闪；
+                        // 「还在动」已由秒数跳动承担（见 `CurrentSegmentFill` 里的同一条说明）。
+                        .opacity(0.9)
                 }
                 Text("\(Int(progress))%")
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
@@ -708,15 +714,16 @@ private struct CurrentSegmentFill: View {
                 Capsule()
                     .fill(Color.sealAccent)
                     .frame(width: filled, height: Self.barHeight)
-                    .overlay(alignment: .leading) {
-                        if showsSweep {
-                            Rectangle()
-                                .fill(Color.white.opacity(0.55))
-                                .frame(width: Self.sweepWidth, height: Self.barHeight)
-                                .offset(x: -Self.sweepWidth + CGFloat(sweepPhase) * (filled + Self.sweepWidth))
-                        }
-                    }
-                    // 把扫光裁进填充区内，否则它会跑到还没填的部分上、看起来像进度倒流。
+                    // ⚠️ **白色扫光已移除**（2026-09-18，用户实测反馈）。
+                    //
+                    // 原来这里有一道 `Color.white.opacity(0.55)`、宽 18pt 的矩形扫过填充区，
+                    // 目的是「数字几十秒不变时表达『在动』」。但用户看到的是：
+                    // 「横杠的煽动效果不好看」「**圆点走前面中间都灰白了**」——
+                    // 白色扫过蓝色，**中段就被读成灰白** ✗。
+                    //
+                    // 「还在动」这个信号现在由 **`本阶段已用时 0:20` 的秒数跳动**承担
+                    //（`SigningProgressBudget.showsOwnElapsed`，守卫 R36 钉着它必须存在），
+                    // 不再需要用视觉噪点表达。
                     .clipShape(Capsule())
             }
             .frame(height: Self.barHeight)

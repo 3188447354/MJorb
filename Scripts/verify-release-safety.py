@@ -321,7 +321,10 @@ def violations(load=read):
           "R05: every Apple request must pass through the throttle (single entry point)")
     recovery_fn = section(portal, "private func withSessionRecovery", "func sign(")
     check("sessionRecoveryBackoffNanoseconds" in recovery_fn
-          and "Self.isSessionExpiredError(error)" in recovery_fn,
+          and "Self.isSessionExpiredError(error)" in recovery_fn
+          # 判据必须**真的在把守抛出**，而不是只出现在函数体里（2026-09-18 加固：
+          # 判据被挪进 `let retryable = …` 之后，只查「有没有出现过」会失去约束力）。
+          and "guard retryable else { throw error }" in recovery_fn,
           "R05: 1100 must back off and retry instead of failing immediately")
     check("static func isSessionExpiredError" in portal,
           "R05: session expiry classification must stay testable")
@@ -1255,15 +1258,17 @@ def violations(load=read):
          "漏掉它会让限流被误报成「账号需要重新验证」"),
         ('withSessionRecovery("分配 App Group \\(mappedBundleID)")',
          "分配 App Group（付费账号才走，但同一条规则不该只落在免费路径上）"),
-        ('withSessionRecovery("读取 App ID 列表")',
+        ('withSessionRecovery("读取 App ID 列表", retriesOnTimeout: true)',
          "读取 App ID 列表（Phase 1 的**第一个**请求；2026-09-18 真机：它撞上 1100 时"
          "会直接让整轮签名失败，而失败点排在名额诊断之前 ⇒ 日志里连走到哪一步都看不出）"),
+        ('withSessionRecovery("读取证书列表", retriesOnTimeout: true)',
+         "读取证书列表（慢速路径；读操作，2026-09-18 补）"),
     ):
         check(label in portal_source, "R24: " + why + " 必须过退避重试")
     # 注意：定义写的是 `withSessionRecovery<T>(`，不带 `<` 的计数只数得到**调用点**。
-    check(portal_source.count("withSessionRecovery(") == 6,
-          "R24: 退避重试的调用点数量变了（应为 6 个：创建 App ID / 更新应用能力 / 申请描述文件 / "
-          "创建证书 / 分配 App Group / 读取 App ID 列表）—— "
+    check(portal_source.count("withSessionRecovery(") == 7,
+          "R24: 退避重试的调用点数量变了（应为 7 个：创建 App ID / 更新应用能力 / 申请描述文件 / "
+          "创建证书 / 分配 App Group / 读取 App ID 列表 / 读取证书列表）—— "
           "新增或删除 portal 调用时请同步这里，别只改这个数字、先确认新调用是不是也在热路径上")
 
     # R25: 同步阻塞 FFI 的**每一处**等待都要有界（2026-09-17 审计出来的）。
@@ -1460,6 +1465,30 @@ def violations(load=read):
           "顺序错了文案就还是「正在验证 Apple ID」")
     check("应用文件准备完成（解压/改写/重签/打包），耗时" in portal_source,
           "R32: 这段准备必须记耗时 —— 原先它一行日志都没有，「等了 2 分钟」无法归因")
+
+    # R33: 「**读**可重试超时、**写**绝不可」是硬规则（2026-09-18）。
+    #
+    # 为什么读要开：读是幂等的（`fetchAppIDs` / `fetchCertificates`），超时重试最坏只是多花时间；
+    # 而**限流时 Apple 的响应会变慢**，20 秒超时后直接失败太脆 ——
+    # 而且超时**不是**会话过期（`isSessionExpiredError` 为假）⇒ 原先完全不重试。
+    #
+    # 为什么写绝对不行：`addCertificate` 的注释写明 ——「请求超时**不代表失败**：
+    # Apple 可能已经建好证书、只是响应没回来；即使建好了也**拿不回来**（私钥随响应返回）
+    # ⇒ **绝不盲目重试（会多占一个证书名额）**」。`updateFeatures` 同理；
+    # `fetchProvisioningProfile` 内部还会先 delete，更不许重试。
+    #
+    # ⇒ 两侧都要钉：**读必须开**（否则限流时的慢响应直接失败），
+    #   **写必须不开**（否则多占证书名额 / 重复写）。只钉一侧会绿着坏掉。
+    for read_label in ('withSessionRecovery("读取 App ID 列表", retriesOnTimeout: true)',
+                       'withSessionRecovery("读取证书列表", retriesOnTimeout: true)'):
+        check(read_label in portal_source, "R33: 读操作必须允许重试超时：" + read_label)
+    for write_label in ('withSessionRecovery("创建证书", retriesOnTimeout',
+                        'withSessionRecovery("更新应用能力 \\(mappedBundleID)", retriesOnTimeout',
+                        'withSessionRecovery("申请描述文件 \\(preparedAppID.mapped)", retriesOnTimeout',
+                        'withSessionRecovery("创建 App ID \\(mappedBundleID)", retriesOnTimeout',
+                        'withSessionRecovery("分配 App Group \\(mappedBundleID)", retriesOnTimeout'):
+        check(write_label not in portal_source,
+              "R33: **写操作绝不允许重试超时**（会多占证书名额 / 重复写）：" + write_label)
 
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
@@ -2774,9 +2803,14 @@ def main():
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "    await AppleRequestThrottle.shared.wait()\n", "",
          "R05: every Apple request must pass through the throttle"),
+        # ⚠️ 2026-09-18 更新到新形状：判据已挪进 `let retryable = …`，
+        # 旧的 `guard Self.isSessionExpiredError(error) else` 锚点已不存在。
+        # 改成「用裸错误码替代共用判据」——同样能证明断言会红。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "guard Self.isSessionExpiredError(error) else { throw error }",
-         "guard false else { throw error }",
+         "                let retryable = Self.isSessionExpiredError(error)\n"
+         "                    || (retriesOnTimeout && Self.isTimeoutError(error))",
+         "                let retryable = (error as NSError).code == 1100\n"
+         "                    || (retriesOnTimeout && Self.isTimeoutError(error))",
          "R05: 1100 must back off and retry"),
         ("Seal/Features/Apps/AppsViewModel.swift",
          "            await self.installChannel?.clearFailureCooldown()\n            self.beginSigningChannel()\n            await self.runBatchRefresh(appIDs: appIDs)",
@@ -3534,6 +3568,17 @@ def main():
          "    case preparingBundle\n"
          "    case imported",
          "R32: **不要**给 `AppState` 加 case"),
+        # ── R33：读可重试超时、写绝不可（2026-09-18）──
+        # 让「创建证书」也重试超时：会多占一个证书名额（addCertificate 的注释明确禁止）。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "try await withSessionRecovery(\"创建证书\") {",
+         "try await withSessionRecovery(\"创建证书\", retriesOnTimeout: true) {",
+         "R33: **写操作绝不允许重试超时**"),
+        # 让「读取 App ID 列表」不再重试超时：限流时的慢响应会直接失败。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "withSessionRecovery(\"读取 App ID 列表\", retriesOnTimeout: true)",
+         "withSessionRecovery(\"读取 App ID 列表\")",
+         "R33: 读操作必须允许重试超时"),
         # 去掉 1100 的专门文案：又落回「没有返回明确失败原因」，
         # 用户不知道账号可能已经被清空、需要立刻重新创建一张证书。
         ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",
@@ -3748,7 +3793,11 @@ def main():
     for path, old, new, expected in mutations:
         original = base_read(path)
         if old not in original:
-            failures.append("Mutation anchor missing: " + path)
+            # ⚠️ 报错必须带**锚点文本**：只说文件名的话，一个文件里有十几个变异时
+            # 根本不知道是哪一个（2026-09-18 为此白跑了一整轮守卫）。
+            failures.append(
+                "Mutation anchor missing: " + path + "\n  anchor=" + repr(old[:160])
+            )
             continue
         changed = original.replace(old, new, 1)
         try:

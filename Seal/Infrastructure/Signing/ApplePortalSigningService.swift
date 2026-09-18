@@ -385,12 +385,26 @@ actor ApplePortalSigningService {
         return nsError.localizedDescription.lowercased().contains("session has expired")
     }
 
-    /// 对单个 Apple 请求做「遇 1100 退避重试」。
+    /// 对单个 Apple 请求做「退避重试」。
     ///
-    /// 只重试会话过期这一种错误：网络超时、Bundle ID 冲突、名额上限等都必须立即抛出，
+    /// 默认只重试会话过期（1100）这一种错误：Bundle ID 冲突、名额上限等都必须立即抛出，
     /// 否则会把本该快速失败的场景拖成十几秒的假等待。
+    ///
+    /// ⚠️ **`retriesOnTimeout` 只允许「读操作」置 true**（2026-09-18）。
+    ///
+    /// 为什么读可以、写绝对不行：
+    /// - **读是幂等的**（`fetchAppIDs` / `fetchCertificates`）—— 超时重试最坏只是多花时间，
+    ///   不会多出任何副作用。而**限流时 Apple 的响应会变慢**，20 秒超时后直接失败太脆；
+    ///   而且超时**不是**会话过期（`isSessionExpiredError` 为假）⇒ 原先完全不重试。
+    /// - **写绝不能重试超时**：`addCertificate` 的注释写得很清楚 ——
+    ///   「请求超时**不代表失败** —— Apple 可能已经建好证书，只是响应没回来；
+    ///   即使建好了也**拿不回来**（私钥随响应返回）⇒ **绝不盲目重试（会多占一个证书名额）**」。
+    ///   `updateFeatures` 同理；`fetchProvisioningProfile` 内部还会先 delete，更不许重试。
+    ///
+    /// ⇒ 「读可重试超时、写不可」是**硬规则**，守卫 R33 同时钉住两侧。
     private func withSessionRecovery<T>(
         _ label: String,
+        retriesOnTimeout: Bool = false,
         operation: () async throws -> T
     ) async throws -> T {
         var lastError: Error?
@@ -398,8 +412,13 @@ actor ApplePortalSigningService {
         for (attempt, delay) in delays.enumerated() {
             if delay > 0 {
                 try Task.checkCancellation()
+                // 措辞按**上一次失败的原因**分：会话类保持原文案（文档与清单引用的就是它），
+                // 超时另说 —— 否则「会话疑似被限流」会把超时说成限流，又是一条误导文案。
+                let kind = lastError.map {
+                    Self.isSessionExpiredError($0) ? "会话疑似被限流" : "请求超时"
+                } ?? "请求失败"
                 await diagnostic(
-                    "Apple 会话疑似被限流，退避 \(delay / 1_000_000_000) 秒后重试 \(label)（第 \(attempt) 次重试）"
+                    "Apple \(kind)，退避 \(delay / 1_000_000_000) 秒后重试 \(label)（第 \(attempt) 次重试）"
                 )
                 try await Task.sleep(nanoseconds: delay)
             }
@@ -408,7 +427,9 @@ actor ApplePortalSigningService {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                guard Self.isSessionExpiredError(error) else { throw error }
+                let retryable = Self.isSessionExpiredError(error)
+                    || (retriesOnTimeout && Self.isTimeoutError(error))
+                guard retryable else { throw error }
                 lastError = error
             }
         }
@@ -932,8 +953,12 @@ actor ApplePortalSigningService {
             }
         }
 
-        // 慢速路径：本地证书不可用，从 Apple 服务器获取证书列表
-        let certificates = try await fetchCertificates(team: team, session: session)
+        // 慢速路径：本地证书不可用，从 Apple 服务器获取证书列表。
+        // ⚠️ **读操作 ⇒ 允许重试超时**（限流时 Apple 响应会变慢，20 秒超时后直接失败太脆；
+        // 而超时不属于「会话过期」，原先完全不重试）。
+        let certificates = try await withSessionRecovery("读取证书列表", retriesOnTimeout: true) {
+            try await fetchCertificates(team: team, session: session)
+        }
         try Task.checkCancellation()
 
         var reuseStatusBySerial: [String: SigningCertificateReuseStatus] = [:]
@@ -1567,7 +1592,7 @@ actor ApplePortalSigningService {
         // ⚠️ **读列表也必须过退避重试**：它是 Phase 1 的第一个请求，撞上短时限流（1100）时
         // 原先会**直接让整轮签名失败**（而不是像 addAppID / 描述文件那样先退避再试），
         // 而且失败点排在名额诊断之前 ⇒ 日志里连「它走到哪一步」都看不出来。
-        var existing = try await withSessionRecovery("读取 App ID 列表") {
+        var existing = try await withSessionRecovery("读取 App ID 列表", retriesOnTimeout: true) {
             try await fetchAppIDs(team: team, session: session)
         }
 

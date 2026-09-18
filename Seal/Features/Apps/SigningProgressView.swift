@@ -181,13 +181,8 @@ struct SigningProgressView: View {
             realProgress: session?.installProgress
         )
         if bucket == SigningProgressBudget.plan(for: stage).bucket {
-            CurrentSegmentFill(
-                fraction: CGFloat(segmentFill),
-                // 只有「估算中」的当前格才画扫光：有真实上传进度的格子本身就在动，
-                // 再叠一层扫光会像两个进度在打架。
-                showsSweep: SigningProgressBudget.isEstimated(stage: stage),
-                sweepPhase: sweepPhase
-            )
+            // ⚠️ 2026-09-19：不再传 `showsSweep` / `sweepPhase`（扫光已移除，见上面结构体注释）。
+            CurrentSegmentFill(fraction: CGFloat(segmentFill))
         } else {
             Capsule()
                 .fill(segmentFill >= 1 ? Color.sealSuccess : Color.sealTextSecondary.opacity(0.22))
@@ -661,13 +656,12 @@ struct SigningProgressView: View {
 /// 只在「估算中」的当前格才画：有真实上传进度的格子本身就在动，再叠一层会像两个进度打架。
 private struct CurrentSegmentFill: View {
     let fraction: CGFloat
-    let showsSweep: Bool
-    /// 扫光相位（0–1），由调用方按帧算好传进来 —— 这个 View 刻意不持有动画状态，
-    /// 否则会和 `TimelineView` 的逐帧重绘互相打架。
-    let sweepPhase: Double
+
+    // ⚠️ 2026-09-19 清理：`showsSweep` / `sweepPhase` / `sweepWidth` 已删除 ——
+    // 白色扫光在 2026-09-18 被移除后（用户反馈「横杠的煽动效果不好看」），
+    // 这三个成员就再没有读者了 ✓。
 
     private static let barHeight: CGFloat = 6
-    private static let sweepWidth: CGFloat = 18
 
     var body: some View {
         GeometryReader { geo in

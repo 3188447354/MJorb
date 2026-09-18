@@ -1624,7 +1624,9 @@ def violations(load=read):
         # 用户明确要求「圈圈不要假预估」⇒ 环与数字只取 `confirmedProgress` ✓。
         # 估算函数本身**保留**（`bucketFill` 仍在用），但不再要求视图消费它 ✓。
         ("SigningProgressBudget.confirmedProgress(", "进度环的「已确认」那一段"),
-        ("SigningProgressBudget.isEstimated(", "估算态（决定扫光与呼吸点）"),
+        # ⚠️ 2026-09-19：`isEstimated`（估算态）**不再**被视图使用 ——
+        # 扫光与呼吸点都已随「圈圈不要假预估」去掉，它现在没有读者了 ✓。
+        # 函数本身**保留**（语义仍是「这个阶段有没有真实进度信号」），只是不再要求视图消费 ✓。
         ("SigningProgressBudget.showsOwnElapsed(", "长阶段的「本阶段已用时」"),
     ):
         check(budget_symbol in budget_view,

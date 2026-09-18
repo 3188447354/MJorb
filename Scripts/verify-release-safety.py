@@ -1473,8 +1473,22 @@ def violations(load=read):
           < portal_source.find("let prepared = try signingWorkspace.prepare("),
           "R32: `progress(.preparingBundle)` 必须发在 `signingWorkspace.prepare(` **之前** —— "
           "顺序错了文案就还是「正在验证 Apple ID」")
-    check("应用文件准备完成（解压/改写/重签/打包），耗时" in portal_source,
+    check("应用文件准备完成（解压 + 结构改写；重签与打包另计），耗时" in portal_source,
           "R32: 这段准备必须记耗时 —— 原先它一行日志都没有，「等了 2 分钟」无法归因")
+    # ⚠️ **文案不许声称它没做的事**（2026-09-18，由一份第三方审计发现）。
+    # `signingWorkspace.prepare(...)` 只做「读中央目录 + 解压 + 结构改写 + 瘦身 + 归一化 +
+    # 删旧签名」，**重签与打包都在它之后、不在这个计时窗口里**。
+    # 原来那句写「（解压/改写/重签/打包）」会让人把它误读成「四件事加起来 N 秒」，
+    # 从而**去优化解压**，而真正可能的大头（1.46 GB 的 deflate 打包）**根本没被计时**。
+    check("（解压/改写/重签/打包）" not in portal_source,
+          "R32: 「应用文件准备完成」的文案不许声称包含重签/打包 —— 它们不在这个计时窗口里")
+    # 两处原本完全没埋点、却可能是耗时大头的阶段，必须有独立计时。
+    # （打包：1.46 GB 走 deflate，按移动端单核 20–50 MB/s 估算量级 30–70 秒；
+    #   重签：33 个 Mach-O 逐个串行，引擎无任何并发。）
+    check("签名：打包完成（deflate），耗时" in portal_source
+          and "签名：重签完成（逐 Mach-O 串行），耗时" in portal_source,
+          "R32: 打包与重签必须各有独立耗时埋点 —— 它们是本地耗时的大头候选，"
+          "原先完全没有埋点 ⇒ 「大包签名慢」只能靠猜")
 
     # R33: 「**读**可重试超时、**写**绝不可」是硬规则（2026-09-18）。
     #
@@ -1561,6 +1575,23 @@ def violations(load=read):
     check(workspace_source.count("static func requiredTemporarySpace(") == 1
           and workspace_source.count("multipliedReportingOverflow(by: 2)") == 1,
           "R35: 「需要多少临时空间」的公式只许有一份 —— 两处各写一遍迟早漂移")
+
+    # R37: 判 Mach-O magic **之前不许整体读入文件**（2026-09-18，由一份第三方审计发现）。
+    #
+    # `rewriteExecutablePathReferences` 被 `normalizeRootFrameworksIntoFrameworksDirectory`
+    # 对**全树每个文件**调用（app 根目录存在 `.framework` / `.dylib` 时才走进去；
+    # **抖音正好满足** —— 3 个注入的 tweak dylib 放在 app 根）。
+    # 原实现第一件事是 `Data(contentsOf:)` —— **整个文件读进内存之后**才判 magic
+    # ⇒ 5053 个文件、合计 **1.46 GB** 的无谓磁盘读 + 同等量级的内存分配，
+    # 其中非 Mach-O 的那绝大部分（图片 / 视频 / 字体 / `Assets.car`）**纯属浪费**。
+    # 更麻烦的是**内存峰值**：单个几百 MB 的资源文件在 iOS 上有被 **jetsam 杀掉**的余地
+    # —— 那会表现为「签名中途莫名失败」。
+    check("guard let magicData = try? handle.read(upToCount: 4)" in workspace_source
+          and 0 <= workspace_source.find("guard magic == 0xfeedfacf")
+          < workspace_source.find("guard var data = try? Data(contentsOf: machOURL)"),
+          "R37: 判 Mach-O magic 必须**先只读前 4 字节** —— 整体读入之后再判，会让全树遍历"
+          "（5053 个文件 / 1.46 GB）把每个文件都读进内存，非 Mach-O 的那些纯属浪费，"
+          "且有 jetsam 风险")
 
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
@@ -3695,6 +3726,28 @@ def main():
          "    private func validate(_ entries: [Entry]) throws -> UInt64 {",
          "    private func validate(_ entries: [Entry]) throws {",
          "R35: `validate` 必须把解压后总量**返回出去**"),
+        # ── R37：先读 4 字节判 magic（2026-09-18）──
+        # 退回「先整体读入」：全树遍历会把 1.46 GB 读进内存，有 jetsam 风险。
+        ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
+         "        guard let handle = try? FileHandle(forReadingFrom: machOURL) else { return }\n"
+         "        defer { try? handle.close() }\n"
+         "        guard let magicData = try? handle.read(upToCount: 4),\n"
+         "              magicData.count == 4 else {\n"
+         "            return\n"
+         "        }\n"
+         "        // MH_MAGIC_64 = 0xfeedfacf（strip arm64e 后全树 thin arm64）\n"
+         "        let magic = magicData.withUnsafeBytes {\n"
+         "            $0.loadUnaligned(fromByteOffset: 0, as: UInt32.self)\n"
+         "        }\n"
+         "        guard magic == 0xfeedfacf else { return }\n"
+         "\n"
+         "        guard var data = try? Data(contentsOf: machOURL) else { return }\n"
+         "        guard data.count >= 32 else { return }\n",
+         "        guard var data = try? Data(contentsOf: machOURL) else { return }\n"
+         "        guard data.count >= 32 else { return }\n"
+         "        guard data.withUnsafeBytes({ $0.loadUnaligned(fromByteOffset: 0, as: UInt32.self) })\n"
+         "            == 0xfeedfacf else { return }\n",
+         "R37: 判 Mach-O magic 必须"),
         # 去掉 1100 的专门文案：又落回「没有返回明确失败原因」，
         # 用户不知道账号可能已经被清空、需要立刻重新创建一张证书。
         ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",

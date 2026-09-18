@@ -822,13 +822,34 @@ struct SigningWorkspace: Sendable {
         movedNames: Set<String>
     ) throws {
         let fileManager = FileManager.default
-        guard var data = try? Data(contentsOf: machOURL) else { return }
-        guard data.count >= 32 else { return }
-        func u32(_ offset: Int) -> UInt32 {
-            data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self) }
+        // ⚠️ **先只读前 4 字节判 magic，再决定要不要整体读入**（2026-09-18）。
+        //
+        // 原实现第一件事是 `Data(contentsOf:)` —— **整个文件读进内存之后**才判 magic。
+        // 而本函数被 `normalizeRootFrameworksIntoFrameworksDirectory` 对**全树每个文件**调用
+        // （app 根目录存在 `.framework` / `.dylib` 时才会走进去；**抖音正好满足** ——
+        // 它有 3 个注入的 tweak dylib 放在 app 根）⇒ 5053 个文件、合计 **1.46 GB** 的无谓
+        // 磁盘读 + 同等量级的内存分配，其中非 Mach-O 的那绝大部分（图片 / 视频 / 字体 /
+        // `Assets.car`）**纯属浪费**。
+        //
+        // 更麻烦的是**内存峰值**：单个几百 MB 的资源文件会把峰值显著抬高，
+        // 在 iOS 上有被 jetsam 杀掉的余地 —— 那会表现为「签名中途莫名失败」。
+        //
+        // 改法**行为完全不变**：只把「读整个文件」推迟到 magic 命中之后。
+        // （`u32` 那个小工具函数只剩这一处用途，随之下移成内联读取。）
+        guard let handle = try? FileHandle(forReadingFrom: machOURL) else { return }
+        defer { try? handle.close() }
+        guard let magicData = try? handle.read(upToCount: 4),
+              magicData.count == 4 else {
+            return
         }
         // MH_MAGIC_64 = 0xfeedfacf（strip arm64e 后全树 thin arm64）
-        guard u32(0) == 0xfeedfacf else { return }
+        let magic = magicData.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 0, as: UInt32.self)
+        }
+        guard magic == 0xfeedfacf else { return }
+
+        guard var data = try? Data(contentsOf: machOURL) else { return }
+        guard data.count >= 32 else { return }
 
         let rpathNeedle = Data("@executable_path/Frameworks".utf8)
         guard data.firstRange(of: rpathNeedle) != nil else { return }

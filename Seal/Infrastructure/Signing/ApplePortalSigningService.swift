@@ -688,8 +688,13 @@ actor ApplePortalSigningService {
                 preferredDisplayName: app.preferredDisplayName,
                 preferredIconData: preferredIconData
             )
+            // ⚠️ **文案不许声称它没做的事**（2026-09-18 修正）。`prepare(...)` 只做
+            // 「读中央目录 + 解压 + 结构改写 + 瘦身 + 归一化 + 删旧签名」——
+            // **重签与打包都在它之后、不在这个计时窗口里**。原来那句写「（解压/改写/重签/打包）」
+            // 会让人把这里误读成「四件事加起来 N 秒」，从而**去优化解压**，
+            // 而真正可能的大头（1.46 GB 的 deflate 打包）**根本没被计时**。
             await diagnostic(
-                "签名：应用文件准备完成（解压/改写/重签/打包），耗时 \(Int(Date().timeIntervalSince(prepareStartedAt))) 秒"
+                "签名：应用文件准备完成（解压 + 结构改写；重签与打包另计），耗时 \(Int(Date().timeIntervalSince(prepareStartedAt))) 秒"
             )
             try Task.checkCancellation()
 
@@ -773,7 +778,15 @@ actor ApplePortalSigningService {
 
             stage = .packaging
             let signedIPAURL = prepared.rootURL.appending(path: "Signed.ipa")
+            // ⚠️ **打包单独计时**（2026-09-18）：1.46 GB 走 deflate，按移动端单核 20–50 MB/s
+            // 估算量级在 **30–70 秒**，**很可能是本地耗时的大头** —— 而它原先完全没有埋点，
+            // 导致「大包签名慢」只能靠猜。（`package` 用 `.deflate` 是**兼容性要求**：
+            // store-mode ZIP 会让 installd 报 `MissingPackagePath`，见 `package` 的注释。）
+            let packageStartedAt = Date()
             try signingWorkspace.package(prepared, outputURL: signedIPAURL)
+            await diagnostic(
+                "签名：打包完成（deflate），耗时 \(Int(Date().timeIntervalSince(packageStartedAt))) 秒"
+            )
 
             return PortalSigningResult(
                 mappedMainBundleID: prepared.mappedMainBundleID,
@@ -2328,6 +2341,11 @@ actor ApplePortalSigningService {
                 )
             }
         }
+        // ⚠️ **重签单独计时**（2026-09-18）：33 个 Mach-O 逐个串行重签（引擎无任何并发），
+        // 原先**完全没有埋点** ⇒ 「大包签名慢」慢在哪一段只能靠猜。
+        // 计时放在 detached **外面**，覆盖「写 appGroups + 重签」这一整段
+        //（写 Info.plist 是毫秒级，可忽略）。
+        let resignStartedAt = Date()
         // rork-sign 是 CPU 密集型同步操作，丢到后台线程，避免长时间占用 actor
         try await Task.detached(priority: .userInitiated) {
             // 对齐 AltStore：签名前把每个描述文件的 appGroups 写入对应 bundle 的 Info.plist
@@ -2407,6 +2425,9 @@ actor ApplePortalSigningService {
                 appGroupIdentifiers: appGroups
             )
         }.value
+        await diagnostic(
+            "签名：重签完成（逐 Mach-O 串行），耗时 \(Int(Date().timeIntervalSince(resignStartedAt))) 秒"
+        )
     }
 
     /// 统一转发 AltSign 回调结果。

@@ -28,7 +28,7 @@ struct SelfReplacementTransactionTests {
     func legacyHandoffMigrationReleasesThePendingSlot() async throws {
         let fixture = try TransactionFixture.withLegacyHandoff()
 
-        let pending = await fixture.store.loadPending()
+        let pending = try await fixture.store.loadPending()
         #expect(pending == nil, "legacy 迁移结果不得留在 pending，否则自续签被永久锁死")
 
         let audit = try await fixture.store.loadAny()
@@ -45,9 +45,11 @@ struct SelfReplacementTransactionTests {
     @Test
     func legacyMigrationIsStableAcrossRepeatedLoads() async throws {
         let fixture = try TransactionFixture.withLegacyHandoff()
-        let first = try #require(await fixture.store.loadAny())
-        _ = await fixture.store.loadPending()
-        let second = try #require(await fixture.store.loadAny())
+        let firstRecord = try await fixture.store.loadAny()
+        let first = try #require(firstRecord)
+        _ = try await fixture.store.loadPending()
+        let secondRecord = try await fixture.store.loadAny()
+        let second = try #require(secondRecord)
         #expect(first.id == second.id)
         #expect(first.settledAt == second.settledAt)
         #expect(second.phase == .recoveryRequired)

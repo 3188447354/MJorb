@@ -81,7 +81,7 @@ struct InstallChannelDiagnosticClassificationTests {
         let errors: [Error] = [
             URLError(.timedOut),
             URLError(.networkConnectionLost),
-            CocoaError(.fileWriteFull)
+            CocoaError(.fileWriteOutOfSpaceError)
         ]
         for error in errors {
             #expect(

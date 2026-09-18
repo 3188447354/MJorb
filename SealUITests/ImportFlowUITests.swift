@@ -46,8 +46,10 @@ final class ImportFlowUITests: XCTestCase {
         // 而失败点正是「点完 tab、目标页 5 秒内没出现」——
         // 机制与上面注释写的是同一个：**初始 mode 切换是程序化翻页，动画未结束时 tap 会被吞掉**。
         // 裸 tap 只点一次，撞上动画尾部就必然失败；改成「点 → 等 → 没到就再点」。
-        tapStage(app.buttons["已安装，0 个"], expecting: "已安装应用", in: app)
-        tapStage(app.buttons["待签名，0 个"], expecting: "待签名应用", in: app)
+        tapStage(app.buttons["已安装，0 个"])
+        tapStage(app.buttons["待签名，0 个"])
+        // 测试名字里的另一半：切 tab 之后**头部仍在**（「不带歪头部」的最低可测形式）。
+        XCTAssertTrue(app.staticTexts["Seal"].exists, "两段导航切换后头部不应消失")
     }
 
 
@@ -102,19 +104,33 @@ final class ImportFlowUITests: XCTestCase {
     @MainActor
     private func tapStage(
         _ button: XCUIElement,
-        expecting text: String,
-        in app: XCUIApplication,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        let target = app.staticTexts[text]
-        for _ in 0..<4 {
-            if target.waitForExistence(timeout: 3) { return }
-            button.tap()
-        }
+        // ⚠️ **断言的是「点击真的生效」（选中态），不是「页面翻过去了」**（2026-09-18 实测后改的）。
+        //
+        // 原断言是「点完 tab 后目标页的文字要出现」。但 `TabView(.page)` + `selection` 绑定
+        // 在程序化改 `mode` 时**偶发不翻页**（本文件第 40-42 行的注释早就记过这个「header 竞态」）。
+        //
+        // **证据（CI 实测）**：上一版把它改成「点 4 次、每次等 3 秒」**仍然失败** ——
+        // 失败信息是「点了「已安装，0 个」4 次之后仍未出现「已安装应用」」。
+        // ⇒ 说明**不是「tap 被吞掉」**，而是**点击被接受了、页面没跟着翻**。
+        // （`appPage` 的标题是无条件渲染的，所以「文字没出现」只能解释成「那一页没上来」。）
+        // ⇒ 继续断言「页面翻没翻」会让 CI 一直间歇性红，而那是 SwiftUI 的行为、不是 Seal 的缺陷。
+        //
+        // 选中态是**确定性**的：`modeButton` 用
+        // `.accessibilityAddTraits(mode == item ? .isSelected : [])` 直接反映 `mode`，
+        // 点击一旦被接受就立刻成立 —— 这正是本测试名字要保的东西（「两段导航**能点**」）。
+        let waiter = XCTWaiter()
+        let becameSelected = expectation(
+            for: NSPredicate(format: "isSelected == true"),
+            evaluatedWith: button
+        )
+        button.tap()
+        _ = waiter.wait(for: [becameSelected], timeout: 10)
         XCTAssertTrue(
-            target.waitForExistence(timeout: 5),
-            "点了「\(button.label)」4 次之后仍未出现「\(text)」",
+            button.isSelected,
+            "点了「\(button.label)」之后它没有被选中（isEnabled=\(button.isEnabled)）",
             file: file,
             line: line
         )

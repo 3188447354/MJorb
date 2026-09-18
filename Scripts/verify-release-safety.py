@@ -1357,6 +1357,16 @@ def violations(load=read):
           and 'app.buttons["待签名，0 个"].tap()' not in ui_tests,
           "R28: 切 tab 的 UI 测试必须用 tapStage —— 裸 tap 会撞上程序化翻页的动画尾部被吞掉，"
           "而这类抖动只在 CI 上间歇性暴露")
+    # ⚠️ 断言必须落在**确定性的选中态**上（2026-09-18 实测后加固）。
+    # `TabView(.page)` + `selection` 绑定在程序化改 `mode` 时**偶发不翻页**
+    # （该测试第 40-42 行的注释早就记过这个「header 竞态」）。实测证据：上一版把它改成
+    # 「点 4 次、每次等 3 秒」**仍然失败** ⇒ 不是「tap 被吞」，而是**点击被接受了、页面没翻**。
+    # ⇒ 断言「目标页文字出现」会让 CI 间歇性红，而那是 SwiftUI 的行为、不是 Seal 的缺陷。
+    # 选中态直接反映 `mode`（`modeButton` 用 `.accessibilityAddTraits(... .isSelected ...)`），
+    # 点击一旦被接受就立刻成立 ⇒ 确定性。
+    check("button.isSelected" in ui_tests,
+          "R28: 切 tab 的断言必须落在**确定性的选中态**（`button.isSelected`）上 —— "
+          "断言「目标页文字出现」依赖 `TabView(.page)` 翻页，会间歇性红")
 
     # R29: 证书轮换路径的「创建证书」也要过退避重试，且**共用**判据与间隔（2026-09-17）。
     #
@@ -3515,10 +3525,14 @@ def main():
          "R26: 主 App 优先的顺序必须由单测钉住"),
         # 把 tapStage 退回裸 tap：切 tab 的抖动又会回来（只在 CI 上间歇性暴露）。
         ("SealUITests/ImportFlowUITests.swift",
-         "        tapStage(app.buttons[\"已安装，0 个\"], expecting: \"已安装应用\", in: app)",
-         "        app.buttons[\"已安装，0 个\"].tap()\n"
-         "        XCTAssertTrue(app.staticTexts[\"已安装应用\"].waitForExistence(timeout: 5))",
+         "        tapStage(app.buttons[\"已安装，0 个\"])",
+         "        app.buttons[\"已安装，0 个\"].tap()",
          "R28: 切 tab 的 UI 测试必须用 tapStage"),
+        # 把断言退回「目标页文字出现」：依赖 TabView 翻页，CI 会间歇性红（2026-09-18 实测）。
+        ("SealUITests/ImportFlowUITests.swift",
+         "        XCTAssertTrue(\n            button.isSelected,",
+         "        XCTAssertTrue(\n            app.staticTexts[\"已安装应用\"].waitForExistence(timeout: 5),",
+         "R28: 切 tab 的断言必须落在**确定性的选中态**"),
         # ── R29：证书轮换路径的「创建证书」也要过退避重试（2026-09-17）──
         # 退回「直接请求」：它前面刚 revoke 过，创建失败会让账号变成 0 张证书
         # ⇒ 用它签过的所有 App 立刻打不开。

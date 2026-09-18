@@ -1151,7 +1151,7 @@ def violations(load=read):
     sign_once_body = squash(section_or_empty(
         portal_source,
         "private func signOnce(",
-        "let session = ALTAppleAPISession("
+        "var session = ALTAppleAPISession("
     ))
     before_at = sign_once_body.find('"签名：正在准备设备环境（anisette）"')
     fetch_at = sign_once_body.find("anisetteProvider.fetch()")
@@ -1553,6 +1553,23 @@ def violations(load=read):
           "R42: 退避全部失败时必须给出**可执行**的出路（重新验证 / **换网络节点**）—— "
           "真机证据是「两个不同账号失败形态完全相同」，那是网络出口级的特征，"
           "只说「重新验证」会让用户在账号上打转")
+
+    # R43: **本地准备之后必须重建会话（换一份新的 anisette）**（2026-09-19 真机根因）。
+    #
+    # anisette 里的 `X-Apple-I-MD` 是**一次性验证码**，有效期只有几十秒 ✗；
+    # 而 `prepare` 的解压 + 三趟全树遍历要 **105–120 秒** ✗
+    # ⇒ 拿两分钟前取的 anisette 去请求 ⇒ Apple 判会话异常返回 **1100** ✗✗。
+    #
+    # 真机证据（构建 141，两次尝试、**两个不同 Apple ID，失败形态完全相同**）：
+    #   23:56:05 「设备环境已就绪」（anisette 在这里取）
+    #   → 120 秒本地准备 → 23:58:10 第一次 Apple 请求 ⇒ **1100** ✗
+    #   而 gap **之前**的请求（fetchTeams / ensureDevice / 证书检查）**全部成功** ✓
+    # ⇒ 时间顺序完全对上；也解释了「换账号也一样失败」（设备身份级，与账号无关）✓
+    check("let refreshedAnisette = try await anisetteProvider.fetch()" in portal_source
+          and "var session = ALTAppleAPISession(" in portal_source,
+          "R43: `prepare` 之后必须**重建会话**（重新取 anisette）—— "
+          "anisette 的一次性码有效期只有几十秒，而本地准备要 105–120 秒 ⇒ "
+          "不重建就是拿过期 anisette 去请求，Apple 判会话异常返回 1100")
 
     # R36: 进度条与阶段轨道的数值只许来自 `SigningProgressBudget`（2026-09-18）。
     #
@@ -4030,6 +4047,10 @@ def main():
          "        }\n",
          "",
          "R39: 阶段进入必须落日志"),
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "            let refreshedAnisette = try await anisetteProvider.fetch()\n",
+         "",
+         "R43: `prepare` 之后必须**重建会话**"),
         # ── R40：102c 不得标失效（2026-09-18 真机）──
         # 删掉排除：账号又会在「紧接 3 次限流退避之后」被标成失效 ⇒ 死循环。
         ("Seal/Core/Accounts/AppleServiceFailurePolicy.swift",

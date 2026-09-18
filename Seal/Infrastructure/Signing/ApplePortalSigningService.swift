@@ -637,7 +637,9 @@ actor ApplePortalSigningService {
             await diagnostic(
                 "签名：设备环境已就绪，耗时 \(Int(Date().timeIntervalSince(anisetteStartedAt))) 秒"
             )
-            let session = ALTAppleAPISession(
+            // ⚠️ `var` 而不是 `let`：`prepare` 之后**必须重建一次**（换新的 anisette），
+            // 理由见下面重建处那段注释（2026-09-19 真机根因）。
+            var session = ALTAppleAPISession(
                 dsid: secret.dsid,
                 authToken: secret.authToken,
                 anisetteData: anisette,
@@ -739,6 +741,30 @@ actor ApplePortalSigningService {
                     + "（其中解压 \(Int(unzipSeconds)) 秒、其余遍历 \(Int(max(0, prepareSeconds - unzipSeconds))) 秒）"
             )
             try Task.checkCancellation()
+
+            // ⚠️⚠️ **本地准备之后必须重建会话（换一份新的 anisette）**（2026-09-19 真机根因）✓
+            //
+            // anisette 里的 `X-Apple-I-MD` 是**一次性验证码**，有效期只有几十秒 ✗；
+            // 而 `prepare` 的解压 + 三趟全树遍历要 **105–120 秒** ✗
+            // ⇒ 拿两分钟前取的 anisette 去请求，Apple 判会话异常返回 **1100** ✗✗。
+            //
+            // 真机证据（构建 141，**两次尝试、两个不同 Apple ID，失败形态完全相同**）：
+            //   23:56:05  「签名：设备环境已就绪」        ← anisette 在这里取
+            //   23:56:06 → 23:58:09  本地准备 **120 秒**
+            //   23:58:10  第一次 Apple 请求 ⇒ **1100** ✗（而 gap **之前**的请求**全部成功** ✓）
+            // ⇒ 时间顺序完全对上：**anisette 取在前面、用在 120 秒之后** ✓
+            //
+            // 这也解释了为什么「换账号也一样失败」—— 它是**设备身份级**的，与账号无关 ✓。
+            // 更早的请求（`fetchTeams` / `ensureDevice` / 证书检查）都在 gap **之前**，
+            // 用的是当时还新鲜的那份 anisette，所以它们成功 ✓ —— 与日志完全一致 ✓。
+            let refreshedAnisette = try await anisetteProvider.fetch()
+            session = ALTAppleAPISession(
+                dsid: secret.dsid,
+                authToken: secret.authToken,
+                anisetteData: refreshedAnisette,
+                xcodeVersion: AppleAccountClient.xcodeVersion
+            )
+            await diagnostic("签名：本地准备耗时较长（\(Int(prepareSeconds)) 秒），已重建 Apple 会话（换新的 anisette 一次性码）")
 
             // 证书轮换可能立刻让旧 profile 失效。磁盘容量、IPA 解包、Bundle 结构和
             // 本地重写必须全部先成功，确认已经具备可签产物后才允许触碰 Apple 证书。

@@ -135,6 +135,22 @@
 
 ---
 
+## 五点五、**已核验「不是缺口」的清单**（别再猜这些）
+
+2026-09-18 这一轮里有 **3 个猜想被代码推翻** —— 都是「先猜有缺口、去读代码才发现已经做了」。
+把结论钉在这里，免得下次重复花时间（每次猜错都要读一轮代码）：
+
+| 猜想 | 实际 | 证据 |
+|---|---|---|
+| 「tab 按钮被 `.disabled(viewModel.phase != .idle)` 挡住，所以点不动」 | ❌ 那行是**导入按钮（"+"）**的；`modeButton` 没有 disabled 门槛 | `AppsRootView:178` vs `modeButton`（191–218） |
+| 「免费账号遇到不支持的 entitlements 就签不上」 | ❌ **已经**按账号能力过滤，且对「参数无效」有「清空 features 重试」兜底 | `filteredAppIDEntitlements` 用 `ALTFreeDeveloperCanUseEntitlement`；`updateFeatures` 的 `isInvalidAppIDParameterError` 分支 |
+| 「映射后的 Bundle ID 变长到 Apple 不接受，且没人管」 | ❌ **已经查了长度**（≤255）＋字符集＋分段规则；扩展 ID 还有哈希缩短兜底 | `BundleIDPolicy.validated`（`identifier.count <= 255`）；`BundleIDMapper.extensionBundleID` 的 `.e<10 位哈希>` |
+| 「安装大包会超时（等待上限写死）」 | ❌ **按包大小算**：小包 804 秒、**抖音 779 MB = 2400 秒**，心跳阈值按上限的 1/4 | `abnormalInstallWaitSeconds(budget:)` = `max(120, budget/4)` |
+| 「`sign()` 里还有别的 catch 会覆盖好文案」 | ❌ R31 修完后**没有**覆盖文案的分支（其余两个是「重试」不是「改写」） | `sign()` 的 catch 链 463–558 |
+
+⇒ **教训（已写进技能）**：**猜一个「缺口」之后，第一件事是去代码里找它是否已经存在。**
+引擎比记忆/直觉里完整，**猜出来的缺口有一半是假的**；而每次猜错都要白读一轮代码。
+
 ## 六、诚实记录：本报告没有覆盖的
 
 - **市面工具的逐条对照没有做到「研究所有」**：网页检索产出偏低（多是入门教程），

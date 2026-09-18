@@ -43,7 +43,7 @@ struct SigningWorkspace: Sendable {
             .map { UInt64(max(0, $0.int64Value)) } ?? 0
         try validateFreeSpace(
             expandedBytes: expandedBytes,
-            compressedBytes: ipaBytes,
+            ipaBytes: ipaBytes,
             at: workspaceRoot
         )
         do {
@@ -245,19 +245,44 @@ struct SigningWorkspace: Sendable {
     ///
     /// 这里 `validate(entries)` 已经把解压后总量算出来了（它本来只用于 8GB 安全上限），
     /// 顺手拿它判一次真实空间。**必须排在真正解压之前**，否则就变成「解压到一半没空间」。
+    /// 需要同时容纳：解压产物 + 输出 IPA（≈原包）+ 原包 + 200MB 余量。
+    ///
+    /// ⚠️ **只留一份公式**：`prepare` 里的检查与签名服务的**前置**检查都用它 ——
+    /// 同一条规则两份实现会漂移（本仓已踩过 6 次）。
+    static func requiredTemporarySpace(expandedBytes: UInt64, ipaBytes: UInt64) -> UInt64 {
+        let (outputAndOriginal, outputOverflow) = ipaBytes.multipliedReportingOverflow(by: 2)
+        guard outputOverflow == false else { return expandedBytes }
+        let (required, requiredOverflow) = expandedBytes.addingReportingOverflow(outputAndOriginal)
+        guard requiredOverflow == false else { return expandedBytes }
+        let (total, totalOverflow) = required.addingReportingOverflow(200 * 1024 * 1024)
+        return totalOverflow ? required : total
+    }
+
+    /// 按**解压后**体积估算签名这个 IPA 需要的临时空间（2026-09-18）。
+    ///
+    /// 供签名服务在**真正开始 `prepare` 之前**做前置判断 —— 用准确值，而不是
+    /// 「压缩体积 × N」那种**两头都会错**的启发式：
+    /// - 抖音（压缩比 ≈1.9×）：780MB × 4 = 3.32GB，而实际峰值 ≈3.0GB ⇒ **假警报**（挡住能签的机器）
+    /// - 高压缩比的包：100MB × 4 = 600MB，而实际峰值 ≈1.7GB ⇒ **低估**（可能中途写满磁盘）
+    ///
+    /// 顺带跑一遍 `validate`（条目数 / 路径安全 / 8GB 上限）⇒ 这些限制也提前到 `prepare`
+    /// 之前暴露。代价只是多开一次 zip 读中央目录（毫秒级，不解压）。
+    func requiredTemporarySpace(forIPAAt ipaURL: URL) throws -> UInt64 {
+        let archive = try Archive(url: ipaURL, accessMode: .read)
+        let entries = Array(archive)
+        let expandedBytes = try validate(entries)
+        let ipaBytes = ((try? FileManager.default.attributesOfItem(atPath: ipaURL.path))?[.size]
+            as? NSNumber).map { UInt64(max(0, $0.int64Value)) } ?? 0
+        return Self.requiredTemporarySpace(expandedBytes: expandedBytes, ipaBytes: ipaBytes)
+    }
+
     private func validateFreeSpace(
         expandedBytes: UInt64,
-        compressedBytes: UInt64,
+        ipaBytes: UInt64,
         at workspaceRoot: URL
     ) throws {
         guard expandedBytes > 0 else { return }
-        // 需要同时容纳：解压产物 + 输出 IPA（≈压缩体积）+ 原包（≈压缩体积）+ 200MB 余量
-        let (outputAndOriginal, outputOverflow) = compressedBytes.multipliedReportingOverflow(by: 2)
-        guard outputOverflow == false else { return }
-        let (required, requiredOverflow) = expandedBytes.addingReportingOverflow(outputAndOriginal)
-        guard requiredOverflow == false else { return }
-        let (total, totalOverflow) = required.addingReportingOverflow(200 * 1024 * 1024)
-        guard totalOverflow == false else { return }
+        let total = Self.requiredTemporarySpace(expandedBytes: expandedBytes, ipaBytes: ipaBytes)
 
         // 读不到可用空间就**放行**（宁可让后面的写入失败，也不要因为读不到属性就拒绝签名）。
         guard let attributes = try? FileManager.default.attributesOfFileSystem(
@@ -273,9 +298,8 @@ struct SigningWorkspace: Sendable {
         }
         throw Self.signingFailure(
             reason: "解压这个 IPA 需要约 \(gigabytes(total)) 空间（按**解压后**体积算："
-                + "解压产物 \(gigabytes(expandedBytes))"
-                + " + 输出包与原包 \(gigabytes(outputAndOriginal))"
-                + " + 200MB 余量），当前剩余 \(gigabytes(UInt64(freeBytes)))。",
+                + "解压产物 \(gigabytes(expandedBytes))，其余是输出包 / 原包 / 200MB 余量），"
+                + "当前剩余 \(gigabytes(UInt64(freeBytes)))。",
             code: "SEAL-SIGN-406"
         )
     }

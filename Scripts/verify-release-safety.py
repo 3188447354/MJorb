@@ -1536,6 +1536,17 @@ def violations(load=read):
     check(0 <= workspace_source.find("try validateFreeSpace(")
           < workspace_source.find("try fileManager.unzipItem("),
           "R35: 空间检查必须排在 `unzipItem` **之前** —— 排在后面就变成「解压到一半没空间」")
+    # ⚠️ **前置**那道检查（签名服务里、排在所有检查最前面）也必须用准确值。
+    # 退回「压缩体积 × 4」会两头出错，而它排在最前面 ⇒ **错的那一头会先拦住用户**：
+    # 抖音 780MB × 4 = 3.32GB（实际 ≈3.0GB）⇒ 假警报；高压缩比的包则被低估。
+    check("signingWorkspace.requiredTemporarySpace(" in portal_source
+          and "ipaSize * 4" not in portal_source,
+          "R35: 前置的磁盘检查必须用「解压后」体积的**准确值** —— `压缩体积 × 4` 会先拦住"
+          "能签的机器（假警报），或低估高压缩比的包")
+    # 公式**只许一份**（本仓「同一条规则两份实现」已踩过 6 次）。
+    check(workspace_source.count("static func requiredTemporarySpace(") == 1
+          and workspace_source.count("multipliedReportingOverflow(by: 2)") == 1,
+          "R35: 「需要多少临时空间」的公式只许有一份 —— 两处各写一遍迟早漂移")
 
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
@@ -3641,11 +3652,20 @@ def main():
         ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
          "        try validateFreeSpace(\n"
          "            expandedBytes: expandedBytes,\n"
-         "            compressedBytes: ipaBytes,\n"
+         "            ipaBytes: ipaBytes,\n"
          "            at: workspaceRoot\n"
          "        )\n",
          "",
          "R35: 解压前必须按解压后体积判空间"),
+        # 把**前置**磁盘检查退回「压缩体积 × 4」的启发式：它会先拦住能签的机器（假警报）。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "            if let requiredBytes = try? signingWorkspace.requiredTemporarySpace(\n"
+         "                forIPAAt: originalIPAURL\n"
+         "            ) {",
+         "            if let requiredBytes = ((try? FileManager.default.attributesOfItem(\n"
+         "                atPath: originalIPAURL.path\n"
+         "            ))?[.size] as? NSNumber).map({ UInt64($0.int64Value) * 4 + 200 * 1024 * 1024 }) {",
+         "R35: 前置的磁盘检查必须用"),
         # 让 `validate` 不再返回解压总量：空间判断就拿不到真实数字了。
         ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
          "    private func validate(_ entries: [Entry]) throws -> UInt64 {",

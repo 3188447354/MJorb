@@ -630,29 +630,38 @@ actor ApplePortalSigningService {
             )
             try Task.checkCancellation()
 
-            // 大 IPA 峰值磁盘空间：解压 ~1x + ldid 临时文件 ~1x + 输出 IPA ~1x
-            // 微信 400MB 需 ~1.2GB，盛世天下 580MB 需 ~1.8GB。空间不足会导致
-            // ldid.cpp(538) 写入失败或 ZIPFoundation DataError，提前检查给出明确提示。
-            do {
-                let ipaAttrs = try FileManager.default.attributesOfItem(atPath: originalIPAURL.path)
-                let ipaSize = (ipaAttrs[.size] as? NSNumber)?.int64Value ?? 0
-                if ipaSize > 0 {
-                    let docDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-                    if let docDir,
-                       let freeAttrs = try? FileManager.default.attributesOfFileSystem(forPath: docDir.path),
-                       let freeBytes = (freeAttrs[.systemFreeSize] as? NSNumber)?.int64Value {
-                        let requiredBytes = ipaSize * 4 + 200 * 1024 * 1024 // 4x + 200MB 余量
-                        if freeBytes < requiredBytes {
-                            let freeGB = Double(freeBytes) / 1_000_000_000
-                            let requiredGB = Double(requiredBytes) / 1_000_000_000
-                            throw Self.failure(
-                                title: "存储空间不足",
-                                reason: String(format: "签名此 IPA 约需 %.1fGB 临时空间，当前剩余 %.1fGB。大 IPA 解压、签名、打包各需一份副本。", requiredGB, freeGB),
-                                recovery: "清理手机存储空间后重试",
-                                code: "SEAL-SIGN-405"
-                            )
-                        }
-                    }
+            // 大 IPA 峰值磁盘空间：解压 ~1x + ldid 临时文件 ~1x + 输出 IPA ~1x。
+            // 空间不足会导致 ldid.cpp(538) 写入失败或 ZIPFoundation DataError，提前给出明确提示。
+            //
+            // ⚠️ **用「解压后」体积算，不要用「压缩体积 × N」**（2026-09-18）。
+            // 那个启发式两头都会错，而它排在所有检查的**最前面** ⇒ 错的那一头会**先拦住用户**：
+            // - 抖音（压缩比 ≈1.9×）：780MB × 4 = 3.32GB，实际峰值 ≈3.0GB ⇒ **假警报**
+            // - 高压缩比的包：100MB × 4 = 600MB，实际峰值 ≈1.7GB ⇒ **低估**
+            // 现在直接问 `SigningWorkspace` 要准确值（它本来就要算这个数，顺带把
+            // 条目数 / 路径安全 / 8GB 上限也提前到这里暴露）。
+            // 拿不到就**放行** —— `prepare` 里还有一道同样的检查兜底（那里 archive 已打开）。
+            if let requiredBytes = try? signingWorkspace.requiredTemporarySpace(
+                forIPAAt: originalIPAURL
+            ) {
+                let docDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+                if let docDir,
+                   let freeAttrs = try? FileManager.default.attributesOfFileSystem(forPath: docDir.path),
+                   let freeBytes = (freeAttrs[.systemFreeSize] as? NSNumber)?.int64Value,
+                   freeBytes > 0,
+                   UInt64(freeBytes) < requiredBytes {
+                    let freeGB = Double(freeBytes) / 1_000_000_000
+                    let requiredGB = Double(requiredBytes) / 1_000_000_000
+                    throw Self.failure(
+                        title: "存储空间不足",
+                        reason: String(
+                            format: "签名此 IPA 约需 %.1fGB 临时空间（按解压后体积算），当前剩余 %.1fGB。"
+                                + "解压产物、输出包与原包会同时占空间。",
+                            requiredGB,
+                            freeGB
+                        ),
+                        recovery: "清理手机存储空间后重试",
+                        code: "SEAL-SIGN-405"
+                    )
                 }
             }
 

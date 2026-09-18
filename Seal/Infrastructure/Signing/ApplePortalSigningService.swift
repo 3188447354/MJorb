@@ -361,15 +361,23 @@ actor ApplePortalSigningService {
     /// 阶段密集请求会被 Apple 限流，返回的 1100 是「被掐断」而非「真过期」。
     /// 同一 session 往往仍然可用，退避后重试即可成功；重试耗尽才向上抛。
     ///
-    /// 累计额外等待 1.5 + 4 + 8 = 13.5 秒。对「本来就会失败」的调用只增加一次
-    /// 十几秒的等待，换来的是不必让用户白跑一趟「重新验证 Apple ID」。
+    /// ⚠️ **梯度从 1.5/4/8 延长到 1.5/4/8/20/40（2026-09-18 真机日志实锤）**：
+    /// build 138 的 `Seal-log(18)` 里，抖音签名在「读取证书列表」撞限流，
+    /// 1.5+4+8 = 13.5 秒三连退避**全部耗尽**后死于 `SEAL-AUTH-102c`
+    /// —— 13.5 秒不够 Apple 放行。延长后累计 73.5 秒：
+    /// - 真被限流 ⇒ 多等一分钟换来整轮签名成功，值得（抖音一轮本身要数分钟）；
+    /// - session 真死 ⇒ 第一个撞上的请求付满梯度后上抛、整轮终止 ——
+    ///   代价只有**一次** ~70 秒的等待，不会按请求数翻倍；
+    /// - 每次退避前都有 `Task.checkCancellation()`，用户随时可取消，不会拖死 UI。
     /// ⚠️ **访问级别是 internal 而非 private**：`ApplePortalCertificateService`（证书轮换 / 清理路径）
     /// 也要用**同一组**间隔 —— 「同一条规则两条链路各抄一份」在本仓已踩过 6 次，
     /// 共用一份常量是防止两边漂移的唯一办法（守卫 R29 钉住这一点）。
     static let sessionRecoveryBackoffNanoseconds: [UInt64] = [
         1_500_000_000,
         4_000_000_000,
-        8_000_000_000
+        8_000_000_000,
+        20_000_000_000,
+        40_000_000_000
     ]
 
     /// 是否为 Apple 的「会话已过期」错误（错误码 1100）。
@@ -1606,6 +1614,18 @@ actor ApplePortalSigningService {
         for appExtension in mainApplication.appExtensions {
             applications[appExtension.bundleIdentifier] = appExtension
         }
+        // ⚠️ **entitlements 取证**（2026-09-18）：`ALTApplication.entitlements` 的底层是
+        // `try? LdidBridge.entitlements(at:) ?? ""` —— 读取失败会**静默**变成空串，不报错。
+        // 空串 ⇒ 本次能力集为空 ⇒ 付费账号不会分配 App Group、免费账号的 features 比对恒空。
+        // 这条只报**数量**（不报键名与值，无凭据风险），用来区分
+        // 「IPA 本身没有 entitlements（砸壳时被剥掉）」和「读取失败」—— 前者无解，后者要修。
+        let bundlesWithEntitlements = applications.values.filter {
+            $0.entitlements.isEmpty == false
+        }.count
+        await diagnostic(
+            "App 能力取证：共 \(applications.count) 个 bundle（主 App 1 + 扩展 \(applications.count - 1)），"
+                + "其中带非空 entitlements 的 \(bundlesWithEntitlements) 个"
+        )
 
         // ⚠️ **Phase 1 的入口也要先留痕**（2026-09-18 真机）。
         // 下面那条完整的「名额」诊断要读 `existing`（账号已有列表），所以必须排在 `fetchAppIDs`
@@ -1655,8 +1675,15 @@ actor ApplePortalSigningService {
         // 这条诊断要**直接回答「能省多少次请求」**，而不只是「features 是不是空的」——
         // 因为「跳过冗余 updateFeatures」正是砍掉一半 Apple 请求的关键，而它的前置条件
         // 是「远端 features 与本次要设置的**完全一致**」（不一致时跳过会静默丢能力）。
-        func desiredFeatureKeys(original: String) -> Set<String> {
-            guard let application = applications[original] else { return [] }
+        // ⚠️ **查 `applications` 必须用 mapped ID**（2026-09-18 真机日志实锤修复）。
+        // 字典是从 `prepared.appURL`（SigningWorkspace 已把 Info.plist 的
+        // CFBundleIdentifier 改写成 mapped ID）解析出来的 ⇒ 键是 **mapped**；
+        // 而这里的历史写法用 **original** ID 去查 ⇒ 永远落空 ⇒
+        // ① `requestedEntitlements` 恒空（签出的包不带任何能力）；
+        // ② features 诊断恒报「本次 []」（远端 ["APG3427HIY"] vs 本次 [] 就是它）；
+        // ③ 「跳过冗余 updateFeatures」优化永远不可能命中。
+        func desiredFeatureKeys(mapped: String) -> Set<String> {
+            guard let application = applications[mapped] else { return [] }
             return Set(
                 filteredAppIDEntitlements(from: application, team: team)
                     .keys
@@ -1665,16 +1692,16 @@ actor ApplePortalSigningService {
             )
         }
         var desiredKeysByMapped: [String: Set<String>] = [:]
-        for (original, mapped) in mappings {
-            desiredKeysByMapped[mapped] = desiredFeatureKeys(original: original)
+        for (_, mapped) in mappings {
+            desiredKeysByMapped[mapped] = desiredFeatureKeys(mapped: mapped)
         }
         // ⚠️ **值类型也必须报出来**（2026-09-18）—— 判据「键集相等 ⇒ 值也相等」
         // **只在所有值都是布尔开关时成立**。若某个能力的值是列表
         // （App Group / Associated Domains 之类），键集相等**不代表**值相等，
         // 跳过会**静默丢掉那个能力** ⇒ 那时这条优化就**不能做**。
         // 只报**类型名**（`Bool` / `Array<String>`…），不报值 —— 类型名不含任何凭据。
-        func desiredFeatureTypeSummary(original: String) -> String? {
-            guard let application = applications[original] else { return nil }
+        func desiredFeatureTypeSummary(mapped: String) -> String? {
+            guard let application = applications[mapped] else { return nil }
             var pairs: [(String, String)] = []
             for (entitlement, value) in filteredAppIDEntitlements(from: application, team: team) {
                 guard let feature = ALTFeature(entitlement: entitlement) else { continue }
@@ -1683,8 +1710,8 @@ actor ApplePortalSigningService {
             guard pairs.isEmpty == false else { return nil }
             return pairs.sorted { $0.0 < $1.0 }.map { "\($0.0)=\($0.1)" }.joined(separator: " ")
         }
-        let typeSample = mappings.keys
-            .compactMap { desiredFeatureTypeSummary(original: $0) }
+        let typeSample = mappings.values
+            .compactMap { desiredFeatureTypeSummary(mapped: $0) }
             .first
         var observedWithFeatures = 0
         var skipCandidates = 0
@@ -1782,7 +1809,10 @@ actor ApplePortalSigningService {
                     existing.append(appID)
                 }
 
-                if let application = applications[originalBundleID] {
+                // ⚠️ 同上：`applications` 的键是 **mapped** ID（workspace 已改写 Info.plist），
+                // 历史 bug 用 original ID 查 ⇒ 恒 nil ⇒ 整段 entitlements 处理被跳过、
+                // 签出的包不带任何能力（App Group、关联域名等全部丢失）。
+                if let application = applications[mappedBundleID] {
                     let entitlementSource = filteredAppIDEntitlements(from: application, team: team)
                     var entitlementValues: [String: ProvisioningEntitlementValue] = [:]
                     for (entitlement, value) in entitlementSource {
@@ -1810,7 +1840,7 @@ actor ApplePortalSigningService {
                         // ② 扩展的 updateFeatures 撞上 1100 ⇒ 走降级分支把 entitlements **清空**继续签
                         //    ⇒ 签名「成功」，但扩展在真机上缺权限（静默降级比失败更难查）。
                         // 退避重试把这两种「把限流当成事实」的结局变回「等一会儿就好了」。
-                        let updatedAppID: ALTAppID =
+                        let updated: (appID: ALTAppID, downgradedToEmptyEntitlements: Bool) =
                             try await withSessionRecovery("更新应用能力 \(mappedBundleID)") {
                                 try await updateFeatures(
                                     appID: appID,
@@ -1819,7 +1849,13 @@ actor ApplePortalSigningService {
                                     session: session
                                 )
                             }
-                        appID = updatedAppID
+                        appID = updated.appID
+                        if updated.downgradedToEmptyEntitlements {
+                            // Apple 拒了这组能力并按空能力重发（见 updateFeatures 返回值说明）：
+                            // 描述文件里不会有它们，请求集必须同步清空，否则事后
+                            // validateEntitlements 必报 SEAL-ENTITLEMENT-401「权限缺失」。
+                            requestedEntitlements[mappedBundleID] = [:]
+                        }
                         if team.type != .free {
                             // 同上：App Group 的分配也是 per-bundle-ID 的门户写入（付费账号才走）。
                             // 免费账号走不到这里，所以它不是「只有抖音签不上」的成因，
@@ -2059,12 +2095,16 @@ actor ApplePortalSigningService {
     }
 
 
+    /// - Returns: `downgradedToEmptyEntitlements` 为 true 表示 Apple 拒了这组能力（3001）、
+    ///   已按**空能力**重发成功。调用方必须同步把 `requestedEntitlements` 清空 ——
+    ///   描述文件里不会有这些能力，事后 `validateEntitlements` 用「本次请求集」对账，
+    ///   不清空就必报 SEAL-ENTITLEMENT-401「权限缺失」。
     private func updateFeatures(
         appID: ALTAppID,
         application: ALTApplication,
         team: ALTTeam,
         session: ALTAppleAPISession
-    ) async throws -> ALTAppID {
+    ) async throws -> (appID: ALTAppID, downgradedToEmptyEntitlements: Bool) {
         let filteredEntitlements = filteredAppIDEntitlements(
             from: application,
             team: team
@@ -2085,7 +2125,7 @@ actor ApplePortalSigningService {
         // This avoids sending empty or signer-managed entitlement payloads that Apple
         // rejects as "provided parameters are invalid" for free accounts.
         guard features.isEmpty == false || filteredEntitlements.isEmpty == false else {
-            return appID
+            return (appID, false)
         }
 
         guard let updated = appID.copy() as? ALTAppID else {
@@ -2098,7 +2138,7 @@ actor ApplePortalSigningService {
         updated.features = features
         updated.entitlements = filteredEntitlements
         do {
-            return try await submitUpdatedAppID(updated, team: team, session: session)
+            return (try await submitUpdatedAppID(updated, team: team, session: session), false)
         } catch {
             guard Self.isInvalidAppIDParameterError(error),
                   team.type == .free,
@@ -2107,7 +2147,7 @@ actor ApplePortalSigningService {
             }
             fallback.features = [:]
             fallback.entitlements = [:]
-            return try await submitUpdatedAppID(fallback, team: team, session: session)
+            return (try await submitUpdatedAppID(fallback, team: team, session: session), true)
         }
     }
 

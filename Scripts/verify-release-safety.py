@@ -1271,6 +1271,21 @@ def violations(load=read):
           "创建证书 / 分配 App Group / 读取 App ID 列表 / 读取证书列表）—— "
           "新增或删除 portal 调用时请同步这里，别只改这个数字、先确认新调用是不是也在热路径上")
 
+    # R24b: `applications` 字典的查询必须用 mapped ID（2026-09-18 真机日志实锤）。
+    #
+    # 字典从 `prepared.appURL`（SigningWorkspace 已把 Info.plist 的 CFBundleIdentifier
+    # 改写成 mapped ID）解析建键 ⇒ 键是 mapped；历史 bug 用 original ID 查 ⇒ 恒 nil ⇒
+    # ① `requestedEntitlements` 恒空（签出的包不带任何能力，付费账号不分配 App Group）；
+    # ② features 诊断恒报「本次 []」（build 138 日志「远端 ["APG3427HIY"] vs 本次 []」）；
+    # ③ 「跳过冗余 updateFeatures」优化永远不可能命中。
+    # 注意：mapped 与 original 未必不同（无冲突时不加后缀），所以这条断言只能防**回退**，
+    # 不能证明键一定对 —— 真正的判据是真机日志里「本次 []」变成真实能力集。
+    check("if let application = applications[mappedBundleID] {" in portal_source,
+          "R24b: Phase 1 的 applications 查询必须用 mapped ID —— 用 original ID 查恒 nil，"
+          "entitlements 全部静默丢失")
+    check("applications[originalBundleID]" not in portal_source,
+          "R24b: 代码里不许再出现用 original ID 查 applications 的写法（键错位复发）")
+
     # R25: 同步阻塞 FFI 的**每一处**等待都要有界（2026-09-17 审计出来的）。
     #
     # 本仓明文规则：「同步阻塞 FFI 的等待必须带超时」。而 `Minimuxer.isAppInstalled`
@@ -1625,10 +1640,14 @@ def violations(load=read):
     # ⚠️ 诊断必须**直接算出「能省多少次请求」**，而不只是「features 是不是空的」——
     # 后者不足以判断能否跳过 `updateFeatures`（前置条件是「远端 features 与本次要设置的
     # **完全一致**」，不一致时跳过会静默丢能力）。这是砍掉一半 Apple 请求的关键取证。
+    # ⚠️ 2026-09-18：`desiredFeatureKeys` 的参数从 original 改为 mapped（applications 键错位
+    # 修复，见 R24b）—— 修复前它恒返回空集，「能省 N 次」恒为 0，这条取证一直空转。
     check("能省 \\(skipCandidates) 次请求" in portal_source
-          and "func desiredFeatureKeys(original: String) -> Set<String>" in portal_source,
+          and "func desiredFeatureKeys(mapped: String) -> Set<String>" in portal_source,
           "R34: 取证诊断必须把「远端 features 与本次要设置一致」的**个数**算出来 —— "
           "只说「features 非空」判断不了能不能跳过 updateFeatures")
+    check("guard let application = applications[mapped] else { return [] }" in portal_source,
+          "R34: desiredFeatureKeys 必须用 mapped ID 查 applications（original 恒 nil，取证空转）")
     # ⚠️ 还**必须报出值类型**：判据「键集相等 ⇒ 值也相等」只在**所有值都是布尔开关**时成立。
     # 若某个能力的值是列表（App Group / Associated Domains 之类），键集相等**不代表**值相等，
     # 跳过会**静默丢掉那个能力** ⇒ 那时这条优化就**不能做**。这是能否落地的最后一块判据。
@@ -3662,7 +3681,7 @@ def main():
         # 把 updateFeatures 退回「直接请求」：它是 Phase 1 里每个 bundle ID 的**第二次**写请求，
         # 与 addAppID 同等密集。主 App 撞 1100 会直接让整个签名失败、扩展撞 1100 会被静默清空 entitlements。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "                        let updatedAppID: ALTAppID =\n"
+         "                        let updated: (appID: ALTAppID, downgradedToEmptyEntitlements: Bool) =\n"
          "                            try await withSessionRecovery(\"更新应用能力 \\(mappedBundleID)\") {\n"
          "                                try await updateFeatures(\n"
          "                                    appID: appID,\n"
@@ -3671,7 +3690,7 @@ def main():
          "                                    session: session\n"
          "                                )\n"
          "                            }\n"
-         "                        appID = updatedAppID",
+         "                        appID = updated.appID",
          "                        appID = try await updateFeatures(\n"
          "                            appID: appID,\n"
          "                            application: application,\n"
@@ -3679,6 +3698,12 @@ def main():
          "                            session: session\n"
          "                        )",
          "R24: 更新应用能力（updateFeatures）"),
+        # 把 Phase 1 的 applications 查询退回 original ID：键错位会让 entitlements 恒空、
+        # 签出的包不带任何能力（2026-09-18 真机日志「远端 ["APG3427HIY"] vs 本次 []」实锤）。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "                if let application = applications[mappedBundleID] {",
+         "                if let application = applications[originalBundleID] {",
+         "R24b: Phase 1 的 applications 查询必须用 mapped ID"),
         # 把 App Group 分配退回「直接请求」：同一条规则不该只落在免费路径上。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "                            try await withSessionRecovery(\"分配 App Group \\(mappedBundleID)\") {\n"

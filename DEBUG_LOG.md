@@ -235,10 +235,75 @@
   但 `DEBUG_LOG.md` / `docs/qa/*` / **源码注释** / **测试夹具的 `maskedEmail` 字段** 里仍写着真实
   Apple ID 邮箱 —— 一处掩码不等于全部掩码。⇒ 掩码后要按「裸账号名 / 带域邮箱 / 变量注入」
   三种形状各自 grep 一遍（本次 5 处 `318***5***` 就是第一轮只找了带域形式漏掉的）。
+- **「从改写产物解析出的字典」必须用改写后的键域查询**（build 138 日志实锤）。`applications`
+  是从 `prepared.appURL`（Bundle ID 已被 SigningWorkspace 改写成 mapped ID）解析出来的，
+  历史代码却拿 original ID 去查 ⇒ 恒 nil、不报错、守卫全绿，后果是
+  **entitlements 整体静默丢失 + 诊断恒报空集**。⇒ 建这类字典时先问一句「这个产物的标识符
+  还是不是调用方手里的那个」；改写链路里 original 与 mapped 是两个键域，查错域不会崩、
+  只会静默空转。守卫 R24b 钉住「查询必须用 mapped ID」。
 
 ---
 
 ## 历史记录
+
+### 2026-09-18 · 抖音签名失败链路（build 138 日志）：applications 键错位 + 退避梯度不足
+
+**现象**（`Seal-log(18).txt`，构建 138，2026-09-18 21:35–21:37）：
+抖音签名在「读取证书列表」撞限流，1.5/4/8 秒三轮退避**全部耗尽**后死于
+`SEAL-AUTH-102c`；同日志里 Seal 自签的 features 诊断恒报
+`远端 ["APG3427HIY"] vs 本次 []`（本次能力集永远是空的）。
+
+**根因**（三条，前两条直接来自日志）：
+
+1. **`applications` 字典键错位**（同日早间审查已发现、当时按「写入量耦合」暂缓）：
+   字典从 `prepared.appURL` 解析建键——SigningWorkspace 在此**之前**已把 Info.plist 的
+   `CFBundleIdentifier` 改写成 mapped ID，所以键域是 **mapped**；而 `provisioningProfiles`
+   里三处查询（`desiredFeatureKeys` / `desiredFeatureTypeSummary` / Phase 1 的
+   `if let application = applications[...]`）全用 **original** ID ⇒ 恒 nil ⇒
+   ① `requestedEntitlements` 恒空（签出的包不带任何能力，付费账号不会分配 App Group）；
+   ② features 诊断恒报「本次 []」；③「跳过冗余 updateFeatures」优化永远不可能命中。
+   **当年「单独修会把写入数从 ~25-35 抬到 ~34-44」的顾虑经复核不成立**：
+   免费账号下 `filteredAppIDEntitlements` 把 app groups 与非白名单权限全部剥掉
+   （`ALTFreeDeveloperCanUseEntitlement` 只放行 interAppAudio / increasedMemoryLimit 等少数），
+   `updateFeatures` 的 `guard features.isEmpty == false || filteredEntitlements.isEmpty == false`
+   会在**发请求之前**早退 ⇒ 免费路径请求量零增加；付费路径确实多 9 次写入，换来的是
+   App Group 真正被分配（正确性），且付费账号不撞免费限流。
+2. **退避梯度不足**：1.5+4+8 = 13.5 秒在 build 138 的日志里被 Apple 的限流窗口
+   完全碾压（三连退避耗尽即死）。
+3. **连带错配（修复 1 会把它暴露出来）**：免费账号撞 3001 时 `updateFeatures` 内部
+   清空能力重发并正常返回，而调用方 `requestedEntitlements` 仍记着原始能力集 ⇒
+   事后 `validateEntitlements` 对账必报 `SEAL-ENTITLEMENT-401`「权限缺失」——
+   修复前查询恒 nil、两边同时空转，这条错配被键错位掩盖着。
+
+**修复**（全部在 `Seal/Infrastructure/Signing/ApplePortalSigningService.swift`）：
+① 三处查询改用 mapped ID（`applications[mappedBundleID]` 等）；
+② `updateFeatures` 返回值改元组，新增 `downgradedToEmptyEntitlements` 标志，
+   调用方据此同步把 `requestedEntitlements[mappedBundleID]` 清空（对账两边一致）；
+③ 退避梯度 `sessionRecoveryBackoffNanoseconds` 从 `[1.5, 4, 8]` 延长为
+   `[1.5, 4, 8, 20, 40]`（累计 73.5 秒；签名/证书轮换两条链路共用同一常量，改一处两处生效）；
+   session 真死时只有第一个撞上的请求付满梯度、整轮终止，代价一次 ~70 秒；
+   每轮退避前有 `Task.checkCancellation()`，可随时取消；
+④ 新增「App 能力取证」诊断行（只报数量）：区分「IPA 本身没带 entitlements（砸壳剥掉，
+   无解）」与「ldid 读取失败（要修 fork 的 `try? ?? ""` 静默空读）」。
+守卫同步：R24b（applications 查询必须用 mapped ID + 禁止 original ID 查法回潮）、
+`updateFeatures` 变异锚点更新为元组形状、新增键错位变异锚点（期望文案与真实断言前缀一致，
+见常犯坑位「变异检查的期望文案」条）。
+
+**涉及文件**：`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、
+`Scripts/verify-release-safety.py`。
+
+**验证状态**：⚠️ 静态核对（锚点与源码逐字符比对过），待 CI + 真机。真机判据：
+① 日志出现「App 能力取证：共 N 个 bundle…带非空 entitlements 的 M 个」且 M > 0；
+② features 诊断的「本次」不再是 `[]`；
+③ 抖音签名遇限流时日志出现「退避 20 秒」「退避 40 秒」且**随后成功**。
+
+**本轮明确没修（避免半吊子）**：
+- AltSign fork 的 `ALTApplication.entitlements` 静默空读（`try? LdidBridge.entitlements(at:) ?? ""`）：
+  先靠取证诊断行区分「IPA 没带」与「读取失败」，确认后者才动 fork。
+- 「跳过冗余 updateFeatures」优化：等一条干净日志（本次能力集非空后）再决定，
+  键集相等 ≠ 值相等（App Group 列表值）的判据没变。
+- 102c 的上游成因（本日志里会话在 2 分钟空闲期内被 Apple 掐死，无法远程定位是
+  跨账号连登、anisette 会话失效还是 IP 级限流）：只能靠加长退避缓解 + 文案引导。
 
 ### 2026-09-18 · 全仓审查：改掉 4 条「不崩、不报错、只在真机上毁体验/毁发布」的缺陷
 

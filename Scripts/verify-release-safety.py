@@ -1509,6 +1509,19 @@ def violations(load=read):
           and "签名：重签完成（逐 Mach-O 串行），耗时" in portal_source,
           "R32: 打包与重签必须各有独立耗时埋点 —— 它们是本地耗时的大头候选，"
           "原先完全没有埋点 ⇒ 「大包签名慢」只能靠猜")
+    # R41: `prepare` 的耗时必须**拆出「解压」那一段**（2026-09-18 真机，构建 133）。
+    #
+    # 真机实测：抖音的 `prepare` 整体 **118 秒**，而它内部有**四次全树遍历**
+    #（解压 / 结构改写 / 瘦身 arm64e / 归一化）⇒ 只报一个总数，**优化方向只能靠猜**
+    #（3 号线原来猜「打包是最大头」，实测打包只有 1 秒 ✗）。
+    # 拆成「解压 X 秒 / 其余遍历 Y 秒」两个数就足以定方向。
+    # ⚠️ 这里**自包含地重新 load**（不依赖 `workspace_source`）—— 那个变量定义在本文件
+    # 更靠后的 R35 段里，直接引用会 `UnboundLocalError`（本守卫自己抓到过 ✗）。
+    check("unzipSeconds: unzipSeconds" in strip_comments(
+              load("Seal/Infrastructure/Signing/SigningWorkspace.swift"))
+          and "其中解压 \\(Int(unzipSeconds)) 秒、其余遍历" in portal_source,
+          "R41: `prepare` 的耗时必须拆出**解压**那一段 —— 否则 118 秒里「解压」与"
+          "「三次全树遍历」无法区分，优化只能靠猜（打包曾被猜成最大头，实测 1 秒）")
 
     # R36: 进度条与阶段轨道的数值只许来自 `SigningProgressBudget`（2026-09-18）。
     #
@@ -3819,8 +3832,13 @@ def main():
         # ── R36：2026-09-18 用户反馈「进度条和底部 5 横杠跳着走」──
         # 破坏预算表的首尾相接：阶段切换时进度会跳一下 / 数字往回退。
         ("Seal/Core/Signing/SigningProgressBudget.swift",
-         "                floor: 14, ceiling: 38, timeConstant: 24,",
-         "                floor: 14, ceiling: 30, timeConstant: 24,",
+         # ⚠️ 锚点**刻意不含 `timeConstant`**（2026-09-18）：那是**会随实测调整**的调参值，
+         # 把它写进锚点 ⇒ 「按实测重标 τ」这种**正当改动**会让守卫误报 anchor missing ✗
+         #（本轮实际踩到：τ 从 24 改到 45，守卫立刻报 anchor missing）。
+         # 变异只改 `ceiling`，所以锚点覆盖到 `ceiling` 为止就够。
+         # **规矩：变异锚点不要包含「本来就该被调参的值」**（τ / 超时阈值 / 上限…）。
+         "floor: 14, ceiling: 38,",
+         "floor: 14, ceiling: 30,",
          "R36: 阶段预算必须首尾相接"),
         # 把某个阶段的 case 标签写歪（`switch` 会编译不过，但守卫是文本检查）：
         # 「每个阶段都必须有预算」这条就此失去约束力。
@@ -3967,6 +3985,12 @@ def main():
          "        if code == \"SEAL-AUTH-102c\" { return nil }\n",
          "",
          "R40: `SEAL-AUTH-102c` 不得标记账号失效"),
+        # ── R41：拆出解压耗时（2026-09-18）──
+        # 不传它：118 秒里「解压」与「三次全树遍历」又分不开了。
+        ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
+         "                unzipSeconds: unzipSeconds\n",
+         "",
+         "R41: `prepare` 的耗时必须拆出**解压**那一段"),
         # 去掉 1100 的专门文案：又落回「没有返回明确失败原因」，
         # 用户不知道账号可能已经被清空、需要立刻重新创建一张证书。
         ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",

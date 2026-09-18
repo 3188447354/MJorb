@@ -79,9 +79,30 @@ enum SigningProgressBudget {
     /// `overallProgress` / `timelinePosition`），而本仓已因「同一条规则两份实现」
     /// 踩过 6 次以上 —— 每一次都是「改了一处、另一处静默失效」。
     ///
-    /// 时间常数按「这个阶段典型多久」估：`preparingBundle` 取 24 秒（抖音 112 秒时
-    /// 会爬到约 37.7%），`installing` 取 20 秒（60 秒后基本停在 94.9%，**永远不会
-    /// 声称装完**）。
+    /// ## 时间常数 `timeConstant`（τ）—— 2026-09-18 **按真机实测重标**
+    ///
+    /// 规则：**τ ≈ 该阶段实测耗时的 1/2.5**。`1−e^(−t/τ)` 在 `t ≈ 2.5τ` 时才走到 92%，
+    /// 所以取这个比例能让爬升**贯穿整个阶段**，而不是「先冲后停」。
+    ///
+    /// 实测来源：构建 133 真机日志的各阶段时间戳（`3188447354@qq.com` 签抖音 +
+    /// LiveContainer 成功那次）：
+    ///
+    /// | 阶段 | 实测 | 旧 τ | 新 τ |
+    /// |---|---|---|---|
+    /// | `preparingAccount` | ~18 秒 | 1.6 | **7** |
+    /// | `preparingBundle` | **118 秒**（抖音）/ 0–3 秒（小包） | 24 | **45** |
+    /// | `preparingCertificate` | ~10 秒（含证书轮换） | 1.6 | **4** |
+    /// | `preparingAppID` | ~14 秒（含描述文件） | 3 | **5** |
+    /// | `preparingProfiles` | 同上（日志未单独分段） | 3 | **4** |
+    /// | `signing` | 0–1 秒 | 3 | **1.5** |
+    /// | `pushing` | ~3 秒 | 8 | **3** |
+    /// | `installing` | 4–6 秒（**但长安装可达数分钟**） | 20 | **20（不动）** |
+    ///
+    /// ⚠️ `installing` **刻意不动**：installd 不回报进度，而它可能长到几分钟
+    /// （真机见过静默 9 分钟 ✗）⇒ τ 必须按**长尾**取，不能按典型的 4–6 秒取 ✓。
+    /// `waitingForChannel` / `verifying` 也保持原值（本来就秒级）✓。
+    ///
+    /// ⚠️ 样本量**只有一两次真机**（小包 + 抖音）⇒ 等阶段时间戳日志攒够数据后**再校准一次** ✓。
     static func plan(for stage: SigningStage) -> Plan {
         switch stage {
         case .waitingForChannel:
@@ -91,37 +112,37 @@ enum SigningProgressBudget {
             )
         case .preparingAccount:
             return Plan(
-                floor: 8, ceiling: 14, timeConstant: 1.6,
+                floor: 8, ceiling: 14, timeConstant: 7,
                 usesRealProgress: false, bucket: 1, indexInBucket: 0
             )
         case .preparingBundle:
             return Plan(
-                floor: 14, ceiling: 38, timeConstant: 24,
+                floor: 14, ceiling: 38, timeConstant: 45,
                 usesRealProgress: false, bucket: 1, indexInBucket: 1
             )
         case .preparingCertificate:
             return Plan(
-                floor: 38, ceiling: 46, timeConstant: 1.6,
+                floor: 38, ceiling: 46, timeConstant: 4,
                 usesRealProgress: false, bucket: 1, indexInBucket: 2
             )
         case .preparingAppID:
             return Plan(
-                floor: 46, ceiling: 58, timeConstant: 3,
+                floor: 46, ceiling: 58, timeConstant: 5,
                 usesRealProgress: false, bucket: 2, indexInBucket: 0
             )
         case .preparingProfiles:
             return Plan(
-                floor: 58, ceiling: 66, timeConstant: 3,
+                floor: 58, ceiling: 66, timeConstant: 4,
                 usesRealProgress: false, bucket: 2, indexInBucket: 1
             )
         case .signing:
             return Plan(
-                floor: 66, ceiling: 74, timeConstant: 3,
+                floor: 66, ceiling: 74, timeConstant: 1.5,
                 usesRealProgress: false, bucket: 3, indexInBucket: 0
             )
         case .pushing:
             return Plan(
-                floor: 74, ceiling: 88, timeConstant: 8,
+                floor: 74, ceiling: 88, timeConstant: 3,
                 usesRealProgress: true, bucket: 4, indexInBucket: 0
             )
         case .installing:

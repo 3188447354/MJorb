@@ -46,10 +46,19 @@ struct SigningWorkspace: Sendable {
             ipaBytes: ipaBytes,
             at: workspaceRoot
         )
+        // ⚠️ **解压单独计时**（2026-09-18 真机，构建 133）：抖音的 `prepare` 整体 **118 秒**，
+        // 而它内部有**四次全树遍历**（解压 / 结构改写 / 瘦身 arm64e / 归一化）
+        // ⇒ 不拆开就不知道 118 秒花在哪一段，「优化大包签名」只能靠猜。
+        //
+        // 只测**解压**这一段（调用方拿总耗时减一下就是「其余」）：
+        // 两个数就足以定方向 —— 解压 ≈118 秒 ⇒ 瓶颈在解压；解压只有十几秒 ⇒ 瓶颈在遍历。
+        // 刻意**不**在 `prepare` 里插五个计时点：本机无编译器，改动面越小越安全。
+        let unzipStartedAt = Date()
         do {
             // 系统 API 流式解压，不加载大文件到内存
             try fileManager.unzipItem(at: ipaURL, to: workspaceRoot)
             try Task.checkCancellation()
+            let unzipSeconds = Date().timeIntervalSince(unzipStartedAt)
 
             let payloadURL = workspaceRoot.appending(
                 path: "Payload",
@@ -140,7 +149,8 @@ struct SigningWorkspace: Sendable {
                 payloadURL: payloadURL,
                 appURL: appURL,
                 mappedMainBundleID: mappedMain,
-                bundleIDMappings: mappings
+                bundleIDMappings: mappings,
+                unzipSeconds: unzipSeconds
             )
         } catch {
             try? fileManager.removeItem(at: workspaceRoot)

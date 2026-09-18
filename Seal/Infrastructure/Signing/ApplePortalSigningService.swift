@@ -693,8 +693,14 @@ actor ApplePortalSigningService {
             // **重签与打包都在它之后、不在这个计时窗口里**。原来那句写「（解压/改写/重签/打包）」
             // 会让人把这里误读成「四件事加起来 N 秒」，从而**去优化解压**，
             // 而真正可能的大头（1.46 GB 的 deflate 打包）**根本没被计时**。
+            // ⚠️ **把 118 秒拆开**（2026-09-18）：`prepare` 内部有四次全树遍历，
+            // 不拆就不知道瓶颈在**解压**还是在**遍历**（结构改写 / 瘦身 / 归一化）。
+            // 两个数就足以定优化方向 —— 解压≈118 秒 ⇒ 瓶颈在解压；解压只有十几秒 ⇒ 瓶颈在遍历。
+            let prepareSeconds = Date().timeIntervalSince(prepareStartedAt)
+            let unzipSeconds = prepared.unzipSeconds
             await diagnostic(
-                "签名：应用文件准备完成（解压 + 结构改写；重签与打包另计），耗时 \(Int(Date().timeIntervalSince(prepareStartedAt))) 秒"
+                "签名：应用文件准备完成（解压 + 结构改写；重签与打包另计），耗时 \(Int(prepareSeconds)) 秒"
+                    + "（其中解压 \(Int(unzipSeconds)) 秒、其余遍历 \(Int(max(0, prepareSeconds - unzipSeconds))) 秒）"
             )
             try Task.checkCancellation()
 

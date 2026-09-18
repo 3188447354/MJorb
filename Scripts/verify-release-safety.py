@@ -1516,6 +1516,27 @@ def violations(load=read):
           < portal_source.find('withSessionRecovery("更新应用能力'),
           "R34: 取证诊断必须排在 Phase 1 的 `updateFeatures` 之前（否则拿不到「复用前」的观测）")
 
+    # R35: 解压**之前**按「解压后」体积判空间（2026-09-18）。
+    #
+    # 原先只有签名服务里那道 `IPA × 4 + 200MB`，用的是**压缩**体积。它对抖音这种
+    # 「压缩比 ≈1.9×」的包偏保守（780MB ⇒ 门槛 3.32GB，实测峰值 ≈3.0GB）；
+    # 但**对高压缩比的包会严重低估** —— 例：100MB 压缩 → 1.5GB 解压，
+    # 实际峰值 ≈ 100 + 1500 + 100 = 1700MB，而那道门槛只有 600MB
+    # ⇒ 可能在**签名中途写满磁盘**，比「直接拒绝」更糟（工作区停在半成品状态）。
+    #
+    # 断言三件事：① 解压总量被**返回出来**并真的用于空间判断（原先只用于 8GB 上限）；
+    # ② 检查排在 `unzipItem` **之前**；③ 有独立日志码便于事后归因。
+    workspace_source = strip_comments(load("Seal/Infrastructure/Signing/SigningWorkspace.swift"))
+    check("try validateFreeSpace(" in workspace_source
+          and 'code: "SEAL-SIGN-406"' in workspace_source,
+          "R35: 解压前必须按解压后体积判空间，并给出可归因的日志码")
+    check("private func validate(_ entries: [Entry]) throws -> UInt64 {" in workspace_source,
+          "R35: `validate` 必须把解压后总量**返回出去** —— 原先它只用于 8GB 安全上限，"
+          "没参与空间判断，所以高压缩比的包会被低估")
+    check(0 <= workspace_source.find("try validateFreeSpace(")
+          < workspace_source.find("try fileManager.unzipItem("),
+          "R35: 空间检查必须排在 `unzipItem` **之前** —— 排在后面就变成「解压到一半没空间」")
+
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
     # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
@@ -3615,6 +3636,21 @@ def main():
          "            \"App ID features 诊断：账号已有 \\(existing.count) 个 App ID，\"\n",
          "",
          "R34: 必须保留 `fetchAppIDs` 是否回填 `features` 的取证诊断"),
+        # ── R35：解压前按解压后体积判空间（2026-09-18）──
+        # 删掉这次检查：高压缩比的包又会被低估，可能在签名中途写满磁盘。
+        ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
+         "        try validateFreeSpace(\n"
+         "            expandedBytes: expandedBytes,\n"
+         "            compressedBytes: ipaBytes,\n"
+         "            at: workspaceRoot\n"
+         "        )\n",
+         "",
+         "R35: 解压前必须按解压后体积判空间"),
+        # 让 `validate` 不再返回解压总量：空间判断就拿不到真实数字了。
+        ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
+         "    private func validate(_ entries: [Entry]) throws -> UInt64 {",
+         "    private func validate(_ entries: [Entry]) throws {",
+         "R35: `validate` 必须把解压后总量**返回出去**"),
         # 去掉 1100 的专门文案：又落回「没有返回明确失败原因」，
         # 用户不知道账号可能已经被清空、需要立刻重新创建一张证书。
         ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",

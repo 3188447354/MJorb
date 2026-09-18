@@ -27,13 +27,24 @@ struct SigningWorkspace: Sendable {
         // 可能因内存/写入失败报 DataError）。仍用 ZIPFoundation Archive 只读条目元数据做安全验证。
         let archive = try Archive(url: ipaURL, accessMode: .read)
         let entries = Array(archive)
-        try validate(entries)
+        let expandedBytes = try validate(entries)
 
         let fileManager = FileManager.default
         try? fileManager.removeItem(at: workspaceRoot)
         try fileManager.createDirectory(
             at: workspaceRoot,
             withIntermediateDirectories: true
+        )
+        // ⚠️ **在真正解压之前**按解压后体积判一次空间（2026-09-18，见 helper 的注释）。
+        // 放在 `createDirectory` 之后是因为要拿 workspaceRoot 所在卷的可用空间。
+        // 压缩体积取**文件系统里的 IPA 大小**（而不是 `Entry.compressedSize` ——
+        // 那个字段在本仓从未被使用过，无法确认这个 ZIPFoundation 版本有没有它）。
+        let ipaBytes = ((try? fileManager.attributesOfItem(atPath: ipaURL.path))?[.size] as? NSNumber)
+            .map { UInt64(max(0, $0.int64Value)) } ?? 0
+        try validateFreeSpace(
+            expandedBytes: expandedBytes,
+            compressedBytes: ipaBytes,
+            at: workspaceRoot
         )
         do {
             // 系统 API 流式解压，不加载大文件到内存
@@ -192,7 +203,12 @@ struct SigningWorkspace: Sendable {
         }
     }
 
-    private func validate(_ entries: [Entry]) throws {
+    /// 校验条目数 / 路径安全 / 解压总量上限，**并把解压后总量返回出去**。
+    ///
+    /// ⚠️ 返回值的用途是**判磁盘空间**（见 `validateFreeSpace`）——
+    /// 原先这个总量只用于「8GB 安全上限」，没有参与空间判断（2026-09-18）。
+    @discardableResult
+    private func validate(_ entries: [Entry]) throws -> UInt64 {
         guard entries.count <= limits.maximumEntryCount else {
             throw Self.signingFailure(
                 reason: "IPA 内文件条目数 \(entries.count) 超过安全上限 \(limits.maximumEntryCount)。",
@@ -216,6 +232,52 @@ struct SigningWorkspace: Sendable {
             }
             expandedSize = sum
         }
+        return expandedSize
+    }
+
+    /// 解压**之前**按「解压后」体积判可用空间（2026-09-18）。
+    ///
+    /// 原先只有签名服务里那道 `IPA × 4 + 200MB`，用的是**压缩**体积。它对抖音这种
+    /// 「压缩比 ≈1.9×」的包偏保守（780MB ⇒ 门槛 3.32GB，实测峰值 ≈3.0GB）；
+    /// 但**对高压缩比的包会严重低估** —— 例：100MB 压缩 → 1.5GB 解压，
+    /// 实际峰值 ≈ 100 + 1500 + 100 = 1700MB，而那道门槛只有 600MB
+    /// ⇒ 可能在**签名中途写满磁盘**，比「直接拒绝」更糟（工作区停在半成品状态）。
+    ///
+    /// 这里 `validate(entries)` 已经把解压后总量算出来了（它本来只用于 8GB 安全上限），
+    /// 顺手拿它判一次真实空间。**必须排在真正解压之前**，否则就变成「解压到一半没空间」。
+    private func validateFreeSpace(
+        expandedBytes: UInt64,
+        compressedBytes: UInt64,
+        at workspaceRoot: URL
+    ) throws {
+        guard expandedBytes > 0 else { return }
+        // 需要同时容纳：解压产物 + 输出 IPA（≈压缩体积）+ 原包（≈压缩体积）+ 200MB 余量
+        let (outputAndOriginal, outputOverflow) = compressedBytes.multipliedReportingOverflow(by: 2)
+        guard outputOverflow == false else { return }
+        let (required, requiredOverflow) = expandedBytes.addingReportingOverflow(outputAndOriginal)
+        guard requiredOverflow == false else { return }
+        let (total, totalOverflow) = required.addingReportingOverflow(200 * 1024 * 1024)
+        guard totalOverflow == false else { return }
+
+        // 读不到可用空间就**放行**（宁可让后面的写入失败，也不要因为读不到属性就拒绝签名）。
+        guard let attributes = try? FileManager.default.attributesOfFileSystem(
+            forPath: workspaceRoot.path
+        ),
+        let freeBytes = (attributes[.systemFreeSize] as? NSNumber)?.int64Value,
+        freeBytes > 0,
+        UInt64(freeBytes) < total else {
+            return
+        }
+        func gigabytes(_ bytes: UInt64) -> String {
+            String(format: "%.1fGB", Double(bytes) / 1_000_000_000)
+        }
+        throw Self.signingFailure(
+            reason: "解压这个 IPA 需要约 \(gigabytes(total)) 空间（按**解压后**体积算："
+                + "解压产物 \(gigabytes(expandedBytes))"
+                + " + 输出包与原包 \(gigabytes(outputAndOriginal))"
+                + " + 200MB 余量），当前剩余 \(gigabytes(UInt64(freeBytes)))。",
+            code: "SEAL-SIGN-406"
+        )
     }
 
     private func appExtensionURLs(in appURL: URL) throws -> [URL] {

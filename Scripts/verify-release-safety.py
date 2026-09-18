@@ -1538,6 +1538,22 @@ def violations(load=read):
           "R41: `prepare` 的耗时必须拆出**解压**那一段 —— 否则 118 秒里「解压」与"
           "「三次全树遍历」无法区分，优化只能靠猜（打包曾被猜成最大头，实测 1 秒）")
 
+    # R42: **1100 不许被说成「限流」**（2026-09-19 真机，构建 141）。
+    #
+    # `withSessionRecovery` 的措辞判据就是 `isSessionExpiredError`（Apple 的 **1100 会话已过期**），
+    # 而旧文案写「Apple 会话疑似被限流」✗ ⇒ 两个害处：
+    #   ① 把用户引向「等一会儿再试」—— 而**退避治不好会话过期** ✗（白等 73 秒）；
+    #   ② 日志里**看不到 1100** 这个真正的码 ⇒ 排查时只能看到「疑似限流」这种推测 ✗。
+    # 真机证据（构建 141）：**两个不同 Apple ID、两次尝试形态完全相同**
+    # ⇒ 那不是账号级的「限流」，是设备身份 / 网络出口级 ✓。
+    check("Apple 会话已过期（1100）" in portal_source,
+          "R42: 会话过期（1100）的措辞必须说准 —— 写成「疑似被限流」会把用户引向"
+          "「等一会儿再试」（治不好），也让日志里看不到 1100 这个真正的码")
+    check("换个节点再试" in portal_source,
+          "R42: 退避全部失败时必须给出**可执行**的出路（重新验证 / **换网络节点**）—— "
+          "真机证据是「两个不同账号失败形态完全相同」，那是网络出口级的特征，"
+          "只说「重新验证」会让用户在账号上打转")
+
     # R36: 进度条与阶段轨道的数值只许来自 `SigningProgressBudget`（2026-09-18）。
     #
     # 起因：用户反馈「百分比进度条和底部 5 个横杠都是跳着走的，不像 0→100 的丝滑」。
@@ -1762,10 +1778,16 @@ def violations(load=read):
           "排在后面等于没排除")
     check('if code.hasPrefix("SEAL-AUTH-102") { return .credentialsRejected }' in policy_source,
           "R40: 其余 `102*`（尤其 `102d`：Apple **明确**拒绝凭据）**必须保持**标记失效")
-    check(0 <= apps_view_source.find("if tick == .restart {")
+    # ⚠️ 闸门**必须是 `stage != currentStage`，不能是 `tick == .restart`**
+    #（2026-09-19 真机踩到 ✗）：`InstallStageTimeline.tick` 只对 **`.installing`** 返回
+    # `.restart`，其余阶段一律 `.clear` —— 它是「安装计时起点」的簿记，
+    # **不是**「阶段是否切换」。拿它当闸门 ⇒ **只有 `installing` 会落日志** ✗✗
+    #（真机实测：整份日志只有 1 条 `SEAL-STAGE-001`，正是 `installing` ✓ 印证）。
+    check(0 <= apps_view_source.find("if stage != currentStage {")
           < apps_view_source.find("阶段进入："),
-          "R39: 阶段日志必须**只在真正的阶段切换时**记（`tick == .restart`）—— "
-          "同一阶段会被重复推送，不加闸门会刷屏，把真信号埋掉")
+          "R39: 阶段日志的闸门必须是 `stage != currentStage`（真正的阶段切换）—— "
+          "同一阶段会被重复推送需要闸门，但**不能用 `tick`**：它只对 `.installing` 返回 `.restart`，"
+          "用它当闸门会导致只有 installing 落日志（真机实测只有 1 条）")
     # ⚠️ 日志还必须排在 `guard signingSession != nil` **之前**（2026-09-18 真机，构建 133）。
     # 批量续签走的是 `BatchRefreshSession`，`signingSession` 可能为空 ⇒ 原来那个 guard
     # 会让整段 return、**日志一条都不落** ⇒ 实测整份日志只有 **2 条** `SEAL-STAGE-001`
@@ -3995,7 +4017,7 @@ def main():
         # ── R39：阶段进入落日志（2026-09-18）──
         # 删掉它：阶段切换在日志里又没了时间戳 ⇒ 「每阶段耗时」拿不到。
         ("Seal/Features/Apps/AppsViewModel.swift",
-         "        if tick == .restart {\n"
+         "        if stage != currentStage {\n"
          "            let entered = stage\n"
          "            Task { [logStore] in\n"
          "                try? await logStore?.append(\n"

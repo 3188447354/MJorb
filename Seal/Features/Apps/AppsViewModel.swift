@@ -2027,11 +2027,15 @@ final class AppsViewModel: ObservableObject {
         //（而且都是 `installing`）✗。而「每阶段耗时」的样本**恰恰主要来自批量续签**
         //（用户最常用的入口）⇒ 日志必须与 session 状态**解耦**。
         //
-        // ⚠️ **只在 `tick == .restart`（真正的阶段切换）时记** —— 同一阶段会被**重复推送**
-        //（安装通道的 >1.0 哨兵 + 签名侧补发），不加闸门会刷屏，把真信号埋掉。
+        // ⚠️ **闸门必须是「阶段真的变了」（`stage != currentStage`），不能用 `tick`**
+        //（2026-09-19 真机踩到 ✗）：`InstallStageTimeline.tick` 只对 **`.installing`** 返回
+        // `.restart`，**其余阶段一律返回 `.clear`** —— 它是「安装计时起点」的簿记，
+        // **不是**「阶段是否切换」✗。拿它当闸门 ⇒ **只有 `installing` 会落日志** ✗✗
+        //（真机实测：整份日志只有 1 条 `SEAL-STAGE-001`，正是 `installing` ✓ 完全印证）。
+        // 同一阶段会被**重复推送**（安装通道的 >1.0 哨兵 + 签名侧补发），所以闸门仍然需要 ✓。
         // ⚠️ 用 `Task` 是因为本函数是**同步**的（改完 `status` 要立刻返回，不能为了记日志
         // 改成 async 去波及所有调用点）；日志晚几毫秒不影响「算时间戳差」。
-        if tick == .restart {
+        if stage != currentStage {
             let entered = stage
             Task { [logStore] in
                 try? await logStore?.append(

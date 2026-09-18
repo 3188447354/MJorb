@@ -420,10 +420,19 @@ actor ApplePortalSigningService {
         for (attempt, delay) in delays.enumerated() {
             if delay > 0 {
                 try Task.checkCancellation()
-                // 措辞按**上一次失败的原因**分：会话类保持原文案（文档与清单引用的就是它），
-                // 超时另说 —— 否则「会话疑似被限流」会把超时说成限流，又是一条误导文案。
+                // ⚠️ 措辞按**上一次失败的原因**分。超时与会话是两回事，不能混（2026-09-18 修）。
+                //
+                // ⚠️ **2026-09-19 再修一次：不再把 1100 说成「限流」** ✗
+                // 这个分支的判据就是 `isSessionExpiredError`（Apple 的 **1100 会话已过期**），
+                // 而旧文案写「Apple 会话疑似被限流」⇒ 两个害处：
+                //   ① 把用户引向「等一会儿再试」—— 而**退避治不好会话过期** ✗（白等 73 秒）；
+                //   ② 日志里**看不到 1100** 这个真正的码 ⇒ 排查时只能看到「疑似限流」这种推测 ✗。
+                // 真机证据（构建 141）：两个不同 Apple ID、两次尝试，都是同一形态
+                //（读证书列表 5 次退避后报 102c）⇒ 那不是「限流」这种账号级现象 ✓。
                 let kind = lastError.map {
-                    Self.isSessionExpiredError($0) ? "会话疑似被限流" : "请求超时"
+                    Self.isSessionExpiredError($0)
+                        ? "Apple 会话已过期（1100）"
+                        : "请求超时"
                 } ?? "请求失败"
                 await diagnostic(
                     "Apple \(kind)，退避 \(delay / 1_000_000_000) 秒后重试 \(label)（第 \(attempt) 次重试）"
@@ -441,7 +450,26 @@ actor ApplePortalSigningService {
                 lastError = error
             }
         }
-        if let lastError { throw lastError }
+        if let lastError {
+            // ⚠️ **重试全部失败时给一条可执行的出路**（2026-09-19）。
+            //
+            // 会话过期（1100）**靠退避治不好** ⇒ 用户需要的是「下一步做什么」，
+            // 而不是再看到一次「疑似限流」✗。出路按有效性排序：
+            //   ① 到「我的」页**重新验证**该 Apple ID（刷新 authToken）；
+            //   ② **换一个网络节点** —— 出口 IP 被 Apple 标记时，**同一账号怎么试都失败** ✗；
+            //   ③ 换个账号（最后手段）。
+            // 真机证据（构建 141）：**两个不同账号失败形态完全相同**
+            // ⇒ 这正是「问题在网络出口 / 设备身份，而不在账号」的特征 ✓
+            // ⇒ 所以文案必须把「换节点」这条说出来，否则用户只会在账号上打转 ✗。
+            if Self.isSessionExpiredError(lastError) {
+                await diagnostic(
+                    "Apple 会话在 \(delays.count - 1) 次退避后仍过期（1100）："
+                        + "退避治不好会话过期 ⇒ 先到「我的」页重新验证该 Apple ID；"
+                        + "若**换账号后同样失败**，多半是当前网络出口被 Apple 标记，换个节点再试"
+                )
+            }
+            throw lastError
+        }
         throw ALTAppleAPIError.unknown()
     }
 

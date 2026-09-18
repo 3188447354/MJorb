@@ -1532,11 +1532,17 @@ def violations(load=read):
     # 拆成「解压 X 秒 / 其余遍历 Y 秒」两个数就足以定方向。
     # ⚠️ 这里**自包含地重新 load**（不依赖 `workspace_source`）—— 那个变量定义在本文件
     # 更靠后的 R35 段里，直接引用会 `UnboundLocalError`（本守卫自己抓到过 ✗）。
-    check("unzipSeconds: unzipSeconds" in strip_comments(
+    # ⚠️ 锚点**刻意不含反斜杠**（2026-09-19）：Swift 的字符串插值是 `\(...)`，
+    # 写进守卫的 Python 字符串要写 `\\(` —— 一旦层数写错，**断言与变异会一个过一个不过**
+    # （本轮实际踩到 ✗）。改用不含反斜杠的 `prepared.xxxSeconds` 片段，转义层数为零 ✓。
+    check("rewriteSeconds: rewriteSeconds" in strip_comments(
               load("Seal/Infrastructure/Signing/SigningWorkspace.swift"))
-          and "其中解压 \\(Int(unzipSeconds)) 秒、其余遍历" in portal_source,
-          "R41: `prepare` 的耗时必须拆出**解压**那一段 —— 否则 118 秒里「解压」与"
-          "「三次全树遍历」无法区分，优化只能靠猜（打包曾被猜成最大头，实测 1 秒）")
+          and "prepared.rewriteSeconds" in portal_source
+          and "prepared.stripSeconds" in portal_source
+          and "prepared.normalizeSeconds" in portal_source,
+          "R41: `prepare` 的耗时必须**拆到每一段**（解压 / 改写 / 瘦身 / 归一化）—— "
+          "否则 105–120 秒里「解压」与「三趟全树遍历」无法区分，优化只能靠猜"
+          "（「打包最大」与「解压最大」两个猜测**都**被实测推翻了 ✗）")
 
     # R42: **1100 不许被说成「限流」**（2026-09-19 真机，构建 141）。
     #
@@ -4057,12 +4063,12 @@ def main():
          "        if code == \"SEAL-AUTH-102c\" { return nil }\n",
          "",
          "R40: `SEAL-AUTH-102c` 不得标记账号失效"),
-        # ── R41：拆出解压耗时（2026-09-18）──
-        # 不传它：118 秒里「解压」与「三次全树遍历」又分不开了。
-        ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
-         "                unzipSeconds: unzipSeconds\n",
+        # ── R41：拆出各段耗时（2026-09-19）──
+        # 把日志里「改写」那一段删掉：四段又只剩三段，定位能力退化。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "prepared.rewriteSeconds",
          "",
-         "R41: `prepare` 的耗时必须拆出**解压**那一段"),
+         "R41: `prepare` 的耗时必须**拆到每一段**"),
         # 去掉 1100 的专门文案：又落回「没有返回明确失败原因」，
         # 用户不知道账号可能已经被清空、需要立刻重新创建一张证书。
         ("Seal/Infrastructure/Signing/ApplePortalCertificateService.swift",

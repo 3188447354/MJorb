@@ -82,6 +82,7 @@ struct SigningWorkspace: Sendable {
                 requested: targetMainBundleID
             )
             var mappings = [originalBundleID: mappedMain]
+            let rewriteStartedAt = Date()
             try updateBundleIdentifier(at: appURL, to: mappedMain)
             // 对齐 SideStore 官方：添加新 Bundle ID 对应的 URL Scheme（保留原始 scheme 不变）
             try updateURLSchemes(in: appURL, originalBundleID: originalBundleID, newBundleID: mappedMain)
@@ -111,11 +112,14 @@ struct SigningWorkspace: Sendable {
             // 两个目录均为可选目录：不存在时 installd 直接跳过（与标准 Xcode 产物一致），
             // 有真实内容的目录原样保留。
             try removeEmptyOptionalDirectories(in: appURL)
+            let rewriteSeconds = Date().timeIntervalSince(rewriteStartedAt)
 
             // 大 IPA 优化：剥离 arm64e 架构，只保留 arm64（iOS 设备均为 arm64）。
             // 按 offset/size 字节级切出 arm64 slice，副本内部签名偏移依然有效，
             // 后续统一由 RorkSigner 重签。
+            let stripStartedAt = Date()
             try stripArm64eArchitecture(in: appURL)
+            let stripSeconds = Date().timeIntervalSince(stripStartedAt)
 
             // ESign 布局归一化：把散落在 .app 根的 .framework/.dylib 移入 Frameworks/，
             // 并将 Mach-O 中对应的 @executable_path/<name> 引用就地改写为 @rpath/<name>。
@@ -123,6 +127,7 @@ struct SigningWorkspace: Sendable {
             // （MIBundle bundlesInParentBundle:subDirectory:"Frameworks"）上必败：
             // APIInternalError("Failed to discover bundles in directory .../Frameworks")。
             // 归一化后与标准 Xcode/LiveContainer 布局完全一致。
+            let normalizeStartedAt = Date()
             try normalizeRootFrameworksIntoFrameworksDirectory(in: appURL)
 
             let extensionURLs = try appExtensionURLs(in: appURL)
@@ -143,6 +148,7 @@ struct SigningWorkspace: Sendable {
             // 对齐官方 SideStore/zsign：这里不做任何 ad-hoc 预处理——预处理反而会残留旧
             // 签名 blob、抹掉原始 entitlements、漏平移 chained-fixups 数据偏移，导致闪退。
             try removeOldSignatures(in: appURL)
+            let normalizeSeconds = Date().timeIntervalSince(normalizeStartedAt)
 
             return PreparedSigningWorkspace(
                 rootURL: workspaceRoot,
@@ -150,7 +156,10 @@ struct SigningWorkspace: Sendable {
                 appURL: appURL,
                 mappedMainBundleID: mappedMain,
                 bundleIDMappings: mappings,
-                unzipSeconds: unzipSeconds
+                unzipSeconds: unzipSeconds,
+                rewriteSeconds: rewriteSeconds,
+                stripSeconds: stripSeconds,
+                normalizeSeconds: normalizeSeconds
             )
         } catch {
             try? fileManager.removeItem(at: workspaceRoot)

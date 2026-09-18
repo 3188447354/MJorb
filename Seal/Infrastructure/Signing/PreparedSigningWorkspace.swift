@@ -16,6 +16,17 @@ struct PreparedSigningWorkspace: Sendable {
     /// ⚠️ **只用于日志归因，不参与任何判断**（不改变行为）。
     let unzipSeconds: Double
 
+    /// 结构改写（BundleID / URL scheme / UTI / 显示名 / 图标 / 删 Watch·AppClip /
+    /// 清 SC_Info 引用 / 清注入残留 / 删空目录）的耗时（秒）。
+    let rewriteSeconds: Double
+
+    /// 瘦身（剥离 arm64e 架构）的耗时（秒）。
+    let stripSeconds: Double
+
+    /// 归一化（根目录 framework/dylib → `Frameworks/` + 改写 `@executable_path`）
+    /// **+ 扩展 BundleID 改写 + 删旧签名**的耗时（秒）。
+    let normalizeSeconds: Double
+
     var targetMainBundleIdentifier: String { mappedMainBundleID }
 }
 

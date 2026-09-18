@@ -738,7 +738,7 @@ actor ApplePortalSigningService {
             let unzipSeconds = prepared.unzipSeconds
             await diagnostic(
                 "签名：应用文件准备完成（解压 + 结构改写；重签与打包另计），耗时 \(Int(prepareSeconds)) 秒"
-                    + "（其中解压 \(Int(unzipSeconds)) 秒、其余遍历 \(Int(max(0, prepareSeconds - unzipSeconds))) 秒）"
+                    + "（解压 \(Int(prepared.unzipSeconds)) / 改写 \(Int(prepared.rewriteSeconds)) / 瘦身 \(Int(prepared.stripSeconds)) / 归一化 \(Int(prepared.normalizeSeconds)) 秒）"
             )
             try Task.checkCancellation()
 

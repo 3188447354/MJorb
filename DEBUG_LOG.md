@@ -212,10 +212,104 @@
   字符类开头 ⇒ 正则与字面串完全不是一回事 ⇒ **假阴性**。
   危险在于：它看起来正是「我刚写的那行没落盘」的症状，会把你送去重写一遍已经写好的代码。
   ⇒ 数「刚写的代码行」一律 `grep -cF`；只有在用真正的正则时才不加 `-F`。
+- **「词表同源」不等于「取词同源」**（2026-09-18 全仓审查抓到）。安装链路两张表的字符串列表
+  逐条一致，但重试侧喂给它的文本走 `error as NSError` + `NSLocalizedDescriptionKey`，
+  而生产错误是 `MinimuxerError.InstallApp(deviceError)` —— 该枚举只遵循 `Error` +
+  `CustomStringConvertible`，**桥接成 NSError 后关联值整个丢失**，于是完美词表恒判「可重试」，
+  500MB 整包被空推 3 轮。⇒ 审「两份名单是否一致」时必须连带审**取文本的那只眼睛**；
+  Swift 枚举带关联值想拿到原文，只能靠 `CustomStringConvertible`/`LocalizedError` 显式出口。
+- **永不满足的判据不得留在 pending/未完成态**（同上审查抓到）。旧版 handoff 迁移出的自替换事务
+  缺候选版本与安装前身份，`matches` 与 `installedBefore` 两条判据恒假 ⇒ 每轮都判「需电脑覆盖恢复」，
+  而 `requireRecovery` 只改 phase 不设 `settledAt`，`create()` 见 pending 就抛 `alreadySubmitted`
+  ⇒ Seal 从此**永久无法自续签**，重启与电脑覆盖安装都清不掉。⇒ 设计"下次再评估"时先证明
+  它**存在可达的满足条件**；一开始就不可能满足的，必须在识别出的那一刻落终态并留审计原因。
+- **错误码分类禁止用数字区间/前缀段**（同上审查抓到）。`hasPrefix("SEAL-INSTALL-71"/"72"/"73")`
+  把 `738`（上一笔安装仍在跑）与 `737`（事务未就绪）算成「重新签名」、`702t`（超时 ≠ 失败）算成
+  「重新安装」—— 用户点一下就是全量重签 + 重传 + 并发 installd。⇒ 用显式码集合
+  （`InstallFailureActionPolicy`），并配一条「每个码恰好命中一个动作」的表驱动测试；
+  同族动作相同时的 `SEAL-INSTALL-` 前缀是安全的，**数字区间**才危险。
+- **判据写在 `#if !targetEnvironment(simulator)` 里 = 没有测试**（同上审查抓到）。
+  纯文本判定（取词、终态表）应放到 `#if` 之外，才能被 `@testable import Seal` 的单测覆盖；
+  这次是把三个函数搬出去之后才补上守卫的。
+- **公开仓库的文档同样要掩码**（同上审查抓到）。git author 早已换成 `dev@seal.local`，
+  但 `DEBUG_LOG.md` / `docs/qa/*` / **源码注释** / **测试夹具的 `maskedEmail` 字段** 里仍写着真实
+  Apple ID 邮箱 —— 一处掩码不等于全部掩码。⇒ 掩码后要按「裸账号名 / 带域邮箱 / 变量注入」
+  三种形状各自 grep 一遍（本次 5 处 `318***5***` 就是第一轮只找了带域形式漏掉的）。
 
 ---
 
 ## 历史记录
+
+### 2026-09-18 · 全仓审查：改掉 4 条「不崩、不报错、只在真机上毁体验/毁发布」的缺陷
+
+**先记一条流程教训**：本轮改动最初落在一份**落后远端 124 个提交**的本地快照上（本地 HEAD 停在
+2026-09-15，工作树里 151 个文件其实是远端早已提交的内容）。⇒ 「工作树有一堆未提交改动」
+**不等于**「这些改动没被提交过」，先 `git fetch` + `git rev-list --left-right --count` 再下判断。
+本批已全部重落到远端真实基线 `3beef2c` 上，四个缺陷在远端逐条复查确认**仍然存在**
+（`errorDetail` 仍走 NSError 桥接、`isResignRequired` 仍是 71/72/73 区间、legacy 迁移
+`settledAt` 仍为 nil、`HardTimeout` 仍无 cancellation handler）。
+
+**现象**（分链路审查逐条读源码确认，非猜测）：
+① 免费账号 3-app 上限与存储不足在真机上从不被判定为终态，大包被反复整包重传；
+② 上一笔自替换安装仍在跑时，结果页把「重新启动 Seal」渲染成「重新签名」；
+③ 从旧版升级上来的设备只要残留 `SelfSigningHandoff.json`，Seal 就永久不能自续签；
+④ 取消一次大包签名/上传后，界面关了，`OperationCoordinator` 的全局单槽还被占好几分钟；
+⑤ `RELEASE_NOTES.md` 已删但两份 workflow 仍 `cat` 它 ⇒ publish job 当场 `exit 1`，发不出 Release。
+
+**证据**：
+① `Vendor/Minimuxer/Sources/Install.swift:131` 抛 `MinimuxerError.InstallApp(deviceError)`；
+`MinimuxerError.swift:11` 只遵循 `Error`（`:86` 的原文只在 `CustomStringConvertible.description`
+里）；重试循环取的文本却来自 `error as NSError` + `NSLocalizedDescriptionKey` ⇒ 设备原文丢失、
+终态表恒假；而同文件 `installationFailure` 用的是会特判 `MinimuxerError` 的 `diagnostic`
+⇒ **两表词表一致、取词不一致**。
+② `isResignRequired` 用 `hasPrefix("SEAL-INSTALL-71"/"72"/"73")` ⇒ `738`
+（recovery 写的是「重新启动 Seal 后再试」）与 `737` 落进「重新签名」，`702t` 落进「重新安装」
+→ `retryInstallationForCurrentSigningSession()` 整包重跑。
+③ 迁移出的 candidate 是 `version:""`（`SelfSigningIdentity.swift:118-122`），`matches` 要求
+版本相等 ⇒ 恒假；`installedBefore = .unknown` ⇒ 相等判据恒假；`requireRecovery` 不设 `settledAt`
+⇒ `loadPending()` 永远返回它 ⇒ `create()` 永远 `alreadySubmitted`。
+④ `HardTimeout.run` 只有裸 `withCheckedThrowingContinuation`、无 `withTaskCancellationHandler`，
+工作又跑在 `Task.detached`（不继承父取消）。
+
+**修复**：
+① `errorDetail` 复用 `diagnostic`，并把 `diagnostic`/`errorDetail`/`isTerminalInstallError`
+搬到 `#if !targetEnvironment(simulator)` 之外（internal）⇒ 首次可单测；
+② 新增 `InstallFailureActionPolicy`（`Seal/Core/Installation/InstallChannelDiagnostic.swift`）
+用**显式码集合**（acknowledge 6 个 / resign 22 个），`SigningProgressView` 三个判定全部转调它；
+三条重试循环开头补 `try Task.checkCancellation()`，让取消真正终止而不是回抛后继续下一轮；
+③ legacy handoff **迁移即终态**（`phase = .recoveryRequired` + `settledAt` 非空 +
+`failureCode = "SEAL-SELF-LEGACY-UNVERIFIABLE…"`），审计记录留在磁盘，槽位当场释放；
+④ `HardTimeout` 加 `withTaskCancellationHandler` + `settled` 标志（覆盖 `onCancel` 早于 `store`
+的时序），取消按 `CancellationError` 立即恢复，是否连带取消工作仍由 `cancelsWorkOnTimeout` 决定；
+⑤ 恢复 `RELEASE_NOTES.md`（顶部条目即当前 `MARKETING_VERSION` 1.1.16 正文），两份 workflow 的
+publish 步骤加 `[ ! -s ]` 判空 + `::error::` 注解。
+附带：`AppImportTimeFormatter` 的 `DateFormatter` 改按「格式+时区」缓存（原先每行 body 现场构造
+1~2 个，`ImportedAppRow.swift:100/135`）；`AGENTS.md` 重写为规范接替文件（订正 SealTunnel 已移除、
+自替换 profile 改为结算后清理两条失效规则）；提交前掩码真实 Apple ID 邮箱（含 Swift/py 注释、
+docs/qa 与一处测试夹具的 `maskedEmail`）。
+
+**涉及文件**：`Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`、
+`Seal/Core/Installation/InstallChannelDiagnostic.swift`、`Seal/Features/Apps/SigningProgressView.swift`、
+`Seal/Core/Concurrency/HardTimeout.swift`、`Seal/Core/Renewal/SelfReplacementTransactionStore.swift`、
+`Seal/Features/Apps/AppPresentation.swift`、`.github/workflows/ios.yml`、`.github/workflows/ios-release.yml`、
+`RELEASE_NOTES.md`、`AGENTS.md`；测试：`SealTests/Installation/InstallChannelDiagnosticClassificationTests.swift`、
+`SealTests/Concurrency/HardTimeoutTests.swift`、`SealTests/Renewal/SelfReplacementTransactionTests.swift`
+（替换原先只断言「能加载成功」的同义反复用例）。
+
+**验证状态**：⚠️ **未验证**。Windows 本机不能编译、`python` 守卫不可执行 ⇒ 只做了静态核对
+（`#if/#endif` 配对、括号平衡与基线对照、被删私有 API 无残留引用、`ImportFailure` 成员初始化参数序）。
+下一步：① 本分支推 CI 走 `ios.yml` 全量档（编译 + 单测 + UI 回归）；② 真机回归「免费账号第 4 个应用」
+与「装到 90% 取消」两条，确认不再重传、租约即时释放；③ 真机确认残留旧 handoff 时仍能自续签。
+
+**本轮明确没修（避免半吊子）**：
+- 批量结果里 Seal 项**预写 `completed`**（`AppsViewModel.persistPendingBatchResultForSealUpdate`）：
+  这是 2026-09-17 为消除「同一批次三份互相矛盾结论」做的取舍，只翻这一处会把那个 bug 放回来，
+  必须连 `recoverInterruptedQueueIfNeeded` 的顺序与「待确认」这一档 UI 一起设计。
+- `SEAL-EXT-401a` 在按钮映射里未登记（只有 `SEAL-EXT-401`）⇒ 撞到它时没有「移除扩展并重试」入口。
+- 审查另发现的签名侧结构性问题（`applications` 字典按**改写后** ID 建键、却按**原始** ID 查找 ⇒
+  首签第三方 IPA 时 `updateFeatures` 与 entitlement 校验整体空转；Phase 2 丢扩展不回收已建 App ID；
+  `removeExtension` 不清理 `SC_Info/Manifest.plist`）**必须与"减少门户写入量"同批处理**——
+  单独修正确性会把抖音的写入数从 ~25-35 抬到 ~34-44，限流只会更凶。
 
 ### 2026-09-18 · 构建 131 红在滑动路径：同一条规则只落在「点击」这一条链路上
 
@@ -457,7 +551,7 @@ R36（逐个阶段点名 + 首尾相接解析比对 + 视图必须用预算表 +
 
 **已知线索**：抖音 = 主 App + 8 扩展，一次签名要连发 **9 次 `addAppID`**；
 免费账号「7 天内最多注册 10 个 App ID」是**主 App 与扩展共享**的名额。
-用户三个账号里只有 `3188447354@qq.com`（1/10）名额够，而它恰好就是报「失效」的那个。
+用户三个账号里只有 `318***5***@qq.com`（1/10）名额够，而它恰好就是报「失效」的那个。
 
 **根因（两条，互相独立）**
 
@@ -718,9 +812,9 @@ recovery: "稍后重试"
 
 | 账号 | 状态 | 已签名 |
 |---|---|---|
-| `sunuannian1@gmail.com` | 有效 | 4 / 10 |
-| `2499776079@qq.com` | 有效 | **10 / 10（满）** |
-| `3188447354@qq.com` | **失效** | 1 / 10 |
+| `sun***1@gmail.com` | 有效 | 4 / 10 |
+| `249***0***@qq.com` | 有效 | **10 / 10（满）** |
+| `318***5***@qq.com` | **失效** | 1 / 10 |
 
 失败用的是失效的那个账号 ⇒ `SEAL-AUTH-102c`（映射 `.credentialsRejected`）✅
 **引导正确，不是缺陷**。
@@ -1857,7 +1951,7 @@ static var currentBuildLabel: String {
 
 - **现象**：设备上续签 Seal 时，证书页读不出完整证书；点续签后弹出「无法确认当前 Seal 的签名证书」，恢复文案「先用电脑的原签名工具覆盖安装一次 Seal，再回来续签」。日志另出现 SEAL-SELF-105「无法确认当前 Seal 的签名身份」。
 - **根因**：当前正在运行的 Seal 由 iloader 用非标准签名结构签名，主程序/网络扩展的真实 CMS 签名者无法被 `AppBundleSigningIdentityReader` 读出。身份读不完整 → 既不敢撤销（SEAL-CERT-232）、也不敢覆盖装自己（SEAL-SELF-105）。这是设备现实状态，不是代码 bug，且不能靠弱化身份校验绕过。
-- **修复/处置**：电脑覆盖安装（不卸载），保持同一 Apple ID（sunuannian1@gmail.com）、Team（CT8QZ7352B）、主/扩展 Bundle ID 一致，改用能产出标准签名的签名工具。
+- **修复/处置**：电脑覆盖安装（不卸载），保持同一 Apple ID（sun***1@gmail.com）、Team（CT8QZ7352B）、主/扩展 Bundle ID 一致，改用能产出标准签名的签名工具。
 - **涉及文件**：`Seal/Infrastructure/Renewal/AppBundleSigningIdentityReader.swift`、`Seal/Core/Renewal/SelfReplacementCoordinator.swift`。
 - **验证状态**：待用户电脑覆盖安装后，回读新日志确认身份读取完整。
 

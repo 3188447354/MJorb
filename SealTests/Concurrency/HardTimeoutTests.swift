@@ -86,6 +86,83 @@ struct HardTimeoutTests {
         #expect(probe.didFinish, "超时后工作应仍在后台跑完，而不是被取消")
         #expect(probe.wasCancelled == false, "cancelsWorkOnTimeout: false 时工作不得被取消")
     }
+
+    /// 父任务取消必须**立即**解除挂起。
+    ///
+    /// 此前 `run` 只有裸 `withCheckedThrowingContinuation`、没有 cancellation handler：
+    /// 取消只能等超时到点或工作自己结束。后果是「取消一次大包上传」后调用方的
+    /// `defer releaseOperation` 迟迟走不到，`OperationCoordinator` 的全局单槽被一次
+    /// 已取消的操作占住数分钟，期间所有其它入口静默失败。
+    @Test
+    func parentCancellationResumesCallerWithoutWaitingForTheWork() async {
+        let started = Date()
+        let task = Task {
+            try await HardTimeout.run(seconds: 30) {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                return 1
+            }
+        }
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        task.cancel()
+
+        var caughtCancellation = false
+        do {
+            _ = try await task.value
+        } catch is CancellationError {
+            caughtCancellation = true
+        } catch {
+            Issue.record("期望 CancellationError，实际抛出 \(error)")
+        }
+        let elapsed = Date().timeIntervalSince(started)
+        #expect(caughtCancellation)
+        #expect(elapsed < 2, "取消后调用方仍在等工作结束，实际 \(elapsed) 秒")
+    }
+
+    /// 任务在 `store` 之前就被取消（`onCancel` 抢在操作体建立之前触发）时不得挂死。
+    @Test
+    func cancellationArrivingBeforeTheRaceIsSetUpStillResumes() async {
+        let task = Task {
+            try await HardTimeout.run(seconds: 30) {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                return 7
+            }
+        }
+        task.cancel()
+        do {
+            _ = try await task.value
+            Issue.record("期望 CancellationError")
+        } catch is CancellationError {
+            // 预期
+        } catch {
+            Issue.record("期望 CancellationError，实际抛出 \(error)")
+        }
+    }
+
+    /// 父任务取消与超时时同一条判据：`cancelsWorkOnTimeout: false` 时**只停止等待**，
+    /// 不得拆掉正在跑的同步 FFI（否则「用户取消」会变成「确定装不上」）。
+    @Test
+    func parentCancellationRespectsNonCancellingMode() async {
+        let probe = CancellationProbe()
+        let task = Task {
+            try await HardTimeout.run(seconds: 30, cancelsWorkOnTimeout: false) {
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                probe.record(cancelled: Task.isCancelled)
+            }
+        }
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        task.cancel()
+        do {
+            _ = try await task.value
+            Issue.record("期望 CancellationError")
+        } catch is CancellationError {
+            // 预期
+        } catch {
+            Issue.record("期望 CancellationError，实际抛出 \(error)")
+        }
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        #expect(probe.didFinish, "取消不得连带取消仍在跑的工作")
+        #expect(probe.wasCancelled == false)
+    }
 }
 
 /// 跨任务记录「工作是否跑完 / 是否被取消」。用锁而不是 actor：

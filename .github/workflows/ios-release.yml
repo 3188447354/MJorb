@@ -157,6 +157,12 @@ jobs:
             echo "Release tag must match the IPA marketing version" >&2
             exit 1
           fi
+          # 发布正文唯一来源。缺文件时 `cat` 只会留下一行 "No such file or directory"，
+          # 看不出是文档被删了还是 checkout 出问题 —— 显式判空并给出可执行的下一步。
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "::error::RELEASE_NOTES.md 缺失或为空：它是发布正文唯一来源（见 AGENTS.md「版本与发布」）。补写本次版本正文后重跑本 job。"
+            exit 1
+          fi
           NOTES="$(cat RELEASE_NOTES.md)"
           ARGS=(--title "Seal $TAG" --notes "$NOTES")
           if [ "$PRERELEASE" = "true" ]; then ARGS+=(--prerelease); fi

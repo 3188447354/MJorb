@@ -49,7 +49,7 @@ struct SelfAppRegistrarTests {
             ),
             AppleAccountRecord(
                 id: expectedID,
-                maskedEmail: "sunuannian1@gmail.com",
+                maskedEmail: "sun***1@gmail.com",
                 accountIdentifier: "current",
                 teamID: "T3432ZHJUF9",
                 teamName: "Current",

@@ -35,6 +35,14 @@ actor SelfReplacementTransactionStore {
             return transaction
         }
         if let legacy = try? JSONDecoder().decode(LegacySelfSigningHandoff.self, from: data) {
+            // 旧版 handoff 里没有候选的 version / buildNumber / IPA 摘要，
+            // 也没有安装前的真实身份快照（只有 bundle id / team / profile / 序列号）。
+            // 因此它**永远**对不上：`CandidateIdentity.matches` 要求版本相等，而迁移出来的
+            // 版本是空串；`installedBefore` 是 `.unknown`，也永不等于任何完整运行身份。
+            // 若把它留成 pending，`requireRecovery` 只改 phase 不设 settledAt ⇒
+            // 每次启动都判「需电脑覆盖恢复」，而 `create` 见 pending 就抛 `alreadySubmitted`
+            // —— Seal 从此**永久无法自续签**，重启与电脑覆盖安装都清不掉。
+            // 迁移当下我们就已确定它不可核验，所以直接按终态关闭，并把原因留在审计记录里。
             let migrated = SelfReplacementTransaction(
                 schemaVersion: 1,
                 id: legacy.id,
@@ -51,10 +59,10 @@ actor SelfReplacementTransactionStore {
                     certificateSerialNumber: legacy.certificateSerialNumber
                 ),
                 signedIPARelativePath: "",
-                phase: .awaitingReplacementConfirmation,
+                phase: .recoveryRequired,
                 submission: .init(id: legacy.id, claimedAt: .distantPast),
-                settledAt: nil,
-                failureCode: nil,
+                settledAt: legacy.confirmedAt ?? Date(),
+                failureCode: "SEAL-SELF-LEGACY-UNVERIFIABLE：旧版 handoff 缺少候选版本与安装前身份，已按不可核验关闭",
                 cleanupSummary: nil
             )
             try write(migrated)

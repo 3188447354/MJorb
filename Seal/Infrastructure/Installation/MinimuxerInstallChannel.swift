@@ -549,12 +549,70 @@ actor MinimuxerInstallChannel: InstallChannel {
     /// 模拟器上也能编译（它只负责等待与写日志，不碰 Minimuxer 的安装 API），
     /// 而它的「抛错」日志需要这段文本。`MinimuxerError` / `describeError` 来自
     /// `Vendor/Minimuxer/Sources` 的纯 Swift 层，全平台可用。
-    private static func diagnostic(_ error: Error) -> String {
+    static func diagnostic(_ error: Error) -> String {
         if let minimuxerError = error as? MinimuxerError {
             return Minimuxer.describeError(minimuxerError)
         }
         let nsError = error as NSError
         return "\(nsError.domain) (\(nsError.code)): \(nsError.localizedDescription)"
+    }
+
+    /// 从 Rust FFI NSError / ImportFailure 提取底层错误文本，用于设备错误分类。
+    /// ImportFailure.errorDescription 返回 title（如"安装失败"），原始设备错误在 reason 里。
+    ///
+    /// 非 `ImportFailure` 必须复用 `diagnostic`：生产安装路径抛的是
+    /// `MinimuxerError.InstallApp(deviceError)`，该枚举只遵循 `Error` +
+    /// `CustomStringConvertible`，桥接成 `NSError` 后关联值里的
+    /// `ApplicationVerificationFailed` / `No space left` 会全部丢失，于是
+    /// `isTerminalInstallError` 恒判「可重试」⇒ 500MB 整包被空推 3 轮。
+    /// `installationFailure` 用的也是 `diagnostic`，两者同源才不会「一张表认得、
+    /// 另一张表喂错文本」。
+    static func errorDetail(_ error: Error) -> String {
+        if let failure = error as? ImportFailure {
+            return failure.reason
+        }
+        return diagnostic(error)
+    }
+
+    /// 确定性安装拒绝（空间不足 / 完整性校验失败 / 免费账号 3 应用上限）：
+    /// 这类 installd 拒绝重传重试无意义，应首次即失败，避免把大包空推 3 轮。
+    ///
+    /// 与 `installationFailure` 共用 `errorDetail`/`diagnostic` 取词；新增错误名时
+    /// 两处必须同步。刻意放在 `#if !targetEnvironment(simulator)` **之外**：
+    /// 纯文本判定只有这样才可能被单测覆盖（`@testable import Seal` 跑在模拟器上）。
+    ///
+    /// 注意「安装超时 **不等于** 安装失败」这条判据在 `isTimeoutInstallError`
+    /// —— 超时必须走那条路，不能用这里的文本匹配。
+    static func isTerminalInstallError(_ detail: String) -> Bool {
+        let lower = detail.lowercased()
+        if lower.contains("no space")
+            || lower.contains("space left")
+            || lower.contains("enospc")
+            || lower.contains("errno 28")
+            || lower.contains("code 28")
+            || lower.contains("integrity")
+            || lower.contains("could not be verified")
+            || lower.contains("cannot be verified")
+            || lower.contains("applicationverificationfailed")
+            || lower.contains("verificationfailed")
+            || lower.contains("failed to verify")
+            || lower.contains("code signature")
+            || lower.contains("signed resource")
+            || lower.contains("invalidsignature")
+            || lower.contains("profileexpired")
+            || lower.contains("untrusted")
+            || lower.contains("maximum")
+            || lower.contains("limit") {
+            return true
+        }
+        return detail.contains("空间不足")
+            || detail.contains("储存空间")
+            || detail.contains("存储空间")
+            || detail.contains("无法验证")
+            || detail.contains("无法安装")
+            || detail.contains("完整性")
+            || detail.contains("上限")
+            || detail.contains("已达")
     }
 
     /// 安装超时 **不等于** 安装失败（R05 的核心判据）。
@@ -688,6 +746,7 @@ actor MinimuxerInstallChannel: InstallChannel {
         let maxAttempts = ipaMB > 100 ? 2 : 4
         var lastError: Error?
         for attempt in 1...maxAttempts {
+            try Task.checkCancellation()
             do {
                 let pushOutcome = await offThread(seconds: pushTimeout) {
                     try Minimuxer.yeetAppAfc(bundleId: bundleID, ipaBytes: ipaData)
@@ -726,6 +785,7 @@ actor MinimuxerInstallChannel: InstallChannel {
         let installTimeout = 600.0
         var lastError: Error?
         for attempt in 1...3 {
+            try Task.checkCancellation()
             do {
                 // 每次安装前重置Install提供者，避免使用已断开的RSD缓存连接
                 // 推送大文件后RSD连接可能超时断开，isReady()只检查TCP不检查RSD服务
@@ -800,6 +860,7 @@ actor MinimuxerInstallChannel: InstallChannel {
         let maxAttempts = 3
         var lastError: Error?
         for attempt in 1...maxAttempts {
+            try Task.checkCancellation()
             do {
                 // 第一次尝试前做一次**有界**的缓存会话活性探测。
                 // 只记日志、不改行为 —— 理由见 `probeCachedSessionIfStale()` 的说明。
@@ -1090,54 +1151,6 @@ actor MinimuxerInstallChannel: InstallChannel {
         )
     }
 
-    /// 确定性安装拒绝（空间不足 / 完整性校验失败 / 免费账号 3 应用上限）：
-    /// 这类 installd 拒绝重传重试无意义，应首次即失败，避免把大包空推 3 轮。
-    /// 与 `installationFailure` 的分类标记保持一致。
-    ///
-    /// 注意「安装超时 **不等于** 安装失败」这条判据在 `isTimeoutInstallError`
-    /// （`#if` 之外，见文件上方）—— 超时必须走那条路，不能用这里的文本匹配。
-    private static func isTerminalInstallError(_ detail: String) -> Bool {
-        let lower = detail.lowercased()
-        if lower.contains("no space")
-            || lower.contains("space left")
-            || lower.contains("enospc")
-            || lower.contains("errno 28")
-            || lower.contains("code 28")
-            || lower.contains("integrity")
-            || lower.contains("could not be verified")
-            || lower.contains("cannot be verified")
-            || lower.contains("applicationverificationfailed")
-            || lower.contains("verificationfailed")
-            || lower.contains("failed to verify")
-            || lower.contains("code signature")
-            || lower.contains("signed resource")
-            || lower.contains("invalidsignature")
-            || lower.contains("profileexpired")
-            || lower.contains("untrusted")
-            || lower.contains("maximum")
-            || lower.contains("limit") {
-            return true
-        }
-        return detail.contains("空间不足")
-            || detail.contains("储存空间")
-            || detail.contains("存储空间")
-            || detail.contains("无法验证")
-            || detail.contains("无法安装")
-            || detail.contains("完整性")
-            || detail.contains("上限")
-            || detail.contains("已达")
-    }
-
-    /// 从 Rust FFI NSError / ImportFailure 提取底层错误文本，用于设备错误分类。
-    /// ImportFailure.errorDescription 返回 title（如"安装失败"），原始设备错误在 reason 里。
-    private static func errorDetail(_ error: Error) -> String {
-        if let failure = error as? ImportFailure {
-            return failure.reason
-        }
-        let nsError = error as NSError
-        return nsError.userInfo[NSLocalizedDescriptionKey] as? String
-            ?? nsError.localizedDescription
-    }
     #endif
 
     /// offThread 后台取 UDID 的结果：跨 @Sendable 线程只能携带 Sendable 值，

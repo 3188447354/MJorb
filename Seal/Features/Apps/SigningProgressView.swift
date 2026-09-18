@@ -646,26 +646,25 @@ struct SigningProgressView: View {
     }
 
     private func isInstallChannelFailure(_ failure: ImportFailure) -> Bool {
-        failure.code.hasPrefix("SEAL-INSTALL-")
+        InstallFailureActionPolicy.action(for: failure.code) == .reinstall
     }
 
     /// 签名包「内容本身」出错（缺失/损坏/过期/设备不符/Team 不符/结构不完整），
-    /// 重复安装同一个坏包不会改变结果，必须重新签名。对应错误码区间：
-    /// SEAL-INSTALL-700~710 = 设备/安装通道（可重装或确定性）；711~730 = 重新签名。
+    /// 重复安装同一个坏包不会改变结果，必须重新签名。
+    ///
+    /// 码集合在 `InstallFailureActionPolicy` 里显式列出：原先这里用
+    /// `hasPrefix("SEAL-INSTALL-71"/"72"/"73")` 做数字区间匹配，把 738
+    /// （上一笔安装仍在跑，recovery 写的是「重新启动 Seal 后再试」）与 737 也算成了
+    /// 「重新签名」，一次点击即触发全量重签 + 重传，正好造出并发安装。
     private func isResignRequired(_ failure: ImportFailure) -> Bool {
-        let code = failure.code
-        return code.hasPrefix("SEAL-INSTALL-71")
-            || code.hasPrefix("SEAL-INSTALL-72")
-            || code.hasPrefix("SEAL-INSTALL-73")
+        InstallFailureActionPolicy.action(for: failure.code) == .resign
     }
 
     /// 确定性失败：重试 / 重新安装都无法改变结果，只能按指引手动处理后重试。
     /// 按钮统一为「知道了」并关闭，不做无效重试。
     private func isNonRetryableFailure(_ failure: ImportFailure) -> Bool {
         CertificateRequestFailurePolicy.isNonRetryableFailure(failure)
-            || failure.code == "SEAL-APPID-DEVICELIMIT"
-            || failure.code == "SEAL-INSTALL-702l"   // 安装被 iOS 拒绝（免费账号 3 应用上限 / 完整性校验）
-            || failure.code == "SEAL-INSTALL-702s"   // 设备存储空间不足
+            || InstallFailureActionPolicy.action(for: failure.code) == .acknowledge
     }
 
     private func openSettings(_ route: SettingsRoute) {

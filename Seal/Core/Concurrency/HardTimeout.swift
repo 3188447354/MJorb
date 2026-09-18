@@ -24,11 +24,17 @@ enum HardTimeout {
         _ operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
         let state = RaceState<T>()
-        return try await withCheckedThrowingContinuation { continuation in
-            // 必须先同步存入 continuation，再启动竞速任务，保证 resume 永远发生在 store 之后
-            state.store(continuation)
-            state.startTimer(seconds: seconds)
-            state.startOperation(operation, cancelsOnTimeout: cancelsWorkOnTimeout)
+        // 父任务取消必须**立刻**解除挂起：只靠超时或工作自己结束来恢复的话，
+        // 「取消一次大包上传」会把 OperationCoordinator 的全局单槽占住好几分钟
+        // （调用方的 `defer releaseOperation` 根本走不到）。
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                // 必须先同步存入 continuation，再启动竞速任务，保证 resume 永远发生在 store 之后
+                state.store(continuation)
+                state.start(seconds: seconds, operation: operation, cancelsOnTimeout: cancelsWorkOnTimeout)
+            }
+        } onCancel: {
+            state.cancelByParent()
         }
     }
 
@@ -40,15 +46,33 @@ enum HardTimeout {
         private var timer: Task<Void, Never>?
         private var work: Task<Void, Never>?
         private var cancelsWorkOnTimeout = true
+        /// 「谁先落地谁赢」：超时、工作完成、父任务取消三方竞速，
+        /// 也用来处理 `onCancel` 早于 `store` 的时序（任务建立前就已被取消）。
+        private var settled = false
 
         func store(_ continuation: CheckedContinuation<T, Error>) {
             lock.lock()
-            self.continuation = continuation
+            let alreadySettled = settled
+            if alreadySettled == false {
+                self.continuation = continuation
+            }
             lock.unlock()
+            if alreadySettled {
+                continuation.resume(throwing: CancellationError())
+            }
         }
 
-        func startTimer(seconds: TimeInterval) {
+        func start(
+            seconds: TimeInterval,
+            operation: @escaping @Sendable () async throws -> T,
+            cancelsOnTimeout: Bool
+        ) {
             lock.lock()
+            guard settled == false else {
+                lock.unlock()
+                return
+            }
+            cancelsWorkOnTimeout = cancelsOnTimeout
             let task = Task.detached(priority: .utility) { [weak self] in
                 do {
                     try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -58,16 +82,7 @@ enum HardTimeout {
                 self?.finish(.failure(TimeoutError(seconds: seconds)))
             }
             timer = task
-            lock.unlock()
-        }
-
-        func startOperation(
-            _ operation: @escaping @Sendable () async throws -> T,
-            cancelsOnTimeout: Bool
-        ) {
-            lock.lock()
-            cancelsWorkOnTimeout = cancelsOnTimeout
-            let task = Task.detached(priority: .userInitiated) { [weak self] in
+            let workTask = Task.detached(priority: .userInitiated) { [weak self] in
                 let result: Result<T, Error>
                 do {
                     result = .success(try await operation())
@@ -76,12 +91,29 @@ enum HardTimeout {
                 }
                 self?.finish(result)
             }
-            work = task
+            work = workTask
             lock.unlock()
+        }
+
+        /// 父任务被取消：调用方不再等待，按 `CancellationError` 恢复。
+        /// 底层同步 FFI 依旧取消不掉，是否连工作一起取消仍由 `cancelsWorkOnTimeout`
+        /// 决定 —— 与超时走同一条判据，避免「取消」反而拆掉正在跑的安装。
+        func cancelByParent() {
+            lock.lock()
+            let timerToCancel = timer
+            timer = nil
+            lock.unlock()
+            timerToCancel?.cancel()
+            finish(.failure(CancellationError()))
         }
 
         private func finish(_ result: Result<T, Error>) {
             lock.lock()
+            guard settled == false else {
+                lock.unlock()
+                return
+            }
+            settled = true
             let pending = continuation
             continuation = nil
             let timerToCancel = timer

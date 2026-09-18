@@ -72,12 +72,7 @@ enum AppImportTimeFormatter {
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> String {
-        let timeFormatter = DateFormatter()
-        timeFormatter.locale = Locale(identifier: "zh_CN")
-        timeFormatter.calendar = calendar
-        timeFormatter.timeZone = calendar.timeZone
-        timeFormatter.dateFormat = "HH:mm"
-        let time = timeFormatter.string(from: date)
+        let time = shared.dateFormat("HH:mm", calendar: calendar).string(from: date)
         if calendar.isDate(date, inSameDayAs: now) {
             return "今天 \(time)"
         }
@@ -85,12 +80,41 @@ enum AppImportTimeFormatter {
            calendar.isDate(date, inSameDayAs: yesterday) {
             return "昨天 \(time)"
         }
-        let dateFormatter = DateFormatter()
-        dateFormatter.locale = Locale(identifier: "zh_CN")
-        dateFormatter.calendar = calendar
-        dateFormatter.timeZone = calendar.timeZone
-        dateFormatter.dateFormat = "M月d日 HH:mm"
-        return dateFormatter.string(from: date)
+        return shared.dateFormat("M月d日 HH:mm", calendar: calendar).string(from: date)
+    }
+
+    /// `DateFormatter` 的构造代价是毫秒级，而这个函数在**每一行的 body 里**被调用
+    /// （`ImportedAppRow` 的时间行与无障碍标签），批量续签期间每个进度 tick 都会重算全部行。
+    /// 缓存按「格式 + 时区」为键：时区变了必须换实例，否则结果整体偏移。
+    private static let shared = DateFormatCache()
+}
+
+/// 线程安全的 `DateFormatter` 缓存（键：格式 + 时区标识 + locale）。
+private final class DateFormatCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cache: [String: DateFormatter] = [:]
+
+    func dateFormat(_ format: String, calendar: Calendar) -> DateFormatter {
+        let key = "\(format)|\(calendar.timeZone.identifier)|\(calendar.identifier)"
+        lock.lock()
+        if let cached = cache[key] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = format
+
+        lock.lock()
+        // 两个调用方同时构造同一格式时，保留先写入的那个，避免同一 key 存两个实例。
+        defer { lock.unlock() }
+        if let existing = cache[key] { return existing }
+        cache[key] = formatter
+        return formatter
     }
 }
 

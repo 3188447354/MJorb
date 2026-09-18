@@ -1,0 +1,163 @@
+# AGENTS.md — Seal 项目工作纪律与约束
+
+> 本文件是跨工具、跨会话的项目规则（含换账号后继续工作的约定）。所有改动请先读这里；
+> 「改动前自查清单」是硬门槛。
+> 复盘台账（现象→根因→修复→涉及文件→验证状态）在 `DEBUG_LOG.md`，按日期倒序；
+> 每次修 bug 或发现常犯坑位必须追加一条。`RELEASE_NOTES.md` 是每次发布的正文来源。
+>
+> 本文件取代原 `CODE_AUDIT_20260915.md`（其内容已并入 `DEBUG_LOG.md` 与 `docs/qa/`）。
+> 文中所有「文件:行号」是写稿时的核对点，代码会变 —— 冲突时以代码为准，并回来更新本文件。
+
+## 0. 项目本质
+
+以**签名 / 安装 / 续签**三条链路为焦点（自签 iOS 应用工具 Seal）。改动常跨 Swift + Rust(Bridge) 两层，
+Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
+
+## 1. 改动前必过自查清单（硬性，5 项缺一不可）
+
+1. **做完结果会怎么样** —— 明确可验收的产出/行为变化。
+2. **有没有遗漏** —— 边界、关联路径、未覆盖分支。
+3. **会不会导致其他出错** —— 签名/续签/安装三环节尤其防互相牵连；回退/兜底是什么。
+4. **规不规范** —— 与项目既有风格、Apple 官方规范一致。
+5. **上游是否已有** —— Seal/AltStore/SideStore/jas/zsign 已有等价实现则优先对齐/复用，不自造轮子。
+
+## 2. 代码规范
+
+- **绿色基线**：离开工作区的改动必须能编译通过，绝不留下「调用了未定义函数/字段」的中间态。
+- **最小改动**：只改目标所需，不顺手重构；根因修完即停。
+- **根因不绕绕**：从真机日志定位根因再改，禁止 `--no-verify` 类绕行；现象→根因→修复→回归闭环。
+- **大包内存纪律**：500MB+ 只流式处理（`unzipItem` 等），禁止整块载入内存。
+  注意还有两条**未走流式**的历史路径：`AppFileStore.extractNestedIPAIfNeeded`（嵌套包整份进内存）、
+  `IPAParserService` 为读 Mach-O 头而 `extract` 整个主二进制 —— 改到它们时顺手改掉。
+- **错误码规范**：一律 `ImportFailure(title/reason/recovery/code)`，code 用 `SEAL-<模块>-<类别><序号>`，
+  唯一且带可恢复引导。改动错误分类前先跑 `Scripts/` 里的码清单核对（全仓已有 327 个码 / 29 个模块前缀）。
+- **并发基线**：`Config/Base.xcconfig` 已开 `SWIFT_VERSION = 6.0` + `SWIFT_STRICT_CONCURRENCY = complete`。
+  全仓在最严档下编译，新增 `@unchecked Sendable` 需要写清「谁在保护它」，不要靠它消警告。
+  仓里已有 5 份手写锁保护的 continuation 盒（`ContinuationBox` / `HardTimeout.RaceState` /
+  `BlockingCall.Outcome` / `AppleAccountClient.LegacyCallbackBox` / `AnisetteClient.InFlightGeneration`）——
+  **不要再加第 6 份**，需要新盒时先看能否复用现有语义。
+
+## 3. 三链路关键约束（改动必查）
+
+### 签名
+- 证书复用只允许剩余有效期 **> 7 天**（覆盖免费 profile 7 天寿命）：只判「当下未过期」会把次日到期的
+  证书签进新包 → iOS 判「尚未验证」闪退。复用/新建各分支（快速路径列表命中、网络失败回退、
+  慢速路径选中、账户证书、新建证书收尾）都要过 `SigningCertificateMaterialPolicy.reuseStatus` /
+  `certificateReusable(_:)`。**网络失败回退本地证书也必须查有效期。**
+  ⚠️ 其中「快速路径列表命中」与「网络失败回退」两支目前既无守卫也无单测（`signingIdentity` 是
+  actor private 且含网络）—— 改这两支时先把它抽成纯函数再改。
+- 序列号跨来源比对必须**归一化（去前导零/大小写）**，否则误判「证书已轮换」（`normalizedSerialNumber`）。
+- 签名/续签处于 LocalDevVPN 环境，无法可靠自动重登 Apple；会话过期统一引导到「我的」页重新验证，
+  **不要实现会触发 2FA 的签名页验证码路径**。
+- `SigningCoordinator` 里预拉起隧道的 `channelStart = Task { installChannel.start() }` 在缓存命中
+  提前 return / 抛错路径上不会被取消，会与安装阶段的 `start()` 并发 —— 碰这块时一并处理。
+
+### 安装
+- 上传与安装必须在**同一条缓存 RemotePairing 会话**上（jas / IdeviceGateway 共同不变量）；
+  跨会话一定 `MissingPackagePath`。
+- **确定性拒绝必须立即终止、不得重传重试**，且「两张表同源」包含两层意思：
+  1. **词表同源**：`isTerminalInstallError`（重试前判定）与 `installationFailure`（最终归类）
+     必须是同一份词表。
+  2. **取词同源**：两处必须用同一个函数从错误里取文本。历史上第二次踩坑就是词表一致、
+     但重试侧用 `NSError` 桥接取词，而生产路径抛 `MinimuxerError.InstallApp(deviceError)`
+     （该枚举只遵循 `Error` + `CustomStringConvertible`），桥接后 `ApplicationVerificationFailed`
+     / `No space left` 等设备原文**全部丢失** ⇒ 500MB 整包被空推 3 轮。
+     现在两处都经 `MinimuxerInstallChannel.diagnostic/errorDetail`，验收测试在
+     `SealTests/Installation/InstallChannelDiagnosticClassificationTests.swift`。
+- 新增错误名时 grep 上面两处，一次改全。
+- **错误码 → 按钮动作必须用显式码集合**（`InstallFailureActionPolicy`），禁止
+  `hasPrefix("SEAL-INSTALL-71"/"72"/"73")` 这类数字区间：区间会把 `SEAL-INSTALL-738`
+  （上一笔安装仍在跑）与 `737`（事务未就绪）算成「重新签名」，把 `702t`（超时 ≠ 失败）
+  算成「重新安装」—— 一次点击就造出并发 installd。
+- 存储不足（`No space left`/`ENOSPC`/`code 28`）显示「设备存储空间不足」而非 WiFi 提示；
+  iOS 拒绝用「知道了」按钮、立即终止、不重试。
+- **超时 ≠ 失败**：`Minimuxer.stageAndInstall` 是同步阻塞 FFI、无取消机制，上层超时只是不再等待，
+  底下很可能还在装。所以超时不得自动重试、`cancelsWorkOnTimeout: false` 的路径不得连带取消工作。
+- 未配对 / 未信任 / 握手失败 / 隧道不可达必须由 `classifyDiscoveryFailure` 分开归类，
+  不许一律显示成「检查 Wi-Fi/LocalDevVPN」。
+
+### 续签
+- 免费账号 3-app 上限是**设备级、跨不同 Apple ID/team 累计**；判据在
+  `SigningCoordinator` 的设备级计数（`account.isFreeTeam`、排除付费账号应用、排除待装自身、`>=3`
+  抛 `SEAL-APPID-DEVICELIMIT`）。
+- 批量续签（`refreshAll`）调 `signAndInstall` 必须传 `bypassFreeAccountDeviceLimit: true`
+  （覆盖已装应用不新增槽位）；单签 `runSigning` 默认 false，靠「继续绕过」按钮传 true。
+- `refreshFailedItems` 只重试上一轮失败的 App，不是全量。
+- 自替换成功与否**只能由安装后启动的新进程读真实落盘签名身份对账**（`SelfReplacementTransaction`），
+  当前进程绝不自判成功；`requireRecovery` 保持 pending 是有意的（等下次启动再评估），
+  但**任何永不满足的判据都不得留在 pending** —— 那会让 `create()` 永久抛 `alreadySubmitted`
+  把自续签锁死（旧版 handoff 迁移就是这么修的：迁移即终态）。
+- 批量结果持久化里 Seal 那一项目前被**预先**记成 `completed`（`AppsViewModel.persistPendingBatchResultForSealUpdate`），
+  这是为消除 2026-09-17「同一批次给出互相矛盾结论」而做的取舍；要改成「待确认」必须连恢复链路一起改，
+  不能只翻这一处。
+
+## 4. 描述文件 / 证书 / 日志
+
+### 设备端描述文件
+- 描述文件存在**手机系统 profile 存储**（profiled），经 misagent 枚举/删除，不属于任何 App 文件夹。
+- misagent 返回 **CMS 签名包裹的二进制**，解析不了会落盘成 `unknown_N.plist`。
+  `DeviceProfileCleaner` **不能按扩展名过滤**，所有文件都交给 `ProvisioningProfileReader`（内置解 CMS）
+  识别，并按 UUID 去重（LockDown 路径同一 profile 会落 raw + plist 两份）。
+- 清理**只按同一 Bundle ID 的 UUID 精准删，严禁删全部**（会误删其他 app 的 profile 致连锁闪退）；
+  `protectedBundleIDs` 必填、扩展靠父 App 保留集合兜底，通道不可信时整轮 fail closed。
+- 自替换路径的清理已改为**结算确认后**按 `keepProfileUUID` 精准清理
+  （见 `SelfAppRegistrar`），与「安装前清理」是两种形态 —— 改之前先读当前实现是哪一种。
+- 列目录失败必须与「设备上确实没有」区分开（置 `stage` / `firstError`），否则清理静默不生效、
+  profile 继续堆积而日志看不出来。
+
+### 日志
+- 导出统一 `SealLogTextFormatter`：北京时间（Asia/Shanghai `yyyy-MM-dd HH:mm:ss`）+ 中文栏目。
+- 容量环形 1000 条，满后滚动丢最旧并计数；导出头部注明「保留最近 N 条」。
+- `SealLogStore` 每次 `flush()` 都镜像 `Seal-log.txt` 到 Documents（只镜像 error 会导致顺利操作无日志可查）。
+- **写入与读取都要脱敏**：`append` 过 `LogPrivacyRedactor`，`entries()` 再过一层；
+  `exportText()`（= 镜像到 Documents 的那份）也必须过，否则升级前遗留的未脱敏 JSON 会被原样导出。
+- 日志导出/上报**不携带** keychain 凭据、Apple ID 明文。
+  ⚠️ 已知违反：`DEBUG_LOG.md` 与 `docs/qa/` 若干文件里写有真实 Apple ID 邮箱与 Team ID，
+  需按 `maskedEmail` 改写（公开仓库即泄露开发者账号）。
+- `NSLog`（`AnisetteDataProvider.debugLog`、`MinimuxerInstallChannel` 设备标识失败）绕过脱敏与环形缓冲，
+  只准打服务器地址/字节数这类无凭据内容；新增 `NSLog` 前先想清楚它会不会带出敏感值。
+
+## 5. 验证纪律
+
+- **真机优先**：涉及安装/installd 的改动必须走回归样本真机验证（见 `docs/qa/device-regression-checklist.md`）；
+  单测/编译通过 ≠ 可用。
+- **自证**：不声称「已修复/已完成」直到有验证证据。
+- **纯函数化才能测**：判据落在 actor / 网络 / `#if !targetEnvironment(simulator)` 里就测不到。
+  新增不变量时把判定抽成可单测的纯函数（`errorDetail`/`isTerminalInstallError`/
+  `InstallFailureActionPolicy` 都是这么挪出 `#if` 的），并补一条守卫测试。
+
+## 6. 版本与发布
+
+- 凡「需发版让用户可检测到」的代码更新，必须 bump `MARKETING_VERSION`（`project.yml` 的 Seal 主 target）。
+  ~~主 target 与 SealTunnel 扩展两处一致~~ → **内置 SealTunnel 扩展已移除**（`project.yml` 只剩一个
+  `MARKETING_VERSION`，`Scripts/verify-ipa.sh` 发现 `PlugIns` 即判失败），VPN 依赖外部 LocalDevVPN。
+- 内置更新比较 `CFBundleShortVersionString` 与 Release `tag_name`（支持 `1.0.13`/`v1.0.13` 前缀），
+  Release tag 必须与 `MARKETING_VERSION` 对齐，否则检测不到。
+  `CURRENT_PROJECT_VERSION` 由 CI `GITHUB_RUN_NUMBER` 覆盖。
+- 发布正文来自 `RELEASE_NOTES.md`；两份工作流的 publish 步骤已加存在性判空，缺文件直接失败并给注解。
+- 跨仓库发 Release（源 `sunuannian1/Trae-seal` → 目标 `sunuannian1/Seal-Releases`）**不传 `--target`**，
+  否则用源仓库 SHA 会 422（`target_commitish invalid`）。
+- ⚠️ 更新链路目前**只校验 `tag_name` 与 IPA 版本串相等**，不校验 `Seal_*.ipa.sha256` ——
+  修它之前不要假设「下载到的包一定是自己发的」。
+
+## 7. CI / 工程约束
+
+- `ios.yml` 完整档：RustBridge 一致性 + UI 回归 + 签名测试，大改动走它。
+  `ios-release.yml` 发布档：Release 编译 + 发布。`ios-fast.yml` 是 `main` 的快速出包档
+  （注意它用 **Debug** 配置且不跑守卫与测试）。
+- **触发方式**：`ios.yml` 除 PR 外，推到非 `main` 分支且改动命中相关路径也会自动编译；
+  `publish-release` 始终只在 `workflow_dispatch` + `publish_release=true` 时触发，**push 路径绝不自动发布**；
+  该不变量由 `Scripts/verify-release-safety.py` 静态守护（含变异自检）。
+- **时间预算**：`ios.yml` 拆成 3 个并行 job —— `build-package` / `swift-regression` / `rork-sign-tests`，
+  墙钟取 max 而非 sum（实测 9m38s）。**不要加「按路径判定是否跑测试」的闸门**（曾实测无收益且承担漏跑风险）。
+- `publish-release` 的 `needs` **必须包含 `swift-regression`**。
+- **构建 App 的 job 必须跑 `ensure-rustbridge.sh`**，否则会链接到落后的 `RustBridge.xcframework`，
+  报一堆 `_rust_bridge_*` undefined symbols。⚠️ 守卫目前只钉住 `ios.yml` 的两个 job，
+  `ios-release.yml` 与 `ios-fast.yml` 无断言 —— 改这三档时人工确认。
+- CI 失败原因必须能在不登录的情况下看到（`tee` 到 `build/TestLog.txt` + `::error::` 注解）。
+- CI 缓存「Refresh local SPM binary artifacts」只清 `SourcePackages/checkouts`，
+  **不许 rm 整个 SourcePackages**（会删掉 OpenSSL.xcframework → `openssl/err.h not found`）。
+- CI 校验 `IPHONEOS_DEPLOYMENT_TARGET=17.0`；改部署目标时同步查三份 workflow 的断言。
+- 改工作流触发条件前先跑 `Scripts/verify-release-safety.py`。**Windows 本机没有可用 Python**
+  （`python`/`python3` 是 WindowsApps 存根：零输出、退出码 49 —— 静默「没输出」不等于通过），
+  守卫只能在 CI 侧执行；本地改动要靠人工读 workflow 断言核对。

@@ -1515,6 +1515,13 @@ def violations(load=read):
     check(0 <= portal_source.find("App ID features 诊断：")
           < portal_source.find('withSessionRecovery("更新应用能力'),
           "R34: 取证诊断必须排在 Phase 1 的 `updateFeatures` 之前（否则拿不到「复用前」的观测）")
+    # ⚠️ 诊断必须**直接算出「能省多少次请求」**，而不只是「features 是不是空的」——
+    # 后者不足以判断能否跳过 `updateFeatures`（前置条件是「远端 features 与本次要设置的
+    # **完全一致**」，不一致时跳过会静默丢能力）。这是砍掉一半 Apple 请求的关键取证。
+    check("能省 \\(skipCandidates) 次请求" in portal_source
+          and "func desiredFeatureKeys(original: String) -> Set<String>" in portal_source,
+          "R34: 取证诊断必须把「远端 features 与本次要设置一致」的**个数**算出来 —— "
+          "只说「features 非空」判断不了能不能跳过 updateFeatures")
 
     # R35: 解压**之前**按「解压后」体积判空间（2026-09-18）。
     #
@@ -3647,6 +3654,11 @@ def main():
          "            \"App ID features 诊断：账号已有 \\(existing.count) 个 App ID，\"\n",
          "",
          "R34: 必须保留 `fetchAppIDs` 是否回填 `features` 的取证诊断"),
+        # 把取证诊断退回「只说 features 非空」：判断不了能不能跳过 updateFeatures。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "                + \"（一致的那些理论上可跳过 updateFeatures ⇒ 能省 \\(skipCandidates) 次请求）\"\n",
+         "",
+         "R34: 取证诊断必须把"),
         # ── R35：解压前按解压后体积判空间（2026-09-18）──
         # 删掉这次检查：高压缩比的包又会被低估，可能在签名中途写满磁盘。
         ("Seal/Infrastructure/Signing/SigningWorkspace.swift",

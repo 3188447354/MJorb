@@ -1633,13 +1633,48 @@ actor ApplePortalSigningService {
         // 但**绝不能盲改**：`ALTAppID.features` 在本仓代码里**只被写入、从未被读取**，
         // 无法证明 `fetchAppIDs` 会把它填上。若它恒为空，靠它跳过会**静默丢掉 entitlements**
         // （比现状更糟）⇒ 先取证，拿到真机日志确认后再决定要不要做这个优化。
-        let featureBearingAppIDs = existing.filter { $0.features.isEmpty == false }
-        let featureSample = featureBearingAppIDs.first.map {
-            "样例 \($0.bundleIdentifier) 有 \($0.features.count) 项"
-        } ?? "全部为空"
+        // 这条诊断要**直接回答「能省多少次请求」**，而不只是「features 是不是空的」——
+        // 因为「跳过冗余 updateFeatures」正是砍掉一半 Apple 请求的关键，而它的前置条件
+        // 是「远端 features 与本次要设置的**完全一致**」（不一致时跳过会静默丢能力）。
+        func desiredFeatureKeys(original: String) -> Set<String> {
+            guard let application = applications[original] else { return [] }
+            return Set(
+                filteredAppIDEntitlements(from: application, team: team)
+                    .keys
+                    .compactMap { ALTFeature(entitlement: $0) }
+                    .map { String(describing: $0) }
+            )
+        }
+        var desiredKeysByMapped: [String: Set<String>] = [:]
+        for (original, mapped) in mappings {
+            desiredKeysByMapped[mapped] = desiredFeatureKeys(original: original)
+        }
+        var observedWithFeatures = 0
+        var skipCandidates = 0
+        var firstMismatch: String?
+        for (_, mapped) in mappings {
+            guard let matched = existing.first(where: {
+                ApplePortalAppIDResolver.matches(
+                    existingBundleIdentifier: $0.bundleIdentifier,
+                    requestedBundleIdentifier: mapped
+                )
+            }) else { continue }
+            let remoteKeys = Set(matched.features.keys.map { String(describing: $0) })
+            guard remoteKeys.isEmpty == false else { continue }
+            observedWithFeatures += 1
+            let desired = desiredKeysByMapped[mapped] ?? []
+            if remoteKeys == desired {
+                skipCandidates += 1
+            } else if firstMismatch == nil {
+                firstMismatch = "\(mapped)：远端 \(remoteKeys.sorted()) vs 本次 \(desired.sorted())"
+            }
+        }
         await diagnostic(
             "App ID features 诊断：账号已有 \(existing.count) 个 App ID，"
-                + "其中 \(featureBearingAppIDs.count) 个带回非空 features（\(featureSample)）"
+                + "其中 \(observedWithFeatures) 个带回非空 features；"
+                + "与本次要设置**完全一致**的有 \(skipCandidates) 个"
+                + "（一致的那些理论上可跳过 updateFeatures ⇒ 能省 \(skipCandidates) 次请求）"
+                + (firstMismatch.map { "；首个不一致样例 \($0)" } ?? "")
         )
 
         // 不做「existing.count >= 10 就硬拦」的本地预检（原 SEAL-APPID-305）：

@@ -847,7 +847,9 @@ struct SigningWorkspace: Sendable {
     /// **语义与 `Data.range(of:)` 完全一致** ✓ ——
     /// 相邻块之间保留 `needle.count - 1` 字节的**重叠**，
     /// 避免跨块边界的匹配被漏掉 ✓（漏掉会导致该改写的没改 ⇒ 装完闪退 ✗✗）。
-    private func containsBytes(_ needle: Data, in url: URL, chunkSize: Int = 256 * 1024) -> Bool {
+    // ⚠️ **不能是 `private`** ✗ —— `@testable` 也看不到 `private` 成员，
+    // 而这段「跨块边界」逻辑**必须**有单测（2026-09-19 构建 163 的越界写就是它 ✗）。
+    func containsBytes(_ needle: Data, in url: URL, chunkSize: Int = 256 * 1024) -> Bool {
         let needleBytes = [UInt8](needle)
         guard needleBytes.isEmpty == false else { return false }
         let overlap = needleBytes.count - 1

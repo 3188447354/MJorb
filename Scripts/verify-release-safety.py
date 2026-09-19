@@ -1705,13 +1705,22 @@ def violations(load=read):
           and "options: .mappedIfSafe" in strip_comments(
               load("Vendor/rork-sign/Sources/RorkSign/Bundle/BundleSignatureCache.swift")),
           "R50: 纯读的地方保留 .mappedIfSafe（读 entitlements / inspectMachO / 缓存条目）")
-    # 🔴 **会被改写的地方绝不许 mmap**（本仓 2026-09-19 的 SIGBUS 就是这条）
-    check("let input = try Data(contentsOf: url)" in signer_source
-          and "let input = try Data(contentsOf: url, options: .mappedIfSafe)" not in signer_source
-          and "var executable = try Data(contentsOf: executableURL)" in signer_source
-          and "var executable = try Data(contentsOf: executableURL, options: .mappedIfSafe)" not in signer_source,
-          "R50: 会被**原地改写**的 Data（签名主路径 input / var executable）绝不许用 mmap ✗ —— "
-          "Swift 的 COW 会直接在映射页上写 ⇒ SIGBUS（2026-09-19 真机 ✓）")
+    # ✅ **照抄上游 `mahee96/CodeSignKit`（SideStore 用的签名器）的内存策略**（2026-09-19 ✓）
+    #
+    # 用户指示「**照抄，禁止乱发明**」✓ —— 上游的做法是：
+    #   `MachOParser.swift:154,157` 用 `Data(contentsOf:…, options: .mappedIfSafe)` 读 ✓
+    #   `MachOSigner.swift:301` 用 `workingData.subdata(in: 0..<codeLimit)` **复制出新 Data 再改** ✓
+    # ⇒ **mmap 读（0 内存）+ 复制后改（1×）⇒ 全程 1 份** ✓
+    #
+    # ⚠️ **为什么这里 mmap 安全** ✗（本仓 2026-09-19 在别处踩过 SIGBUS ✓）：
+    # 本文件的签名入口**全部是 `_ data: Data`（不是 `inout`）** ✓，
+    # 改写都发生在 `var output = data` 的 **COW 副本**上 ✓ ⇒ mmap 那份**只被读** ✓。
+    # **反面**：`SigningWorkspace.rewriteExecutablePathReferences` **原地改** ⇒ 那里**必须**整块读 ✓（R49）。
+    # **⇒ 判据不是「哪里该用 mmap」，而是「这份 Data 会不会被原地写」** ✓。
+    check("let input = try Data(contentsOf: url, options: .mappedIfSafe)" in signer_source
+          and "var executable = try Data(contentsOf: executableURL, options: .mappedIfSafe)" in signer_source,
+          "R50: 签名器的 input / executable 必须**照抄上游用 mmap 读** ✗ —— "
+          "整块读会让峰值翻倍（2.1 GB ⇒ jetsam 杀后台，2026-09-19 真机 ✓）")
 
     # R53: `rewriteExecutablePathReferences` 必须**先分块预扫描**，命中才整块读 ✓
     #
@@ -1724,11 +1733,13 @@ def violations(load=read):
     # ⚠️ 分块扫描必须排在**整块读之前** ✗ —— 排后面等于没改 ✓。
     # ⚠️ 重叠必须保留 `needle.count - 1` 字节 ✗ —— 漏掉跨块匹配会导致**该改写的没改**
     #    ⇒ 装完闪退 ✗✗（这条最危险，所以也钉住 ✓）。
-    check("private func containsBytes(" in workspace_src
+    check("func containsBytes(" in workspace_src
           and "guard containsBytes(rpathNeedle, in: machOURL) else { return }" in workspace_src
           and "Data(buffer[0..<total]).range(of: needle) != nil" in workspace_src
           and 0 <= workspace_src.find("guard containsBytes(rpathNeedle, in: machOURL)")
-          < workspace_src.find("guard var data = try? Data(contentsOf: machOURL)"),
+          < workspace_src.find("guard var data = try? Data(contentsOf: machOURL)")
+          and "findsNeedleStraddlingAChunkBoundary" in load(
+              "SealTests/Signing/SigningWorkspaceChunkedScanTests.swift"),
           "R53: `rewriteExecutablePathReferences` 必须先**分块预扫描**、命中才整块读 ✗ —— "
           "整块读会让 jetsam 杀后台（网易云 + LocalVPN 一起被杀 ✓），mmap 会 SIGBUS ✗")
     filter_test_source = load("SealTests/Signing/SigningDiagnosticFilterTests.swift")
@@ -4269,9 +4280,9 @@ def main():
          "R49: `rewriteExecutablePathReferences` 会**原地改写**这份 Data"),
         # ── R50：会被**原地改写**的 Data 绝不许 mmap（2026-09-19 真机 SIGBUS）──
         ("Vendor/rork-sign/Sources/RorkSign/Bundle/BundleSigner.swift",
-         "let input = try Data(contentsOf: url)",
          "let input = try Data(contentsOf: url, options: .mappedIfSafe)",
-         "R50: 会被**原地改写**的 Data"),
+         "let input = try Data(contentsOf: url)",
+         "R50: 签名器的 input / executable 必须**照抄上游用 mmap 读**"),
         # ── R52：签名器 FairPlay 补丁必须保留（2026-09-19）──
         ("Vendor/rork-sign/Sources/RorkSign/MachO/MachOSigner.swift",
          "func clearFairPlayCryptid(",

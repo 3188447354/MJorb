@@ -308,7 +308,24 @@ enum BundleSigner {
         // 改写时 Swift 的 COW 照常复制 ✓ ⇒ **语义完全一致** ✓。
         // ⚠️ **不能用 `.mappedIfSafe`**：这份数据会进签名器，可能被原地改写 ✗
         //（同 `SigningWorkspace` 的 SIGBUS 事故，2026-09-19 ✓）。
-        let input = try Data(contentsOf: url)
+        // ✅ **照抄上游 `mahee96/CodeSignKit`（SideStore 用的签名器）的内存策略** ✓
+        //（2026-09-19；用户指示「照抄，禁止乱发明」✓）
+        //
+        // 上游 `MachOParser.swift:154,157`：
+        //     self.data = try Data(contentsOf: url, options: .mappedIfSafe)
+        // 上游 `MachOSigner.swift:301`：
+        //     var finalBinary = workingData.subdata(in: 0..<min(codeLimit, workingData.count))
+        // ⇒ **mmap 读（0 内存）+ 复制出新 Data 再改（1×）⇒ 全程只有 1 份** ✓
+        //
+        // ⚠️ **为什么这里 mmap 是安全的** ✗（我今天在别处踩过 SIGBUS ✓）：
+        // 本文件的签名入口**全部是 `_ data: Data`（不是 `inout`）** ✓，
+        // 改写都发生在 `var output = data` 的 **COW 副本**上 ✓
+        // ⇒ **mmap 的那份只被读，绝不被写** ✓ ⇒ 不会 SIGBUS ✓。
+        //（反面例子：`SigningWorkspace.rewriteExecutablePathReferences` **原地改**，
+        //  所以那里**必须**整块读 ✓ —— 见 R49。）
+        //
+        // ⇒ 峰值：**2× → 1×**（2.1 GB → ~1 GB）✓
+        let input = try Data(contentsOf: url, options: .mappedIfSafe)
         let cacheKey = try context.signatureCache?.makeKey(
             input: input,
             bundleIdentifier: bundleIdentifier,
@@ -728,7 +745,10 @@ private enum BundleDylibEditor {
         // 真改写时 Swift 的 COW 会照常复制 ✓ ⇒ **语义完全一致** ✓。
         // ⚠️ **不能用 `.mappedIfSafe`**：下面会 `removeDylibLoadCommands` / `injectDylibLoadCommand`
         // 重新赋值并原地改写 ✗（同 `SigningWorkspace` 的 SIGBUS 事故，2026-09-19 ✓）。
-        var executable = try Data(contentsOf: executableURL)
+        // ✅ **照抄上游：mmap 读** ✓（见上面 `input` 处那条注释的完整理由 ✓）
+        // ⚠️ 这里是 `var`，但它**只会被重新赋值**（`removeDylibLoadCommands` 返回**新的** Data ✓）
+        //    ⇒ mmap 的那份从不被原地写 ✓ ⇒ 安全 ✓
+        var executable = try Data(contentsOf: executableURL, options: .mappedIfSafe)
         if !options.dylibLoadCommandsToRemove.isEmpty {
             executable = try RorkSigner.removeDylibLoadCommands(
                 from: executable,

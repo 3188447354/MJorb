@@ -350,6 +350,22 @@ actor ApplePortalSigningService {
         try? await logStore?.append(category: .signing, level: level, message: message)
     }
 
+    /// 签名器诊断的**过滤规则**（见 `signApp` 里 `onDiagnostic` 的注释）。
+    ///
+    /// 做成**纯函数**是为了能单测 ✓ —— 它的错法两种都很隐蔽 ✗：
+    /// 「过滤太松 ⇒ 刷爆 1000 条环形缓冲、把阶段/耗时挤掉」，
+    /// 「过滤太紧 ⇒ 崩溃点那几行看不到」。两者都**不编译失败、也不崩** ✓。
+    static func isUsefulSigningDiagnostic(_ message: String) -> Bool {
+        // ① 真正签的 Mach-O（`signedCode=`）—— 定位崩溃就靠它 ✓
+        if message.contains("signedCode=") { return true }
+        // ② 有身份的可执行容器（`.app` / `.appex` / `.framework`）；
+        //    纯资源 `.bundle`（抖音 150+ 个）一律丢掉 ✗
+        guard message.contains("sealedBundle=") else { return false }
+        return message.hasSuffix(".app")
+            || message.hasSuffix(".appex")
+            || message.hasSuffix(".framework")
+    }
+
     private static func diagnosticDate(_ date: Date?) -> String {
         guard let date else { return "缺失" }
         return ISO8601DateFormatter().string(from: date)
@@ -2547,7 +2563,18 @@ actor ApplePortalSigningService {
                 // `SealLogStore` 是 **actor**（写入异步）。代价是**最后几条可能丢**
                 //（真机被 iOS 杀掉时尤其如此）—— 但它要回答的问题恰恰是
                 //「**签到了第几个 bundle 才被杀**」，那一条**大概率**已经落盘 ✓。
+                // ⚠️ **必须过滤**（2026-09-19 真机，构建 151 —— 这是我上一批引入的回归 ✗）：
+                // 签名器会对**每个** bundle（含 `BDAlogProtocol.bundle` 这类纯资源包）
+                // 和每个 Mach-O 各打一行 ⇒ 抖音一次 **200+ 行** ✗
+                // ⇒ 1000 条环形缓冲被占满，把**阶段 / 耗时 / 错误**这些真正要看的行**挤出去了** ✗✗
+                //（实测：构建 151 的日志里 204/240 行都是「重签：」✗）。
+                //
+                // ⇒ 只保留两类：
+                //   ① `signedCode=` —— 真正签的 Mach-O（几十行；**定位崩溃就靠它** ✓）；
+                //   ② `sealedBundle=` 且以 `.app` / `.appex` / `.framework` 结尾
+                //      —— 有身份的可执行容器（跳过纯资源 `.bundle` ✓）。
                 onDiagnostic: { message in
+                    guard Self.isUsefulSigningDiagnostic(message) else { return }
                     Task { await self.diagnostic("重签：\(message)") }
                 }
             )

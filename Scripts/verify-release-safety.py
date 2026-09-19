@@ -1623,6 +1623,28 @@ def violations(load=read):
           "R47: Bundle ID 的报错必须说清「这是 Apple 的规定」，"
           "并指出想带表情应该改「App 名称」—— 否则用户会以为 Seal 不支持表情")
 
+    # R48: 签名器诊断**必须过滤**（2026-09-19 真机，构建 151 —— 我自己引入的回归 ✗）。
+    #
+    # 打开签名器诊断后，它对**每个** bundle（含 `BDAlogProtocol.bundle` 这类纯资源包）
+    # 和每个 Mach-O 各打一行 ⇒ 抖音一次 **200+ 行** ✗
+    # ⇒ 1000 条环形缓冲被占满，把**阶段 / 耗时 / 错误**全挤掉 ✗
+    #（实测那一份日志 204/240 行都是「重签：」✗）。
+    #
+    # ⚠️ 过滤太松会刷爆日志、太紧会丢掉崩溃点 —— 两种都**不编译失败、也不崩**，
+    # 所以既要有纯函数 + 单测，也要有这条守卫 ✓。
+    portal_filter_source = strip_comments(
+        load("Seal/Infrastructure/Signing/ApplePortalSigningService.swift")
+    )
+    check("static func isUsefulSigningDiagnostic(" in portal_filter_source
+          and "guard Self.isUsefulSigningDiagnostic(message) else { return }" in portal_filter_source,
+          "R48: 签名器诊断必须过滤 —— 不过滤会刷爆 1000 条环形缓冲，"
+          "把阶段 / 耗时 / 错误全挤掉（真机实测 204/240 行都是「重签：」）")
+    filter_test_source = load("SealTests/Signing/SigningDiagnosticFilterTests.swift")
+    check("signedCodeAlwaysPasses" in filter_test_source
+          and "resourceBundlesAreDropped" in filter_test_source,
+          "R48: 过滤规则必须有单测（signedCode 必须放行 / 资源包必须丢掉）—— "
+          "过滤太紧会丢掉崩溃点，而那种错法不编译失败、也不崩")
+
     # R36: 进度条与阶段轨道的数值只许来自 `SigningProgressBudget`（2026-09-18）。
     #
     # 起因：用户反馈「百分比进度条和底部 5 个横杠都是跳着走的，不像 0→100 的丝滑」。
@@ -4125,6 +4147,11 @@ def main():
          "Apple 规定", 
          "Seal 规定", 
          "R47: Bundle ID 的报错必须说清「这是 Apple 的规定」"),
+        # ── R48：签名器诊断必须过滤（2026-09-19）──
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "guard Self.isUsefulSigningDiagnostic(message) else { return }",
+         "guard true else { return }",
+         "R48: 签名器诊断必须过滤"),
         # ── R40：102c 不得标失效（2026-09-18 真机）──
         # 删掉排除：账号又会在「紧接 3 次限流退避之后」被标成失效 ⇒ 死循环。
         ("Seal/Core/Accounts/AppleServiceFailurePolicy.swift",

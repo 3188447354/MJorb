@@ -1181,30 +1181,24 @@ actor ApplePortalSigningService {
             sealSignerConfirmed = isSeal == false
         }
 
-        // AltStore/SideStore 的免费团队真实链路：门户已有证书但没有任何可签满 7 天的
-        // 本机身份时，先撤销旧证书，再创建新证书。免费团队只有一个活动开发证书槽位，
-        // 继续 add 只会确定性得到 3022/7460。
-        if team.type == .free, certificates.isEmpty == false {
-            let candidates = SigningCertificateMaterialPolicy.rotationCandidates(
-                remoteSerialNumbers: certificates.map(\.serialNumber),
-                reuseStatusBySerial: reuseStatusBySerial,
-                runningSealSerialNumbers: sealActualSignerSerials
-            )
-            if candidates.isEmpty == false {
-                return try await rotateCertificatesAndCreateIdentity(
-                    candidates: candidates,
-                    sealSignerConfirmed: sealSignerConfirmed,
-                    certificates: certificates,
-                    secret: secret,
-                    team: team,
-                    session: session,
-                    deviceName: deviceName,
-                    persistSigningMaterial: persistSigningMaterial,
-                    persistRevokedSigningMaterial: persistRevokedSigningMaterial
-                )
-            }
-        }
-
+        // ⚠️ **不再「预判性轮换」—— 改成 SideStore 的「先创建」顺序**（2026-09-19，对照上游后改）。
+        //
+        // 原实现：免费团队 + 门户已有证书 ⇒ **先撤销旧证书、再创建新的** ✗
+        //（当时的理由：免费团队只有一个活动槽位，继续 add 会确定性得到 3022/7460）。
+        //
+        // 但 SideStore 的 `CertificateProvisioningFlow` 是**先创建** ✓：
+        //     复用活跃证书 → 不行 ⇒ 直接 `requestCertificate`（创建）
+        //     → **只有创建失败**才进 `replaceCertificate`（撤销 → 再创建）
+        //
+        // ⇒ **差别出在「槽位其实可用」的时候**：Seal 的「不可用」是**本地判断** ✓
+        //   （无本机私钥 / 剩余不足 7 天），可能比 Apple 的判定**更悲观** ✗
+        //   ⇒ 于是**白撤掉一张本来还能用的证书** ✗✗。
+        // ⇒ 而且「先创建」把「撤销了却没建成」的窗口压到**只在真的满时**才出现 ✓。
+        //
+        // ⇒ 现在统一走下面这条链路：**创建 → 撞 3022 → 才轮换** ✓
+        //（免费团队撞 3022 的代价只是**一次注定失败的请求** ✓，可忽略；
+        //  而**自动撤销能力保留** ✓ —— 撞 3022 后仍由 `rotateCertificatesAndCreateIdentity`
+        //  撤销 + 重建，用户无需介入 ✓）。
         do {
             return try await createSigningIdentity(
                 secret: secret,

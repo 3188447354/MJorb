@@ -2699,10 +2699,19 @@ def violations(load=read):
           and "fullSerialText(certificate.serialNumber)" in cert_view,
           "Certificates: UI must show full identity and associated apps")
     signing_service = load("Seal/Infrastructure/Signing/ApplePortalSigningService.swift")
-    check("if team.type == .free, certificates.isEmpty == false" in signing_service
-          and 'catch let failure as ImportFailure where failure.code == "SEAL-CERT-204b"' in signing_service
+    # ⚠️ **2026-09-19 改**：原来是「**预判性轮换**（免费团队 + 门户已有证书 ⇒ 先撤销 ✗）
+    # **或** 撞 3022 后轮换」两条并存 —— 但它的文案本来就写的是 **or** ✓。
+    # 对照上游 SideStore 的 `CertificateProvisioningFlow` 后改成**只走后者** ✓：
+    #     复用活跃证书 → 不行 ⇒ **直接创建** → 只有创建失败才进 `replaceCertificate`（撤销 → 再创建）
+    # 理由：Seal 的「不可用」是**本地判断**（无本机私钥 / 剩余不足 7 天），
+    # 可能比 Apple 的判定**更悲观** ✗ ⇒ 预判性撤销会**白撤一张本来还能用的证书** ✗✗。
+    # **自动撤销能力保留** ✓（撞 3022 后仍由 `rotateCertificatesAndCreateIdentity` 撤销 + 重建）。
+    # ⚠️ 断言用**带 ` {` 的形式**：文件里 `SEAL-CERT-204b` 出现两次 ——
+    # 1210 是**外层触发点**（有 ` {`），1278 是轮换循环内部（没有）。
+    # 只写前半段会被 1278 匹配上，变异（改掉 1210）就抓不住了 ✗。
+    check('} catch let failure as ImportFailure where failure.code == "SEAL-CERT-204b" {' in signing_service
           and "rotationCandidates(" in signing_service,
-          "Certificates: unusable/stale bindings must rotate before a free-team request or after exact 3022")
+          "Certificates: unusable/stale bindings must rotate after exact 3022 (create first, revoke only on 3022)")
     settings = load("Seal/Features/Settings/SettingsViewModel.swift")
     check("let expirationDate = portalPresence == .invalid" in settings,
           "Certificates: revoked remote certificates must not show stale local expiry")
@@ -3170,10 +3179,12 @@ def main():
          "associatedApps(serialNumber: serialNumber, apps: apps)",
          "apps.filter { _ in false }",
          "Certificates: the installed-app list must reuse the association rule"),
+        # 2026-09-19：改成「先创建、撞 3022 才撤销」后，变异锚点移到 **3022 兜底**上 ✓
+        #（关掉它 ⇒ 账号满时不再轮换 ⇒ 断言必须红 ✓）。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "if team.type == .free, certificates.isEmpty == false {",
-         "if false {",
-         "Certificates: unusable/stale bindings must rotate before a free-team request or after exact 3022"),
+         '} catch let failure as ImportFailure where failure.code == "SEAL-CERT-204b" {',
+         "} catch let failure as ImportFailure where false {",
+         "Certificates: unusable/stale bindings must rotate after exact 3022 (create first, revoke only on 3022)"),
         ("Seal/Features/Settings/SettingsViewModel.swift",
          "let expirationDate = portalPresence == .invalid",
          "let expirationDate = false",

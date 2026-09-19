@@ -773,14 +773,37 @@ actor ApplePortalSigningService {
             // 这也解释了为什么「换账号也一样失败」—— 它是**设备身份级**的，与账号无关 ✓。
             // 更早的请求（`fetchTeams` / `ensureDevice` / 证书检查）都在 gap **之前**，
             // 用的是当时还新鲜的那份 anisette，所以它们成功 ✓ —— 与日志完全一致 ✓。
-            let refreshedAnisette = try await anisetteProvider.fetch()
-            session = ALTAppleAPISession(
-                dsid: secret.dsid,
-                authToken: secret.authToken,
-                anisetteData: refreshedAnisette,
-                xcodeVersion: AppleAccountClient.xcodeVersion
-            )
-            await diagnostic("签名：本地准备耗时较长（\(Int(prepareSeconds)) 秒），已重建 Apple 会话（换新的 anisette 一次性码）")
+            // ⚠️ **抽成闭包：每个阶段的 Apple 请求之前都要重建一次**（2026-09-19）。
+            //
+            // 这一条是**对照上游 AltStore 之后定下来的** ✓：
+            // `AppManager` 把 `FetchAnisetteDataOperation` 排在
+            // **本地打补丁之后、第一个 Apple 请求之前**，并让后续操作**显式依赖它** ——
+            //     refreshAnisetteDataOperation.addDependency(patchAppOperation)
+            //     fetchProvisioningProfilesOperation.addDependency(refreshAnisetteDataOperation)
+            //
+            // 但两者的 **Apple 工作窗口长度**差一个量级 ✗：
+            //   - AltStore：刷完就**一次操作**取完描述文件 ✓ ⇒ 一份新鲜的够用；
+            //   - Seal：App ID 阶段要发 **9 个 App ID × 2 次写请求** ✗ + 9 份描述文件 ✗
+            //     ⇒ 远超 anisette 一次性码的寿命（真机证据：1100 都发生在 **App ID 阶段** ✓）。
+            //
+            // ⇒ **每个阶段的 Apple 请求之前都重建一次** ✓。多刷几次没有副作用：
+            //   同一个 provider ⇒ machineID 不变 ✓，只是换一份新的验证码 ✓。
+            //
+            // ⚠️ 闭包里必须写 `self.`（Swift 要求显式捕获语义 ✗）；
+            // 闭包**返回**新 session、由调用点赋值 —— 不让闭包去改捕获的 `var` ✓。
+            let freshSession = { (label: String) async -> ALTAppleAPISession? in
+                guard let freshAnisette = try? await self.anisetteProvider.fetch() else { return nil }
+                await self.diagnostic("签名：已重建 Apple 会话（换新的 anisette 一次性码；\(label)）")
+                return ALTAppleAPISession(
+                    dsid: secret.dsid,
+                    authToken: secret.authToken,
+                    anisetteData: freshAnisette,
+                    xcodeVersion: AppleAccountClient.xcodeVersion
+                )
+            }
+            if let fresh = await freshSession("本地准备耗时 \(Int(prepareSeconds)) 秒") {
+                session = fresh
+            }
 
             // 证书轮换可能立刻让旧 profile 失效。磁盘容量、IPA 解包、Bundle 结构和
             // 本地重写必须全部先成功，确认已经具备可签产物后才允许触碰 Apple 证书。
@@ -799,6 +822,12 @@ actor ApplePortalSigningService {
             )
             try Task.checkCancellation()
 
+            // ⚠️ **App ID 阶段之前再刷一次**（2026-09-19）：这一阶段要连发
+            // 9 个 App ID × 2 次写请求 ✗，是本轮里**最长**的 Apple 工作窗口，
+            // 而真机上 1100 恰好都发生在这里 ✓。
+            if let fresh = await freshSession("进入 App ID 阶段") {
+                session = fresh
+            }
             await progress(.preparingAppID)
             stage = .appID
             let profileRequestStartedAt = Date()

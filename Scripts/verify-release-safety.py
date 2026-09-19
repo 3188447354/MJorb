@@ -1571,7 +1571,7 @@ def violations(load=read):
     #   → 120 秒本地准备 → 23:58:10 第一次 Apple 请求 ⇒ **1100** ✗
     #   而 gap **之前**的请求（fetchTeams / ensureDevice / 证书检查）**全部成功** ✓
     # ⇒ 时间顺序完全对上；也解释了「换账号也一样失败」（设备身份级，与账号无关）✓
-    check("let refreshedAnisette = try await anisetteProvider.fetch()" in portal_source
+    check("let freshSession = { (label: String) async -> ALTAppleAPISession? in" in portal_source
           and "var session = ALTAppleAPISession(" in portal_source,
           "R43: `prepare` 之后必须**重建会话**（重新取 anisette）—— "
           "anisette 的一次性码有效期只有几十秒，而本地准备要 105–120 秒 ⇒ "
@@ -4159,7 +4159,7 @@ def main():
          "",
          "R39: 阶段进入必须落日志"),
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "            let refreshedAnisette = try await anisetteProvider.fetch()\n",
+         "            let freshSession = { (label: String) async -> ALTAppleAPISession? in\n",
          "",
          "R43: `prepare` 之后必须**重建会话**"),
         # ── R44：阳性对照的判别性诊断（2026-09-19）──

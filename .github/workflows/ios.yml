@@ -20,7 +20,13 @@ on:
       - "Seal/**"
       - "SealTests/**"
       - "SealUITests/**"
-      - "Vendor/Minimuxer/**"
+      # ⚠️ **必须是 `Vendor/**`**（2026-09-19 修正）✗ —— 原来只列了 `Vendor/Minimuxer/**`，
+      # 于是「改了 `Vendor/CodeSignKit/Package.swift`」**根本不触发 CI** ✗✗。
+      # 而现在 `Vendor/` 里已经有**签名器**（`SideSign` / `CodeSignKit` ✓）和它的一串依赖
+      #（`GSACryptoKit` / `libdeflate` / `AnisetteKit` / `rork-sign` ✓）
+      # ⇒ 改它们却不跑 CI = 可能把坏代码推上去而毫无察觉 ✗。
+      # ⇒ 改成整目录匹配 ✓（`paths` 只决定**要不要触发**，不影响构建耗时 ✓）。
+      - "Vendor/**"
       - "project.yml"
       - "Config/**"
       - "Scripts/**"

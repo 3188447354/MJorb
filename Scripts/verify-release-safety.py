@@ -1689,6 +1689,24 @@ def violations(load=read):
           "R52: 签名器的 FairPlay 补丁必须保留 —— 少了它，清过 FairPlay 标记的镜像"
           "仍带着 cryptid=1 被签名，dyld 会拿错误的账号去解密并**在启动时崩溃**")
 
+    # R54: `ios.yml` 的 push 触发路径必须覆盖**整个 `Vendor/`**（2026-09-19 实踩 ✗）
+    #
+    # 原来只列了 `Vendor/Minimuxer/**` ✗ —— 于是「改了
+    # `Vendor/CodeSignKit/Package.swift`（统一 swift-crypto 版本）」**根本不触发 CI** ✗✗，
+    # 推上去后干等，还以为 CI 在跑 ✓。
+    #
+    # ⚠️ 而现在 `Vendor/` 里已经有**签名器本体**（`SideSign` / `CodeSignKit` ✓）
+    # 和它的一串依赖（`GSACryptoKit` / `libdeflate` / `AnisetteKit` / `rork-sign` ✓）
+    # ⇒ 改它们却不跑 CI = 可能把坏代码推上去而毫无察觉 ✗。
+    #
+    # ⇒ 断言必须是 `Vendor/**`（整目录 ✓），不能是某个子目录 ✗。
+    #（`paths` 只决定**要不要触发**，不影响构建耗时 ✓。）
+    ios_workflow = load(".github/workflows/ios.yml")
+    check('"Vendor/**"' in ios_workflow
+          and '"Vendor/Minimuxer/**"' not in ios_workflow.split("paths:")[1].split("workflow_dispatch")[0],
+          "R54: `ios.yml` 的 push 触发路径必须覆盖整个 `Vendor/**` ✗ —— "
+          "只列 `Vendor/Minimuxer/**` 会让「改了签名器却不跑 CI」，推上去干等 ✓")
+
     # R50: 读**可执行文件**（取 entitlements / 改 load commands）时**不许整块读入**
     #（2026-09-19 真机：崩溃点正是「**刚开始签最大的 `AwemeCore.framework`**」✗）。
     #
@@ -4298,6 +4316,11 @@ def main():
          "        guard containsBytes(rpathNeedle, in: machOURL) else { return }\n",
          "",
          "R53: `rewriteExecutablePathReferences` 必须先**分块预扫描**"),
+        # ── R54：ios.yml 触发路径必须覆盖整个 Vendor（2026-09-19）──
+        (".github/workflows/ios.yml",
+         '      - "Vendor/**"',
+         '      - "Vendor/Minimuxer/**"',
+         "R54: `ios.yml` 的 push 触发路径必须覆盖整个 `Vendor/**`"),
         # ── R40：102c 不得标失效（2026-09-18 真机）──
         # 删掉排除：账号又会在「紧接 3 次限流退避之后」被标成失效 ⇒ 死循环。
         ("Seal/Core/Accounts/AppleServiceFailurePolicy.swift",

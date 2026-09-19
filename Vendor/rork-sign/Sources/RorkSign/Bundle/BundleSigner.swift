@@ -306,7 +306,9 @@ enum BundleSigner {
         // ⚠️ `.mappedIfSafe`（2026-09-19）：这是**签名主路径**，每个 Mach-O 都会走到 ✗。
         // 这份数据要拿去算缓存键、再拿去签名；mmap 下**在真正改写之前都不复制** ✓，
         // 改写时 Swift 的 COW 照常复制 ✓ ⇒ **语义完全一致** ✓。
-        let input = try Data(contentsOf: url, options: .mappedIfSafe)
+        // ⚠️ **不能用 `.mappedIfSafe`**：这份数据会进签名器，可能被原地改写 ✗
+        //（同 `SigningWorkspace` 的 SIGBUS 事故，2026-09-19 ✓）。
+        let input = try Data(contentsOf: url)
         let cacheKey = try context.signatureCache?.makeKey(
             input: input,
             bundleIdentifier: bundleIdentifier,
@@ -724,7 +726,9 @@ private enum BundleDylibEditor {
         // 它确实是 `var`（下面可能改写 load commands ✓），但**常见路径不改**
         //（`dylibLoadCommandsToRemove` 为空）⇒ mmap 下就**一次复制都不发生** ✓；
         // 真改写时 Swift 的 COW 会照常复制 ✓ ⇒ **语义完全一致** ✓。
-        var executable = try Data(contentsOf: executableURL, options: .mappedIfSafe)
+        // ⚠️ **不能用 `.mappedIfSafe`**：下面会 `removeDylibLoadCommands` / `injectDylibLoadCommand`
+        // 重新赋值并原地改写 ✗（同 `SigningWorkspace` 的 SIGBUS 事故，2026-09-19 ✓）。
+        var executable = try Data(contentsOf: executableURL)
         if !options.dylibLoadCommandsToRemove.isEmpty {
             executable = try RorkSigner.removeDylibLoadCommands(
                 from: executable,

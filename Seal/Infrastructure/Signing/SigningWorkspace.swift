@@ -869,6 +869,16 @@ struct SigningWorkspace: Sendable {
         // ⚠️ 这**不是**流式处理（`AGENTS.md` 的「500MB+ 只流式」仍然适用于别处 ✗）——
         // 它只解决了「白读」与「内存峰值」，真正省掉那 45 秒要靠**分块预扫描**
         //（见 `docs/qa/2026-09-19-signing-root-cause-and-crash.md` 第六节）。
+        // ⚠️ **这里必须是普通读取，不能用 `.mappedIfSafe`**（2026-09-19 真机崩溃 ✗）。
+        //
+        // 崩溃栈：`_platform_memmove` ← `Data._Representation.replaceSubrange` ←
+        //         `SigningWorkspace.rewriteExecutablePathReferences`，
+        // 异常：`EXC_BAD_ACCESS (SIGBUS)` / `KERN_PROTECTION_FAILURE`，
+        // 地址落在 **mapped file** 区域（`vmRegionInfo`）✓。
+        //
+        // 原因：下面会对 `data` 做 `replaceSubrange` 原地改写（第 ~905 行）再 `write` 回盘 ✓。
+        // Swift 的 COW 判定「这份 Data 唯一引用」⇒ **直接在映射页上写** ✗ ⇒ 写只读页 ⇒ SIGBUS ✗✗。
+        // ⇒ **凡是要改写的 Data，一律不能用 mmap** ✓（只读的检查可以用 ✓）。
         guard let handle = try? FileHandle(forReadingFrom: machOURL) else { return }
         defer { try? handle.close() }
         guard let magicData = try? handle.read(upToCount: 4),
@@ -881,7 +891,7 @@ struct SigningWorkspace: Sendable {
         }
         guard magic == 0xfeedfacf else { return }
 
-        guard var data = try? Data(contentsOf: machOURL, options: .mappedIfSafe) else { return }
+        guard var data = try? Data(contentsOf: machOURL) else { return }
         guard data.count >= 32 else { return }
 
         let rpathNeedle = Data("@executable_path/Frameworks".utf8)

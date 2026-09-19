@@ -1648,10 +1648,21 @@ def violations(load=read):
     # 实测：「归一化」段 **45 秒** ✗ + 崩溃日志 `Footprint: +956.91 MB` ✗，
     # 而崩溃点正是最大的 `AwemeCore.framework` ✓。
     # ⇒ 必须用 `.mappedIfSafe`（mmap，不复制、不占常驻内存）✓
-    check("Data(contentsOf: machOURL, options: .mappedIfSafe)" in strip_comments(
-              load("Seal/Infrastructure/Signing/SigningWorkspace.swift")),
-          "R49: 判 Mach-O 时不许整块读入 —— 必须用 .mappedIfSafe（mmap），"
-          "否则全树每个 Mach-O 都会把整个二进制搬进内存")
+    # ⚠️ **2026-09-19 真机崩溃后反转**：这里**必须用普通读取，绝不能用 mmap** ✗✗
+    #
+    # 崩溃栈：`_platform_memmove` ← `Data._Representation.replaceSubrange` ←
+    #         `SigningWorkspace.rewriteExecutablePathReferences`，
+    # 异常：`EXC_BAD_ACCESS (SIGBUS)` / `KERN_PROTECTION_FAILURE`，
+    # 地址落在 **mapped file** 区域（`vmRegionInfo` 明确指认 ✓）。
+    #
+    # 原因：本函数会 `replaceSubrange` **原地改写**这份 Data 再 `write` 回盘 ✗；
+    # Swift 的 COW 判定「唯一引用」⇒ **直接在映射页上写** ✗ ⇒ 写只读页 ⇒ SIGBUS ✗✗。
+    # ⇒ **判据：凡是要改写的 Data 一律不许 mmap；只有纯读的检查才可以用** ✓
+    workspace_src = strip_comments(load("Seal/Infrastructure/Signing/SigningWorkspace.swift"))
+    check("guard var data = try? Data(contentsOf: machOURL) else { return }" in workspace_src
+          and "Data(contentsOf: machOURL, options: .mappedIfSafe)" not in workspace_src,
+          "R49: `rewriteExecutablePathReferences` 会**原地改写**这份 Data ⇒ 必须普通读取 ✗ —— "
+          "用 mmap 会在写映射页时 SIGBUS（2026-09-19 真机崩溃 ✓）")
 
     # R52: `Vendor/rork-sign` 的 **FairPlay 补丁**必须保留（2026-09-19，拿上游 0.6.5 一字一码对比时发现）。
     #
@@ -1679,21 +1690,28 @@ def violations(load=read):
     # 这些调用只需要 Mach-O 的**头部 / load commands**，却把整个二进制搬进内存 ✗
     # —— 抖音的 framework 有上百 MB，而崩溃日志里 `Footprint +956.91 MB` ✓。
     # 两条链路（AppBundleSigner / BundleSigner）都要，缺一条就等于没修 ✗。
+    # ⚠️ **2026-09-19 真机崩溃后收窄**：mmap **只准用在纯读的地方** ✓
+    #
+    # 保留（纯读）：`readEntitlementsXML(...)` / `inspectMachO(...)` / 缓存条目 decode ✓
+    # 回退（会被改写 ✗）：签名主路径的 `input`（进签名器）/ `var executable`（会被重新赋值）
+    #   —— 二者都会 SIGBUS（同 R49 ✓）。
     mapped = "Data(contentsOf: executableURL, options: .mappedIfSafe)"
     signer_source = strip_comments(
         load("Vendor/rork-sign/Sources/RorkSign/Bundle/BundleSigner.swift")
     )
-    # ⚠️ `BundleSigner` 里有**三处**读大文件（签名主路径 / 校验 host 可执行文件 / 缓存条目）
-    # ⇒ 按**出现次数**断言，否则删掉其中一处守卫照样绿 ✗
-    #（本仓「同一模式出现多次就失去约束力」已踩过 ✗）。
     check(mapped in strip_comments(
               load("Vendor/rork-sign/Sources/RorkSign/Bundle/AppBundleSigner.swift"))
-          and mapped in signer_source
-          and signer_source.count("Data(contentsOf: url, options: .mappedIfSafe)") >= 2
+          and "Data(contentsOf: url, options: .mappedIfSafe)" in signer_source
           and "options: .mappedIfSafe" in strip_comments(
               load("Vendor/rork-sign/Sources/RorkSign/Bundle/BundleSignatureCache.swift")),
-          "R50: 读可执行文件必须用 .mappedIfSafe —— 整块读入会把上百 MB 的 framework "
-          "搬进内存（签名主路径 / 校验 / 缓存条目都要，缺一条等于没修）")
+          "R50: 纯读的地方保留 .mappedIfSafe（读 entitlements / inspectMachO / 缓存条目）")
+    # 🔴 **会被改写的地方绝不许 mmap**（本仓 2026-09-19 的 SIGBUS 就是这条）
+    check("let input = try Data(contentsOf: url)" in signer_source
+          and "let input = try Data(contentsOf: url, options: .mappedIfSafe)" not in signer_source
+          and "var executable = try Data(contentsOf: executableURL)" in signer_source
+          and "var executable = try Data(contentsOf: executableURL, options: .mappedIfSafe)" not in signer_source,
+          "R50: 会被**原地改写**的 Data（签名主路径 input / var executable）绝不许用 mmap ✗ —— "
+          "Swift 的 COW 会直接在映射页上写 ⇒ SIGBUS（2026-09-19 真机 ✓）")
     filter_test_source = load("SealTests/Signing/SigningDiagnosticFilterTests.swift")
     check("signedCodeAlwaysPasses" in filter_test_source
           and "resourceBundlesAreDropped" in filter_test_source,
@@ -1866,7 +1884,7 @@ def violations(load=read):
     # —— 那会表现为「签名中途莫名失败」。
     check("guard let magicData = try? handle.read(upToCount: 4)" in workspace_source
           and 0 <= workspace_source.find("guard magic == 0xfeedfacf")
-          < workspace_source.find("guard var data = try? Data(contentsOf: machOURL, options: .mappedIfSafe)"),
+          < workspace_source.find("guard var data = try? Data(contentsOf: machOURL)"),
           "R37: 判 Mach-O magic 必须**先只读前 4 字节** —— 整体读入之后再判，会让全树遍历"
           "（5053 个文件 / 1.46 GB）把每个文件都读进内存，非 Mach-O 的那些纯属浪费，"
           "且有 jetsam 风险")
@@ -4160,9 +4178,9 @@ def main():
          "        }\n"
          "        guard magic == 0xfeedfacf else { return }\n"
          "\n"
-         "        guard var data = try? Data(contentsOf: machOURL, options: .mappedIfSafe) else { return }\n"
-         "        guard data.count >= 32 else { return }\n",
          "        guard var data = try? Data(contentsOf: machOURL) else { return }\n"
+         "        guard data.count >= 32 else { return }\n",
+         "        guard var data = try? Data(contentsOf: machOURL, options: .mappedIfSafe) else { return }\n"
          "        guard data.count >= 32 else { return }\n"
          "        guard data.withUnsafeBytes({ $0.loadUnaligned(fromByteOffset: 0, as: UInt32.self) })\n"
          "            == 0xfeedfacf else { return }\n",
@@ -4220,14 +4238,14 @@ def main():
          "R48: 签名器诊断必须过滤"),
         # ── R49：判 Mach-O 不许整块读入（2026-09-19）──
         ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
-         "Data(contentsOf: machOURL, options: .mappedIfSafe)",
-         "Data(contentsOf: machOURL)",
-         "R49: 判 Mach-O 时不许整块读入"),
-        # ── R50：读可执行文件不许整块读入（2026-09-19）──
-        ("Vendor/rork-sign/Sources/RorkSign/Bundle/AppBundleSigner.swift",
-         "Data(contentsOf: executableURL, options: .mappedIfSafe)",
-         "Data(contentsOf: executableURL)",
-         "R50: 读可执行文件必须用 .mappedIfSafe"),
+         "guard var data = try? Data(contentsOf: machOURL) else { return }",
+         "guard var data = try? Data(contentsOf: machOURL, options: .mappedIfSafe) else { return }",
+         "R49: `rewriteExecutablePathReferences` 会**原地改写**这份 Data"),
+        # ── R50：会被**原地改写**的 Data 绝不许 mmap（2026-09-19 真机 SIGBUS）──
+        ("Vendor/rork-sign/Sources/RorkSign/Bundle/BundleSigner.swift",
+         "let input = try Data(contentsOf: url)",
+         "let input = try Data(contentsOf: url, options: .mappedIfSafe)",
+         "R50: 会被**原地改写**的 Data"),
         # ── R52：签名器 FairPlay 补丁必须保留（2026-09-19）──
         ("Vendor/rork-sign/Sources/RorkSign/MachO/MachOSigner.swift",
          "func clearFairPlayCryptid(",

@@ -1639,6 +1639,19 @@ def violations(load=read):
           and "guard Self.isUsefulSigningDiagnostic(message) else { return }" in portal_filter_source,
           "R48: 签名器诊断必须过滤 —— 不过滤会刷爆 1000 条环形缓冲，"
           "把阶段 / 耗时 / 错误全挤掉（真机实测 204/240 行都是「重签：」）")
+
+    # R49: 判 Mach-O 时**不许把整个二进制读进内存**（2026-09-19 真机，构建 151）。
+    #
+    # `rewriteExecutablePathReferences` 对**全树每个 Mach-O** 调用一次，
+    # 而它第一步是 `Data(contentsOf:)` ⇒ 抖音 30+ 个 framework、几百 MB 白搬进内存 ✗
+    #（紧接着的 `firstRange` 判定在**绝大多数二进制上都会失败** ✗）。
+    # 实测：「归一化」段 **45 秒** ✗ + 崩溃日志 `Footprint: +956.91 MB` ✗，
+    # 而崩溃点正是最大的 `AwemeCore.framework` ✓。
+    # ⇒ 必须用 `.mappedIfSafe`（mmap，不复制、不占常驻内存）✓
+    check("Data(contentsOf: machOURL, options: .mappedIfSafe)" in strip_comments(
+              load("Seal/Infrastructure/Signing/SigningWorkspace.swift")),
+          "R49: 判 Mach-O 时不许整块读入 —— 必须用 .mappedIfSafe（mmap），"
+          "否则全树每个 Mach-O 都会把整个二进制搬进内存")
     filter_test_source = load("SealTests/Signing/SigningDiagnosticFilterTests.swift")
     check("signedCodeAlwaysPasses" in filter_test_source
           and "resourceBundlesAreDropped" in filter_test_source,
@@ -1811,7 +1824,7 @@ def violations(load=read):
     # —— 那会表现为「签名中途莫名失败」。
     check("guard let magicData = try? handle.read(upToCount: 4)" in workspace_source
           and 0 <= workspace_source.find("guard magic == 0xfeedfacf")
-          < workspace_source.find("guard var data = try? Data(contentsOf: machOURL)"),
+          < workspace_source.find("guard var data = try? Data(contentsOf: machOURL, options: .mappedIfSafe)"),
           "R37: 判 Mach-O magic 必须**先只读前 4 字节** —— 整体读入之后再判，会让全树遍历"
           "（5053 个文件 / 1.46 GB）把每个文件都读进内存，非 Mach-O 的那些纯属浪费，"
           "且有 jetsam 风险")
@@ -4094,7 +4107,7 @@ def main():
          "        }\n"
          "        guard magic == 0xfeedfacf else { return }\n"
          "\n"
-         "        guard var data = try? Data(contentsOf: machOURL) else { return }\n"
+         "        guard var data = try? Data(contentsOf: machOURL, options: .mappedIfSafe) else { return }\n"
          "        guard data.count >= 32 else { return }\n",
          "        guard var data = try? Data(contentsOf: machOURL) else { return }\n"
          "        guard data.count >= 32 else { return }\n"
@@ -4152,6 +4165,11 @@ def main():
          "guard Self.isUsefulSigningDiagnostic(message) else { return }",
          "guard true else { return }",
          "R48: 签名器诊断必须过滤"),
+        # ── R49：判 Mach-O 不许整块读入（2026-09-19）──
+        ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
+         "Data(contentsOf: machOURL, options: .mappedIfSafe)",
+         "Data(contentsOf: machOURL)",
+         "R49: 判 Mach-O 时不许整块读入"),
         # ── R40：102c 不得标失效（2026-09-18 真机）──
         # 删掉排除：账号又会在「紧接 3 次限流退避之后」被标成失效 ⇒ 死循环。
         ("Seal/Core/Accounts/AppleServiceFailurePolicy.swift",

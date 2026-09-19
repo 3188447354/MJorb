@@ -855,6 +855,20 @@ struct SigningWorkspace: Sendable {
         //
         // 改法**行为完全不变**：只把「读整个文件」推迟到 magic 命中之后。
         // （`u32` 那个小工具函数只剩这一处用途，随之下移成内联读取。）
+        // ⚠️ **`.mappedIfSafe`（内存映射）而不是整块读入**（2026-09-19 真机，构建 151）。
+        //
+        // 本函数对**全树每个 Mach-O** 调用一次，而下一步的 `firstRange` 判定
+        // 在**绝大多数二进制上都会失败**（只有引用了根目录 framework 的那几个才命中 ✓）
+        // ⇒ 原样整体读入等于把几百 MB 白搬进内存 ✗：
+        // 「归一化」段实测 **45 秒** ✗，且崩溃日志里 `Footprint: +956.91 MB` ✗。
+        //
+        // `.mappedIfSafe` 让 `Data` 走 mmap：**不复制、不占常驻内存** ✓，
+        // 扫描时按页调入 ✓；系统不支持映射时它会自动退化成普通读取 ✓
+        // ⇒ **语义与原来完全一致** ✓（同样的字节、同样的 `firstRange`、同样的 `write`）。
+        //
+        // ⚠️ 这**不是**流式处理（`AGENTS.md` 的「500MB+ 只流式」仍然适用于别处 ✗）——
+        // 它只解决了「白读」与「内存峰值」，真正省掉那 45 秒要靠**分块预扫描**
+        //（见 `docs/qa/2026-09-19-signing-root-cause-and-crash.md` 第六节）。
         guard let handle = try? FileHandle(forReadingFrom: machOURL) else { return }
         defer { try? handle.close() }
         guard let magicData = try? handle.read(upToCount: 4),
@@ -867,7 +881,7 @@ struct SigningWorkspace: Sendable {
         }
         guard magic == 0xfeedfacf else { return }
 
-        guard var data = try? Data(contentsOf: machOURL) else { return }
+        guard var data = try? Data(contentsOf: machOURL, options: .mappedIfSafe) else { return }
         guard data.count >= 32 else { return }
 
         let rpathNeedle = Data("@executable_path/Frameworks".utf8)

@@ -2540,7 +2540,16 @@ actor ApplePortalSigningService {
                 privateKeyData: privateKeyData,
                 mainBundleID: mainBundleID,
                 profiles: materials,
-                appGroupIdentifiers: appGroups
+                appGroupIdentifiers: appGroups,
+                // ⚠️ 打开签名器内部的逐 bundle 诊断（2026-09-19）。
+                //
+                // 为什么是 fire-and-forget：签名器给的是**同步回调**，而
+                // `SealLogStore` 是 **actor**（写入异步）。代价是**最后几条可能丢**
+                //（真机被 iOS 杀掉时尤其如此）—— 但它要回答的问题恰恰是
+                //「**签到了第几个 bundle 才被杀**」，那一条**大概率**已经落盘 ✓。
+                onDiagnostic: { message in
+                    Task { await self.diagnostic("重签：\(message)") }
+                }
             )
         }.value
         // ⚠️ 命中数一起报（2026-09-18）：续签同一个 App 时证书/entitlements/内容都没变

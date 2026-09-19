@@ -65,7 +65,19 @@ enum RorkAppSigner {
         privateKeyData: Data,
         mainBundleID: String,
         profiles: [ProfileMaterial],
-        appGroupIdentifiers: [String] = []
+        appGroupIdentifiers: [String] = [],
+        // ⚠️ **签名器内部诊断出口**（2026-09-19）。
+        //
+        // 真机（构建 147）：Seal 在 `signing` 阶段被 iOS **按 CPU 预算杀掉** ✗
+        //（`bug_type 202`：90 秒 CPU / 166 秒，超过「180 秒内 50%」的上限），
+        // 而签名阶段**一行日志都没有** ⇒ 连「死在哪个 bundle」都不知道 ✗。
+        //
+        // `RorkSigner` 其实**自带**一套 `SigningDiagnostics`（逐 bundle 打
+        // `>>> Signing: <path>` / AppName / BundleId …），但
+        // `AppSigningOptions.diagnostics` **默认 `.disabled`**，Seal 从来没设置过它 ✗。
+        //
+        // ⇒ 这里把出口暴露给调用方 ✓。默认 nil ⇒ **不改变任何现有行为** ✓。
+        onDiagnostic: ((String) -> Void)? = nil
     ) throws -> SigningCacheStats {
         guard certificateData.isEmpty == false else {
             throw SignError.missingCertificate
@@ -102,7 +114,7 @@ enum RorkAppSigner {
         }
 
         // 主 Bundle ID 已在 prepare 阶段改写，这里传同一个 ID，rork-sign rebase 后保持不变
-        let options = AppSigningOptions(
+        var options = AppSigningOptions(
             bundleIdentifier: mainBundleID,
             rootProvisioningProfile: mainProfile.data,
             provisioningProfilesByBundleIdentifier: extensionProfiles,
@@ -115,6 +127,14 @@ enum RorkAppSigner {
             // 取不到就传 nil ⇒ 退化成原来的「每次全量重签」，**不会失败**。
             signingCache: SigningCacheStore.preparedOptions()
         )
+
+        // ⚠️ 把签名器内部的逐 bundle 诊断接到调用方（默认关闭 ⇒ 显式打开）。
+        // 它是**同步回调**，所以调用方那边只能是 fire-and-forget（见 `signApp` 的注释）。
+        if let onDiagnostic {
+            options.diagnostics = SigningDiagnostics(eventHandler: { _, message in
+                onDiagnostic(message)
+            })
+        }
 
         do {
             let result = try RorkSigner.signBundle(

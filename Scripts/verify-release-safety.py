@@ -1598,6 +1598,20 @@ def violations(load=read):
           "R45: 重签前必须有「分界日志」—— 真机上 Seal 在 signing 阶段闪退，" 
           "没有它连「Swift 侧准备」与「签名器内部」都分不开")
 
+    # R46: 签名器内部的逐 bundle 诊断必须被**打开**（2026-09-19 真机）。
+    #
+    # 真机（构建 147）：Seal 在 `signing` 阶段被 iOS **按 CPU 预算杀掉**
+    #（崩溃日志 `bug_type 202`：90 秒 CPU / 166 秒，超过「180 秒内 50%」的上限），
+    # 而签名阶段**一行日志都没有** ⇒ 连「死在哪个 bundle」都不知道 ✗。
+    #
+    # 根因：`RorkSigner` **自带** `SigningDiagnostics`（逐 bundle 打
+    # `>>> Signing: <path>`），但 `AppSigningOptions.diagnostics` **默认 `.disabled`**，
+    # 而 Seal **从来没设置过它** ✗。
+    check("options.diagnostics = SigningDiagnostics(" in strip_comments(
+              load("Seal/Infrastructure/Signing/RorkAppSigner.swift")),
+          "R46: 签名器内部的逐 bundle 诊断必须被打开 —— 否则真机被 CPU 预算杀掉时，"
+          "日志里连「死在哪个 bundle」都不知道")
+
     # R36: 进度条与阶段轨道的数值只许来自 `SigningProgressBudget`（2026-09-18）。
     #
     # 起因：用户反馈「百分比进度条和底部 5 个横杠都是跳着走的，不像 0→100 的丝滑」。
@@ -4090,6 +4104,11 @@ def main():
          "签名：开始重签（逐 Mach-O 串行）",
          "签名：重签开始（分界日志已删）",
          "R45: 重签前必须有「分界日志」"),
+        # ── R46：签名器逐 bundle 诊断必须打开（2026-09-19）──
+        ("Seal/Infrastructure/Signing/RorkAppSigner.swift",
+         "options.diagnostics = SigningDiagnostics(", 
+         "options.diagnostics = SigningDiagnostics.disabled // ", 
+         "R46: 签名器内部的逐 bundle 诊断必须被打开"),
         # ── R40：102c 不得标失效（2026-09-18 真机）──
         # 删掉排除：账号又会在「紧接 3 次限流退避之后」被标成失效 ⇒ 死循环。
         ("Seal/Core/Accounts/AppleServiceFailurePolicy.swift",

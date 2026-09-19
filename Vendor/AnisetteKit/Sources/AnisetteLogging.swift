@@ -1,5 +1,5 @@
 //
-//  AnisetteKitLogging.swift
+//  AnisetteLogging.swift
 //  AnisetteKit
 //
 //  Created by Magesh K on 17/08/26.
@@ -7,34 +7,17 @@
 //
 
 import Foundation
-import anisette_core
 
-public enum AnisetteKitLogging {
+public enum AnisetteLogging {
     private static let lock = NSLock()
-    private nonisolated(unsafe) static var isEnabled: Bool = false
+    private nonisolated(unsafe) static var _isLoggingEnabled: Bool = false
 
     public static var isLoggingEnabled: Bool {
-        lock.withLock { isEnabled }
+        lock.withLock { _isLoggingEnabled }
     }
 
     public static func setLogging(_ enabled: Bool) {
-        lock.withLock { isEnabled = enabled }
-        anisetteCoreSetLogging(enabled ? 1 : 0)
-        #if os(Windows)
-        if enabled {
-            _putenv("UNICORN_LOG_LEVEL=0xFFFFFFFF")
-            _putenv("UNICORN_LOG_DETAIL_LEVEL=2")
-        } else {
-            _putenv("UNICORN_LOG_LEVEL=0")
-        }
-        #else
-        if enabled {
-            setenv("UNICORN_LOG_LEVEL", "0xFFFFFFFF", 1)
-            setenv("UNICORN_LOG_DETAIL_LEVEL", "2", 1)
-        } else {
-            setenv("UNICORN_LOG_LEVEL", "0", 1)
-        }
-        #endif
+        lock.withLock { _isLoggingEnabled = enabled }
     }
 }
 
@@ -64,7 +47,7 @@ public func debugLog(_ text: @autoclosure () -> String) {
 }
 
 public func verboseLog(_ text: @autoclosure () -> String) {
-    if AnisetteKitLogging.isLoggingEnabled {
+    if AnisetteLogging.isLoggingEnabled {
         let message = formatLogMessage(text())
         if !message.isEmpty && message.allSatisfy({ $0 == "\n" || $0 == "\r" }) {
             print(message, terminator: "")

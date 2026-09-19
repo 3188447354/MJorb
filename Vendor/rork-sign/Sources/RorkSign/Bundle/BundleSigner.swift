@@ -413,7 +413,9 @@ enum BundleSigner {
     /// Reads the current executable entitlements before the signature is replaced.
     private static func originalEntitlementsXML(at executableURL: URL) throws -> String {
         do {
-            return try MachOSigner.readEntitlementsXML(Data(contentsOf: executableURL))
+            return try MachOSigner.readEntitlementsXML(
+                Data(contentsOf: executableURL, options: .mappedIfSafe)
+            )
         } catch {
             return ""
         }
@@ -711,7 +713,13 @@ private enum BundleDylibEditor {
         }
 
         let fileManager = FileManager.default
-        var executable = try Data(contentsOf: executableURL)
+        // ⚠️ **`.mappedIfSafe`（mmap）**（2026-09-19，与 Seal 侧同一处修法）。
+        //
+        // 这里读的是**根 bundle 的可执行文件**（抖音的 `AwemeCore` 有上百 MB ✗）。
+        // 它确实是 `var`（下面可能改写 load commands ✓），但**常见路径不改**
+        //（`dylibLoadCommandsToRemove` 为空）⇒ mmap 下就**一次复制都不发生** ✓；
+        // 真改写时 Swift 的 COW 会照常复制 ✓ ⇒ **语义完全一致** ✓。
+        var executable = try Data(contentsOf: executableURL, options: .mappedIfSafe)
         if !options.dylibLoadCommandsToRemove.isEmpty {
             executable = try RorkSigner.removeDylibLoadCommands(
                 from: executable,

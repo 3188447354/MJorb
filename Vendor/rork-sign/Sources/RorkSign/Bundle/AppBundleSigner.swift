@@ -824,7 +824,18 @@ private enum AppBundleIdentityRewriter {
         guard FileManager.default.fileExists(atPath: executableURL.path) else {
             return ""
         }
-        let executableEntitlementsXML = try MachOSigner.readEntitlementsXML(Data(contentsOf: executableURL))
+        // ⚠️ **`.mappedIfSafe`（mmap）而不是整块读入**（2026-09-19，Seal 侧真机证据）。
+        //
+        // 本函数只需要 Mach-O 的**头部 / load commands**（entitlements 就在里面）✗，
+        // 却把**整个可执行文件**搬进内存 —— 而抖音的 `AwemeCore.framework` 有上百 MB ✗。
+        // 真机崩溃点正好是「**刚开始签 `AwemeCore.framework`**」那一刻 ✓，
+        // 崩溃日志里 `Footprint: 152.94 MB -> 1109.84 MB (+956.91 MB)` ✓。
+        //
+        // `.mappedIfSafe` 走 mmap：**不复制、不占常驻内存** ✓，按页调入 ✓；
+        // 系统不支持映射时**自动退化成普通读取** ✓ ⇒ **语义完全一致** ✓。
+        let executableEntitlementsXML = try MachOSigner.readEntitlementsXML(
+            Data(contentsOf: executableURL, options: .mappedIfSafe)
+        )
         if !executableEntitlementsXML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return executableEntitlementsXML
         }

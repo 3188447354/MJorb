@@ -1652,6 +1652,20 @@ def violations(load=read):
               load("Seal/Infrastructure/Signing/SigningWorkspace.swift")),
           "R49: 判 Mach-O 时不许整块读入 —— 必须用 .mappedIfSafe（mmap），"
           "否则全树每个 Mach-O 都会把整个二进制搬进内存")
+
+    # R50: 读**可执行文件**（取 entitlements / 改 load commands）时**不许整块读入**
+    #（2026-09-19 真机：崩溃点正是「**刚开始签最大的 `AwemeCore.framework`**」✗）。
+    #
+    # 这些调用只需要 Mach-O 的**头部 / load commands**，却把整个二进制搬进内存 ✗
+    # —— 抖音的 framework 有上百 MB，而崩溃日志里 `Footprint +956.91 MB` ✓。
+    # 两条链路（AppBundleSigner / BundleSigner）都要，缺一条就等于没修 ✗。
+    mapped = "Data(contentsOf: executableURL, options: .mappedIfSafe)"
+    check(mapped in strip_comments(
+              load("Vendor/rork-sign/Sources/RorkSign/Bundle/AppBundleSigner.swift"))
+          and mapped in strip_comments(
+              load("Vendor/rork-sign/Sources/RorkSign/Bundle/BundleSigner.swift")),
+          "R50: 读可执行文件必须用 .mappedIfSafe —— 整块读入会把上百 MB 的 framework "
+          "搬进内存（两条链路都要，缺一条等于没修）")
     filter_test_source = load("SealTests/Signing/SigningDiagnosticFilterTests.swift")
     check("signedCodeAlwaysPasses" in filter_test_source
           and "resourceBundlesAreDropped" in filter_test_source,
@@ -4170,6 +4184,11 @@ def main():
          "Data(contentsOf: machOURL, options: .mappedIfSafe)",
          "Data(contentsOf: machOURL)",
          "R49: 判 Mach-O 时不许整块读入"),
+        # ── R50：读可执行文件不许整块读入（2026-09-19）──
+        ("Vendor/rork-sign/Sources/RorkSign/Bundle/AppBundleSigner.swift",
+         "Data(contentsOf: executableURL, options: .mappedIfSafe)",
+         "Data(contentsOf: executableURL)",
+         "R50: 读可执行文件必须用 .mappedIfSafe"),
         # ── R40：102c 不得标失效（2026-09-18 真机）──
         # 删掉排除：账号又会在「紧接 3 次限流退避之后」被标成失效 ⇒ 死循环。
         ("Seal/Core/Accounts/AppleServiceFailurePolicy.swift",

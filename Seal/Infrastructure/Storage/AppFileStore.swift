@@ -569,6 +569,15 @@ actor AppFileStore {
         }
     }
 
+    /// 读一个文件。
+    ///
+    /// ⚠️ **返回值是 mmap 出来的 `Data` —— 调用方绝不许原地改写它** ✗✗
+    /// （`replaceSubrange` / `withUnsafeMutableBytes` 直写都不行 ✓）。
+    ///
+    /// 原因（2026-09-19 真机 SIGBUS 事故 ✓）：mmap 的页是**只读**的，
+    /// Swift 的 COW 对「唯一引用」的 mmap Data **不复制** ⇒ 直接写映射页 ⇒ SIGBUS ✗。
+    /// 当前所有调用点都是**纯读**（图标 / IPA 数据 / 已签包）✓，所以暂时安全；
+    /// **新增调用方若要改写，请改用普通读取**（`Data(contentsOf:)` 不带 options）✓。
     func read(relativePath: String) throws -> Data {
         let url = try fileURL(relativePath: relativePath)
         return try Data(contentsOf: url, options: .mappedIfSafe)

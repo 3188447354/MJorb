@@ -417,6 +417,45 @@ appGroups 个数 / 主 Bundle ID）⇒ 下次崩溃能分出「Swift 侧准备�
 
 ---
 
+### 2026-09-19 · 🔴🔴 **mmap 导致 SIGBUS**（构建 160，我引入的崩溃 ✗）
+
+**现象**：点签名后，日志停在「`阶段进入：preparingBundle`」，**12 秒后闪退** ✗。
+用户提供 `.ips`，关键字段：
+
+```
+bug_type   = 309
+exception  = EXC_BAD_ACCESS (SIGBUS)
+subtype    = KERN_PROTECTION_FAILURE at 0x…7d0
+vmRegionInfo: 地址落在  mapped file  [288K]  r--/rw-  SM=COW     ← 内存映射的文件
+栈：_platform_memmove
+    Data._Representation.replaceSubrange(_:with:count:)
+    SigningWorkspace.rewriteExecutablePathReferences            ← ★
+    SigningWorkspace.normalizeRootFrameworksIntoFrameworksDirectory
+```
+
+**根因**：我为了让大包不吃内存，把 `Data(contentsOf:)` 改成
+`Data(contentsOf:options:.mappedIfSafe)` ✓ —— **但那个函数会 `replaceSubrange` 原地改写这份 Data**
+再 `write` 回盘 ✗。
+**Swift 的 COW 判定「这份 Data 唯一引用」⇒ 直接往映射页上写** ✗ ⇒ 写只读页 ⇒ **SIGBUS** ✗✗。
+（我当时的推理是「真改写时 COW 会照常复制」—— **对 mmap 的 Data 不成立** ✗）
+
+**修复**：**mmap 只准用在纯读的地方** ✓
+- 回退 3 处会被改写的（`SigningWorkspace` / 签名主路径 `input` / `var executable`）✗
+- 保留 7 处纯读的 ✓（`readEntitlementsXML` / `inspectMachO` / 缓存条目 decode / 既有两处）
+
+**守卫**：R49 **反转**（`rewriteExecutablePathReferences` 必须普通读取，mmap 形式不许出现 ✓）；
+R50 **收窄** + 新增「会被原地改写的 Data 绝不许 mmap」✓。
+
+**⚠️ 教训（两条，都值得记）**：
+1. **`mmap` 的 `Data` 不是「省内存的普通 Data」** ✗ —— 它的页是**只读**的，
+   任何原地改写（`replaceSubrange` / `withUnsafeMutableBytes` 直写）都会 **SIGBUS** ✗。
+   **判据：这份 Data 会不会被改？会 ⇒ 不许 mmap。**
+2. **改了断言的文案，必须同步改变异的标签** ✗ ——
+   守卫用 `item.startswith(expected)` 匹配，不同步会报成「变异没被抓到」，
+   看着像变异失效，其实是**断言已触发、只是消息对不上** ✓（脚本里本来就有这条注释，我又踩了一次 ✗）。
+
+---
+
 ### 2026-09-19 · 签名器的 **FairPlay cryptid 补丁**（此前只写在提交信息里，台账缺记 ✗）
 
 **现象**：已解密但 `LC_ENCRYPTION_INFO(_64)`（cmd `0x21`/`0x2c`）的 `cryptid` 仍为 1 的镜像，

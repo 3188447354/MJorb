@@ -82,7 +82,9 @@ final class BundleSignatureCache {
             return nil
         }
         let url = entryURL(for: key)
-        guard let data = try? Data(contentsOf: url),
+        // ⚠️ `.mappedIfSafe`（2026-09-19）：条目里存的是**已签名 Mach-O 的副本** ✗，
+        // 大包时可能很大；mmap 不复制 ✓，解析（`decoder.decode`）按页调入 ✓。
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
               let entry = try? decoder.decode(Entry.self, from: data),
               entry.key == key.digest,
               let signed = Data(base64Encoded: entry.signedMachOBase64),

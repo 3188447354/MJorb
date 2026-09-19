@@ -1660,12 +1660,20 @@ def violations(load=read):
     # —— 抖音的 framework 有上百 MB，而崩溃日志里 `Footprint +956.91 MB` ✓。
     # 两条链路（AppBundleSigner / BundleSigner）都要，缺一条就等于没修 ✗。
     mapped = "Data(contentsOf: executableURL, options: .mappedIfSafe)"
+    signer_source = strip_comments(
+        load("Vendor/rork-sign/Sources/RorkSign/Bundle/BundleSigner.swift")
+    )
+    # ⚠️ `BundleSigner` 里有**三处**读大文件（签名主路径 / 校验 host 可执行文件 / 缓存条目）
+    # ⇒ 按**出现次数**断言，否则删掉其中一处守卫照样绿 ✗
+    #（本仓「同一模式出现多次就失去约束力」已踩过 ✗）。
     check(mapped in strip_comments(
               load("Vendor/rork-sign/Sources/RorkSign/Bundle/AppBundleSigner.swift"))
-          and mapped in strip_comments(
-              load("Vendor/rork-sign/Sources/RorkSign/Bundle/BundleSigner.swift")),
+          and mapped in signer_source
+          and signer_source.count("Data(contentsOf: url, options: .mappedIfSafe)") >= 2
+          and "options: .mappedIfSafe" in strip_comments(
+              load("Vendor/rork-sign/Sources/RorkSign/Bundle/BundleSignatureCache.swift")),
           "R50: 读可执行文件必须用 .mappedIfSafe —— 整块读入会把上百 MB 的 framework "
-          "搬进内存（两条链路都要，缺一条等于没修）")
+          "搬进内存（签名主路径 / 校验 / 缓存条目都要，缺一条等于没修）")
     filter_test_source = load("SealTests/Signing/SigningDiagnosticFilterTests.swift")
     check("signedCodeAlwaysPasses" in filter_test_source
           and "resourceBundlesAreDropped" in filter_test_source,

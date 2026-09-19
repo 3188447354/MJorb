@@ -303,7 +303,10 @@ enum BundleSigner {
     ) throws {
         let fileManager = FileManager.default
         let attributes = try fileManager.attributesOfItem(atPath: url.path)
-        let input = try Data(contentsOf: url)
+        // ⚠️ `.mappedIfSafe`（2026-09-19）：这是**签名主路径**，每个 Mach-O 都会走到 ✗。
+        // 这份数据要拿去算缓存键、再拿去签名；mmap 下**在真正改写之前都不复制** ✓，
+        // 改写时 Swift 的 COW 照常复制 ✓ ⇒ **语义完全一致** ✓。
+        let input = try Data(contentsOf: url, options: .mappedIfSafe)
         let cacheKey = try context.signatureCache?.makeKey(
             input: input,
             bundleIdentifier: bundleIdentifier,
@@ -683,7 +686,9 @@ private struct HostedBundleSigningTransaction {
             throw RorkSignError.invalidBundle("Host executable does not exist: \(url.path).")
         }
         do {
-            _ = try RorkSigner.inspectMachO(Data(contentsOf: url))
+            // ⚠️ `.mappedIfSafe`（2026-09-19）：这里**只解析头部**判「是不是合法 Mach-O」✗，
+            // 却把整个可执行文件读进内存 —— 抖音的 framework 有上百 MB ✗。
+            _ = try RorkSigner.inspectMachO(Data(contentsOf: url, options: .mappedIfSafe))
         } catch {
             throw RorkSignError.invalidBundle("Host executable is not a supported Mach-O: \(url.path).")
         }

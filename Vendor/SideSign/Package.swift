@@ -47,7 +47,6 @@ let package = Package(
         .package(name: "CodeSignKit",  path: "../CodeSignKit"),
         .package(name: "GSACryptoKit", path: "../GSACryptoKit"),
         .package(name: "libdeflate",   path: "../libdeflate"),
-        .package(name: "AnisetteKit",  path: "../AnisetteKit"),
     ],
 
     targets: [
@@ -56,7 +55,6 @@ let package = Package(
             dependencies: [
                 .product(name: "libdeflate", package: "libdeflate"),
                 .product(name: "Crypto", package: "swift-crypto"),
-                "AnisetteKit",
                 "CodeSignKit",
                 "GSACryptoKit"
             ],
@@ -68,7 +66,6 @@ let package = Package(
                 "SideSign",
                 "CodeSignKit",
                 "GSACryptoKit",
-                "AnisetteKit",
                 .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "CLI"

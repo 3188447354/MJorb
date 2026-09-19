@@ -1707,6 +1707,26 @@ def violations(load=read):
           "R54: `ios.yml` 的 push 触发路径必须覆盖整个 `Vendor/**` ✗ —— "
           "只列 `Vendor/Minimuxer/**` 会让「改了签名器却不跑 CI」，推上去干等 ✓")
 
+    # R55: 签名身份读取必须走**上游 `MachOParser`**（2026-09-19，换签名器的一部分 ✓）
+    #
+    # 背景：Seal 原来用 `RorkSigner.checkMachOCodeSignatures` ✗ —— 它**整块读**可执行文件；
+    # 上游 `SideStore/CertificateManager.swift:325` 用的是 `MachOParser(url:)` ✓，
+    # 而 `MachOParser` 内部是 `.mappedIfSafe`（**mmap** ✓）⇒ 更省内存 ✓。
+    #
+    # ⚠️ 这条路径**喂给 `SEAL-CERT-232`** ✗（「读不出身份 ⇒ 中断证书轮换」）
+    # ⇒ 影响的是**真实行为**，不是纯诊断 ✓。
+    # ⚠️ 实测：把 `RorkSigner` 的引用全删掉后，**原来的守卫照样全绿** ✗
+    # ⇒ 说明这条路径**此前没有任何守卫覆盖** ✓ ⇒ 补上 ✓。
+    identity_reader = strip_comments(
+        load("Seal/Infrastructure/Renewal/AppBundleSigningIdentityReader.swift")
+    )
+    check("import CodeSignKit" in identity_reader
+          and "try? MachOParser(url: executableURL)" in identity_reader
+          and "parser.x509Certificates()" in identity_reader
+          and "RorkSigner." not in identity_reader,
+          "R55: 签名身份读取必须走上游 `MachOParser`（mmap ✓）✗ —— "
+          "退回 `RorkSigner` 会变成整块读，且这条路径喂给 SEAL-CERT-232，影响真实行为 ✓")
+
     # R50: 读**可执行文件**（取 entitlements / 改 load commands）时**不许整块读入**
     #（2026-09-19 真机：崩溃点正是「**刚开始签最大的 `AwemeCore.framework`**」✗）。
     #
@@ -4321,6 +4341,11 @@ def main():
          '      - "Vendor/**"',
          '      - "Vendor/Minimuxer/**"',
          "R54: `ios.yml` 的 push 触发路径必须覆盖整个 `Vendor/**`"),
+        # ── R55：身份读取必须走 MachOParser（2026-09-19）──
+        ("Seal/Infrastructure/Renewal/AppBundleSigningIdentityReader.swift",
+         "try? MachOParser(url: executableURL)",
+         "try? RorkSigner.checkMachOCodeSignatures(at: executableURL)",
+         "R55: 签名身份读取必须走上游 `MachOParser`（mmap ✓）"),
         # ── R40：102c 不得标失效（2026-09-18 真机）──
         # 删掉排除：账号又会在「紧接 3 次限流退避之后」被标成失效 ⇒ 死循环。
         ("Seal/Core/Accounts/AppleServiceFailurePolicy.swift",

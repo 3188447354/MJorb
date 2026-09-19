@@ -7,7 +7,6 @@
 //
 
 import Foundation
-import AnisetteKit
 
 public enum Constants {
     // https://gsa.apple.com/grandslam/GsService2
@@ -125,41 +124,11 @@ public enum Constants {
         public static let fileExtension              = ".dat"
     }
 
-    public enum Anisette {
-        public static let defaultClientInfo     = AnisetteConstants.defaultClientInfo
-        public static let defaultUserAgent      = AnisetteConstants.defaultUserAgent
-
-        public enum URLs {
-            public static let grandSlamLookup   = AnisetteConstants.URLs.grandSlamLookup
-        }
-
-        public enum Headers {
-            public static let machineID        = AnisetteConstants.Headers.machineID
-            public static let oneTimePassword  = AnisetteConstants.Headers.oneTimePassword
-            public static let localUserID      = AnisetteConstants.Headers.localUserID
-            public static let routingInfo      = AnisetteConstants.Headers.routingInfo
-            public static let deviceID         = AnisetteConstants.Headers.deviceID
-            public static let serialNumber     = AnisetteConstants.Headers.serialNumber
-            public static let clientInfo       = AnisetteConstants.Headers.clientInfo
-            public static let userAgent        = AnisetteConstants.Headers.userAgent
-            public static let clientTime       = AnisetteConstants.Headers.clientTime
-            public static let locale           = AnisetteConstants.Headers.locale
-            public static let timeZone         = AnisetteConstants.Headers.timeZone
-        }
-
-        public enum Libraries {
-            public static let requiredNames = AnisetteConstants.Libraries.requiredNames
-        }
-
-        public static let defaultBaseDirName                    = ".sidesign"
-        public static let localLibsSubdirectory                 = "local-libs"
-        public static let remoteLibsSubdirectory                = "remote-libs"
-        public static let provisioningSubdirectory              = "provisioning"
-        public static let cachingPollingDelayNanoseconds: UInt64 = 200_000_000
-        public static let remoteCacheDuration: TimeInterval     = 30.0
-        public static let serverValidationTimeout: TimeInterval = 3.0
-        public static let remoteRequestTimeout: TimeInterval    = 15.0
-    }
+    // ⚠️ **`Anisette` 段已删除**（2026-09-19，Seal 只需要 SideSign 的**签名能力** ✓）：
+    // 它整段都在转发 `AnisetteKit.AnisetteConstants` ✗ —— 而 Seal 有自己的 anisette 层
+    //（`Seal/Infrastructure/Accounts/` ✓），**完全不用 SideSign 的这一套** ✓
+    // ⇒ 删掉它 + `Sources/Anisette/` + `Sources/DeveloperPortal/`，
+    //    SideSign 就不必依赖新版 `AnisetteKit` 了 ✓（Seal 的 `LocalAnisetteProvider` 用的是旧版 ✓）。
 }
 
 public enum GrandSlamAuthErrorCodes {

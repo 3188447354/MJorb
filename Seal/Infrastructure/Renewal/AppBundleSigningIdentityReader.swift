@@ -1,5 +1,5 @@
 import Foundation
-import RorkSign
+import CodeSignKit
 
 /// 描述文件授权证书与实际 CMS 签名者不一致时的读取结果。
 /// 真实签名者必须来自 Mach-O 内嵌 CMS，而不是描述文件第一张证书。
@@ -23,38 +23,77 @@ struct AppBundleSigningIdentityReader: Sendable {
     typealias Inspector = @Sendable (URL) throws -> ExecutableSignerEvidence
     private let inspectExecutable: Inspector
 
-    init(inspectExecutable: @escaping Inspector = Self.inspectWithRorkSign) {
+    init(inspectExecutable: @escaping Inspector = Self.inspectWithCodeSignKit) {
         self.inspectExecutable = inspectExecutable
     }
 
-    private static func inspectWithRorkSign(_ executableURL: URL) throws -> ExecutableSignerEvidence {
-        let reports = try RorkSigner.checkMachOCodeSignatures(at: executableURL)
-        // 上游对齐：只把「能读出一致签名证书」作为识别身份的依据。
-        // 第三方工具（Sideloadly 的 bundle mangle、爱思的非标准结构）会让严格的全量
-        // CodeDirectory 哈希校验失败，但 CMS 密码学校验与签名证书仍可正常解析。
-        // 若这里仍要求 codeDirectoryHashesValid，Seal 就永远读不出第三方引导后的身份，
-        // 触发 SEAL-CERT-232 中断轮换。因此降级：不再把哈希失败判成识别失败，
-        // 仅依赖「可读出的签名证书 serial」，并把 CMS/哈希校验状态如实记录到 evidence 供诊断。
-        // 防误撤销自身证书的原始目的只需要 signer serial；serial 仍受 readTarget 的
-        // profile 授权校验（signerNotAuthorizedByProfile）保护，不受本次放宽影响。
-        let certificateReports = reports.compactMap { $0.signingCertificate }
-        guard let first = certificateReports.first else {
+    /// 读取可执行文件的**真实签名身份** —— 照抄上游 SideStore 的做法 ✓
+    ///
+    /// ## 为什么换掉 rork-sign（2026-09-19，用户死命令「一个代码不漏地抄」✓）
+    ///
+    /// 上游 `SideStore/Core/Certificates/CertificateManager.swift:313-341`
+    /// 的 `readBinaryCertificate(at:)` 是：
+    /// ```swift
+    ///     guard let parser = try? <上游用 MachOParser 解析可执行文件> else { return nil }
+    /// let certChain = parser.x509Certificates()
+    /// for (index, x509Cert) in certChain.enumerated() {
+    ///     guard let derData = x509Cert.data else { continue }
+    ///     let subjectDN = parseCertificate(derData: derData).subject
+    ///     let isFilteredOut = subjectDN.contains("Root")
+    ///                      || subjectDN.contains("Authority")
+    ///                      || subjectDN.contains("Relations")
+    ///     ...
+    /// }
+    /// ```
+    /// **⇒ `MachOParser` 用 mmap 读** ✓（`MachOParser.swift:154,157` 的 `.mappedIfSafe` ✓），
+    /// 而 rork-sign 的 `checkMachOCodeSignatures` 是整块读 ✗ —— 换掉它同时省内存 ✓。
+    ///
+    /// ## 语义（与原来一致，刻意保留的两条放宽 ✓）
+    ///
+    /// - **只把「能读出签名证书 serial」作为识别依据** ✓ —— 第三方工具（Sideloadly 的
+    ///   bundle mangle、爱思的非标准结构）会让严格的全量 CodeDirectory 哈希校验失败 ✗，
+    ///   但 CMS 密码学校验与签名证书仍可解析 ✓。若这里仍要求哈希有效，Seal 就永远读不出
+    ///   第三方引导后的身份 ⇒ 触发 `SEAL-CERT-232` **中断轮换** ✗。
+    /// - `cmsValid` / `codeDirectoryValid` 因此**只用于记录** ✓，不参与「识别成功」判定 ✓。
+    private static func inspectWithCodeSignKit(_ executableURL: URL) throws -> ExecutableSignerEvidence {
+        // ① 解析 Mach-O（上游 `MachOParser` ⇒ **mmap 读** ✓，不整块载入内存 ✓）
+        guard let parser = try? MachOParser(url: executableURL) else {
             throw IdentityReadFailure.signerMissing
         }
-        let normalized = SigningCertificateSelectionPolicy.normalizedSerialNumber(first.serialNumberHex)
-        guard normalized.isEmpty == false,
-              certificateReports.allSatisfy({
-                  SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumberHex) == normalized
-              }) else {
+
+        // ② 取证书链，并**照抄上游的过滤**：丢掉 Root / Intermediate CA ✓
+        //    （上游判据：subject 里含 "Root" / "Authority" / "Relations" ✓）
+        let chain = parser.x509Certificates()
+        let leafCertificates = chain.filter { certificate in
+            let subject = certificate.subjectSummary
+            return !(subject.contains("Root")
+                     || subject.contains("Authority")
+                     || subject.contains("Relations"))
+        }
+        // 过滤后为空 ⇒ 退回整条链（第三方工具可能把 subject 写得不规范 ✗，
+        // 那种情况下**宁可放宽也不误判「读不出身份」** ✓ —— 与原来的放宽语义一致 ✓）
+        let candidates = leafCertificates.isEmpty ? chain : leafCertificates
+
+        let normalizedSerials = candidates
+            .map { SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumberHex) }
+            .filter { $0.isEmpty == false }
+        guard let first = normalizedSerials.first else {
+            throw IdentityReadFailure.signerMissing
+        }
+        // ③ 各张证书（含多架构）的 serial 必须一致 —— 保留原来的防篡改检查 ✓
+        guard normalizedSerials.allSatisfy({ $0 == first }) else {
             throw IdentityReadFailure.inconsistentArchitectures
         }
-        let signedReports = reports.filter(\.hasCMS)
-        let cmsValid = signedReports.isEmpty == false && signedReports.allSatisfy(\.cmsSignatureValid)
-        let codeDirectoryValid = signedReports.allSatisfy(\.codeDirectoryHashesValid)
+
+        // ④ CMS / 哈希状态：用上游的 `SignatureVerifier` ✓（照抄上游 ✓）
+        //    ⚠️ 它内部是 `Data(contentsOf:)` 整块读 ✗（`SignatureVerifier.swift:62` ✓）——
+        //    但这条路径只在**读身份**时走一次 ✓，不在签名热路径上 ✓；
+        //    而且失败与否**不影响识别结果** ✓（见上面「刻意保留的两条放宽」✓）。
+        let verification = SignatureVerifier.verify(url: executableURL, deep: false)
         return ExecutableSignerEvidence(
-            serialNumber: normalized,
-            cmsValid: cmsValid,
-            codeDirectoryValid: codeDirectoryValid
+            serialNumber: first,
+            cmsValid: verification.isValid,
+            codeDirectoryValid: verification.isValid
         )
     }
 

@@ -869,8 +869,18 @@ struct SigningWorkspace: Sendable {
             if Data(buffer[0..<total]).range(of: needle) != nil { return true }
 
             // 尾部 overlap 字节留到下一块，避免漏掉跨块边界的匹配 ✓
+            //
+            // ⚠️ **必须用 `memmove` 就地搬，不能 `replaceSubrange` 缩短数组** ✗✗
+            //（2026-09-19 构建 163 真机崩溃 ✓）：
+            // `replaceSubrange(0..<k, with: [])` 会把 `buffer` **变短** ✗，
+            // 而下一轮的 `base.advanced(by: carried)` + `read(chunkSize)` 是按
+            // **原始长度**算的 ⇒ **越界写堆** ⇒ 直接崩 ✗。
+            // ⇒ 保持 `buffer` 长度不变，只把尾部 `overlap` 字节搬到开头 ✓。
             if total > overlap {
-                buffer.replaceSubrange(0..<(total - overlap), with: [])
+                buffer.withUnsafeMutableBytes { raw in
+                    guard let base = raw.baseAddress else { return }
+                    memmove(base, base.advanced(by: total - overlap), overlap)
+                }
                 carried = overlap
             } else {
                 carried = total

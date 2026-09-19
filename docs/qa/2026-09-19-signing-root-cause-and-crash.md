@@ -13,7 +13,7 @@
 | 1 | **「签不了」的根因是 anisette 的一次性验证码被复用到 120 秒之后** ⇒ Apple 返回 1100 | **已修 + 真机确认** ✓ |
 | 2 | 本地耗时的大头是**归一化（30–35 秒）**，不是解压（7–11 秒）、更不是打包（1 秒） | 已定位 ✓ |
 | 3 | 描述文件回收被**永久阻断**，原因是**整条设备查询通道不可信**（系统 App 也查不到） | 已确认，修复待做 |
-| 4 | 构建 147 上 Seal 在 **`signing` 阶段直接闪退** | **未定位** ✗ |
+| 4 | 构建 147 上 Seal 在 **`signing` 阶段直接闪退** | **已定位**：iOS 按 **CPU 预算**杀掉进程 ✓（见第四节） |
 
 ## 一、根因：anisette 被复用到 120 秒之后
 
@@ -116,7 +116,7 @@ anisette 里的 `X-Apple-I-MD` 是**一次性验证码**，有效期只有几十
 ⇒ 下一步：在「探测到死」时**重建 RSD 连接**（此前一直缺的正是这条直接证据）。
 守卫 **R44**。
 
-## 四、未解决：构建 147 在 `signing` 阶段**直接闪退**
+## 四、`signing` 阶段「闪退」的真相：**iOS 按 CPU 预算杀掉进程**
 
 ```
 08:09:53  [SEAL-STAGE-001] 阶段进入：preparingProfiles
@@ -124,46 +124,65 @@ anisette 里的 `X-Apple-I-MD` 是**一次性验证码**，有效期只有几十
 （日志到此为止：没有打包、没有 installing、没有 error）
 ```
 
-**两次运行断在同一位置** ⇒ **硬崩溃**（日志来不及 flush）。
+两次运行断在同一位置 ⇒ 看起来像「硬崩溃」。
 
-### 已排除
+### 4.1 崩溃日志给出了答案（用户提供）
 
-- 签名器里**没有** `Data(contentsOf:)` 之类的整块载入 ✗（内存风险低）。
-
-### 候选（**未确认，不许猜**）
-
-`Vendor/rork-sign` 里有若干 **`precondition`**（**Release 下也会崩**，不像 `assert`），
-集中在 CMS / DER / 证书链：
+`Seal.cpu_resource-2026-09-18-231431.ips`（构建 140，2026-09-18 23:11–23:14）：
 
 ```
-CMSGenerator.swift:279        precondition(components.count >= 2)
-DEREncoding.swift:32/55/103   precondition(value >= 0) / preconditionFailure("Invalid OID arc")
-AppleCertificateChain.swift:59 preconditionFailure("Embedded Apple certificate ... is invalid")
+Event:        cpu usage
+Action taken: none
+CPU:          90 seconds cpu time over 166 seconds (54% cpu average),
+              exceeding limit of 50% cpu over 180 seconds
+CPU limit:    90s        CPU used: 90s        Duration: 165.54s
+Footprint:    152.94 MB -> 1109.84 MB (+956.91 MB)
+Num threads:  3          Primary state: Frontmost App, User Initiated
+最重叶子:      Foundation + 6969300（29 个采样里占 14 个 ≈ 一半 CPU）
 ```
 
-### 已做
+⇒ **不是代码崩溃，也不是内存被杀** —— 是 **iOS 的 CPU 预算** ✗：
+**任意 180 秒窗口内，App 的 CPU 时间不得超过 90 秒（50%）**，
+Seal 用了 **90 秒 / 166 秒** ⇒ 被系统**终止** ✓。
 
-重签前加**分界日志**（提交 `6569269`，守卫 **R45**）：
+**⇒ 这解释了「日志戛然而止」** ✓ —— 进程被系统杀掉，**来不及 flush** ✓。
 
-```
-签名：开始重签（逐 Mach-O 串行）—— 待签描述文件 N 份、appGroups N 个、主 Bundle …
-```
+### 4.2 与本地耗时的关系（为什么正好是抖音）
 
-- 下次崩溃**没有**这一行 ⇒ 死在 Swift 侧准备；
-- **有**这一行 ⇒ 死在 `RorkSigner` 内部。
+| 本地工作 | 实测 |
+|---|---|
+| 解压 | 7–11 秒 |
+| 归一化 | **30–35 秒** |
+| 瘦身 | 2–5 秒 |
+| **重签**（全部 Mach-O 的 SHA-1/SHA-256 页哈希） | CPU 大头 |
 
-### 顺带查清：签名器内部**为什么一行日志都没有**
+⇒ 累计**突破 90 秒** ✗ ⇒ 「大包 + 8 扩展」正好把预算撑爆 ✓
 
-`RorkSigner` **自带**一套 `SigningDiagnostics`（`context.diagnostics.info(...)` 逐 bundle 打），
-但 `BundleSigningOptions.diagnostics` **默认 `.disabled`**，而 Seal **从来没设置过它**。
+**⇒ 所以第二节的「归一化优化」不只是「快一点」——它直接决定会不会被系统杀掉** ✓
 
-要接上有一个矛盾：它是**同步回调**，而 `SealLogStore` 是 **actor**（写入异步 ⇒
-崩溃时挂起的日志会丢 ✗）。⇒ 等确认死在签名器内部之后再动。
+### 4.3 已做：打开签名器内部的逐 bundle 诊断（`d07b42f`，守卫 R46）
 
-### 需要的输入
+`RorkSigner` **自带**一套 `SigningDiagnostics`（逐 bundle 打 `>>> Signing: <path>`），
+但 `AppSigningOptions.diagnostics` **默认 `.disabled`**，而 Seal **从来没设置过它** ✗
+—— 这就是「签名阶段一行日志都没有」的原因 ✓。
 
-**iOS 崩溃日志**：设置 → 隐私与安全性 → 分析与改进 → 分析数据 → `Seal-2026-09-19-…`。
-它直接指出崩溃在哪一帧，比任何埋点都快。
+现在 `signAppBundle` 多了可选 `onDiagnostic`（默认 nil ⇒ 不改变现有行为），
+`signApp` 传入回调（日志前缀 `重签：`）。
+⚠️ 同步回调 vs `SealLogStore`（actor）⇒ 只能 fire-and-forget，**最后几条可能丢** ✗
+—— 但它要回答的是「**签到了第几个 bundle 才被杀**」，那一条大概率已落盘 ✓。
+
+### 4.4 已排除
+
+- 签名器里**没有** `Data(contentsOf:)` 之类的整块载入 ✗（内存风险低）；
+- **签名缓存不是元凶**：缓存键含**证书指纹**，而日志里 Seal 自续签那轮证书刚轮换过
+  ⇒ 键必然不同 ⇒ 命中 0 是**正确行为** ✓。
+
+### 4.5 下一步
+
+1. **拿 `d07b42f` 之后的崩溃日志**（或日志尾部）⇒ 看最后一条 `重签：>>> Signing:` 是哪个 bundle；
+2. **减少归一化的全树遍历**（见第六节第 3 条）—— 它同时是「慢」和「被杀」的原因 ✓；
+3. 若符号化可行：用 CI 构建产物 + dSYM 把 `Foundation + 6969300` 映射回函数名
+   （本机无 Mac ⇒ 需在 CI 侧做）。
 
 ## 五、本轮推送的提交（分支 `fix/signing-attribution-batch0`）
 
@@ -186,7 +205,11 @@ AppleCertificateChain.swift:59 preconditionFailure("Embedded Apple certificate .
 
 ## 六、下一步（按信息效率排序）
 
-1. **拿 iOS 崩溃日志** ⇒ 直接定位第四节；
-2. 装含分界日志的构建重试 ⇒ 分出「Swift 侧准备」与「签名器内部」；
-3. 按第二节的结论**减少归一化的全树遍历**（`strip` 与 `normalize` 两次逐文件 open 是主要成本）；
-4. 按第三节的结论在**探测到死时重建 RSD 连接**。
+1. **装 `d07b42f` 之后的构建重试** ⇒ 日志尾部会显示「重签到哪个 bundle 被杀」✓；
+2. **减少归一化的全树遍历**（第二节 + 4.2）—— 同一棵树被「瘦身」和「归一化」
+   **各扫一遍、各逐文件 open 一次**（5053 文件 × 2 × ~6ms ≈ 30–35 秒）：
+   让「瘦身」把它判定的 Mach-O 列表交给「归一化」复用，可省掉一整趟（预计 −15 秒 CPU）✓。
+   ⚠️ 顺序正好对（瘦身在前），但**根目录被移走的文件路径要重映射到 `Frameworks/`**，
+   且**必须保留「列表为空 ⇒ 回退到枚举」的兜底**，否则会静默漏改写引用 ⇒ App 起不来 ✗；
+3. 按第三节的结论在**探测到死时重建 RSD 连接**（证据已齐：系统 App 也 `unavailable`）；
+4. 若需要精确定位 CPU 热点：在 CI 侧用构建产物 + dSYM 做符号化。

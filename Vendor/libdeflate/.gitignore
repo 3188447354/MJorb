@@ -1,0 +1,8 @@
+/build*
+/libdeflate-*-windows-*
+/libdeflate-*.tar.gz
+cscope*
+tags
+.build/workspace-state.json
+build/
+.build/

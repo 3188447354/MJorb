@@ -1635,10 +1635,15 @@ def violations(load=read):
     portal_filter_source = strip_comments(
         load("Seal/Infrastructure/Signing/ApplePortalSigningService.swift")
     )
-    check("static func isUsefulSigningDiagnostic(" in portal_filter_source
-          and "guard Self.isUsefulSigningDiagnostic(message) else { return }" in portal_filter_source,
-          "R48: 签名器诊断必须过滤 —— 不过滤会刷爆 1000 条环形缓冲，"
-          "把阶段 / 耗时 / 错误全挤掉（真机实测 204/240 行都是「重签：」）")
+    # ⚠️ **2026-09-19 收窄**：签名器已从 `rork-sign` **换成上游 `SideSign`** ✓
+    #（用户死命令「照抄」✓），而上游的诊断走它自己的 `debugLog` ✗ ——
+    # **不再经过 Seal 的回调** ⇒ 原来的 `guard Self.isUsefulSigningDiagnostic(message)` 调用点**已移除** ✓。
+    #
+    # ⇒ 断言改成**只要求过滤规则本身还在** ✓（它是对的 ✓，将来若再接诊断出口就直接用 ✓）；
+    #    **不再要求调用点存在** ✗（那会把「已换成上游签名器」这件事判成红 ✗）。
+    check("static func isUsefulSigningDiagnostic(" in portal_filter_source,
+          "R48: 签名器诊断的**过滤规则**必须保留 —— 一旦再接诊断出口，不过滤会刷爆 "
+          "1000 条环形缓冲，把阶段 / 耗时 / 错误全挤掉（真机实测 204/240 行都是「重签：」）")
 
     # R49: 判 Mach-O 时**不许把整个二进制读进内存**（2026-09-19 真机，构建 151）。
     #
@@ -4270,9 +4275,9 @@ def main():
          "R47: Bundle ID 的报错必须说清「这是 Apple 的规定」"),
         # ── R48：签名器诊断必须过滤（2026-09-19）──
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "guard Self.isUsefulSigningDiagnostic(message) else { return }",
-         "guard true else { return }",
-         "R48: 签名器诊断必须过滤"),
+         "static func isUsefulSigningDiagnostic(",
+         "static func isUsefulSigningDiagnosticREMOVED(", 
+         "R48: 签名器诊断的**过滤规则**必须保留"),
         # ── R49：判 Mach-O 不许整块读入（2026-09-19）──
         ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
          "guard var data = try? Data(contentsOf: machOURL) else { return }",

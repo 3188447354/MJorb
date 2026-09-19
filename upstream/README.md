@@ -15,6 +15,10 @@
 | 3 | **`SideStore/AltSign`** | `35b68f1a…`（2026-08-26 16:27） | **`project.yml` 里 `AltSign` 依赖的上游** ✓（用户自己的 fork 是它的**未改动镜像** ✓） | — |
 | 4 | **`mahee96/AnisetteKit`** | `db8b4102…`（2026-09-18 18:49） | **`project.yml` 里 `AnisetteKit` 依赖的上游** ✓（同上 ✓） | — |
 | 5 | **`rorkai/rork-sign`** | **tag `0.6.5`**（`ce7fc756…`，2026-08-28） | **`Vendor/rork-sign/` 的上游** ✓ —— **唯一能做「一字一码」对照的地方** ✓（见下） | Apache-2.0 |
+| 6 | **`mahee96/CodeSignKit`** | `d0c67710…`（2026-09-09） | **SideStore 真正用的签名器** ✓（`SideSign` → 它 ✓）—— **内存策略的照抄对象** ✓<br>（`MachOParser` 用 mmap 读 ✓ + `MachOSigner:301` 用 `subdata` 复制后改 ✓ ⇒ 全程 1 份 ✓） | — |
+| 7 | **`SideStore/SideSign`** | `6b686516…`（2026-09-19） | SideStore 的签名 CLI/API 层 ✓（依赖 `CodeSignKit` + `AnisetteKit` ✓） | — |
+| 6 | **`mahee96/CodeSignKit`** | `d0c67710…`（2026-09-09） | **SideStore 真正用的签名器** ✓（`SideSign` → 它 ✓）—— **内存策略的照抄对象** ✓<br>（`MachOParser` 用 mmap 读 ✓ + `MachOSigner:301` 用 `subdata` 复制后改 ✓ ⇒ 全程 1 份 ✓） | — |
+| 7 | **`SideStore/SideSign`** | `6b686516…`（2026-09-19） | SideStore 的签名 CLI/API 层 ✓（依赖 `CodeSignKit` + `AnisetteKit` ✓） | — |
 
 前两个与 Seal 同为 **AGPL-3.0** ✓。
 

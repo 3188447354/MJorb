@@ -17,8 +17,14 @@ packages:
     url: https://github.com/sunuannian1/AltSign
     revision: 87f61ceb1161d90f3c6b2e35bad7ebab15367a90
   AnisetteKit:
-    url: https://github.com/sunuannian1/AnisetteKit
-    revision: 081200ec0cfcecc1fd7ef0dd8c5ddc62bd040c88
+    # ⚠️ **改成 vendor 路径**（2026-09-19）—— 原因见 `Vendor/SideSign/Package.swift` 的注释：
+    # `SideSign` 声明的是 `branch: "main"`，与这里原来的固定 revision 冲突 ⇒ SwiftPM 解析失败 ✗。
+    # 上游自己在注释里就是用本地路径的 ✓。原 revision：`081200ec0cfcecc1fd7ef0dd8c5ddc62bd040c88`
+    path: Vendor/AnisetteKit
+  SideSign:
+    # ★ **上游（SideStore）的重签层** —— 它内部调用 `CodeSignKit` 完成真正的签名 ✓
+    # 依赖也全部 vendor 到 `Vendor/`（见 `Vendor/SideSign/Package.swift` ✓）
+    path: Vendor/SideSign
   Crypto:
     url: https://github.com/apple/swift-crypto
     exactVersion: 4.5.2
@@ -45,6 +51,8 @@ targets:
       - package: Minimuxer
       - package: RorkSign
         product: RorkSign
+      - package: SideSign
+        product: SideSign
       - package: Crypto
         product: Crypto
       - package: Crypto

@@ -860,7 +860,8 @@ actor ApplePortalSigningService {
                 at: prepared.appURL,
                 p12Data: identity.secret.certificateP12,
                 mainBundleID: prepared.mappedMainBundleID,
-                profiles: profilePreparation.profiles
+                profiles: profilePreparation.profiles,
+                team: team
             )
             try Task.checkCancellation()
 
@@ -2422,7 +2423,15 @@ actor ApplePortalSigningService {
         at appURL: URL,
         p12Data: Data?,
         mainBundleID: String,
-        profiles: [ALTProvisioningProfile]
+        profiles: [ALTProvisioningProfile],
+        // ★ **上游签名器需要团队信息**（2026-09-19，换 `SideSign` 后新增 ✓）。
+        // `SideSign` 的 `Team(identifier:name:type:)` 要这三样 ✓：
+        //   - `identifier` ⇒ `team.identifier` ✓
+        //   - `name`       ⇒ `team.name` ✓
+        //   - `type`       ⇒ **免费团队传 `.free`** ✓，否则 `.individual` ✓
+        //     （⚠️ 上游的 `TeamType` 只有 `unknown`/`organization`/`individual`/`free` ✗，
+        //       **没有 `.paid`** —— 别写成 `.paid` 会编译失败 ✗）
+        team: ALTTeam
     ) async throws {
         guard let p12Data, p12Data.isEmpty == false else {
             throw ApplePortalSigningFailure.make(
@@ -2573,34 +2582,35 @@ actor ApplePortalSigningService {
                 "签名：开始重签（逐 Mach-O 串行）—— 待签描述文件 \(materials.count) 份、"
                     + "appGroups \(appGroups.count) 个、主 Bundle \(mainBundleID)"
             )
-            return try RorkAppSigner.signAppBundle(
+            // ★ **换成上游（SideStore）的签名器** ✓（2026-09-19，用户死命令：「一个代码不漏地抄，
+            //   签名器不一样你就换」✓）。
+            //
+            // 上游链路：`SideSign.AppBundleSigner.signApp` → `CodeSignKit.CodeSigner.sign` ✓
+            // 内存策略（逐行查证 ✓）：mmap 读 + 复制出新 Data 再改 ⇒ **全程 1 份** ✓
+            // 而 rork-sign 是「整块读 + 原地改 ⇒ COW 复制」⇒ **峰值 2 份** ✗
+            //（真机 `JetsamEvent`：Seal `rpages 129697 × 16KB = 2.11 GB` ⇒ 被 jetsam 杀掉，
+            //  并连带杀掉后台的网易云 / LocalDevVPN ✗✗）
+            //
+            // ⚠️ 上游签名器**没有签名缓存** ✗（rork-sign 的 `SigningCacheOptions` 是它独有的 ✓）
+            //   ⇒ 接受「每次全量重签」✓，换来的是**内存峰值减半** ✓。
+            //
+            // ⚠️ 上游的逐 bundle 诊断走它自己的 `debugLog` ✗ —— **不进 SealLogStore** ✓，
+            //   所以这里不再接 `onDiagnostic`（`Self.isUsefulSigningDiagnostic` 暂时保留，
+            //   等 `RorkSigner.checkMachOCodeSignatures` 也换掉后再清理 ✓）。
+            try await SideSignAppSigner.signAppBundle(
                 at: appURL,
                 certificateData: certificateData,
                 privateKeyData: privateKeyData,
+                teamID: team.identifier,
+                teamName: team.name,
+                isFreeTeam: team.type == .free,
                 mainBundleID: mainBundleID,
-                profiles: materials,
-                appGroupIdentifiers: appGroups,
-                // ⚠️ 打开签名器内部的逐 bundle 诊断（2026-09-19）。
-                //
-                // 为什么是 fire-and-forget：签名器给的是**同步回调**，而
-                // `SealLogStore` 是 **actor**（写入异步）。代价是**最后几条可能丢**
-                //（真机被 iOS 杀掉时尤其如此）—— 但它要回答的问题恰恰是
-                //「**签到了第几个 bundle 才被杀**」，那一条**大概率**已经落盘 ✓。
-                // ⚠️ **必须过滤**（2026-09-19 真机，构建 151 —— 这是我上一批引入的回归 ✗）：
-                // 签名器会对**每个** bundle（含 `BDAlogProtocol.bundle` 这类纯资源包）
-                // 和每个 Mach-O 各打一行 ⇒ 抖音一次 **200+ 行** ✗
-                // ⇒ 1000 条环形缓冲被占满，把**阶段 / 耗时 / 错误**这些真正要看的行**挤出去了** ✗✗
-                //（实测：构建 151 的日志里 204/240 行都是「重签：」✗）。
-                //
-                // ⇒ 只保留两类：
-                //   ① `signedCode=` —— 真正签的 Mach-O（几十行；**定位崩溃就靠它** ✓）；
-                //   ② `sealedBundle=` 且以 `.app` / `.appex` / `.framework` 结尾
-                //      —— 有身份的可执行容器（跳过纯资源 `.bundle` ✓）。
-                onDiagnostic: { message in
-                    guard Self.isUsefulSigningDiagnostic(message) else { return }
-                    Task { await self.diagnostic("重签：\(message)") }
+                profiles: materials.map {
+                    SideSignAppSigner.ProfileMaterial(bundleID: $0.bundleID, data: $0.data)
                 }
             )
+            // 上游没有签名缓存 ⇒ 命中数恒为 0 ✓
+            return SigningCacheStats(signed: 0, cached: 0)
         }.value
         // ⚠️ 命中数一起报（2026-09-18）：续签同一个 App 时证书/entitlements/内容都没变
         // ⇒ 缓存 key 不变 ⇒ 那 30 多个 Mach-O 应当**全部命中**。

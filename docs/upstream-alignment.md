@@ -104,6 +104,17 @@ Seal 的是**自己的 wrapper**（`struct AnisetteV3Client: AnisetteEnvironment
 | **2026-09-19** | **扩展的 App ID 准备顺序** | 主 App **排最前** ✓（`ApplePortalAppIDResolver.preparationOrder`）；扩展**串行**、且每请求**节流 0.4 秒**（`AppleRequestThrottle`）✗ | SideStore `FetchProvisioningProfilesOperation`：<br>① **主 App 先准备** ✓（`provisionAndFetchProfile(for: targetAppBundle, parentAppBundle: nil)`，在扩展之前）<br>② 扩展用 **`withThrowingTaskGroup` 并发** ✓<br>③ **没有节流** ✓<br>（`PrepareAppExtensionBundleIDsOperation` 只做「扩展 BundleID 跟着主 profile 改写」✓，不涉及注册顺序） | **一半一致、一半待定**：<br>① **主 App 先 = 上游一致** ✓ ⇒ **不用改** ✓；<br>② **串行 + 节流 vs 并发无节流** ✗ ⇒ **待定** —— 节流是为「1100 短时频率限制」加的 ✓，<br>但**本轮的 anisette 修复可能才是 1100 的真因** ✗（gap 前成功 / gap 后失败的时间线支持这点 ✓）<br>⇒ **建议先跑一次带 anisette 修复的构建**：若不再 1100 ⇒ 再考虑去掉节流、改成并发 ✓<br>（并发还能**缩短 Apple 窗口** ⇒ 对 anisette 寿命有利 ✓✓） |
 | — | **证书轮换 / 更新** | `ApplePortalCertificateService` 的轮换事务 | **待对照**：SideStore `UpdateAppCertificateOperation.swift` + `VerifyCertificateOperation.swift` | **待对照** |
 | — | **描述文件批量安装** | 逐个安装 | **待对照**：SideStore `RefreshAppOperation` 里有**批量 profile 注入**（`addPendingProfileBatch`） | **待对照** |
+| **2026-09-19** | **会话过期（1100）的重试与退避** | `withSessionRecovery`：退避重试 + 重建会话 ✓ | **两个上游都完全不处理** ✗ —— `AltSign` 里没有 1100/retry/backoff/sessionExpired 任何一处 ✓；`SideStore` 里唯一的 "1100" 是个**端口号** ✓ | **保留** ✓ —— **上游「没有」≠「更好」** ✗：上游把会话过期完全交给**用户手动重试** ✗，而 Seal 自动恢复是**必要的健壮性** ✓（今天的 1100 就是证据 ✓） |
+| **2026-09-19** | **`ALTAppleAPISession` 与 anisette 的关系** | 认证时建会话，之后**替换/重建**它来更新 anisette ✓ | `AltSign` 的 `authenticate(... anisetteData: ALTAnisetteData ...)` 把 anisette 当**入参** ✓；`ALTAppleAPISession(dsid:authToken:anisetteData:xcodeVersion:)` 在**认证那一刻**建会话 ✓ ⇒ **库不管 anisette 的生命周期** ✗ | **已跟** ✓ —— `anisetteData` 只是会话的**一个字段**，调用方必须在**每次 Apple 工作前**替换它 ✓（AltStore 的做法：`session?.anisetteData = anisetteData` ✓）|
+
+> **⚠️ 分清两种「Seal 多出来的东西」**（用户 2026-09-19 指示「比 SideStore 严格就去除」时）：
+>
+> | 类型 | 例子 | 处置 |
+> |---|---|---|
+> | **更严格**（额外的**限制/保守** ✗） | 白撤证书 / 过度节流 | **去掉** ✓ |
+> | **更完整**（额外的**健壮性/恢复** ✓） | `withSessionRecovery` / 守卫 | **保留** ✓ |
+>
+> **上游「没有」不等于「更好」** ✗ —— 今天的 1100 恰恰证明：上游不处理它，Seal 必须自己处理 ✓。
 
 ---
 

@@ -1612,6 +1612,17 @@ def violations(load=read):
           "R46: 签名器内部的逐 bundle 诊断必须被打开 —— 否则真机被 CPU 预算杀掉时，"
           "日志里连「死在哪个 bundle」都不知道")
 
+    # R47: Bundle ID 的报错必须**说清是 Apple 的规定**，并指出「显示名可以带表情」
+    #（2026-09-19 用户问「Bundle ID 能不能带符号/表情」）。
+    #
+    # 带空格 / 中文 / 表情 / 符号的 Bundle ID 会被 **Apple 直接拒绝** ✗ ——
+    # 不是 Seal 的限制。而「桌面显示的名字」写在 `CFBundleDisplayName`，**可以带表情** ✓。
+    # 不把这两件事分开说，用户会以为「Seal 不支持表情」✗。
+    bundle_policy_source = strip_comments(load("Seal/Core/Signing/BundleIDPolicy.swift"))
+    check("Apple 规定" in bundle_policy_source and "App 名称" in bundle_policy_source,
+          "R47: Bundle ID 的报错必须说清「这是 Apple 的规定」，"
+          "并指出想带表情应该改「App 名称」—— 否则用户会以为 Seal 不支持表情")
+
     # R36: 进度条与阶段轨道的数值只许来自 `SigningProgressBudget`（2026-09-18）。
     #
     # 起因：用户反馈「百分比进度条和底部 5 个横杠都是跳着走的，不像 0→100 的丝滑」。
@@ -4109,6 +4120,11 @@ def main():
          "options.diagnostics = SigningDiagnostics(", 
          "options.diagnostics = SigningDiagnostics.disabled // ", 
          "R46: 签名器内部的逐 bundle 诊断必须被打开"),
+        # ── R47：Bundle ID 报错要说清是 Apple 的规定（2026-09-19）──
+        ("Seal/Core/Signing/BundleIDPolicy.swift",
+         "Apple 规定", 
+         "Seal 规定", 
+         "R47: Bundle ID 的报错必须说清「这是 Apple 的规定」"),
         # ── R40：102c 不得标失效（2026-09-18 真机）──
         # 删掉排除：账号又会在「紧接 3 次限流退避之后」被标成失效 ⇒ 死循环。
         ("Seal/Core/Accounts/AppleServiceFailurePolicy.swift",

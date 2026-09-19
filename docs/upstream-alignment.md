@@ -38,6 +38,23 @@ Seal 的 git 历史**被重建过** ✗：全部 659 个提交都是同一个作
 
 ## 三、`Vendor/rork-sign/` 的补丁清单（覆盖上游时必须保留）
 
+> **这是本仓唯一能真正做到「一字一码」的地方** ✓ ——
+> `Vendor/rork-sign` 就是 `rorkai/rork-sign` **0.6.5** 的副本 + **4 个文件**的补丁 ✓
+> （`upstream/rork-sign` 已按 0.6.5 拿进来；完整 diff 见
+> [`docs/upstream/rork-sign-0.6.5-vs-Vendor.diff`](./upstream/rork-sign-0.6.5-vs-Vendor.diff) ✓）
+>
+> ⚠️ **对比时必须加 `--strip-trailing-cr`** ✗ —— 两边换行符不同，
+> 不加会把整个文件算成差异（实测：2949 行 → 实际 15 行 ✓）。
+
+| 文件 | 改动 | 性质 | 守卫 |
+|---|---|---|---|
+| `MachO/MachOSigner.swift` | 125+ / 13- | **Seal 补丁**：`clearFairPlayCryptid`（修**启动崩溃**）+ `adjustedCodeLimit`/symtab（处理「已签名二进制再签」）| **R52** ✓ |
+| `Bundle/AppBundleSigner.swift` | 13+ / 2- | mmap（`readEntitlementsXML` 不再整块读 ✗） | R50 ✓ |
+| `Bundle/BundleSigner.swift` | 26+ / 7- | mmap（3 处） | R50 ✓ |
+| `Bundle/BundleSignatureCache.swift` | 4+ / 2- | mmap（缓存条目） | R50 ✓ |
+
+**⇒ 同步上游时这 4 个文件的补丁必须逐条保住** ✓
+
 Seal 改过它 ✗ —— 每次同步上游前先确认这些补丁仍在（守卫已钉 ✓）：
 
 | 补丁 | 守卫 |

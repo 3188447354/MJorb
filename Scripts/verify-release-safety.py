@@ -1653,6 +1653,26 @@ def violations(load=read):
           "R49: 判 Mach-O 时不许整块读入 —— 必须用 .mappedIfSafe（mmap），"
           "否则全树每个 Mach-O 都会把整个二进制搬进内存")
 
+    # R52: `Vendor/rork-sign` 的 **FairPlay 补丁**必须保留（2026-09-19，拿上游 0.6.5 一字一码对比时发现）。
+    #
+    # 该补丁的注释写明了后果：
+    #   「a decrypted image that still advertises cryptid=1 makes dyld attempt
+    #     FairPlay decryption with the wrong account and **crash at launch**」
+    # ⇒ 签名后**启动崩溃** ✗ —— 是最高严重级的一类缺陷。
+    # ⚠️ 它**不是**上游自带的（上游 0.6.5 没有）✗ ⇒ 同步上游时会**静默丢失** ✗
+    #   ⇒ 必须有守卫钉住 ✓。
+    macho_signer = strip_comments(
+        load("Vendor/rork-sign/Sources/RorkSign/MachO/MachOSigner.swift")
+    )
+    # ⚠️ 断言用**唯一的 `func` 定义** + **调用次数** ✗ ——
+    # `try clearFairPlayCryptid(` 在文件里出现 **3 次**（三条签名路径各一次）⇒
+    # 只写它会被另外两处匹配上，变异（改掉其中一处）就抓不住 ✗
+    #（本仓「同一模式出现多次就失去约束力」已踩过多次 ✓）。
+    check("func clearFairPlayCryptid(" in macho_signer
+          and macho_signer.count("try clearFairPlayCryptid(") >= 3,
+          "R52: 签名器的 FairPlay 补丁必须保留 —— 少了它，清过 FairPlay 标记的镜像"
+          "仍带着 cryptid=1 被签名，dyld 会拿错误的账号去解密并**在启动时崩溃**")
+
     # R50: 读**可执行文件**（取 entitlements / 改 load commands）时**不许整块读入**
     #（2026-09-19 真机：崩溃点正是「**刚开始签最大的 `AwemeCore.framework`**」✗）。
     #
@@ -4208,6 +4228,11 @@ def main():
          "Data(contentsOf: executableURL, options: .mappedIfSafe)",
          "Data(contentsOf: executableURL)",
          "R50: 读可执行文件必须用 .mappedIfSafe"),
+        # ── R52：签名器 FairPlay 补丁必须保留（2026-09-19）──
+        ("Vendor/rork-sign/Sources/RorkSign/MachO/MachOSigner.swift",
+         "func clearFairPlayCryptid(",
+         "// clearFairPlayCryptid removed",
+         "R52: 签名器的 FairPlay 补丁必须保留"),
         # ── R40：102c 不得标失效（2026-09-18 真机）──
         # 删掉排除：账号又会在「紧接 3 次限流退避之后」被标成失效 ⇒ 死循环。
         ("Seal/Core/Accounts/AppleServiceFailurePolicy.swift",

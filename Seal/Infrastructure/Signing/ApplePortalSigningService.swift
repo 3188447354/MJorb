@@ -2516,6 +2516,20 @@ actor ApplePortalSigningService {
                 appGroups = []
             }
 
+            // ⚠️ **重签前的最后一行**（2026-09-19 真机，构建 147）：
+            // Seal 在 `signing` 阶段**直接闪退** ✗（两次都在同一位置，日志到此为止，
+            // 没有 error、没有打包、没有安装）⇒ 导出日志里连
+            // 「死在重签**前**还是重签**中**」都分不出来 ✗。
+            //
+            // 这一行把问题**一分为二** ✓：
+            //   - 下次崩溃**没有**这一行 ⇒ 死在 Swift 侧准备（描述文件 / entitlements / appGroups）；
+            //   - **有**这一行 ⇒ 死在 `RorkSigner` 内部 ✓（那是 Vendor 里的 Swift 签名器，
+            //     它自己有一套 `SigningDiagnostics` 出口，默认 `.disabled` ✗ ——
+            //     要接上得先解决「它是同步回调、而 `SealLogStore` 是 actor」这个矛盾）。
+            await diagnostic(
+                "签名：开始重签（逐 Mach-O 串行）—— 待签描述文件 \(materials.count) 份、"
+                    + "appGroups \(appGroups.count) 个、主 Bundle \(mainBundleID)"
+            )
             return try RorkAppSigner.signAppBundle(
                 at: appURL,
                 certificateData: certificateData,

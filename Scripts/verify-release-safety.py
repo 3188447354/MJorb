@@ -1588,6 +1588,16 @@ def violations(load=read):
           "R44: 阳性对照失败时必须输出**判别性诊断**（拿系统 App 再问一次）—— "
           "否则「通道不可信」与「只有 Seal 自己查不到」在日志里分不开")
 
+    # R45: 重签前必须有「**分界日志**」（2026-09-19 真机，构建 147）。
+    #
+    # 真机：Seal 在 `signing` 阶段**直接闪退** ✗（两次都在同一位置，日志到此为止，
+    # 没有 error、没有打包、没有安装）⇒ 导出日志里连
+    # 「死在重签**前**还是重签**中**」都分不出来 ✗。
+    # ⇒ 重签前必须留一行，把问题一分为二 ✓。
+    check("签名：开始重签（逐 Mach-O 串行）" in portal_source,
+          "R45: 重签前必须有「分界日志」—— 真机上 Seal 在 signing 阶段闪退，" 
+          "没有它连「Swift 侧准备」与「签名器内部」都分不开")
+
     # R36: 进度条与阶段轨道的数值只许来自 `SigningProgressBudget`（2026-09-18）。
     #
     # 起因：用户反馈「百分比进度条和底部 5 个横杠都是跳着走的，不像 0→100 的丝滑」。
@@ -4075,6 +4085,11 @@ def main():
          "            for sample in [\"com.apple.Preferences\", \"com.apple.mobilesafari\"] {\n",
          "",
          "R44: 阳性对照失败时必须输出**判别性诊断**"),
+        # ── R45：重签前的分界日志（2026-09-19）──
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "签名：开始重签（逐 Mach-O 串行）",
+         "签名：重签开始（分界日志已删）",
+         "R45: 重签前必须有「分界日志」"),
         # ── R40：102c 不得标失效（2026-09-18 真机）──
         # 删掉排除：账号又会在「紧接 3 次限流退避之后」被标成失效 ⇒ 死循环。
         ("Seal/Core/Accounts/AppleServiceFailurePolicy.swift",

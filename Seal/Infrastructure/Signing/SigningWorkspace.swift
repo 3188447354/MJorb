@@ -836,6 +836,48 @@ struct SigningWorkspace: Sendable {
     /// RPATH 声明（LC_RPATH 或字面量），否则 @rpath 无解析路径，保持原样。
     /// 安全性：`@rpath/` 恒短于 `@executable_path/`，覆写 + null 填充零字节平移；
     /// 仅当匹配串后紧跟 0x00（完整 C 字符串）时替换，不破坏更长的相邻串。
+    /// 分块扫描文件里有没有 `needle` —— **不把整个文件读进内存** ✓。
+    ///
+    /// ⚠️ 为什么不用 `.mappedIfSafe`：调用方命中后会**整块读入并原地改写** ✗，
+    /// 而 mmap 出来的 `Data` 被原地改写会 **SIGBUS** ✗（2026-09-19 真机崩溃 ✓）。
+    /// ⚠️ 为什么不能整块读：抖音全树 1.46 GB ⇒ 内存峰值会让 iOS **jetsam** 批量杀后台 ✗
+    ///（用户实测：网易云 + LocalDevVPN 一起被杀 ✓）。
+    /// ⇒ **两个都不能选** ⇒ 只能分块 ✓。
+    ///
+    /// **语义与 `Data.range(of:)` 完全一致** ✓ ——
+    /// 相邻块之间保留 `needle.count - 1` 字节的**重叠**，
+    /// 避免跨块边界的匹配被漏掉 ✓（漏掉会导致该改写的没改 ⇒ 装完闪退 ✗✗）。
+    private func containsBytes(_ needle: Data, in url: URL, chunkSize: Int = 256 * 1024) -> Bool {
+        let needleBytes = [UInt8](needle)
+        guard needleBytes.isEmpty == false else { return false }
+        let overlap = needleBytes.count - 1
+
+        let descriptor = Darwin.open(url.path, O_RDONLY)
+        guard descriptor >= 0 else { return false }
+        defer { Darwin.close(descriptor) }
+
+        var buffer = [UInt8](repeating: 0, count: chunkSize + overlap)
+        var carried = 0
+        while true {
+            let readCount = buffer.withUnsafeMutableBytes { raw -> Int in
+                guard let base = raw.baseAddress else { return -1 }
+                return Darwin.read(descriptor, base.advanced(by: carried), chunkSize)
+            }
+            guard readCount > 0 else { return false }
+
+            let total = carried + readCount
+            if Data(buffer[0..<total]).range(of: needle) != nil { return true }
+
+            // 尾部 overlap 字节留到下一块，避免漏掉跨块边界的匹配 ✓
+            if total > overlap {
+                buffer.replaceSubrange(0..<(total - overlap), with: [])
+                carried = overlap
+            } else {
+                carried = total
+            }
+        }
+    }
+
     private func rewriteExecutablePathReferences(
         machOURL: URL,
         movedNames: Set<String>
@@ -879,6 +921,20 @@ struct SigningWorkspace: Sendable {
         // 原因：下面会对 `data` 做 `replaceSubrange` 原地改写（第 ~905 行）再 `write` 回盘 ✓。
         // Swift 的 COW 判定「这份 Data 唯一引用」⇒ **直接在映射页上写** ✗ ⇒ 写只读页 ⇒ SIGBUS ✗✗。
         // ⇒ **凡是要改写的 Data，一律不能用 mmap** ✓（只读的检查可以用 ✓）。
+        // ⚠️ **先分块预扫描；只有真的命中才整块读入**（2026-09-19 第二次真机迭代 ✓）。
+        //
+        // 这段的演进过程（两次都踩了坑，所以写清楚 ✓）：
+        //   ① 最初：先 `Data(contentsOf:)` 整块读，再 `firstRange` 判断 ✗
+        //      ⇒ 抖音全树 1.46 GB 白读 ⇒ **45 秒 + 内存峰值** ✗
+        //   ② 改成 `.mappedIfSafe`（mmap）✗
+        //      ⇒ 下面要 `replaceSubrange` 原地改写 ⇒ **写映射页 ⇒ SIGBUS 崩溃** ✗✗
+        //      （真机 `.ips`：`EXC_BAD_ACCESS` / `KERN_PROTECTION_FAILURE` in `mapped file` ✓）
+        //   ③ **现在：256KB 分块扫描** ✓
+        //      ⇒ 既不吃内存 ✓ 也不 SIGBUS ✓；只有**命中**时才整块读 ✓
+        //      （命中是少数：只有引用了根目录 framework 的那几个二进制 ✓）
+        //
+        // ⚠️ 用户实测的内存证据（2026-09-19 构建 161）：整块读的峰值会让 iOS **jetsam**
+        // 批量杀后台 —— **网易云 + LocalDevVPN 一起被杀** ✗（VPN 一死，签名必然失败 ✗）。
         guard let handle = try? FileHandle(forReadingFrom: machOURL) else { return }
         defer { try? handle.close() }
         guard let magicData = try? handle.read(upToCount: 4),
@@ -891,11 +947,11 @@ struct SigningWorkspace: Sendable {
         }
         guard magic == 0xfeedfacf else { return }
 
+        let rpathNeedle = Data("@executable_path/Frameworks".utf8)
+        guard containsBytes(rpathNeedle, in: machOURL) else { return }
+
         guard var data = try? Data(contentsOf: machOURL) else { return }
         guard data.count >= 32 else { return }
-
-        let rpathNeedle = Data("@executable_path/Frameworks".utf8)
-        guard data.firstRange(of: rpathNeedle) != nil else { return }
 
         var didRewrite = false
         for name in movedNames {

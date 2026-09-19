@@ -1712,6 +1712,25 @@ def violations(load=read):
           and "var executable = try Data(contentsOf: executableURL, options: .mappedIfSafe)" not in signer_source,
           "R50: 会被**原地改写**的 Data（签名主路径 input / var executable）绝不许用 mmap ✗ —— "
           "Swift 的 COW 会直接在映射页上写 ⇒ SIGBUS（2026-09-19 真机 ✓）")
+
+    # R53: `rewriteExecutablePathReferences` 必须**先分块预扫描**，命中才整块读 ✓
+    #
+    # 2026-09-19 两次真机迭代的结论（两个极端都不能选 ✗）：
+    #   ① 整块 `Data(contentsOf:)` ⇒ 抖音全树 1.46 GB 白读 ⇒ **45 秒 + 内存峰值** ✗
+    #      用户实测：内存峰值让 iOS **jetsam** 批量杀后台（**网易云 + LocalDevVPN 一起被杀** ✗）
+    #   ② `.mappedIfSafe` ⇒ 下面要 `replaceSubrange` 原地改写 ⇒ **SIGBUS 崩溃** ✗✗
+    #   ③ **分块扫描** ✓ ⇒ 既不吃内存 ✓ 也不 SIGBUS ✓
+    #
+    # ⚠️ 分块扫描必须排在**整块读之前** ✗ —— 排后面等于没改 ✓。
+    # ⚠️ 重叠必须保留 `needle.count - 1` 字节 ✗ —— 漏掉跨块匹配会导致**该改写的没改**
+    #    ⇒ 装完闪退 ✗✗（这条最危险，所以也钉住 ✓）。
+    check("private func containsBytes(" in workspace_src
+          and "guard containsBytes(rpathNeedle, in: machOURL) else { return }" in workspace_src
+          and "Data(buffer[0..<total]).range(of: needle) != nil" in workspace_src
+          and 0 <= workspace_src.find("guard containsBytes(rpathNeedle, in: machOURL)")
+          < workspace_src.find("guard var data = try? Data(contentsOf: machOURL)"),
+          "R53: `rewriteExecutablePathReferences` 必须先**分块预扫描**、命中才整块读 ✗ —— "
+          "整块读会让 jetsam 杀后台（网易云 + LocalVPN 一起被杀 ✓），mmap 会 SIGBUS ✗")
     filter_test_source = load("SealTests/Signing/SigningDiagnosticFilterTests.swift")
     check("signedCodeAlwaysPasses" in filter_test_source
           and "resourceBundlesAreDropped" in filter_test_source,
@@ -4165,6 +4184,10 @@ def main():
          "R35: `validate` 必须把解压后总量**返回出去**"),
         # ── R36：先读 4 字节判 magic（2026-09-18）──
         # 退回「先整体读入」：全树遍历会把 1.46 GB 读进内存，有 jetsam 风险。
+        # ⚠️ **R37 的锚点是跨多行的块** ✗ —— 在它覆盖的行区间里插任何注释都会让它失配
+        #（报成 `Mutation anchor missing`，看着像变异本身有问题 ✓）。
+        # 2026-09-19 已经踩了 **三次** ✗ ⇒ 改这段代码时，**注释一律写在
+        # `guard let handle = try? FileHandle(...)` 这一行之前** ✓。
         ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
          "        guard let handle = try? FileHandle(forReadingFrom: machOURL) else { return }\n"
          "        defer { try? handle.close() }\n"
@@ -4177,6 +4200,9 @@ def main():
          "            $0.loadUnaligned(fromByteOffset: 0, as: UInt32.self)\n"
          "        }\n"
          "        guard magic == 0xfeedfacf else { return }\n"
+         "\n"
+         "        let rpathNeedle = Data(" + chr(34) + "@executable_path/Frameworks" + chr(34) + ".utf8)\n"
+         "        guard containsBytes(rpathNeedle, in: machOURL) else { return }\n"
          "\n"
          "        guard var data = try? Data(contentsOf: machOURL) else { return }\n"
          "        guard data.count >= 32 else { return }\n",
@@ -4251,6 +4277,11 @@ def main():
          "func clearFairPlayCryptid(",
          "// clearFairPlayCryptid removed",
          "R52: 签名器的 FairPlay 补丁必须保留"),
+        # ── R53：分块预扫描必须在整块读之前（2026-09-19）──
+        ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
+         "        guard containsBytes(rpathNeedle, in: machOURL) else { return }\n",
+         "",
+         "R53: `rewriteExecutablePathReferences` 必须先**分块预扫描**"),
         # ── R40：102c 不得标失效（2026-09-18 真机）──
         # 删掉排除：账号又会在「紧接 3 次限流退避之后」被标成失效 ⇒ 死循环。
         ("Seal/Core/Accounts/AppleServiceFailurePolicy.swift",

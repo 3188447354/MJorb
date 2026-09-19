@@ -7,7 +7,9 @@
 //
 
 import Foundation
-import AnisetteKit
+// ⚠️ **去掉了 **（2026-09-19，Seal 只用 SideSign 的签名能力 ✓）：
+// 本文件只在  里转发过  ✗，
+// 而 Seal 有自己的 anisette 层 ✓ ⇒ 删掉后 SideSign 不必依赖 AnisetteKit ✓。
 
 public enum SideSignLogging {
     public private(set) nonisolated(unsafe) static var isLoggingEnabled = false
@@ -16,7 +18,6 @@ public enum SideSignLogging {
         defer { debugLog("[SideSign] setLogging(\(enabled)) completed") }
         debugLog("[SideSign] setLogging(\(enabled)) invoked")
         isLoggingEnabled = enabled
-        AnisetteKitLogging.setLogging(enabled)
     }
 }
 

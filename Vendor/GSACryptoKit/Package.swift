@@ -34,7 +34,9 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-crypto.git", exact: "4.3.1")
+                // ⚠️ 2026-09-19：**统一到 Seal 的 4.5.2** ✗ —— 原来写 4.3.1 会与根包冲突
+        //（CI 实报：「gsacryptokit depends on swift-crypto 4.3.1 and root depends on 4.5.2」✓）
+        .package(url: "https://github.com/apple/swift-crypto.git", exact: "4.5.2"),
     ],
     targets: [
         .target(

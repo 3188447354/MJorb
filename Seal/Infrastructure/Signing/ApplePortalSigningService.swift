@@ -2526,7 +2526,11 @@ actor ApplePortalSigningService {
             //   - **有**这一行 ⇒ 死在 `RorkSigner` 内部 ✓（那是 Vendor 里的 Swift 签名器，
             //     它自己有一套 `SigningDiagnostics` 出口，默认 `.disabled` ✗ ——
             //     要接上得先解决「它是同步回调、而 `SealLogStore` 是 actor」这个矛盾）。
-            await diagnostic(
+            // ⚠️ 必须写 `self.` —— 这行在闭包里（`Task { ... }.value`），
+            // 不写会编译失败：`call to method 'diagnostic' in closure requires
+            // explicit use of 'self' to make capture semantics explicit` ✗
+            //（2026-09-19 实际踩到，`6569269` 因此红了一轮 CI ✗）
+            await self.diagnostic(
                 "签名：开始重签（逐 Mach-O 串行）—— 待签描述文件 \(materials.count) 份、"
                     + "appGroups \(appGroups.count) 个、主 Bundle \(mainBundleID)"
             )

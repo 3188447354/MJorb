@@ -417,6 +417,55 @@ appGroups 个数 / 主 Bundle ID）⇒ 下次崩溃能分出「Swift 侧准备�
 
 ---
 
+### 2026-09-19 · 签名器的 **FairPlay cryptid 补丁**（此前只写在提交信息里，台账缺记 ✗）
+
+**现象**：已解密但 `LC_ENCRYPTION_INFO(_64)`（cmd `0x21`/`0x2c`）的 `cryptid` 仍为 1 的镜像，
+重签后 **dyld 会用新账号尝试 FairPlay 解密、不匹配而启动即杀进程** ✗。
+
+**根因**：`Vendor/rork-sign` 是 `rorkai/rork-sign` **0.6.5** 的副本，
+而上游**没有**处理这个残留标记 ✗。
+
+**修复**（提交 `b548021`，2026-09-04）：新增 `clearFairPlayCryptid`，在**三条平行签名路径**
+（`thinSigningCacheInput` / `signThinMachO` / `prepareThinMachOCMSCodeDirectories`）
+**计算 CodeDirectory 页哈希之前**统一把 `cryptid@loadcmd+16` 写 0，对齐 ldid / zsign / Sideloadly ✓。
+
+⚠️ **三条路径必须同时清零** ✗ —— detached CMS 的 prepare 与 final 两阶段若看到不一致的 cryptid，
+外部预签 CodeDirectory 与最终落盘镜像不符会使 **CMS 失效** ✗；
+且 cryptid 位于**被签名的代码区内**，必须先清再哈希 ✓（`cryptoff`/`cryptsize` 不变，仅清 id ✓）。
+
+**涉及文件**：`Vendor/rork-sign/Sources/RorkSign/MachO/MachOSigner.swift`（125+ / 13-）
+
+**验证状态**：补了 `machO64WithFairPlayEncryption` 合成 fixture + 两个回归测试 ✓；
+**守卫 R52** 钉住（2026-09-19 加 —— 因为它**不在上游** ✗，同步上游会**静默丢失** ✗✗）。
+
+**⚠️ 教训**：这条补丁此前**只存在于提交信息里** ✗ —— 台账（`DEBUG_LOG.md` / `docs/qa/`）里一条都没有 ✗。
+**⇒ 凡是「改了 Vendor 里的上游代码」的补丁，必须同时进本台账 + 加守卫** ✓
+（否则同步上游时丢了，真机上只会看到「签完启动就崩」✗）。
+
+---
+
+### 2026-09-19 · 🔴 上游契约：**AnisetteKit 每次调用都产生新数据，从不缓存**
+
+拿 `mahee96/AnisetteKit`（Seal 的 `AnisetteKit` 依赖的上游）进来后看到的接口：
+
+```swift
+public protocol AnisetteDataProvider: Sendable {
+    func getAnisetteHeaders(libDir:provisioningDir:identifier:adiPb:) throws -> AnisetteDataResponse
+    func startProvision(...)
+    func endProvision(...)
+}
+```
+
+**⇒ 它的 API 是「调一次就产生一份新的 headers」**（含一次性码 ✓）
+**⇒ 库里没有任何「会话」或「缓存」的概念** ✓✓
+
+⇒ **「把 anisette 取一次、塞进 `ALTAppleAPISession` 用一整轮」完全是调用方的错** ✗ ——
+这是 2026-09-19 那个 1100 根因**最硬的证据** ✓（比时间线推理更直接 ✓）。
+
+**⇒ 判据：凡是要发 Apple 请求，就当场调一次 `fetch()`；不要把它当成「会话的一部分」** ✓。
+
+---
+
 ### 2026-09-18 · 抖音签名失败链路（build 138 日志）：applications 键错位 + 退避梯度不足
 
 **现象**（`Seal-log(18).txt`，构建 138，2026-09-18 21:35–21:37）：

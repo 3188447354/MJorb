@@ -65,6 +65,31 @@ Seal 改过它 ✗ —— 每次同步上游前先确认这些补丁仍在（守
 
 ---
 
+## 三点五、依赖层的上游（`project.yml` 指向的用户 fork，均为**未改动镜像** ✓）
+
+| Seal 的依赖 | 用户 fork | **真正的上游** | 版本 |
+|---|---|---|---|
+| `AltSign`（`project.yml:17`） | `sunuannian1/AltSign` | **`SideStore/AltSign`** | `35b68f1a…`（2026-08-26） |
+| `AnisetteKit`（`project.yml:20`） | `sunuannian1/AnisetteKit` | **`mahee96/AnisetteKit`** | `db8b4102…`（2026-09-18） |
+
+### 🔴 `AnisetteKit` 的接口契约（2026-09-19 实测）
+
+```swift
+public protocol AnisetteDataProvider: Sendable {
+    func getAnisetteHeaders(libDir:provisioningDir:identifier:adiPb:) throws -> AnisetteDataResponse
+}
+```
+
+**⇒ 「调一次产生一份新 headers」，库里没有任何会话/缓存概念** ✓
+⇒ **⇒ 把 anisette 存进会话复用**就是**调用方的错** ✗（1100 根因最硬的证据 ✓）。
+
+⚠️ **注意**：Seal 的 `Seal/Infrastructure/Accounts/AnisetteClient.swift` 与
+`AnisetteDataProvider.swift` **与上游同名但角色不同** ✗ ——
+Seal 的是**自己的 wrapper**（`struct AnisetteV3Client: AnisetteEnvironmentManaging`），
+上游的是**库本身** ⇒ **同名不代表同角色，别按名字配对** ✓。
+
+---
+
 ## 四、对照台账（**改签名/续签链路前先查这里**）
 
 > 规矩：**对照过就记一条** —— 免得同一个问题重复查 ✓。

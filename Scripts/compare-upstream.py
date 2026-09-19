@@ -37,7 +37,7 @@ SEAL_TESTS = ROOT / "SealTests"
 # ⇒ 只能按**功能**配对 ✓。新增对照时往这里加一行。
 PAIRS: dict[str, list[str]] = {
     # anisette
-    "AnisetteProvider.swift": ["AnisetteProvider.swift"],
+    "AnisetteProvider.swift": ["SideStore/Core/Anisette/AnisetteProvider.swift"],
     "AnisetteClient.swift": [
         "SideStore/Core/Anisette/OnDeviceAnisetteManager.swift",
         "SideStore/Core/Anisette/AnisetteServersManager.swift",
@@ -50,12 +50,11 @@ PAIRS: dict[str, list[str]] = {
         "SideStore/Core/Operations/PipelineOperations/CacheSigningCertOperation.swift",
     ],
     # App ID / 描述文件
-    "ApplePortalAppIDResolver.swift": [
-        "SideStore/Core/Operations/PipelineOperations/PrepareAppExtensionBundleIDsOperation.swift",
-    ],
     "ApplePortalSigningService.swift": [
         "SideStore/Core/Operations/PipelineOperations/FetchProvisioningProfilesOperation.swift",
         "SideStore/Core/Operations/PipelineOperations/RefreshAppOperation.swift",
+        # ⚠️ Seal 的 `ApplePortalAppIDResolver` 是**这个文件里的嵌套类型**（没有独立文件 ✓）
+        "SideStore/Core/Operations/PipelineOperations/PrepareAppExtensionBundleIDsOperation.swift",
     ],
     # 安装
     "MinimuxerInstallChannel.swift": [

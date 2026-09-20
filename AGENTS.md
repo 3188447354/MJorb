@@ -160,8 +160,12 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
 - **时间预算**：`ios.yml` 拆成 3 个并行 job —— `build-package` / `swift-regression` / `signer-tests`，
   墙钟取 max 而非 sum（实测 9m38s）。**不要加「按路径判定是否跑测试」的闸门**（曾实测无收益且承担漏跑风险）。
   ⚠️ 2026-09-19：`signer-tests` 由 `rork-sign-tests` **改名而来** —— 签名器换成上游
-  `SideSign` + `CodeSignKit` 后 `Vendor/rork-sign` 已删除，该 job 改为测 `Vendor/CodeSignKit`
-  与 `Vendor/SideSign` 两个包（守卫 R56 钉住它的存在与 `working-directory`）。
+  `SideSign` + `CodeSignKit` 后 `Vendor/rork-sign` 已删除，该 job 改为测签名内核
+  **`Vendor/CodeSignKit`**（守卫 R56 钉住它的存在与 `working-directory`）。
+  ⚠️ 2026-09-20 **收窄**：**不再**测 `Vendor/SideSign` ✗ —— 它的测试**上游自己就编译不过**
+  （缺 `import Foundation`），而剩下的用例只测 `Device` 模型与 `Archive` 往返，
+  **Seal 完全不用 `SideSign.Archive`** ⇒ 零价值 ⇒ 按「不要打补丁」删掉那一步
+  （连同 `Tests/` 与 `Package.swift` 的 `.testTarget` ✓）。
 - `publish-release` 的 `needs` **必须包含 `swift-regression`**。
 - **构建 App 的 job 必须跑 `ensure-rustbridge.sh`**，否则会链接到落后的 `RustBridge.xcframework`，
   报一堆 `_rust_bridge_*` undefined symbols。⚠️ 守卫目前只钉住 `ios.yml` 的两个 job，

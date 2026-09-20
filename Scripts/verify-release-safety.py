@@ -1651,15 +1651,25 @@ def violations(load=read):
           "R60: 发布正文必须**只取第一个版本一节** ✗ —— 取整个文件会让更新弹窗"
           "列出所有历史版本（且含内部术语）✗；两个发布档都要改 ✓")
 
-    # R60b: `RELEASE_NOTES.md` 的**第一个版本标题必须是最高版本**（2026-09-20）✓
+    # R60b: `RELEASE_NOTES.md` 的**第一节版本必须等于 `MARKETING_VERSION`**（2026-09-20）✓
     #
-    # 因为正文只取第一节（R60 ✓）—— 若有人把新版本**追加到文件末尾**（而不是置顶），
-    # 弹窗就会显示**旧版本** ✗✗（用户看到的是上一版的说明）。
-    notes_versions = re.findall(r"^# (\d+)\.(\d+)\.(\d+)", load("RELEASE_NOTES.md"), re.M)
-    notes_parsed = [tuple(int(x) for x in v) for v in notes_versions]
-    check(len(notes_parsed) >= 2 and notes_parsed[0] == max(notes_parsed),
-          "R60b: `RELEASE_NOTES.md` 的**第一个版本标题必须是最高版本** ✗ —— "
-          "发布正文只取第一节（R60）⇒ 新版本追加到末尾会让**更新弹窗显示旧版本** ✗✗")
+    # 因为正文只取第一节（R60 ✓）⇒ 两者不一致就会**给用户发错版本的说明** ✗✗
+    #（例如新版本写好了、版本号没 bump ⇒ 弹窗显示上一版的文案 ✓；
+    #  或把新版本**追加到末尾**而不是置顶 ⇒ 同上 ✓）。
+    #
+    # ⚠️ **第一版判据写成「第一个是最高版本」—— 太弱** ✗：
+    # 把第一节的 `# ` 降级成 `## `（等于**删掉**第一节）之后，
+    # 剩下的第一个（1.1.16）**自己就是最高** ⇒ 判据照样 PASS ✗✗，
+    # 变异检查当场报 `Guard failed mutation check: R60b` ✓。
+    # ⇒ 改成跟 `MARKETING_VERSION` **对账** ✓（这才是真正要守的东西 ✓）。
+    marketing_versions = re.findall(r"MARKETING_VERSION:\s*(\S+)", load("project.yml"))
+    notes_first = re.findall(r"^# (\d+\.\d+\.\d+)", load("RELEASE_NOTES.md"), re.M)
+    check(len(marketing_versions) == 1
+          and len(notes_first) >= 1
+          and notes_first[0] == marketing_versions[0],
+          "R60b: `RELEASE_NOTES.md` 的**第一节版本必须等于 `MARKETING_VERSION`** ✗ —— "
+          "发布正文只取第一节（R60）⇒ 不一致就会**给用户发错版本的说明** ✗；"
+          "新版本必须**置顶**，不能追加到末尾 ✓")
 
     # R45: 重签前必须有「**分界日志**」（2026-09-19 真机，构建 147）。
     #
@@ -4432,11 +4442,18 @@ def main():
          '          NOTES="$(cat RELEASE_NOTES.md)"',
          "R60: 发布正文必须**只取第一个版本一节**"),
         # ── R60b：发布说明的第一个版本必须是最高的（2026-09-20）──
-        # 把旧版本标题挪到最上面：正文只取第一节 ⇒ 弹窗会显示旧版本。
+        # 把**第一个** `# ` 标题降级成 `## `：它就不再被 `^# (\d+)` 认作版本标题 ✗
+        # ⇒ 解析出的「第一个版本」变成 1.1.16 ≠ 最高版本 ⇒ R60b 失败 ✓。
+        #
+        # ⚠️ 锚点**故意只写 `# `**（不带版本号、不带标题文案）✗ ——
+        # 第一版我写成 `# 1.2.0：修好「签大包时 Seal 被系统杀掉」` ✗，
+        # 结果**当天就把标题改了两次**（→「优化部分应用无法签名」→ 去掉全角冒号）✗✗
+        # ⇒ CI 报 `Mutation anchor missing` ✗（本地那次 PASS 是在改标题**之前**跑的 ✗）。
+        # ⇒ **发布说明的标题每次发版都会改** ✓ ⇒ 锚点绝不能依赖它 ✓。
         ("RELEASE_NOTES.md",
-         "# 1.2.0：修好「签大包时 Seal 被系统杀掉」",
-         "# 1.1.0：把旧版本标题挪到最上面",
-         "R60b: `RELEASE_NOTES.md` 的**第一个版本标题必须是最高版本**"),
+         "# ",
+         "## ",
+         "R60b: `RELEASE_NOTES.md` 的**第一节版本必须等于 `MARKETING_VERSION`**"),
         # ── R45：重签前的分界日志（2026-09-19）──
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "签名：开始重签（逐 Mach-O 串行）",

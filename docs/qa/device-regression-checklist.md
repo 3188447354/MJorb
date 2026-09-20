@@ -494,6 +494,19 @@ Apple 已经接受了密码，只是要求走第二步（输验证码）。这�
   正常时应有 `[minimuxer] [iface] vpn peer: <ip>`。
 - ⇒ **开测前先确认 LocalDevVPN 是「已连接」状态**，否则后面所有失败都白分析 ✗。
 
+**⏱️ 「验证中」不是死机 —— 最坏要等约 3.5 分钟**（2026-09-20 查代码算出）：
+点了「检测连接」后 Seal 显示「验证中」，它在跑 `MinimuxerInstallChannel.diagnose()`，
+全程**有界但很慢**：
+- `Minimuxer.start` 有 **4 秒**超时；
+- 设备探测是 `for attempt in 0..<36`，每轮 = `readyDeviceIdentifier()`（`blockingCallTimeoutSeconds`
+  = **5 秒**）＋ 500ms 睡眠 ⇒ **36 × 5.5 ≈ 198 秒**；
+- ⇒ **最坏 ≈ 3.5 分钟**才给出成功/失败结论。
+- ⚠️ **设备连不上时恰好走最坏路径**（muxer 监听器已起、`ready` 为真，但设备不可达
+  ⇒ 每轮都把那 5 秒耗尽）—— 也就是 LocalDevVPN 没连上时的形态。
+- ⇒ **3.5 分钟内别急着判死** ✓；超过 3.5 分钟仍是「验证中」才算真卡住。
+- **想立刻退出**：杀掉 Seal 重开 —— 重新加载时 `PairingStore.current()` 会把残留的
+  `.validating` 归位成「已导入，待验证」（`PairingStore.swift:100`），不会一直显示「验证中」✓。
+
 ---
 
 ## 三、只有某一个 App 签不上？先别急着重验证 Apple ID

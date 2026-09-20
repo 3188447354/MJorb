@@ -14,8 +14,15 @@ struct SealCommunityView: View {
     @State private var alertMessage = ""
     @State private var showAlert = false
 
-    private let qqGroupNumber = "1093450608"
-    private let qqJoinURL = URL(string: "https://qm.qq.com/q/OHpPXyHryI")
+    // ⚠️ **这两行必须指向同一个群** ✗ —— 它们是**两条路径**，不是「链接 + 备份」✓：
+    //   · `qqGroupNumber` → `mqqapi://card/show_pslcard?...&uin=<群号>&card_type=group`
+    //     （**主路径**：QQ 装了就直接打开群资料卡 ✓）
+    //   · `qqJoinURL` → 只在 **QQ 没装**、scheme 打不开时兜底 ✓
+    // ⇒ 2026-09-20 换群时踩到：短链换了新群、群号还留着旧的 ⇒ **主路径会跳进旧群** ✗✗
+    //   ⚠️ 短链 `qm.qq.com/q/XXXX` 是**不透明**的 ✗ —— 从链接本身**看不出群号** ✓，
+    //   要抓落地页里的 `群号: <digits>` 或 `"groupcode":"<digits>"` 才知道 ✓。
+    private let qqGroupNumber = "1051135067"
+    private let qqJoinURL = URL(string: "https://qm.qq.com/q/8HfHpTmOzu")
     private let telegramURL = URL(string: "https://t.me/addlist/vQ5-N-_q0qYzNWNl")
     private let rewardTitle = "请作者喝杯奶茶"
 

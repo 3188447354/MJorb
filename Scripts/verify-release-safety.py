@@ -1623,6 +1623,22 @@ def violations(load=read):
           "只写 `var description` 不会被字符串插值采用（插值走合成的 memberwise 描述）⇒ "
           "日志里会打出原始结构体并被截断，诊断变噪音 ✗")
 
+    # R59: 「加入 QQ 群」必须保留**两条路径**（2026-09-20）。
+    #
+    # `mqqapi://card/show_pslcard?...&uin=<群号>&card_type=group` 是**主路径**
+    #（QQ 装了就直接开群资料卡 ✓），短链 `qm.qq.com/q/XXXX` 只在 **QQ 没装**时兜底 ✓。
+    # ⚠️ **换群时两处必须一起改** ✗ —— 短链是**不透明**的，从链接本身看不出群号 ✗，
+    # 只换短链会让主路径跳进**旧群** ✗✗（2026-09-20 实际踩到 ✓）。
+    # ⚠️ 本断言只能钉「两条路径都还在」✓；「两处指向同一个群」**无法静态校验** ✗
+    #（要联网解析短链才拿得到群号 ✗）⇒ 只能靠上面那段注释 + 台账提醒 ✓。
+    community_source = load("Seal/Features/Settings/SealCommunityView.swift")
+    check("private let qqGroupNumber" in community_source
+          and "private let qqJoinURL" in community_source
+          and "mqqapi://card/show_pslcard" in community_source
+          and "openURL(fallback)" in community_source,
+          "R59: 「加入 QQ 群」必须保留**两条路径**（`mqqapi` 主路径 ＋ 短链兜底）✗ —— "
+          "删掉任一条：**没装 QQ 的用户点进去没有任何反应** ✗")
+
     # R45: 重签前必须有「**分界日志**」（2026-09-19 真机，构建 147）。
     #
     # 真机：Seal 在 `signing` 阶段**直接闪退** ✗（两次都在同一位置，日志到此为止，
@@ -4378,6 +4394,12 @@ def main():
          "struct TimedProbe: CustomStringConvertible",
          "struct TimedProbe",
          "R58b: `TimedProbe` 必须显式遵循 `CustomStringConvertible`"),
+        # ── R59：QQ 加群的两条路径（2026-09-20）──
+        # 删掉短链兜底：没装 QQ 的用户点进去没有任何反应。
+        ("Seal/Features/Settings/SealCommunityView.swift",
+         "private let qqJoinURL",
+         "private let qqFallbackRemoved",
+         "R59: 「加入 QQ 群」必须保留**两条路径**"),
         # ── R45：重签前的分界日志（2026-09-19）──
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "签名：开始重签（逐 Mach-O 串行）",

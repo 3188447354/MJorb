@@ -24,6 +24,15 @@
   默认 `.disabled`）⇒ **根本没有那几行**；
   ② 进程被 CPU 预算杀掉 ⇒ **即使有也来不及落盘**。
   ⇒ 处置完全不同：① 接线（`d07b42f`）；② 减少 CPU 或分批。
+- 🔴 **发布时别走错档：`ios-release.yml` 是「快速档」，签名器/RustBridge/安装链路的大改动必须走完整档**（2026-09-20）。
+  `ios-release.yml` 的**文件头自己写着**：跳过模拟器 UI 回归与 **`signer-tests` 测试门**，
+  用于「**只改了 Swift 业务逻辑、没动 Rust 桥/签名器**」的小版本快速出包 ✗；
+  **大改动仍须走完整 iOS workflow** ✓。
+  ⇒ **1.2.0 换了签名器** ✗ ⇒ 应走 **`ios.yml`** 的 `publish-release`
+  （`needs: [build-package, signer-tests, swift-regression]` ✓ —— 两个门都在 ✓），
+  **不是** `ios-release.yml` ✗。
+  **判据：发布前先读那个 workflow 的头部注释** ✓ —— 本仓把「这档能用来干什么」写在文件头 ✓
+  （和「刻意不 reset」那条同源：**理由都写在注释里** ✓）。
 - 🔴 **换一个「值」时，先数清有几条路径在用它 —— 短链是不透明的，看不出它指向谁**（2026-09-20）。
   「加入 QQ 群」有**两条路径** ✗：`mqqapi://…&uin=<群号>&card_type=group`（**主路径**，QQ 装了直接开群卡 ✓）
   ＋ 短链 `qm.qq.com/q/XXXX`（只在 **QQ 没装**时兜底 ✓）。

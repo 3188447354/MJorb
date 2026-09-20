@@ -361,7 +361,13 @@ jobs:
             echo "::error::RELEASE_NOTES.md 缺失或为空：它是发布正文唯一来源（见 AGENTS.md「版本与发布」）。补写本次版本正文后重跑本 job。"
             exit 1
           fi
-          NOTES="$(cat RELEASE_NOTES.md)"
+          # ⚠️ **只取「第一个 `# 版本：…` 标题」那一节**（2026-09-20 修）✗ ——
+          # 原来是 `cat` **整个文件** ✗ ⇒ **更新弹窗会把所有历史版本全列出来**
+          #（实测 74 行 / 5 个版本 ✗），而且旧版本文案里带 `installation_proxy` / `installd`
+          # 这类**内部术语** ✗✗ —— 那是给开发者看的，不该出现在用户弹窗里 ✓。
+          # 判据：`RELEASE_NOTES.md` **最新的版本必须写在文件最上面** ✓（守卫钉住 ✓）。
+          NOTES="$(awk '/^# /{ if (found) exit; found=1 } found' RELEASE_NOTES.md \
+            | sed -e '/^---[[:space:]]*$/d' -e 's/[[:space:]]*$//' | cat -s)"
           ARGS=(--title "Seal $TAG" --notes "$NOTES")
           if [ "$PRERELEASE" = "true" ]; then ARGS+=(--prerelease); fi
           gh release create "$TAG" "${ARGS[@]}" --repo sunuannian1/Seal-Releases \

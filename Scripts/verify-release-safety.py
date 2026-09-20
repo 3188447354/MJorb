@@ -1639,6 +1639,28 @@ def violations(load=read):
           "R59: 「加入 QQ 群」必须保留**两条路径**（`mqqapi` 主路径 ＋ 短链兜底）✗ —— "
           "删掉任一条：**没装 QQ 的用户点进去没有任何反应** ✗")
 
+    # R60: 发布正文必须**只取「第一个版本」那一节**（2026-09-20 修）✗
+    #
+    # 原来是 `NOTES="$(cat RELEASE_NOTES.md)"` ✗ ⇒ **更新弹窗把所有历史版本全列出来**
+    #（实测：整个文件 74 行 / 5 个版本 ✗），而且旧版本文案里带 `installation_proxy` /
+    # `installd` 这类**内部术语** ✗✗ —— 那是给开发者看的，不该出现在用户弹窗里 ✓。
+    # ⚠️ 两个发布档（完整档 + 快速档）**都有**这段 ✗ ⇒ 必须**同时**钉住 ✓。
+    release_workflows = (".github/workflows/ios.yml", ".github/workflows/ios-release.yml")
+    check(all('NOTES="$(cat RELEASE_NOTES.md)"' not in load(w) for w in release_workflows)
+          and all("if (found) exit; found=1" in load(w) for w in release_workflows),
+          "R60: 发布正文必须**只取第一个版本一节** ✗ —— 取整个文件会让更新弹窗"
+          "列出所有历史版本（且含内部术语）✗；两个发布档都要改 ✓")
+
+    # R60b: `RELEASE_NOTES.md` 的**第一个版本标题必须是最高版本**（2026-09-20）✓
+    #
+    # 因为正文只取第一节（R60 ✓）—— 若有人把新版本**追加到文件末尾**（而不是置顶），
+    # 弹窗就会显示**旧版本** ✗✗（用户看到的是上一版的说明）。
+    notes_versions = re.findall(r"^# (\d+)\.(\d+)\.(\d+)", load("RELEASE_NOTES.md"), re.M)
+    notes_parsed = [tuple(int(x) for x in v) for v in notes_versions]
+    check(len(notes_parsed) >= 2 and notes_parsed[0] == max(notes_parsed),
+          "R60b: `RELEASE_NOTES.md` 的**第一个版本标题必须是最高版本** ✗ —— "
+          "发布正文只取第一节（R60）⇒ 新版本追加到末尾会让**更新弹窗显示旧版本** ✗✗")
+
     # R45: 重签前必须有「**分界日志**」（2026-09-19 真机，构建 147）。
     #
     # 真机：Seal 在 `signing` 阶段**直接闪退** ✗（两次都在同一位置，日志到此为止，
@@ -4400,6 +4422,21 @@ def main():
          "private let qqJoinURL",
          "private let qqFallbackRemoved",
          "R59: 「加入 QQ 群」必须保留**两条路径**"),
+        # ── R60：发布正文只取当前版本一节（2026-09-20）──
+        # 换回 `cat` 整个文件：更新弹窗会列出所有历史版本（含内部术语）。
+        # ⚠️ 锚点是**两条 shell 行**（含续行反斜杠）✗ —— 在它区间里插东西会失配，
+        #    改这段时把锚点一起更新 ✓。
+        (".github/workflows/ios.yml",
+         "          NOTES=\"$(awk '/^# /{ if (found) exit; found=1 } found' RELEASE_NOTES.md \\\n"
+         "            | sed -e '/^---[[:space:]]*$/d' -e 's/[[:space:]]*$//' | cat -s)\"",
+         '          NOTES="$(cat RELEASE_NOTES.md)"',
+         "R60: 发布正文必须**只取第一个版本一节**"),
+        # ── R60b：发布说明的第一个版本必须是最高的（2026-09-20）──
+        # 把旧版本标题挪到最上面：正文只取第一节 ⇒ 弹窗会显示旧版本。
+        ("RELEASE_NOTES.md",
+         "# 1.2.0：修好「签大包时 Seal 被系统杀掉」",
+         "# 1.1.0：把旧版本标题挪到最上面",
+         "R60b: `RELEASE_NOTES.md` 的**第一个版本标题必须是最高版本**"),
         # ── R45：重签前的分界日志（2026-09-19）──
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "签名：开始重签（逐 Mach-O 串行）",

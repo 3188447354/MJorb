@@ -61,3 +61,33 @@ iOS 17.0–17.3.1 上没有它，userspace 隧道只能经 Wi-Fi/bonjour 走 Rem
 3. 版本清单：Wikipedia 的 `iOS 17` / `iOS 18` / `iOS 26` / `iOS 27` 各词条的 Version history 表。
 4. 想确认「设备端到底有没有这个服务」，比读文档更硬的办法是**真机连一次**：
    `idevice_pair` 生成远程配对文件成功 ⇒ 该版本有 `CoreDeviceProxy` ✓。
+
+## 七、完整性审计：Seal 里还有别的地方要求 17.4 吗？
+
+**动机**：只把配对助手修好还不够 —— 如果 Seal 别处也硬性假设 17.4，那 17.0–17.3.1 拿到
+Lockdown 文件照样会卡住。所以做了一次全仓审计（2026-09-20）。
+
+**审计方法**：全仓 `grep` 这几个模式 —— `17.4` / `17_4` / `17.3` / `CoreDeviceProxy` /
+`isRemotePairing` / `remotePairing` / `RPPairing`，覆盖 `Seal/**`、`Vendor/Minimuxer/Sources/**`、
+`Vendor/Minimuxer/RustBridge/src/**`。
+
+**结论**：
+
+| # | 查了什么 | 结果 |
+|---|---|---|
+| 1 | `Seal/**` 与 `Minimuxer/**` 里有没有 `17.4` 闸门 | **一处都没有** ✓ —— 全仓唯一的 17.4 判据就在配对助手（本轮已修） |
+| 2 | 版本分支的判据是什么 | 一律是 **`major < 17`**（pre17 / post17），**与 17.4 无关** ✓<br>`Mounter.swift:119`（DDI 挂载）、`Jit.swift:68`（调试）都是这个判据 |
+| 3 | 装 App 走哪条路 | `Install.swift:26` 按 **配对文件类型**分流：`Muxer.isrppairing ? RPInstall : LockDownInstall` ✓<br>⇒ Lockdown 文件自动选 `LockDownInstall`；其注释写明**沿用 SideStore minimuxer 真机验证过的布局** ✓ |
+| 4 | 个性化 DDI 挂载要不要 `CoreDeviceProxy` | **不要** ✓ —— `mount_personalized_ddi`（`post17.rs:193`）走 `TcpProvider`（usbmuxd TCP socket）+ `LockdownClient` + `ImageMounter` |
+| 5 | 全仓哪里用了 `CoreDeviceProxy` | **只有一处**：`post17.rs:100` 的 `debug_app_post17`（**JIT / 调试启动**） |
+
+**第 5 条的推论（已知缺口，但对 Seal 用户无影响）**：
+`Jit.swift` 的分支是 `major < 17 ⇒ debugPre17`、否则 ⇒ `rustBridgeDebugAppPost17`（需要 `CoreDeviceProxy`）
+⇒ **iOS 17.0–17.3.1 上「启用 JIT / 调试启动」无路可走**，会以 `CreateCoreDevice` 失败。
+⚠️ **但 Seal 根本没有暴露 JIT 功能** —— 全仓只有 `CertificateExportHandler.swift:47` 一处注释
+提到 LiveContainer 的「免 JIT 模式」✓ ⇒ 该缺口与 Seal 的「装 App / 续签」无关 ✓，本轮不改代码。
+
+**因此**：iOS 17.0–17.3.1 的**安装与续签不依赖 17.4 的任何能力** ✓；
+剩下的风险只在**运行时**（这条通道在 Seal 里从未跑过真机）⇒ 见
+`device-regression-checklist.md` 第 15 项。
+

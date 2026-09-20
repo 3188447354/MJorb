@@ -24,8 +24,40 @@
   默认 `.disabled`）⇒ **根本没有那几行**；
   ② 进程被 CPU 预算杀掉 ⇒ **即使有也来不及落盘**。
   ⇒ 处置完全不同：① 接线（`d07b42f`）；② 减少 CPU 或分批。
-- 🔴 **新加一个 CI 门禁时，要预期它「第一次跑就红」—— 而且红的原因很可能在上游**（2026-09-20）。
-  换签名器后把 `rork-sign-tests` 改成 `signer-tests`（测 `CodeSignKit` ＋ `SideSign`），
+- 🔴 **给 struct 写 `var description` **不会**让字符串插值用它 —— 必须显式遵循 `CustomStringConvertible`**（2026-09-20 真机踩到）✗。
+  我给诊断加了个 `TimedProbe`，里面有 `var description: String`，以为 `"\(timedProbe)"` 会用它 ✗ ——
+  **实际走的是合成的 memberwise 描述** ⇒ 真机日志里打出来的是
+  `TimedProbe(probe: Seal.…InstallProbe.unavailable, seconds: 2.40802764…812e-05)` ✗
+  （而且长到被日志行**截断** ✗）⇒ **诊断反而把日志变难读了** ✗✗。
+  ⇒ 修法：`struct TimedProbe: CustomStringConvertible` ✓（`description` 才会被插值采用 ✓）。
+  **判据：任何「自定义描述」的类型，第一件事就是确认它遵循了 `CustomStringConvertible`** ✓；
+  ⚠️ **这类退化是静默的** ✗ —— 编译过、跑得动、断言全绿，**只有真机日志里才看得出来** ✗
+  ⇒ 必须**加守卫**（本仓已加 **R58b** ✓）。
+  **⚠️ 更一般的教训：加诊断 ≠ 诊断可用** ✓ —— 诊断上线后**第一次拿到真实日志时，
+  要把它当「输出」验收**（能读吗？被截断了吗？会不会反而更难查？）✗，
+  别默认「我加了就一定有信息」✓。
+- 🔴 **别把「刻意不覆盖」当成「漏掉」—— 判「同一规则只覆盖一条路径」之前，先读另一条路径的注释**（2026-09-20）。
+  我查到 `removeProfiles` 里两条路径待遇不同：`dumpProfiles` 有**有界重试**
+  （`Provision.resetProvider()` ＋ 等 4 秒 × 3 次 ✓），而**阳性对照是单发** ✗ ——
+  加上真机证据（两次中止同行都带 `dump 尝试 2/3 次` ⇒ 列描述文件那条路径重试了 2–3 次才成功），
+  我判断这是「同一已知条件只给一条路径加防护」（本仓已有 4 次前科 ✗），
+  **并打算照抄 `dumpProfiles` 给阳性对照加 reset ＋ 重试** ✗。
+  **结果在动手前读到 `probeInstalled` 上面那段注释** ✓：
+
+  > **刻意不调 `Install.resetProvider()`**（虽然 `InstalledAppDeviceVerifier` 会调）：
+  > 本函数跑在「刚装完一个 App」与「自替换结算」两个时间点上，此刻可能有
+  > installation_proxy 连接正在服务，重置会把它拆掉（**R05**）。缓存连接失效的代价
+  > **已经由阳性对照兜住** —— 那种情况下对照会抛错或答错，**直接中止整轮，方向是安全的**。
+
+  ⇒ **阳性对照「单发」是刻意的** ✓，而且**不 reset 正是为了不触发 R05** ✗ ——
+  两个调用点的**语境不同**：`InstalledAppDeviceVerifier` 跑在**安装完成之后**（可安全重置 ✓），
+  而 `DeviceProfileCleaner` 跑在**安装前后**（重置会拆掉正在服务的连接 ✗）。
+  **判据：判「这条路径漏了防护」之前，先 `grep -n '刻意\|不要\|禁止' <那个函数上方 30 行>`** ✓ ——
+  本仓大量「看起来该统一、其实刻意不统一」的决定**都写在注释里** ✓；
+  读不到理由 ≠ 没有理由 ✗（而按错的结论去改，会**破坏一条已经想清楚的安全边界** ✗✗）。
+  ⚠️ **同一轮里我连续两次「结论没落在代码上」**（先误判阳性对照挑错 ID、再误判重试漏覆盖 ✗）——
+  **两次都靠动手前读代码拦住** ✓ ⇒ **结论必须引用代码原文，而不是日志里那个字符串** ✓。
+- 🔴 **新加一个 CI 门禁时，要预期它「第一次跑就红」—— 而且红的原因很可能在上游**（2026-09-20）。  换签名器后把 `rork-sign-tests` 改成 `signer-tests`（测 `CodeSignKit` ＋ `SideSign`），
   **首次运行**就红 ✗ —— 但红的不是我们的改动：
   `Vendor/SideSign/Tests/SideSignTests.swift` **上游自己就没写 `import Foundation`** ✗
   （`cannot find 'FileManager' in scope` ✓），另有一处 `entries.map(\.filename)`

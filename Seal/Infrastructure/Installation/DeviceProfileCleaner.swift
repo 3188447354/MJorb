@@ -304,10 +304,17 @@ struct DeviceProfileCleaner: Sendable {
     /// 真机实测规律（构建 175）：两次中止都发生在**刚启动**
     ///（冷启动后 22 秒 / 自替换重启后 60 秒），且同行都带 `dump 尝试 N 次`；
     /// 16 秒后再跑就正常了 ⇒ **强烈指向「启动早期通道还没就绪」** ✓。
-    struct TimedProbe {
+    /// ⚠️ **必须显式写 `: CustomStringConvertible`** ✗（2026-09-20 真机踩到）：
+    /// 光有一个 `var description` **不会**让字符串插值用它 —— 插值走的是**合成的**
+    /// memberwise 描述 ⇒ 日志里打出来的是
+    /// `TimedProbe(probe: Seal.…InstallProbe.unavailable, seconds: 2.4e-05)` ✗
+    ///（而且长到被日志行截断 ✗）—— **诊断反而把日志变难读了** ✗。
+    struct TimedProbe: CustomStringConvertible {
         let probe: ProfileReclaimPolicy.InstallProbe
         let seconds: TimeInterval
 
+        /// 例：`查询失败(0.0s)`（瞬时抛错）／`查询失败(15.0s)`（撞上 `queryTimeoutSeconds` 超时）
+        /// —— **秒数就是判别器** ✓。
         var description: String {
             "\(probe.logName)\(String(format: "(%.1fs)", seconds))"
         }

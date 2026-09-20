@@ -1611,6 +1611,17 @@ def violations(load=read):
           "R58: 阳性对照失败时必须输出**带耗时的**探测结果（并再问同一个 ID 一次）✗ —— "
           "否则「超时」与「抛错」在日志里分不开，"
           "而真机实测中止都发生在刚启动、16 秒后就正常 ⇒ 分不出就没法定位 ✓")
+    # R58b: `TimedProbe` **必须显式遵循 `CustomStringConvertible`**（2026-09-20 真机踩到）✗
+    #
+    # 光有一个 `var description` **不会**让字符串插值用它 —— 插值走的是**合成的**
+    # memberwise 描述 ⇒ 真机日志里打出来的是
+    # `TimedProbe(probe: Seal.…InstallProbe.unavailable, seconds: 2.4e-05)` ✗
+    #（而且长到被日志行**截断** ✗）⇒ **诊断反而把日志变难读了** ✗。
+    # ⇒ 这类「加了诊断、但诊断静默降级成噪音」的退化，只有守卫能钉住 ✓。
+    check("struct TimedProbe: CustomStringConvertible" in cleaner_source,
+          "R58b: `TimedProbe` 必须显式遵循 `CustomStringConvertible` ✗ —— "
+          "只写 `var description` 不会被字符串插值采用（插值走合成的 memberwise 描述）⇒ "
+          "日志里会打出原始结构体并被截断，诊断变噪音 ✗")
 
     # R45: 重签前必须有「**分界日志**」（2026-09-19 真机，构建 147）。
     #
@@ -4361,6 +4372,12 @@ def main():
          'String(format: "(%.1fs)", seconds)',
          "",
          "R58: 阳性对照失败时必须输出**带耗时的**探测结果"),
+        # ── R58b：TimedProbe 必须显式遵循 CustomStringConvertible（2026-09-20 真机）──
+        # 去掉遵循：插值走合成的 memberwise 描述 ⇒ 日志里打出原始结构体并被截断 ✗。
+        ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
+         "struct TimedProbe: CustomStringConvertible",
+         "struct TimedProbe",
+         "R58b: `TimedProbe` 必须显式遵循 `CustomStringConvertible`"),
         # ── R45：重签前的分界日志（2026-09-19）──
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "签名：开始重签（逐 Mach-O 串行）",

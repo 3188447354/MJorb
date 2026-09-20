@@ -483,6 +483,17 @@ Apple 已经接受了密码，只是要求走第二步（输验证码）。这�
 ⇒ 所以这一项要验的是**运行时行为**（会话能不能建起来、installd 认不认），
 不是「代码里还有没有别的闸门」—— 那个已经查完了 ✓。
 
+**🔴 前置条件：这台设备上必须装好并连上 LocalDevVPN**（2026-09-20 查代码确认）——
+**「本机配对」≠「不需要隧道」** ✗，别搞错：
+- `NetworkObserver.refreshEndpoint()` 只从 **`utun` 开头的接口**取设备 IP
+  （`IfaceScanner.probableVPN()` = `interfaces.first { $0.name.hasPrefix("utun") }`），
+  且 `getPeer()` 还要 `testDeviceConnection` 确认可达；
+- 拿不到 ⇒ `DeviceEndpoint.clear()` ⇒ `Muxer` 的 `ListDevices` 回**空列表**
+  ⇒ `idevice` 认为**没有设备** ⇒ 安装失败（症状很误导）。
+- **诊断日志**：`[minimuxer] [net] no SideVPN endpoint detected` ⇒ 就是 VPN 没起来；
+  正常时应有 `[minimuxer] [iface] vpn peer: <ip>`。
+- ⇒ **开测前先确认 LocalDevVPN 是「已连接」状态**，否则后面所有失败都白分析 ✗。
+
 ---
 
 ## 三、只有某一个 App 签不上？先别急着重验证 Apple ID

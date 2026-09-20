@@ -457,8 +457,23 @@ Apple 已经接受了密码，只是要求走第二步（输验证码）。这�
 现在助手**按设备系统版本自动选**：**< 17.4 ⇒ Lockdown（本机配对）**、**≥ 17.4 ⇒ 远程配对**、
 版本读不到 ⇒ 保持原行为。
 
-> ⚠️ **Seal App 侧的文案修复在 run#185 及以后**；**助手侧要等 `main` 分支重新构建助手**才带这个改动
-> （助手的 push 触发只覆盖 `main` 与 `feature/**`）。
+> ⚠️ **Seal App 侧的文案修复在 run#185 及以后**。
+>
+> ✅ **2026-09-20 复核（已实测确认，取代原先「要等 `main` 重新构建」的说法）**：
+> 交付给用户的 `Seal配对助手.exe`（CI run **35501570354**，提交 **`a81249e1`**，分支
+> `fix/signing-attribution-batch0`）**已经带**版本自动分流。该提交的
+> `.github/workflows/pairing-assistant.yml` 已含 4 条断言（`fn seal_mode_for_ios`、
+> `seal_lockdown_only`、`seal_mode_for_ios(&ios_version, self.pairing_mode)`、`✦  生成并写入 Seal`），
+> 并把 `seal_pairing_mode` 列为**必须不存在**；该 run 结论 success ⇒ 断言全过。
+> ⚠️ 注意 **`fix/**` 不在该 workflow 的 `on.push.branches`（只有 `main` 与 `feature/**`）**
+> ⇒ 那次是 **`workflow_dispatch` 手动触发**跑出来的 —— 所以「分支不对就没构建」这个直觉在这里不成立，
+> **要看 run 的 `headSha`，不要看分支名**（`gh run view <id> --json headSha,headBranch`）。
+>
+> 🔴 **连带更正（写操作说明时的教训）**：覆盖层把「配对类型」单选**删掉了**
+> （所以上面那份断言才要求源码里不得再出现 `seal_pairing_mode`），主按钮也**只有一个**
+> 「✦  生成并写入 Seal」。**别拿 `seal_src/locales/*.toml`（= 上游原始界面）的按钮名去写操作说明** ——
+> 那是**上游**的界面，不是用户手上那个 exe 的界面；要写就必须对着
+> `Tools/SealPairingAssistant/patch_upstream.py` ＋ 构建该 exe 的 run 里的界面断言写。
 
 **怎么做**：拿一台 **iOS 17.0–17.3.1** 的 iPhone（USB 接电脑），跑 Seal 配对助手 →
 点「生成并写入 Seal」；助手卡片在「已就绪」下会多一行 **「iOS 17.4 以下：本机配对（Lockdown）」**。
@@ -516,7 +531,15 @@ Apple 已经接受了密码，只是要求走第二步（输验证码）。这�
 | 构建 | **名义**上限（控制流可算） | **实测**墙钟 | 每轮探测的预算 |
 |---|---|---|---|
 | **修复后**（构建 **186** 起） | 约 20–60 秒 | 待测（预期与名义同量级） | `probeDeviceFetchTimeoutMs` = **1 秒** ✓ |
-| **184 及更早** | **约 3.4 分钟** | **12 分钟以上** ✗ | `deviceFetchTimeoutMs` = 15 秒 ✗ |
+| **184 及更早**（探测**挂住**：连接无响应、被外层 5 秒截断） | **约 3.4 分钟** | **12 分钟以上** ✗ | `deviceFetchTimeoutMs` = 15 秒 ✗ |
+| **184 及更早**（探测**快速失败**：对端回 RST） | **约 20 秒** | **约 25 秒** ✓ 实测 | 同上（但没花到预算） |
+
+> ⚠️ **「3.4 分钟 / 12 分钟」只属于「挂住」那一行** —— 别把它当 184 的固定表现。
+> **实测证据（2026-09-20，构建 184 真机日志）**：同一台设备连续失败的时间戳是
+> `21:30:02 → :27 → :52 → 21:31:23`，**间隔 25 秒** ⇒ 那是 `ready()` **立刻拿到 RST**、
+> 每轮只付 0.5 秒睡眠的形态（36 × 0.5 s ＋ 固定开销）。
+> ⇒ 判断「这轮为什么慢」要先看**底层错误是超时还是 RST**：
+> `ConnectionRefused` ⇒ 快速失败（≈20–25 秒）；无底层错误 / 超时 ⇒ 挂住（≈3.4 分钟起）。
 
 - 设备探测是 `for attempt in 0..<36`，每轮 = `readyDeviceIdentifier()` ＋ 500ms 睡眠
   （**设计意图 = 给 RSD 握手约 18 秒**）；`readyDeviceIdentifier()` = `isReady()` + `fetchUDIDDetailed()`。

@@ -262,9 +262,16 @@ jobs:
           Windows prerequisite:
           Install Apple website iTunes / Apple Mobile Device support as required by upstream idevice_pair.
           "@ | Set-Content (Join-Path $out "README.txt") -Encoding UTF8
+          # ⚠️ 必须 UTF8，**不能用 ASCII 编码**（2026-09-20 修）：PowerShell 的 ASCII 编码
+          # 会把所有非 ASCII 字符**替换成 ?** ⇒ 清单里的文件名变成 Seal????.exe，
+          # 用户 sha256sum -c SHA256SUMS.txt 直接报「没有那个文件」✗
+          # （哈希本身是对的，所以这个错很难被发现 —— 只有真去 -c 才暴露）。
+          # 本步骤 shell 是 pwsh（PS 7）⇒ UTF8 写出来是**无 BOM** 的 ✓
+          # （PS 5.1 的 UTF8 会带 BOM，那会同样让 -c 失败；
+          #  真要在 5.1 上跑，得用 [System.IO.File]::WriteAllText + UTF8Encoding($false)）。
           Get-FileHash (Join-Path $out "Seal配对助手.exe") -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash.ToLower())  Seal配对助手.exe" } |
-            Set-Content (Join-Path $out "SHA256SUMS.txt") -Encoding ASCII
+            Set-Content (Join-Path $out "SHA256SUMS.txt") -Encoding UTF8
 
       - name: Upload Windows pairing assistant
         uses: actions/upload-artifact@v7.0.1

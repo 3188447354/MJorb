@@ -29,6 +29,18 @@
     再拿它和便宜判据一起进逻辑与 guard ⇒ **最坏路径最慢** ✗。
     **逻辑与的判据要按「便宜 → 贵」排序**，便宜的那侧已经为假就直接返回 ✓
     （守卫 **R61** 按**下标顺序**钉住，因为「只查短预算」会被上游顺序骗过去 ✓）。
+- 🔴 **给带非 ASCII 文件名的产物生成校验清单，绝不能写成 ASCII 编码**（2026-09-20，配对助手产物）。
+  `.github/workflows/pairing-assistant.yml` 用 `Set-Content … -Encoding ASCII` 写
+  `SHA256SUMS.txt` ⇒ PowerShell 把 `Seal配对助手.exe` 里的中文**逐个替换成 `?`**，
+  清单里变成 `Seal????.exe` ✗ —— 用户 `sha256sum -c SHA256SUMS.txt` 直接报「没有那个文件」✗。
+  ⚠️ **哈希本身是对的**，所以这个错**看不出来**：只有真去 `-c` 校验才暴露
+  （我是在交付前手工核哈希时才发现的）。
+  ⇒ 改成 `-Encoding UTF8` ✓；⚠️ 但这**只在 shell 是 `pwsh`（PS 7）时成立** ——
+  PS 5.1 的 `-Encoding UTF8` **会带 BOM**，BOM 同样会让 `-c` 失败 ⇒
+  那种环境要写 `[System.IO.File]::WriteAllText($p, $t, (New-Object System.Text.UTF8Encoding($false)))`。
+  **判据：产物校验清单必须能被 `sha256sum -c` 直接跑通** ✓（**哈希对 ≠ 清单可用** ✗）。
+  ⚠️ 同一个文件里 `[Text.Encoding]::ASCII.GetString(...)` 查 PE 头是**正当用法** ✓，
+  别顺手把它一起「修」了。
 - **iOS 有一条硬性 CPU 预算：任意 180 秒窗口内，App 的 CPU 时间不得超过 90 秒（50%）**（2026-09-19）。
   超了**不是抛错、不是崩溃**，而是被系统**直接终止** ✗ —— 日志**来不及 flush**，
   所以现象是「**日志戛然而止**」，看起来像闪退，但崩溃日志里根本没有异常栈。

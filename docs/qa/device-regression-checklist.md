@@ -515,8 +515,8 @@ Apple 已经接受了密码，只是要求走第二步（输验证码）。这�
 
 | 构建 | 最坏耗时 | 每轮探测的预算 |
 |---|---|---|
-| **修复后**（构建 **186** 起） | **约 40 秒** | `probeDeviceFetchTimeoutMs` = **1 秒** ✓ |
-| **184 及更早** | **9–18 分钟** ✗ | `deviceFetchTimeoutMs` = 15 秒 ✗ |
+| **修复后**（构建 **186** 起） | **约 20–60 秒** | `probeDeviceFetchTimeoutMs` = **1 秒** ✓ |
+| **184 及更早** | **约 9 分钟** ✗ | `deviceFetchTimeoutMs` = 15 秒 ✗ |
 
 - 设备探测是 `for attempt in 0..<36`，每轮 = `readyDeviceIdentifier()` ＋ 500ms 睡眠
   （**设计意图 = 给 RSD 握手约 18 秒**）；`readyDeviceIdentifier()` = `isReady()` + `fetchUDIDDetailed()`。
@@ -525,9 +525,26 @@ Apple 已经接受了密码，只是要求走第二步（输验证码）。这�
 - ⇒ **有外层重试的地方，内层预算必须短**（重试本身就是等待）：就绪探测用 1 秒，
   一次性路径（dump / 安装 / DDI / JIT）继续用 15 秒 ✓。守卫 **R61** 钉住四条判据
   （含「`ready()` 里便宜判据必须在 `getFirstDevice()` 之前」✓）。
+- **耗时是逐项算出来的**（改之前先看这张表，别凭感觉估）：
+
+  | 情形 | 每轮 | 36 轮 | ＋固定开销 | 合计 |
+  |---|---|---|---|---|
+  | **186 起**：隧道**没通**（便宜判据即为假 ⇒ 每轮 ~0 秒） | 0.5 s | 18 s | ~2 s | **~20 秒** |
+  | **186 起**：隧道通了、只差设备（每轮 1 秒探测） | 1.5 s | 54 s | ~2 s | **~56 秒** |
+  | **184 及更早**：`ready()` **无条件**先跑 `getFirstDevice()`（15 秒） | 15.5 s | **9.3 分钟** | ~2 s | **~9 分钟** ✗ |
+
+  （固定开销 = `waitForNetworkRefresh` 0.5 s ＋ `probeTunnel` 1.8 s ＋ 首次探测 ＋ `Minimuxer.start` ≤4 s。）
+- ⚠️ **「184 及更早」是 ~9 分钟，不是 18 分钟**：`readyDeviceIdentifier()` 第一行是
+  `guard await isReady() else { return nil }` ⇒ `ready()` 为假时 `fetchUDIDDetailed()`
+  **根本不会被调用** ⇒ 每轮只付一次 15 秒。我第一版按「两处都轮询」写成了 9–18 分钟 ✗，
+  第二版才被这个 `guard` 纠正过来。
 - ⚠️ lockdown 路径下 `ready()` 与 `fetchUDIDDetailed()` **都会**轮询设备，
   所以 184 及更早的「最坏路径」= 设备不可达 = **最常见的那条** ✗（远程配对 17.4+ 才直接返回）。
-- ⚠️ 中途把 Seal 切后台 / 锁屏，iOS 会挂起进程 ⇒ 墙钟时间可以**再翻几倍**。
+- ⚠️ 中途把 Seal 切后台 / 锁屏，iOS 会挂起进程 ⇒ 墙钟时间可以**再翻几倍**
+  （用户实测：停在「验证中」**12 分钟以上**仍无结论 ⇒ 与 ~9 分钟 + 挂起吻合）。
+- ⚠️ **界面这条路径只跑一次 `diagnose()`**：`runInstallChannelCheck` 直接调 `diagnose()`
+  （`SettingsViewModel.swift:2237`），**不经过** `start()` ⇒ `startHardTimeoutSeconds = 75`
+  的硬超时与 `startOnce()` 的「失败后再诊断一次」**都不适用**（这也是它能等 12 分钟的原因）✓。
 - **判断标准**：界面**一直**停在「验证中」= 还在跑；**失败**会弹窗并把状态退回
   「已导入，待验证」（`finishInstallChannelCheckWithFailure` → `markPendingValidation()`）。
 - **想立刻退出**：杀掉 Seal 重开 —— 重新加载时 `PairingStore.current()` 会把残留的

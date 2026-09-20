@@ -9,11 +9,17 @@
 
 - 🔴 **有外层重试的地方，内层预算必须短**（2026-09-20 真机，构建 184）。
   「就绪探测」跑在外层重试循环里，却各自用了**一次性路径**的长预算 ⇒ 把「设计约 18 秒」
-  放大成 **9–18 分钟**，而且**设备不可达时每轮都走满**（最坏路径恰好是最常见的那条 ✗）。
+  放大成 **约 9 分钟**，而且**设备不可达时每轮都走满**（最坏路径恰好是最常见的那条 ✗）。
   - 具体：`MinimuxerInstallChannel.diagnose()` 的设备探测是 `for attempt in 0..<36` ＋ 500ms
-    睡眠（**注释写明意图 = 给 RSD 握手约 18 秒** ✓），但每轮里的 `Minimuxer.ready()` 与
-    `fetchUDIDDetailed()` 都要走 `Device.getFirstDevice()`，而它默认轮询
-    `deviceFetchTimeoutMs` = **15 秒**才抛 `NoDevice` ⇒ 36 × 15 ≈ 9 分钟（两处都轮询 ≈18 分钟）。
+    睡眠（**注释写明意图 = 给 RSD 握手约 18 秒** ✓），但每轮里的 `Minimuxer.ready()` 都要走
+    `Device.getFirstDevice()`，而它默认轮询 `deviceFetchTimeoutMs` = **15 秒**才抛 `NoDevice`
+    ⇒ 36 × 15 ≈ **9 分钟**。
+    ⚠️ **不是 18 分钟**：`readyDeviceIdentifier()` 第一行是
+    `guard await isReady() else { return nil }` ⇒ `ready()` 为假时 `fetchUDIDDetailed()`
+    **根本不会被调用**（每轮只付一次 15 秒）✓。
+  - ⚠️ **「可能很贵的调用」≠「一定会被调用」** —— 算「最坏耗时」前必须**逐行读控制流** ✓。
+  - 修复后（构建 **186**，探测改用 1 秒）⇒ **约 20–60 秒**：隧道没通 ~20 秒（每轮 0.5 秒）、
+    隧道通了只差设备 ~56 秒（每轮 1.5 秒）✓。**循环外的固定开销（~2 秒）也要算进去** ✓。
   - ⚠️ **外层 `offThread(seconds:)` 的超时不算数** ✗ —— 它只表示「不再等」，
     被包住的同步 FFI 仍在后台跑完（`BlockingCall` 自己写明 ✓）
     ⇒ **算预算时取「外层超时」与「被包住那层的内部轮询预算」的较大者** ✓。
@@ -397,12 +403,15 @@
 ⇒ 那三个时刻设备路径不可用 ✓（`Provision.dumpProfiles → Device.getFirstDevice()`，
 轮询满 15 秒才会这么写 ✓）。
 
-**根因**：`diagnose()` 的 36 轮探测循环里，每轮的 `Minimuxer.ready()` 与 `fetchUDIDDetailed()`
-都走 `Device.getFirstDevice()`，而它默认轮询 `deviceFetchTimeoutMs` = **15 秒**
-⇒ 最坏 **9–18 分钟**；**且 lockdown 路径两者都轮询**（`isrppairing == true` 的远程配对路径
-才直接返回 ✓）⇒ 「最坏路径」= 设备不可达 = **最常见的那条** ✗。
+**根因**：`diagnose()` 的 36 轮探测循环里，每轮的 `Minimuxer.ready()` 都要走
+`Device.getFirstDevice()`，而它默认轮询 `deviceFetchTimeoutMs` = **15 秒**
+⇒ 最坏 **约 9 分钟**；**且 lockdown 路径会真的走到这一步**（`isrppairing == true` 的远程配对
+路径才直接返回 ✓）⇒ 「最坏路径」= 设备不可达 = **最常见的那条** ✗。
 ⚠️ 我先前按 `36 × 5.5 ≈ 198 秒` 算出的「3.5 分钟」是**错的** ✗ ——
 外层 `offThread(5 秒)` 只限制「等」，不限制被包住的同步 FFI 跑多久 ✓。
+⚠️ 我第二版写的「9–18 分钟」**也是错的** ✗ —— 上限是 9 分钟：`readyDeviceIdentifier()` 第一行是
+`guard await isReady() else { return nil }` ⇒ `ready()` 为假时 `fetchUDIDDetailed()`
+**根本不会被调用**（每轮只付一次 15 秒）✓。详见下方「这个数字我改过两轮」。
 
 **修复**：
 - `Vendor/Minimuxer/Sources/Constants.swift`：新增 `probeDeviceFetchTimeoutMs = 1000` ✓
@@ -415,12 +424,26 @@
   两个探测点都传短预算 / **`ready()` 里下标顺序**）＋ **2 个变异锚点**
   （① 改回默认预算 ⇒ ③ 失败；② 只改预算不改顺序 ⇒ ④ 失败，专门证明 ④ 不空转 ✓）。
   守卫 **452/235 → 456/237** ✓。
-- 文档：`docs/qa/device-regression-checklist.md` 第 15 项加「修复前 9–18 分钟 / 修复后约 40 秒」
-  对照表；`Vendor/Minimuxer/SEAL_VENDOR.md` 记这条本地加固；
+- 文档：`docs/qa/device-regression-checklist.md` 第 15 项加「修复前 **~9 分钟** / 修复后
+  **~20–60 秒**」对照表（含逐项成本推导）；`Vendor/Minimuxer/SEAL_VENDOR.md` 记这条本地加固；
   `AGENTS.md` §3 安装加「有外层重试的地方，内层预算必须短」✓。
 
 **验证状态**：守卫 **456 断言 + 237 变异 PASS** ✓；**真机待验** ——
-下一个构建要验的是「**设备不可达时约 40 秒内给出失败**」，不是「等更久」✓。
+下一个构建要验的是「**设备不可达时 ~20–60 秒内给出失败**」，不是「等更久」✓。
+
+**⚠️ 这个数字我改过两轮，两次都记下来（防止下一轮再犯）**：
+
+1. 第一版按外层 `offThread(5 秒)` 算 ⇒ 「最坏 3.5 分钟」✗ —— 漏了**被包住那层自己的**
+   15 秒轮询预算（`offThread` 只限制「等」，不限制里面跑）。
+2. 第二版写成「**9–18 分钟**」✗ —— 「18」那半来自「`ready()` 与 `fetchUDIDDetailed()`
+   两处都会轮询」这个假设，而 `readyDeviceIdentifier()` 第一行是
+   `guard await isReady() else { return nil }` ⇒ `ready()` 为假时后者**根本不会被调用**
+   ⇒ 每轮只付一次 15 秒 ⇒ 上限 **~9 分钟** ✓（用户实测 12 分钟以上，差值是固定开销 + 进程被挂起）。
+3. 第三版把「修复后」从「约 40 秒」细化为 **~20–60 秒** ✓：隧道没通 ⇒ 36 × 0.5 s ≈ 20 秒；
+   隧道通了、只差设备 ⇒ 36 × 1.5 s ≈ 56 秒（`ready()` 的 1 秒探测也计入每轮）。
+
+⇒ **判据：算「最坏耗时」时必须逐行读控制流，确认哪些调用真的会到达** ✓ ——
+**「可能很贵的调用」不等于「一定会被调用」** ✗（这两次错法一个漏算、一个多算）。
 
 ### 2026-09-20 · 配对助手把「配对类型」藏了 ⇒ iOS 17.0–17.3.1 生成不出配对文件
 

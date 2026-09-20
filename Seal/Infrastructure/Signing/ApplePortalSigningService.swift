@@ -2494,8 +2494,13 @@ actor ApplePortalSigningService {
         // 计时放在 detached **外面**，覆盖「写 appGroups + 重签」这一整段
         //（写 Info.plist 是毫秒级，可忽略）。
         let resignStartedAt = Date()
-        // rork-sign 是 CPU 密集型同步操作，丢到后台线程，避免长时间占用 actor
-        let cacheStats = try await Task.detached(priority: .userInitiated) {
+        // 签名是 CPU 密集型同步操作，丢到后台线程，避免长时间占用 actor
+        //
+        // ⚠️ 返回值**刻意丢弃**（`_ =`，2026-09-20）✗ —— 它原来是「新算 / 缓存命中」计数，
+        // 而**上游签名器没有缓存** ⇒ 那个计数**恒为 `(0, 0)`** ✓ ⇒ 记进日志只会误导排查 ✗
+        //（详见下面那条 `await diagnostic` 的注释 ✓）。
+        // 保留 `SigningCacheStats` 类型本身只是为了**不动闭包的返回类型** ✓。
+        _ = try await Task.detached(priority: .userInitiated) {
             // 对齐 AltStore：签名前把每个描述文件的 appGroups 写入对应 bundle 的 Info.plist
             let reader = ProvisioningProfileReader()
             for material in materials {
@@ -2615,13 +2620,16 @@ actor ApplePortalSigningService {
             // 上游没有签名缓存 ⇒ 命中数恒为 0 ✓
             return SigningCacheStats(signed: 0, cached: 0)
         }.value
-        // ⚠️ 命中数一起报（2026-09-18）：续签同一个 App 时证书/entitlements/内容都没变
-        // ⇒ 缓存 key 不变 ⇒ 那 30 多个 Mach-O 应当**全部命中**。
-        // 「命中 0」本身也是信息：说明 key 的某个输入变了（证书轮换 / entitlements 变了 / 包变了）。
+        // ⚠️ **不再报「缓存命中」**（2026-09-20，换签名器之后）✗ ——
+        // 上游 `SideSign` / `CodeSignKit` **没有签名缓存** ✓ ⇒ 那个数**恒为 0** ✗。
+        // 旧文案写着「续签同一个 App 时命中数应当接近总数」，那是给**已删除的 `rork-sign`**
+        //（它有 `SigningCacheOptions` ✓）写的 ⇒ 留着会让下一次排查**以为「缓存没生效」** ✗，
+        // 而日志是唯一的排障通道 ✓ ⇒ 必须直说现状 ✓。
+        //（真机 `Seal-log(28).txt` 构建 175 上实测：`新算 0 个 / 缓存命中 0 个`，
+        //  但两个 App 都签成并装上了 ⇒ 那个 0 不代表任何问题 ✓。）
         await diagnostic(
-            "签名：重签完成（逐 Mach-O 串行），耗时 \(Int(Date().timeIntervalSince(resignStartedAt))) 秒；"
-                + "新算 \(cacheStats.signed) 个 / 缓存命中 \(cacheStats.cached) 个"
-                + "（续签同一个 App 时命中数应当接近总数）"
+            "签名：重签完成（逐 Mach-O 串行），耗时 \(Int(Date().timeIntervalSince(resignStartedAt))) 秒"
+                + "（上游签名器无缓存 ⇒ 每次全量重签）"
         )
     }
 

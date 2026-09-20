@@ -23,7 +23,7 @@ on:
       # ⚠️ **必须是 `Vendor/**`**（2026-09-19 修正）✗ —— 原来只列了 `Vendor/Minimuxer/**`，
       # 于是「改了 `Vendor/CodeSignKit/Package.swift`」**根本不触发 CI** ✗✗。
       # 而现在 `Vendor/` 里已经有**签名器**（`SideSign` / `CodeSignKit` ✓）和它的一串依赖
-      #（`GSACryptoKit` / `libdeflate` / `AnisetteKit` / `rork-sign` ✓）
+      #（`GSACryptoKit` / `libdeflate` / `AnisetteKit` ✓）
       # ⇒ 改它们却不跑 CI = 可能把坏代码推上去而毫无察觉 ✗。
       # ⇒ 改成整目录匹配 ✓（`paths` 只决定**要不要触发**，不影响构建耗时 ✓）。
       - "Vendor/**"
@@ -281,10 +281,14 @@ jobs:
           path: build/TestResults.xcresult
           retention-days: 14
 
-  # rork-sign 纯 Swift 签名核心自带测试（Mach-O 签名、CodeResources、描述文件、
-  # 证书请求、OCSP、Bundle 递归签名等）。在 macOS host 上用 SPM 直接 swift test，
-  # 作为签名核心的独立回归门，与主 App 完整门并行，避免签名器演进悄悄破坏既有行为。
-  rork-sign-tests:
+  # 签名内核（上游 `CodeSignKit`）+ 重签层（上游 `SideSign`）**自带**的测试。
+  # 在 macOS host 上用 SPM 直接 swift test，作为**签名核心的独立回归门**，
+  # 与主 App 完整门并行 —— 避免签名器演进悄悄破坏既有行为。
+  #
+  # ⚠️ 本 job 原名 `rork-sign-tests`（2026-09-19 之前测的是 `Vendor/rork-sign` ✗）——
+  # 用户死命令「签名器不一样你就换」之后，`Vendor/rork-sign` **整个目录已删除** ✗
+  # ⇒ 改成测**现在真正在跑的那两个包** ✓（`CodeSignKit` 才是签名内核 ✓）。
+  signer-tests:
     runs-on: macos-26
     timeout-minutes: 30
     steps:
@@ -296,20 +300,22 @@ jobs:
           sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
           swift --version
 
-      - name: Cache rork-sign SwiftPM artifacts
+      - name: Cache signer SwiftPM artifacts
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
-          path: Vendor/rork-sign/.build
-          key: rorksign-spm-${{ runner.os }}-${{ hashFiles('Vendor/rork-sign/Package.resolved') }}
+          path: |
+            Vendor/CodeSignKit/.build
+            Vendor/SideSign/.build
+          key: signer-spm-${{ runner.os }}-${{ hashFiles('Vendor/CodeSignKit/Package.resolved', 'Vendor/SideSign/Package.resolved') }}
           restore-keys: |
-            rorksign-spm-${{ runner.os }}-
+            signer-spm-${{ runner.os }}-
 
-      - name: Resolve rork-sign dependencies
-        working-directory: Vendor/rork-sign
-        run: swift package resolve
+      - name: Run CodeSignKit unit tests
+        working-directory: Vendor/CodeSignKit
+        run: swift test
 
-      - name: Run rork-sign unit tests
-        working-directory: Vendor/rork-sign
+      - name: Run SideSign unit tests
+        working-directory: Vendor/SideSign
         run: swift test
 
   # 全绿后可选发布 GitHub Release：手动 dispatch 时勾选 publish_release。
@@ -317,7 +323,7 @@ jobs:
   publish-release:
     # swift-regression 必须在 needs 里：测试已从 build-package 拆出，
     # 否则发布可能在 UI 回归还没跑完时就发出去。
-    needs: [build-package, rork-sign-tests, swift-regression]
+    needs: [build-package, signer-tests, swift-regression]
     if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true
     runs-on: ubuntu-latest
     timeout-minutes: 15

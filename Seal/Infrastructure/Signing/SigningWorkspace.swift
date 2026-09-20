@@ -116,7 +116,7 @@ struct SigningWorkspace: Sendable {
 
             // 大 IPA 优化：剥离 arm64e 架构，只保留 arm64（iOS 设备均为 arm64）。
             // 按 offset/size 字节级切出 arm64 slice，副本内部签名偏移依然有效，
-            // 后续统一由 RorkSigner 重签。
+            // 后续统一由上游签名器（`SideSign` → `CodeSignKit`）重签。
             let stripStartedAt = Date()
             try stripArm64eArchitecture(in: appURL)
             let stripSeconds = Date().timeIntervalSince(stripStartedAt)
@@ -143,7 +143,7 @@ struct SigningWorkspace: Sendable {
                 mappings[original] = mapped
             }
             // 移除旧的 _CodeSignature 目录（不修改 Mach-O 里的 LC_CODE_SIGNATURE）。
-            // Mach-O 的旧签名/未签名状态统一交给 RorkSigner 处理：有 LC_CODE_SIGNATURE
+            // Mach-O 的旧签名/未签名状态统一交给上游签名器（`SideSign` → `CodeSignKit`）处理：有 LC_CODE_SIGNATURE
             // 时按旧 dataoff 干净截断重签，无签名时用 load-command 空闲区插入新签名。
             // 对齐官方 SideStore/zsign：这里不做任何 ad-hoc 预处理——预处理反而会残留旧
             // 签名 blob、抹掉原始 entitlements、漏平移 chained-fixups 数据偏移，导致闪退。
@@ -992,7 +992,7 @@ struct SigningWorkspace: Sendable {
 
     /// 大 IPA 优化：剥离 FAT 二进制里的 arm64e 等多余 slice，只保留 arm64 以瘦身。
     /// 仅处理 fat32/fat64（magic 0xBEBAFECA/0xBFBAFECA）；thin 二进制（含 thin arm64e）
-    /// 无多余 slice 可剥离，原样保留交由 RorkSigner 重签——这是预期行为，不要按
+    /// 无多余 slice 可剥离，原样保留交由上游签名器重签——这是预期行为，不要按
     /// 「剥离 thin arm64e」去改（thin arm64e 没有普通 arm64 slice，剥了就没有可运行代码）。
     private func stripArm64eArchitecture(in appURL: URL) throws {
         let fileManager = FileManager.default

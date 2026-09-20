@@ -14,7 +14,7 @@
 CodeDirectory（把代码按页做哈希） → CMS 签名（用你的证书签它） → 塞进 __LINKEDIT
 ```
 
-**⇒ 这一步谁做都一样** ✓（zsign / ldid / codesign / rork-sign ✓，算法必须一致 ✓）
+**⇒ 这一步谁做都一样** ✓（zsign / ldid / codesign / `CodeSignKit` ✓，算法必须一致 ✓）
 
 **⇒ 真正的差别在这四件事上** ✓✓：
 
@@ -42,12 +42,12 @@ CodeDirectory（把代码按页做哈希） → CMS 签名（用你的证书签�
 
 ### 🔧 干活阶段（**这一步所有工具几乎一样** ✓）
 
-| 步 | 干什么 | 细节（以 zsign / rork-sign 为准 ✓） |
+| 步 | 干什么 | 细节（以 zsign / `CodeSignKit` 为准 ✓） |
 |---|---|---|
 | **5** | **解包 IPA** | 解出 `Payload/App.app/` ✓ |
 | **6** | **改 Bundle** | 改 `Info.plist`（Bundle ID / 名称 / 版本 ✓）；**替换 `embedded.mobileprovision`** ✓；**注入 dylib**（改 `LC_LOAD_DYLIB` ✓）—— zsign 的 `-b/-n/-l/-P` 就是干这个 ✓ **[源码]** |
 | **7** | **写 entitlements** | 从**描述文件里派生** ✓（免费账号的 entitlement 很有限 ✓）—— 这一步错了会导致**装完启动就崩** ✗ |
-| **8** | **自内向外逐个签 Mach-O** | `Frameworks/ → PlugIns/*.appex → 主 App` ✓<br>每个二进制：改 load commands → **算 CodeDirectory 页哈希** → **CMS 签名** ✓<br>**再 seal 资源**（`_CodeSignature/CodeResources` ✓）<br>zsign 有 `.zsign_cache` ✓、rork-sign 有 `BundleSignatureCache` ✓（跳过没变的 ✓） |
+| **8** | **自内向外逐个签 Mach-O** | `Frameworks/ → PlugIns/*.appex → 主 App` ✓<br>每个二进制：改 load commands → **算 CodeDirectory 页哈希** → **CMS 签名** ✓<br>**再 seal 资源**（`_CodeSignature/CodeResources` ✓）<br>zsign 有 `.zsign_cache` ✓；⚠️ **Seal 现在用的 `CodeSignKit` 没有签名缓存** ✗（`rork-sign` 的 `BundleSignatureCache` 已随目录删除 ✓）⇒ **每次全量重签** ✓ |
 | **9** | **重打包 + 安装** | 压回 IPA ✓ → 通过 `installd` / `ideviceinstaller` 装上 ✓ |
 
 ---
@@ -94,7 +94,7 @@ CodeDirectory（把代码按页做哈希） → CMS 签名（用你的证书签�
 第 2 步 证书      →  自己的 Apple ID，免费账号只有 1 张 ✓
 第 3 步 App ID    →  自动注册（主 App 优先 ✓）
 第 4 步 描述文件  →  自己申请（带本机 UDID ✓）
-第 5~9 步 重签    →  rork-sign（zsign 兼容 ✓）+ 4 个 Seal 补丁 ✓
+第 5~9 步 重签    →  SideSign → CodeSignKit（原样 vendor ✓，**零补丁** ✓）
 ```
 
 **⇒ 全部在手机上完成** ✓ —— 这是 Seal 与 Sideloadly 的核心差别（**不需要电脑** ✓），

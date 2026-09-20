@@ -30,8 +30,9 @@ packages:
     exactVersion: 4.5.2
   Minimuxer:
     path: Vendor/Minimuxer
-  RorkSign:
-    path: Vendor/rork-sign
+  # ⚠️ **`RorkSign` 已移除**（2026-09-19）—— 签名器换成了上游 SideStore 的
+  # `SideSign` + `CodeSignKit` ✓（用户死命令：「签名器不一样你就换」✓）。
+  # `Vendor/rork-sign` 目录也已删除 ✓。
 targets:
   Seal:
     type: application
@@ -49,8 +50,6 @@ targets:
         product: AltSign-Static
       - package: AnisetteKit
       - package: Minimuxer
-      - package: RorkSign
-        product: RorkSign
       - package: SideSign
         product: SideSign
       - package: Crypto

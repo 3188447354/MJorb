@@ -187,7 +187,7 @@ SealLogStore.swift
 ```
 BundleIDMapper.swift
 BundleIDPolicy.swift
-RorkAppSigner.swift
+SideSignAppSigner.swift
 SignedArtifactBundleIDReader.swift
 SignedArtifactProfileReader.swift
 SignedArtifactSnapshot.swift

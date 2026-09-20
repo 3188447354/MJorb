@@ -23,10 +23,12 @@ let package = Package(
             type: .dynamic,
             targets: ["SideSign"]
         ),
-        .executable(
-            name: "sidesign",
-            targets: ["SideSignCLI"]
-        ),
+        // ⚠️ **`sidesign` 命令行产品已移除**（2026-09-19）——
+        // 上游的 `CLI/` 整体建立在**已删掉的门户层**上（`import AnisetteKit` +
+        // `DeveloperPortal` / `CertificateRequest` / `CertificateType` / `ProfileType` ✗）
+        // ⇒ 删掉那层之后它**根本编译不过** ✗。
+        // Seal 只用 `SideSign` 这个**库**（`project.yml` 里就是 `product: SideSign` ✓）
+        // ⇒ 留着它只会让 `swift build` / `swift test` 在该目录下直接报错 ✗。
     ],
 
     dependencies: [
@@ -60,16 +62,11 @@ let package = Package(
             ],
             path: "Sources"
         ),
-        .executableTarget(
-            name: "SideSignCLI",
-            dependencies: [
-                "SideSign",
-                "CodeSignKit",
-                "GSACryptoKit",
-                .product(name: "Crypto", package: "swift-crypto")
-            ],
-            path: "CLI"
-        ),
+        // ⚠️ **`.executableTarget(name: "SideSignCLI")` 已移除**（2026-09-19）✗ ——
+        // 它的 `CLI/` 目录**整段建立在已删掉的门户层上**（`import AnisetteKit` +
+        // `DeveloperPortal` / `CertificateRequest` / `CertificateType` / `ProfileType` ✗）
+        // ⇒ 删掉那层之后**根本编译不过** ✗，而 Seal 只用 `SideSign` 这个库 ✓。
+        // ⇒ 留着它会让 `swift build` / `swift test` 在 `Vendor/SideSign/` 下直接报错 ✗。
         .testTarget(
             name: "SideSignTests",
             dependencies: [

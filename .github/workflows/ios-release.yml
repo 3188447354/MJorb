@@ -1,9 +1,10 @@
 name: iOS Release Fast
 
 # 快速发布档：Release 编译 + 打包 + 发布到 Seal-Releases。
-# 与完整 ios.yml 的区别：跳过模拟器 UI 回归与 rork-sign 测试门，
+# 与完整 ios.yml 的区别：跳过模拟器 UI 回归与 signer-tests 测试门，
 # 用于「只改了 Swift 业务逻辑、没动 Rust 桥/签名器」的小版本快速出包。
 # 大改动（签名器、RustBridge、安装链路）仍须走完整 iOS workflow。
+# ⚠️ 2026-09-19：`rork-sign-tests` 已改名为 `signer-tests`（测 `CodeSignKit` + `SideSign` ✓）。
 on:
   workflow_dispatch:
     inputs:

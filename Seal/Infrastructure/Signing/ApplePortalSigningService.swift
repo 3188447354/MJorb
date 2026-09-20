@@ -2436,7 +2436,7 @@ actor ApplePortalSigningService {
         guard let p12Data, p12Data.isEmpty == false else {
             throw ApplePortalSigningFailure.make(
                 stage: .signing,
-                error: RorkAppSigner.SignError.missingCertificate
+                error: SideSignAppSigner.SignError.missingCertificate
             )
         }
 
@@ -2449,7 +2449,7 @@ actor ApplePortalSigningService {
         } catch {
             throw ApplePortalSigningFailure.make(
                 stage: .signing,
-                error: RorkAppSigner.SignError.identityImportFailed(
+                error: SideSignAppSigner.SignError.identityImportFailed(
                     "ALTCertificate 解析 P12 失败：\(error.localizedDescription)，请重新登录 Apple ID"
                 )
             )
@@ -2458,14 +2458,14 @@ actor ApplePortalSigningService {
         guard let certificateData = altCert.data, certificateData.isEmpty == false else {
             throw ApplePortalSigningFailure.make(
                 stage: .signing,
-                error: RorkAppSigner.SignError.missingCertificate
+                error: SideSignAppSigner.SignError.missingCertificate
             )
         }
         let privateKeyData = altCert.privateKey
 
         // 在 actor 上先提取 Sendable 数据（ALTProvisioningProfile 是 ObjC 非 Sendable 类型）
         let materials = profiles.map {
-            RorkAppSigner.ProfileMaterial(bundleID: $0.bundleIdentifier, data: $0.data)
+            SideSignAppSigner.ProfileMaterial(bundleID: $0.bundleIdentifier, data: $0.data)
         }
 
         // 防御性校验：签名前确认主描述文件确实授权了当前证书。若证书已在 Apple 侧被
@@ -2483,7 +2483,7 @@ actor ApplePortalSigningService {
             if authorizedSerials.contains(chosenSerial) == false {
                 throw ApplePortalSigningFailure.make(
                     stage: .signing,
-                    error: RorkAppSigner.SignError.signFailed(
+                    error: SideSignAppSigner.SignError.signFailed(
                         "所选证书 \(chosenSerial) 不在主描述文件授权列表 [\(authorizedSerials.joined(separator: ", "))] 中，证书可能已在 Apple 侧被轮换"
                     )
                 )
@@ -2548,7 +2548,9 @@ actor ApplePortalSigningService {
                 try? infoDictionary.write(to: infoURL)
             }
 
-            // 从主应用描述文件提取映射后的 appGroups，传给 RorkSigner 确保 entitlements 中 appGroups 正确
+            // 从主应用描述文件提取映射后的 appGroups —— **只喂给下面那行诊断日志** ✓
+            //（2026-09-19：上游签名器**自己**从描述文件派生 entitlements ✓，
+            //  不再需要调用方把 appGroups 传进去 ✗）。
             let mainProfileData = materials.first(where: {
                 $0.bundleID.caseInsensitiveCompare(mainBundleID) == .orderedSame
             })?.data ?? materials.first?.data
@@ -2571,9 +2573,10 @@ actor ApplePortalSigningService {
             //
             // 这一行把问题**一分为二** ✓：
             //   - 下次崩溃**没有**这一行 ⇒ 死在 Swift 侧准备（描述文件 / entitlements / appGroups）；
-            //   - **有**这一行 ⇒ 死在 `RorkSigner` 内部 ✓（那是 Vendor 里的 Swift 签名器，
-            //     它自己有一套 `SigningDiagnostics` 出口，默认 `.disabled` ✗ ——
-            //     要接上得先解决「它是同步回调、而 `SealLogStore` 是 actor」这个矛盾）。
+            //   - **有**这一行 ⇒ 死在**签名器内部** ✓（现在是上游 `SideSign` → `CodeSignKit` ✓）。
+            //     ⚠️ **2026-09-19 起这里更弱了** ✗：上游只有 `verboseLog`（走 `print`
+            //     ⇒ **进不了 SealLogStore** ✗）与 `signApp(progress:)`（只有计数、没有回调 ✗）
+            //     ⇒ **「死在哪个 bundle」在日志里看不出来** ✗，只能靠「日志戛然而止」推断 ✓。
             // ⚠️ 必须写 `self.` —— 这行在闭包里（`Task { ... }.value`），
             // 不写会编译失败：`call to method 'diagnostic' in closure requires
             // explicit use of 'self' to make capture semantics explicit` ✗
@@ -2594,9 +2597,9 @@ actor ApplePortalSigningService {
             // ⚠️ 上游签名器**没有签名缓存** ✗（rork-sign 的 `SigningCacheOptions` 是它独有的 ✓）
             //   ⇒ 接受「每次全量重签」✓，换来的是**内存峰值减半** ✓。
             //
-            // ⚠️ 上游的逐 bundle 诊断走它自己的 `debugLog` ✗ —— **不进 SealLogStore** ✓，
-            //   所以这里不再接 `onDiagnostic`（`Self.isUsefulSigningDiagnostic` 暂时保留，
-            //   等 `RorkSigner.checkMachOCodeSignatures` 也换掉后再清理 ✓）。
+            // ⚠️ 上游的逐 bundle 诊断走它自己的 `verboseLog` / `debugLog` ✗ —— **不进 SealLogStore** ✓，
+            //   所以这里不再接 `onDiagnostic` ✓。`Self.isUsefulSigningDiagnostic` **保留、暂无调用点** ✓
+            //   （守卫 R48 只要求过滤规则本身还在 ✓）—— 将来若接上游 `progress:`，直接复用它 ✓。
             try await SideSignAppSigner.signAppBundle(
                 at: appURL,
                 certificateData: certificateData,
@@ -2605,9 +2608,9 @@ actor ApplePortalSigningService {
                 teamName: team.name,
                 isFreeTeam: team.type == .free,
                 mainBundleID: mainBundleID,
-                profiles: materials.map {
-                    SideSignAppSigner.ProfileMaterial(bundleID: $0.bundleID, data: $0.data)
-                }
+                // `materials` 本身就是 `SideSignAppSigner.ProfileMaterial` ✓
+                //（上面的构造已经改过来了 ✓）⇒ 直接传，不必再 map 一遍 ✓
+                profiles: materials
             )
             // 上游没有签名缓存 ⇒ 命中数恒为 0 ✓
             return SigningCacheStats(signed: 0, cached: 0)

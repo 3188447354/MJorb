@@ -1598,19 +1598,24 @@ def violations(load=read):
           "R45: 重签前必须有「分界日志」—— 真机上 Seal 在 signing 阶段闪退，" 
           "没有它连「Swift 侧准备」与「签名器内部」都分不开")
 
-    # R46: 签名器内部的逐 bundle 诊断必须被**打开**（2026-09-19 真机）。
+    # ⚠️ **R46 已移除**（2026-09-19）：签名器从 `Vendor/rork-sign` 换成了上游
+    # `SideSign` + `CodeSignKit` ✓（用户死命令「一个代码不漏地抄，不要打补丁」✓），
+    # 而 `Seal/Infrastructure/Signing/RorkAppSigner.swift` **整个文件已删除** ✗
+    # ⇒ 这条断言失去了对象 ✓。
     #
-    # 真机（构建 147）：Seal 在 `signing` 阶段被 iOS **按 CPU 预算杀掉**
-    #（崩溃日志 `bug_type 202`：90 秒 CPU / 166 秒，超过「180 秒内 50%」的上限），
-    # 而签名阶段**一行日志都没有** ⇒ 连「死在哪个 bundle」都不知道 ✗。
+    # 🔴 **但它守的知识必须留档** ✗ —— 真机（构建 147）Seal 在 `signing` 阶段被 iOS
+    # **按 CPU 预算杀掉**（崩溃日志 `bug_type 202`：90 秒 CPU / 166 秒，
+    # 超过「180 秒内 50%」的上限），而当时签名阶段**一行日志都没有** ✗
+    # ⇒ 连「死在哪个 bundle」都不知道 ✗。
     #
-    # 根因：`RorkSigner` **自带** `SigningDiagnostics`（逐 bundle 打
-    # `>>> Signing: <path>`），但 `AppSigningOptions.diagnostics` **默认 `.disabled`**，
-    # 而 Seal **从来没设置过它** ✗。
-    check("options.diagnostics = SigningDiagnostics(" in strip_comments(
-              load("Seal/Infrastructure/Signing/RorkAppSigner.swift")),
-          "R46: 签名器内部的逐 bundle 诊断必须被打开 —— 否则真机被 CPU 预算杀掉时，"
-          "日志里连「死在哪个 bundle」都不知道")
+    # 换签名器之后这个能力**变弱了** ✗（必须如实记录，别让它悄悄消失）：
+    #   · `rork-sign` 有 `AppSigningOptions.diagnostics`，Seal 打开后能拿到**逐 bundle** 的诊断 ✓；
+    #   · 上游 `SideSign` 只有 `verboseLog`（逐 bundle，但走 `print` ⇒ **进不了 Seal 的日志** ✗）
+    #     与 `signApp(progress:)`（`Progress.completedUnitCount` **逐 Mach-O 累加**，
+    #     但没有回调、只能轮询 ✗）。
+    # ⇒ **现在真机上「死在哪个 bundle」只能靠 `SEAL-STAGE-001` 的阶段边界 + 日志戛然而止推断** ✗。
+    # ⇒ **真机回归时必须专门验证**：抖音（9 个 bundle）重签**不再**被 CPU 预算杀掉 ✓；
+    #    若再被杀，就去接上游 `progress:`（它是上游自己的 API ✓，不算发明 ✓）。
 
     # R47: Bundle ID 的报错必须**说清是 Apple 的规定**，并指出「显示名可以带表情」
     #（2026-09-19 用户问「Bundle ID 能不能带符号/表情」）。
@@ -1669,25 +1674,23 @@ def violations(load=read):
           "R49: `rewriteExecutablePathReferences` 会**原地改写**这份 Data ⇒ 必须普通读取 ✗ —— "
           "用 mmap 会在写映射页时 SIGBUS（2026-09-19 真机崩溃 ✓）")
 
-    # R52: `Vendor/rork-sign` 的 **FairPlay 补丁**必须保留（2026-09-19，拿上游 0.6.5 一字一码对比时发现）。
+    # ⚠️ **R52 已移除**（2026-09-19）：签名器从 `Vendor/rork-sign` 换成了上游
+    # `SideSign` + `CodeSignKit` ✓（用户死命令「一个代码不漏地抄，不要打补丁」✓），
+    # `Vendor/rork-sign` **整个目录已删除** ✗ ⇒ 这条断言失去了对象 ✓。
     #
-    # 该补丁的注释写明了后果：
+    # 🔴 **但它守的知识必须留档** ✗ —— 已核实：
+    #   `CodeSignKit/MachOParser.swift:555` 只有「**读** cryptid」没有「清零」✓，
+    #   `SideSign` / `SideStore` 也**完全不处理** ✗。
+    #
+    # 后果（原文照录）：
     #   「a decrypted image that still advertises cryptid=1 makes dyld attempt
     #     FairPlay decryption with the wrong account and **crash at launch**」
-    # ⇒ 签名后**启动崩溃** ✗ —— 是最高严重级的一类缺陷。
-    # ⚠️ 它**不是**上游自带的（上游 0.6.5 没有）✗ ⇒ 同步上游时会**静默丢失** ✗
-    #   ⇒ 必须有守卫钉住 ✓。
-    macho_signer = strip_comments(
-        load("Vendor/rork-sign/Sources/RorkSign/MachO/MachOSigner.swift")
-    )
-    # ⚠️ 断言用**唯一的 `func` 定义** + **调用次数** ✗ ——
-    # `try clearFairPlayCryptid(` 在文件里出现 **3 次**（三条签名路径各一次）⇒
-    # 只写它会被另外两处匹配上，变异（改掉其中一处）就抓不住 ✗
-    #（本仓「同一模式出现多次就失去约束力」已踩过多次 ✓）。
-    check("func clearFairPlayCryptid(" in macho_signer
-          and macho_signer.count("try clearFairPlayCryptid(") >= 3,
-          "R52: 签名器的 FairPlay 补丁必须保留 —— 少了它，清过 FairPlay 标记的镜像"
-          "仍带着 cryptid=1 被签名，dyld 会拿错误的账号去解密并**在启动时崩溃**")
+    # ⇒ **签名后启动崩溃** ✗✗ —— 最高严重级。
+    #
+    # ⇒ **真机回归时必须专门验证「装完能不能启动」** ✓（这是换签名器引入的**已知风险** ✓）。
+    # ⇒ 若真的启动崩，把原来那个补丁移植到 `CodeSignKit` ✓
+    #   （原型见 `Vendor/rork-sign` 的历史提交 `b548021` ✓，
+    #    以及 `docs/upstream-alignment.md` 的台账 ✓）。
 
     # R54: `ios.yml` 的 push 触发路径必须覆盖**整个 `Vendor/`**（2026-09-19 实踩 ✗）
     #
@@ -1696,7 +1699,7 @@ def violations(load=read):
     # 推上去后干等，还以为 CI 在跑 ✓。
     #
     # ⚠️ 而现在 `Vendor/` 里已经有**签名器本体**（`SideSign` / `CodeSignKit` ✓）
-    # 和它的一串依赖（`GSACryptoKit` / `libdeflate` / `AnisetteKit` / `rork-sign` ✓）
+    # 和它的一串依赖（`GSACryptoKit` / `libdeflate` / `AnisetteKit` ✓）
     # ⇒ 改它们却不跑 CI = 可能把坏代码推上去而毫无察觉 ✗。
     #
     # ⇒ 断言必须是 `Vendor/**`（整目录 ✓），不能是某个子目录 ✗。
@@ -1738,16 +1741,17 @@ def violations(load=read):
     # 保留（纯读）：`readEntitlementsXML(...)` / `inspectMachO(...)` / 缓存条目 decode ✓
     # 回退（会被改写 ✗）：签名主路径的 `input`（进签名器）/ `var executable`（会被重新赋值）
     #   —— 二者都会 SIGBUS（同 R49 ✓）。
-    mapped = "Data(contentsOf: executableURL, options: .mappedIfSafe)"
-    signer_source = strip_comments(
-        load("Vendor/rork-sign/Sources/RorkSign/Bundle/BundleSigner.swift")
-    )
-    check(mapped in strip_comments(
-              load("Vendor/rork-sign/Sources/RorkSign/Bundle/AppBundleSigner.swift"))
-          and "Data(contentsOf: url, options: .mappedIfSafe)" in signer_source
-          and "options: .mappedIfSafe" in strip_comments(
-              load("Vendor/rork-sign/Sources/RorkSign/Bundle/BundleSignatureCache.swift")),
-          "R50: 纯读的地方保留 .mappedIfSafe（读 entitlements / inspectMachO / 缓存条目）")
+    # ⚠️ **R50 已移除、判据改由 R57 承接**（2026-09-19）：签名器换成上游
+    # `SideSign` + `CodeSignKit` 后，`Vendor/rork-sign` **整个目录已删除** ✗
+    # ⇒ 原来那两条断言失去了对象 ✓，**但同样的判据已重定向到 `CodeSignKit`** ✓（见下面的 R57 ✓）。
+    #
+    # 🔴 **但「mmap 判据」必须留档** ✗ —— 这是 2026-09-19 真机 SIGBUS 换来的：
+    #   **不是「哪里该用 mmap」，而是「这份 Data 会不会被原地写」** ✓
+    #   · **只读 ⇒ mmap 安全** ✓
+    #   · **原地写 ⇒ 必须整块读** ✓（`SigningWorkspace.rewriteExecutablePathReferences`
+    #     —— 这条**仍然由 R49 钉住** ✓）
+    # ⇒ 换成上游签名器后，这条判据在 `CodeSignKit` 里同样适用 ✓
+    #   （上游 `MachOParser` 用 mmap 读 ✓、`MachOSigner:301` 用 `subdata` 复制后改 ✓）。
     # ✅ **照抄上游 `mahee96/CodeSignKit`（SideStore 用的签名器）的内存策略**（2026-09-19 ✓）
     #
     # 用户指示「**照抄，禁止乱发明**」✓ —— 上游的做法是：
@@ -1760,10 +1764,7 @@ def violations(load=read):
     # 改写都发生在 `var output = data` 的 **COW 副本**上 ✓ ⇒ mmap 那份**只被读** ✓。
     # **反面**：`SigningWorkspace.rewriteExecutablePathReferences` **原地改** ⇒ 那里**必须**整块读 ✓（R49）。
     # **⇒ 判据不是「哪里该用 mmap」，而是「这份 Data 会不会被原地写」** ✓。
-    check("let input = try Data(contentsOf: url, options: .mappedIfSafe)" in signer_source
-          and "var executable = try Data(contentsOf: executableURL, options: .mappedIfSafe)" in signer_source,
-          "R50: 签名器的 input / executable 必须**照抄上游用 mmap 读** ✗ —— "
-          "整块读会让峰值翻倍（2.1 GB ⇒ jetsam 杀后台，2026-09-19 真机 ✓）")
+    # （上面那条断言已随 `Vendor/rork-sign` 删除 ✓ —— 同样的判据现在适用于 `CodeSignKit` ✓。）
 
     # R53: `rewriteExecutablePathReferences` 必须**先分块预扫描**，命中才整块读 ✓
     #
@@ -1785,6 +1786,29 @@ def violations(load=read):
               "SealTests/Signing/SigningWorkspaceChunkedScanTests.swift"),
           "R53: `rewriteExecutablePathReferences` 必须先**分块预扫描**、命中才整块读 ✗ —— "
           "整块读会让 jetsam 杀后台（网易云 + LocalVPN 一起被杀 ✓），mmap 会 SIGBUS ✗")
+    # R57: **换签名器之后，「内存策略」这条判据必须钉在新内核上**（2026-09-19）✓
+    #
+    # R50 守的是 `Vendor/rork-sign` 的 mmap 读 ✗ —— 那个目录已删 ✓；
+    # 而它守的**知识**现在适用于上游 `CodeSignKit` ✓（这是「照抄」能成立的前提 ✓）：
+    #   · `MachOParser.swift:154,157` 用 `.mappedIfSafe` 读 ✓（0 常驻内存 ✓）
+    #   · `MachOSigner.swift:301` 用 `subdata` **复制出新 Data 再改** ✓（全程 1 份 ✓）
+    # ⇒ **整条链路只有 1 份内存** ✓ —— 这正是抖音（780 MB + 8 扩展）不再 jetsam 的原因 ✓。
+    #
+    # ⚠️ 这条断言**不是形式主义** ✗：本仓 2026-09-19 实测过另一条路 ——
+    # 整块 `Data(contentsOf:)` 让抖音签名的内存峰值到 **2.11 GB**
+    #（`JetsamEvent`：`largestProcess = "Seal"`，`rpages 129697 × 16KB` ✗），
+    # 连带把后台的网易云 / LocalDevVPN 一起杀掉 ✗✗。
+    # ⇒ 谁把 `CodeSignKit` 的 mmap 改成整块读，谁就把那个 2 GB 峰值请回来了 ✗。
+    codesignkit_parser = load("Vendor/CodeSignKit/Sources/MachOParser.swift")
+    codesignkit_signer = load("Vendor/CodeSignKit/Sources/MachOSigner.swift")
+    check("Data(contentsOf: execURL, options: .mappedIfSafe)" in codesignkit_parser
+          and "Data(contentsOf: url, options: .mappedIfSafe)" in codesignkit_parser,
+          "R57: 上游 `CodeSignKit/MachOParser` 必须**用 mmap 读**（`.mappedIfSafe`）✗ —— "
+          "改成整块读会把抖音签名的内存峰值请回 2.11 GB，触发 jetsam 批量杀后台")
+    check("workingData.subdata(in: 0..<min(codeLimit, workingData.count))" in codesignkit_signer,
+          "R57: 上游 `CodeSignKit/MachOSigner` 必须**复制出新 Data 再改**（`subdata`）✗ —— "
+          "在 mmap 的那份上原地改会写只读页 ⇒ SIGBUS（本仓 2026-09-19 真机踩过 ✓）")
+
     filter_test_source = load("SealTests/Signing/SigningDiagnosticFilterTests.swift")
     check("signedCodeAlwaysPasses" in filter_test_source
           and "resourceBundlesAreDropped" in filter_test_source,
@@ -1962,27 +1986,22 @@ def violations(load=read):
           "（5053 个文件 / 1.46 GB）把每个文件都读进内存，非 Mach-O 的那些纯属浪费，"
           "且有 jetsam 风险")
 
-    # R38: 签名缓存必须**接上、放对地方、有上限、且不许把签名搞失败**（2026-09-18）。
+    # ⚠️ **R38 已移除**（2026-09-19）：签名器从 `Vendor/rork-sign` 换成了上游
+    # `SideSign` + `CodeSignKit` ✓（用户死命令「一个代码不漏地抄」✓），
+    # 而 `Seal/Infrastructure/Signing/RorkAppSigner.swift` **整个文件已删除** ✗
+    # ⇒ 这条断言失去了对象 ✓。
     #
-    # 引擎的 `SigningCacheOptions` 按**内容寻址**缓存「已签名的 Mach-O」：key 覆盖
-    # **证书哈希 + entitlements 哈希 + Mach-O 内容 + CD 哈希模式**，**不含描述文件字节**
-    # ⇒ 续签同一个 App（证书不变、entitlements 不变、包不变）时 key 不变
-    # ⇒ 那 30 多个 Mach-O **全部命中** ⇒ 这正是主场景（7 天续签）省掉全部重签的杠杆。
-    signer_source = strip_comments(load("Seal/Infrastructure/Signing/RorkAppSigner.swift"))
-    check("signingCache: SigningCacheStore.preparedOptions()" in signer_source,
-          "R38: 签名缓存必须真的传进 `AppSigningOptions` —— 引擎早就实现了缓存，"
-          "而本仓一直没接（「实现了但没启用」本仓已有前科）")
-    check("for: .cachesDirectory" in signer_source
-          and "for: .applicationSupportDirectory" not in signer_source,
-          "R38: 缓存目录必须在 **Caches** 下 —— 缓存**可再生**，不该进 iCloud 备份"
-          "（放 ApplicationSupport 会被备份 ✗）")
-    check("static let byteLimit" in signer_source
-          and "func pruneIfNeeded" in signer_source,
-          "R38: 缓存必须有**上限 + 淘汰** —— 引擎没有 prune API，而缓存里存的是"
-          "已签名 Mach-O 的副本，不设上限会无界增长")
-    check("static func preparedOptions(fileManager: FileManager = .default) -> SigningCacheOptions?" in signer_source,
-          "R38: 取不到缓存目录必须返回 **nil**（而不是抛错）—— 缓存是「有更好、没有也能签」"
-          "的东西，**绝不允许它把签名搞失败**")
+    # 🔴 **但它守的知识必须留档** ✗ —— `rork-sign` 的 `SigningCacheOptions` 是它**独有**的优化 ✓：
+    # 按**内容寻址**缓存「已签名的 Mach-O」（key = 证书哈希 + entitlements 哈希 +
+    # Mach-O 内容 + CD 哈希模式，**不含描述文件字节**）⇒ 续签同一个 App 时那 30 多个
+    # Mach-O **全部命中** ⇒ 这正是主场景（7 天续签）省掉全部重签的杠杆 ✓。
+    #
+    # ⚠️ **上游 `SideSign` / `CodeSignKit` 没有签名缓存** ✗（已逐行核实 ✓）
+    # ⇒ **Seal 现在每次续签都是全量重签** ✗，这直接加重了**大包**的 CPU 预算压力 ✗
+    #（真机构建 147：签抖音时 90 秒 CPU / 166 秒，撞「180 秒内 50%」上限被系统杀掉 ✗）。
+    # ⇒ 保留 `SigningCacheStats` 类型（恒为 `(0, 0)` ✓）**只是为了让调用方结构不变** ✓ ——
+    # **它不是缓存，别再把它当缓存读** ✗。
+    # ⇒ **真机回归时必须专门看**：抖音（780 MB + 8 扩展）重签耗时与 CPU 秒数 ✓。
 
     # R39: **每个阶段真正进入时必须落一行日志**（2026-09-18）—— 这是「分段耗时」的唯一来源。
     #
@@ -3115,8 +3134,21 @@ def violations(load=read):
     # 报一堆 `_rust_bridge_*` undefined symbols —— 2026-09-14 拆分 job 时真实踩到。
     check("ensure-rustbridge.sh" in section(ios, "\n  build-package:", "\n  swift-regression:"),
           "ios.yml: build-package must run ensure-rustbridge.sh")
-    check("ensure-rustbridge.sh" in section(ios, "\n  swift-regression:", "\n  rork-sign-tests:"),
+    check("ensure-rustbridge.sh" in section(ios, "\n  swift-regression:", "\n  signer-tests:"),
           "ios.yml: swift-regression must run ensure-rustbridge.sh")
+    # ⚠️ **区段止标记是 `\n  signer-tests:`** ✗ —— 本 job 2026-09-19 由 `rork-sign-tests`
+    # **改名而来** ✓（签名器换成上游 `SideSign` + `CodeSignKit` 后，
+    # `Vendor/rork-sign` 整个目录已删除 ✗）。改 job 名时**必须同步改这里**，
+    # 否则 `section()` 找不到标记 ⇒ 整轮守卫**带 Python 栈崩掉** ✗（R09c 同款）。
+    check("\n  signer-tests:" in ios,
+          "R56: `ios.yml` 必须保留**签名内核的独立回归门**（`signer-tests`）✗ —— "
+          "它测的是上游 `CodeSignKit`（Mach-O 签名 / CodeDirectory / CodeResources / "
+          "签名校验 ✓）与 `SideSign` ✓；删掉它等于「换签名器之后没有任何回归网」✗")
+    check("working-directory: Vendor/CodeSignKit" in ios
+          and "working-directory: Vendor/SideSign" in ios,
+          "R56: `signer-tests` 必须真的测**现在在跑的那两个包**（`CodeSignKit` + `SideSign`）✗ —— "
+          "只留 job 名而把 `working-directory` 指回已删的 `Vendor/rork-sign` 是最坏情况"
+          "（名字看着还在、其实什么都没测 ✗）")
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -3149,8 +3181,8 @@ def main():
          "if: inputs.publish_release == true",
          "ios.yml: publish job"),
         (".github/workflows/ios.yml",
-         "needs: [build-package, rork-sign-tests, swift-regression]",
-         "needs: [build-package, rork-sign-tests]",
+         "needs: [build-package, signer-tests, swift-regression]",
+         "needs: [build-package, signer-tests]",
          "ios.yml: publish must wait"),
         (".github/workflows/ios.yml",
          "run: bash Scripts/ensure-rustbridge.sh",
@@ -4266,11 +4298,10 @@ def main():
          "            == 0xfeedfacf else { return }\n",
          "R37: 判 Mach-O magic 必须"),
         # ── R38：签名缓存（2026-09-18）──
-        # 不传缓存：退化成「每次全量重签」，续签白等。
-        ("Seal/Infrastructure/Signing/RorkAppSigner.swift",
-         "            signingCache: SigningCacheStore.preparedOptions()\n",
-         "",
-         "R38: 签名缓存必须真的传进"),
+        # ⚠️ **已随 `Vendor/rork-sign` 删除**（2026-09-19）✗ —— 断言与锚点的对象都是
+        # `Seal/Infrastructure/Signing/RorkAppSigner.swift`，那个文件已删 ✓。
+        # 🔴 **知识留档**：上游 `SideSign` / `CodeSignKit` **没有签名缓存** ✗
+        # ⇒ Seal 现在每次续签都是**全量重签** ✗，大包的 CPU 预算压力因此更大 ✓。
         # ── R39：阶段进入落日志（2026-09-18）──
         # 删掉它：阶段切换在日志里又没了时间戳 ⇒ 「每阶段耗时」拿不到。
         ("Seal/Features/Apps/AppsViewModel.swift",
@@ -4302,10 +4333,11 @@ def main():
          "签名：重签开始（分界日志已删）",
          "R45: 重签前必须有「分界日志」"),
         # ── R46：签名器逐 bundle 诊断必须打开（2026-09-19）──
-        ("Seal/Infrastructure/Signing/RorkAppSigner.swift",
-         "options.diagnostics = SigningDiagnostics(", 
-         "options.diagnostics = SigningDiagnostics.disabled // ", 
-         "R46: 签名器内部的逐 bundle 诊断必须被打开"),
+        # ⚠️ **已随 `Vendor/rork-sign` 删除**（2026-09-19）✗ —— 断言与锚点的对象都是
+        # `Seal/Infrastructure/Signing/RorkAppSigner.swift`，那个文件已删 ✓。
+        # 🔴 **知识留档**：换签名器后「死在哪个 bundle」**看不出来了** ✗ ——
+        # 上游 `SideSign` 的 `verboseLog` 走 `print`（进不了 Seal 的导出日志 ✗），
+        # `signApp(progress:)` 只有计数、没有回调 ✓ ⇒ 真机回归时靠「日志戛然而止」推断 ✓。
         # ── R47：Bundle ID 报错要说清是 Apple 的规定（2026-09-19）──
         ("Seal/Core/Signing/BundleIDPolicy.swift",
          "Apple 规定", 
@@ -4322,15 +4354,24 @@ def main():
          "guard var data = try? Data(contentsOf: machOURL, options: .mappedIfSafe) else { return }",
          "R49: `rewriteExecutablePathReferences` 会**原地改写**这份 Data"),
         # ── R50：会被**原地改写**的 Data 绝不许 mmap（2026-09-19 真机 SIGBUS）──
-        ("Vendor/rork-sign/Sources/RorkSign/Bundle/BundleSigner.swift",
-         "let input = try Data(contentsOf: url, options: .mappedIfSafe)",
-         "let input = try Data(contentsOf: url)",
-         "R50: 签名器的 input / executable 必须**照抄上游用 mmap 读**"),
-        # ── R52：签名器 FairPlay 补丁必须保留（2026-09-19）──
-        ("Vendor/rork-sign/Sources/RorkSign/MachO/MachOSigner.swift",
-         "func clearFairPlayCryptid(",
-         "// clearFairPlayCryptid removed",
-         "R52: 签名器的 FairPlay 补丁必须保留"),
+        # ⚠️ **已随 `Vendor/rork-sign` 删除**（2026-09-19）✗ ⇒ **判据改由 R57 承接** ✓
+        #（同一条「mmap 读 + 复制后改」现在钉在上游 `CodeSignKit` 上 ✓）。
+        #
+        # ── R52：签名器 FairPlay 补丁（2026-09-19）──
+        # ⚠️ **已随 `Vendor/rork-sign` 删除**（2026-09-19）✗ ——
+        # 🔴 **但这是换签名器引入的「最高严重级」已知风险** ✗：
+        #   `CodeSignKit/MachOParser.swift:555` 只有「读 cryptid」、**没有清零** ✓，
+        #   `SideSign` / `SideStore` 也完全不处理 ✗ ⇒ **可能「装完启动崩」** ✗✗。
+        # ⇒ 真机回归**必须专门验证「装完能不能启动」** ✓；
+        #    若真的启动崩，把那个补丁移植到 `CodeSignKit` ✓
+        #   （原型见 `Vendor/rork-sign` 的历史提交 `b548021` ✓）。
+        #
+        # ── R57：上游签名内核的内存策略（2026-09-19，承接 R50）──
+        # 改成整块读 ⇒ 抖音签名的内存峰值回到 2.11 GB ⇒ jetsam 批量杀后台 ✗。
+        ("Vendor/CodeSignKit/Sources/MachOParser.swift",
+         "Data(contentsOf: execURL, options: .mappedIfSafe)",
+         "Data(contentsOf: execURL)",
+         "R57: 上游 `CodeSignKit/MachOParser` 必须**用 mmap 读**"),
         # ── R53：分块预扫描必须在整块读之前（2026-09-19）──
         ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
          "        guard containsBytes(rpathNeedle, in: machOURL) else { return }\n",

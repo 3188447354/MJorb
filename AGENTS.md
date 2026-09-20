@@ -157,8 +157,11 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
 - **触发方式**：`ios.yml` 除 PR 外，推到非 `main` 分支且改动命中相关路径也会自动编译；
   `publish-release` 始终只在 `workflow_dispatch` + `publish_release=true` 时触发，**push 路径绝不自动发布**；
   该不变量由 `Scripts/verify-release-safety.py` 静态守护（含变异自检）。
-- **时间预算**：`ios.yml` 拆成 3 个并行 job —— `build-package` / `swift-regression` / `rork-sign-tests`，
+- **时间预算**：`ios.yml` 拆成 3 个并行 job —— `build-package` / `swift-regression` / `signer-tests`，
   墙钟取 max 而非 sum（实测 9m38s）。**不要加「按路径判定是否跑测试」的闸门**（曾实测无收益且承担漏跑风险）。
+  ⚠️ 2026-09-19：`signer-tests` 由 `rork-sign-tests` **改名而来** —— 签名器换成上游
+  `SideSign` + `CodeSignKit` 后 `Vendor/rork-sign` 已删除，该 job 改为测 `Vendor/CodeSignKit`
+  与 `Vendor/SideSign` 两个包（守卫 R56 钉住它的存在与 `working-directory`）。
 - `publish-release` 的 `needs` **必须包含 `swift-regression`**。
 - **构建 App 的 job 必须跑 `ensure-rustbridge.sh`**，否则会链接到落后的 `RustBridge.xcframework`，
   报一堆 `_rust_bridge_*` undefined symbols。⚠️ 守卫目前只钉住 `ios.yml` 的两个 job，
@@ -167,6 +170,9 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
 - CI 缓存「Refresh local SPM binary artifacts」只清 `SourcePackages/checkouts`，
   **不许 rm 整个 SourcePackages**（会删掉 OpenSSL.xcframework → `openssl/err.h not found`）。
 - CI 校验 `IPHONEOS_DEPLOYMENT_TARGET=17.0`；改部署目标时同步查三份 workflow 的断言。
-- 改工作流触发条件前先跑 `Scripts/verify-release-safety.py`。**Windows 本机没有可用 Python**
-  （`python`/`python3` 是 WindowsApps 存根：零输出、退出码 49 —— 静默「没输出」不等于通过），
-  守卫只能在 CI 侧执行；本地改动要靠人工读 workflow 断言核对。
+- 改工作流触发条件前先跑 `Scripts/verify-release-safety.py`。
+  ⚠️ **裸 `python` / `python3` 在本机不可用**（WindowsApps 存根：零输出、退出码 49
+  —— 静默「没输出」不等于通过 ✗）；**但守卫本机可跑** ✓ —— 用托管解释器的**绝对路径**：
+  `C:/Users/DMJ/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe Scripts/verify-release-safety.py`
+  （一轮 85–200 秒，**必须放后台跑**，否则会被 120 秒默认超时 SIGTERM 且没有任何输出 ✗）。
+  ⇒ **CI 只当最后一道关，不要拿它当第一次验证。**

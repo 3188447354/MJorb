@@ -22,20 +22,12 @@ struct SideSignTests {
         #expect(device.type == .iPhone)
     }
 
-    @Test
-    func certificateRequestCSRGeneration() throws {
-        let request = try CertificateRequest(machineName: "TestMac")
-        #expect(!request.csrData.isEmpty)
-        #expect(!request.privateKey.isEmpty)
-        #expect(request.machineName == "TestMac")
-    }
-
-    @Test
-    func developerPortalSingleton() throws {
-        let portal = DeveloperPortal.shared
-        #expect(portal.baseURL == Constants.URLs.developerServicesBase)
-        #expect(portal.servicesBaseURL == Constants.URLs.developerServicesV1Base)
-    }
+    // ⚠️ **两个测试已移除**（2026-09-19，Seal 只用 SideSign 的签名能力 ✓）：
+    //   · `certificateRequestCSRGeneration` —— 用 `CertificateRequest`（已删 ✗）
+    //   · `developerPortalSingleton`        —— 用 `DeveloperPortal`（已删 ✗）
+    // 二者都属于「门户 / anisette」那层 —— Seal 用自己的 `AltSign` + `AltAppleAPI` ✓
+    // ⇒ 留着它们只会让 `swift test` 编译不过 ✗。
+    // 其余 3 个测试（`Device` 模型 + 两个 `Archive` 往返）与签名能力无关但**仍然有效** ✓ ⇒ 保留 ✓。
 
     @Test
     func archiveStoreRoundtrip() throws {

@@ -24,6 +24,22 @@
   默认 `.disabled`）⇒ **根本没有那几行**；
   ② 进程被 CPU 预算杀掉 ⇒ **即使有也来不及落盘**。
   ⇒ 处置完全不同：① 接线（`d07b42f`）；② 减少 CPU 或分批。
+- 🔴 **删一个 vendor 目录里的一层时，要顺着依赖把「编译不过的残留」一次删干净**（2026-09-19）。
+  删掉 `Vendor/SideSign` 的 anisette / 门户两层之后，**同一个仓库里还剩两处残留** ✗：
+  `CLI/`（`import AnisetteKit` ＋ `DeveloperPortal` / `CertificateRequest` ✗）与
+  `Tests/SideSignTests` 里 2 个用例（引用同一批已删类型 ✗）。
+  ⇒ **它们不参与 App 构建**（`project.yml` 只引 `product: SideSign` ✓）⇒ **CI 照样全绿** ✓，
+  所以**不会自己暴露** ✗ —— 只有有人在该目录下跑 `swift build` / `swift test` 才会炸 ✗。
+  **判据：删完一层之后，`grep -rn '<被删类型>' <那个 vendor 目录>` 必须为空** ✓
+  （`Sources/` ＋ `CLI/` ＋ `Tests/` ＋ `Package.swift` 四处都要查 ✓）。
+- 🔴 **换掉一个「会打补丁的依赖」时，先把它带来的独有能力逐项列出来**（2026-09-19）。
+  换签名器丢掉的不只是代码，还有**三项能力** ✗：① 签名缓存（`SigningCacheOptions`）
+  ② 逐 bundle 诊断（`AppSigningOptions.diagnostics`）③ FairPlay `cryptid` 清零补丁。
+  ⇒ 前两项让**性能与可观测性变差**（大包 CPU 预算更紧 ✗、日志里看不出死在哪个 bundle ✗），
+  第三项是**「装完启动崩」** ✗✗。
+  **判据：换完先写一张「丢了什么」的表**（本仓落在 `docs/upstream-alignment.md` 第九节 ✓），
+  并逐项标成**待真机验证** ✓ —— 否则这些能力是**静默消失**的 ✗
+  （不崩、不报错、守卫全绿，只有真机上才知道 ✗）。
   **判据：先在崩溃日志里找 `Event:` 那一行**，别一上来就怀疑代码崩了。
 
 - **用别人的函数当判据之前，先读它的实现**（2026-09-19）。`InstallStageTimeline.tick(entering:currentStage:)`
@@ -286,6 +302,46 @@
 
 ## 历史记录
 
+### 2026-09-19 · 签名器整个换成上游 `SideSign` + `CodeSignKit`；删掉 `rork-sign`（收尾）
+
+**现象**：签**大包**（抖音 780 MB ＋ 8 扩展）时 Seal 被 iOS **jetsam** 杀掉，
+并**连累后台**（用户原话：「网易云播放的音乐被杀掉了，LOCALDevVPN 也被杀掉了」✗）——
+真机 `JetsamEvent`：`largestProcess = "Seal"`，`rpages 129697 × 16KB = **2.11 GB**` ✓。
+而 **SideStore 同样在手机上签大包没问题** ✓。
+
+**根因**：`Vendor/rork-sign`（`rorkai/rork-sign` 0.6.5 ＋ Seal 的 4 个补丁）走的是
+「**整块读 ＋ 原地改**」⇒ Swift COW 在「唯一引用」时不复制 ⇒ **峰值 2×** ✗。
+上游 `CodeSignKit` 走的是「**mmap 读 ＋ `subdata` 复制后改**」⇒ **全程 1 份** ✓
+（`MachOParser.swift:154,157` / `MachOSigner.swift:301` ✓）。
+
+**修复**（用户死命令：「**一个代码不漏地给我抄 不要打补丁 签名器不一样你就换啊**」＋「**禁止乱发明**」✓）：
+① 签名内核 → `Vendor/CodeSignKit`（**只改 `Package.swift` 一行**：`swift-crypto` 4.3.1 → 4.5.2 ✓）；
+② 重签层 → `Vendor/SideSign` ＋ 薄适配 `Seal/Infrastructure/Signing/SideSignAppSigner.swift` ✓；
+③ **删净 `rork-sign`**：`Vendor/rork-sign/`（2.0 MB）＋ `RorkAppSigner.swift` ＋ `project.yml` 依赖 ✓。
+
+**收尾时补删的两处**（上一层的**必然残留**，不删就编译不过 ✗，而 CI **照样全绿** ⇒ 不会自己暴露 ✗）：
+- `Vendor/SideSign/CLI/` ＋ `Package.swift` 的 `sidesign` 产品与 `executableTarget`
+  （`CLI/CommandHandler.swift:13` 仍 `import AnisetteKit` ✗）；
+- `Tests/SideSignTests` 里 2 个用例（`CertificateRequest` / `DeveloperPortal` ✗；其余 3 个保留 ✓）。
+
+**顺带修掉一个真缺陷**：`Vendor/SideSign/Sources/Logging.swift:10-12` 的注释里两个标识符
+（`AnisetteKit` / `AnisetteKitLogging.setLogging`）**消失了** ✗ ——
+正是「`python -c` 里的反引号被 bash 先当命令执行」那个事故 ✓，已按上游原文补回 ✓。
+
+**CI 侧**：`ios.yml` 的 `rork-sign-tests` → **`signer-tests`**（测 `CodeSignKit` ＋ `SideSign` ✓，
+不是简单删掉 —— 保住「签名内核独立回归门」✓）；`publish-release.needs` 同步 ✓。
+
+**守卫**：移除 R38（签名缓存）/ R46（逐 bundle 诊断）/ R52（FairPlay 补丁）—— **对象已删，但知识全部留档** ✓；
+**R50 的判据重定向为 R57** ✓（同一条「mmap 读 ＋ 复制后改」现在钉在上游 `CodeSignKit` ✓，
+配一个「改回整块读」的变异锚点 ✓）；**新增 R56** ✓（防「job 名还在、其实什么都没测」✗）。
+本机完整守卫：**447 断言 / 230 变异 / PASS** ✓（3 分 03 秒）。
+
+**验证状态**：静态守卫全绿 ✓；**编译与真机未验证** ✗ ⇒ 三个已知风险见
+`docs/qa/2026-09-19-signer-swap-to-sidesign.md` 第五节
+（**① 装完能不能启动** —— FairPlay `cryptid` 没清零 ✗✗；② 大包 CPU 预算；③ 逐 bundle 可观测性 ✗）。
+
+---
+
 ### 2026-09-19 · 「签不了」的根因：**anisette 是一次性快照，被复用到了 120 秒之后**
 
 **现象**（`Seal-log(20).txt`，构建 141，两次尝试、**两个不同 Apple ID**，失败形态完全相同）：
@@ -457,6 +513,12 @@ R50 **收窄** + 新增「会被原地改写的 Data 绝不许 mmap」✓。
 ---
 
 ### 2026-09-19 · 签名器的 **FairPlay cryptid 补丁**（此前只写在提交信息里，台账缺记 ✗）
+
+> 🔴🔴 **2026-09-19 起这条补丁已经不在仓库里了** ✗ —— 签名器整个换成了上游
+> `SideSign` + `CodeSignKit`（用户死命令「**不要打补丁**」✓），`Vendor/rork-sign` **已删除** ✓，
+> 而**上游同样不处理 cryptid** ✗ ⇒ **「装完启动崩」的风险重新出现** ✗✗。
+> ⇒ 下面这段保留为**原型记录** ✓：真机若出现「装完点开就闪退」，就照它移植到 `CodeSignKit` ✓
+> （历史提交 `b548021` ✓ / 守卫 R52 已随目录删除，改为**留档** ✓）。
 
 **现象**：已解密但 `LC_ENCRYPTION_INFO(_64)`（cmd `0x21`/`0x2c`）的 `cryptid` 仍为 1 的镜像，
 重签后 **dyld 会用新账号尝试 FairPlay 解密、不匹配而启动即杀进程** ✗。

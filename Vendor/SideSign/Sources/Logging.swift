@@ -7,8 +7,8 @@
 //
 
 import Foundation
-// ⚠️ **去掉了 **（2026-09-19，Seal 只用 SideSign 的签名能力 ✓）：
-// 本文件只在  里转发过  ✗，
+// ⚠️ **去掉了 `import AnisetteKit`**（2026-09-19，Seal 只用 SideSign 的签名能力 ✓）：
+// 本文件只在 `SideSignLogging.setLogging` 里转发过 `AnisetteKitLogging.setLogging` ✗，
 // 而 Seal 有自己的 anisette 层 ✓ ⇒ 删掉后 SideSign 不必依赖 AnisetteKit ✓。
 
 public enum SideSignLogging {

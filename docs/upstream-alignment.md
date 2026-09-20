@@ -36,7 +36,12 @@ Seal 的 git 历史**被重建过** ✗：全部 659 个提交都是同一个作
 
 ---
 
-## 三、`Vendor/rork-sign/` 的补丁清单（覆盖上游时必须保留）
+## 三、~~`Vendor/rork-sign/` 的补丁清单~~ 🔴 **已作废**（2026-09-19）
+
+> 🔴 **`Vendor/rork-sign` 整个目录已删除** ✗ —— 签名器换成了上游 **`SideSign` + `CodeSignKit`** ✓
+> （用户死命令：「**一个代码不漏地给我抄 不要打补丁 签名器不一样你就换啊**」✓）。
+> ⇒ **下面这一节只作历史记录** ✓，**不要再照它去改代码** ✗（那些文件已经不在仓库里了）。
+> ⇒ 现在生效的是**第九节**（换签名器之后的对齐台账 ✓）。
 
 > **这是本仓唯一能真正做到「一字一码」的地方** ✓ ——
 > `Vendor/rork-sign` 就是 `rorkai/rork-sign` **0.6.5** 的副本 + **4 个文件**的补丁 ✓
@@ -107,11 +112,9 @@ Seal 的是**自己的 wrapper**（`struct AnisetteV3Client: AnisetteEnvironment
 | **2026-09-19** | **会话过期（1100）的重试与退避** | `withSessionRecovery`：退避重试 + 重建会话 ✓ | **两个上游都完全不处理** ✗ —— `AltSign` 里没有 1100/retry/backoff/sessionExpired 任何一处 ✓；`SideStore` 里唯一的 "1100" 是个**端口号** ✓ | **保留** ✓ —— **上游「没有」≠「更好」** ✗：上游把会话过期完全交给**用户手动重试** ✗，而 Seal 自动恢复是**必要的健壮性** ✓（今天的 1100 就是证据 ✓） |
 | **2026-09-19** | 🔴 **签大包的内存峰值** | **整块读 + 原地改（COW 复制）⇒ 峰值 2×** ✗<br>真机 `JetsamEvent`：Seal `rpages 129697 × 16KB = **2.11 GB**` ⇒ 被杀 ✓ | **`CodeSignKit`（SideStore 用的签名器）**：<br>① `MachOParser.swift:154,157` **`Data(contentsOf:…, options: .mappedIfSafe)`**（mmap 读，0 内存 ✓）<br>② `MachOSigner.swift:301` **`workingData.subdata(in: 0..<codeLimit)`**（复制出新 Data 再改，1× ✓）<br>⇒ **全程只有 1 份** ✓<br>⚠️ **上游也没有流式** ✗（`InputStream`/`FileHandle(forWriting` 全空 ✓）⇒ 说明 **1× 就够** ✓ | **跟** ✓ 已实施 `db2463a` —— 把 `BundleSigner` 的 `input` 与 `var executable` 改成 mmap 读 ✓ |
 | **2026-09-19** | 🔴🔴 **mmap 的统一判据**（今天所有纠结的答案 ✓） | — | — | **不是「哪里该用 mmap」，而是「这份 Data 会不会被原地写」** ✓<br>· **只读 ⇒ mmap 安全** ✓（签名器 input/executable ✓ / `readEntitlementsXML` ✓ / `inspectMachO` ✓ / 缓存条目 ✓）<br>· **原地写 ⇒ 必须整块读** ✓（`SigningWorkspace.rewriteExecutablePathReferences` ✓ —— R49 钉住 ✓）<br>⚠️ 违反它的后果：**SIGBUS 崩溃** ✗（构建 160 ✓） |
-| **2026-09-19** | 🔴 **签大包的内存峰值** | **整块读 + 原地改（COW 复制）⇒ 峰值 2×** ✗<br>真机 `JetsamEvent`：Seal `rpages 129697 × 16KB = **2.11 GB**` ⇒ 被杀 ✓ | **`CodeSignKit`（SideStore 用的签名器）**：<br>① `MachOParser.swift:154,157` **`Data(contentsOf:…, options: .mappedIfSafe)`**（mmap 读，0 内存 ✓）<br>② `MachOSigner.swift:301` **`workingData.subdata(in: 0..<codeLimit)`**（复制出新 Data 再改，1× ✓）<br>⇒ **全程只有 1 份** ✓<br>⚠️ **上游也没有流式** ✗（`InputStream` / `FileHandle(forWriting` 全空 ✓）⇒ 说明 **1× 就够** ✓ | **跟** ✓ 已实施 `db2463a` —— 把 `BundleSigner` 的 `input` 与 `var executable` 改成 mmap 读 ✓ |
-| **2026-09-19** | 🔴🔴 **mmap 的统一判据** | — | — | **不是「哪里该用 mmap」，而是「这份 Data 会不会被原地写」** ✓<br>· **只读 ⇒ mmap 安全** ✓（签名器 input/executable ✓ / `readEntitlementsXML` ✓ / `inspectMachO` ✓ / 缓存条目 ✓）<br>· **原地写 ⇒ 必须整块读** ✓（`SigningWorkspace.rewriteExecutablePathReferences` ✓ —— R49 钉住 ✓）<br>⚠️ 违反它的后果：**SIGBUS 崩溃** ✗（构建 160 ✓） |
-| **2026-09-19** | 🔴 **签大包的内存峰值** | **整块读 + 原地改（COW 复制）⇒ 峰值 2×** ✗<br>真机 `JetsamEvent`：Seal `rpages 129697 × 16KB = **2.11 GB**` ⇒ 被杀 ✓ | **`CodeSignKit`（SideStore 用的签名器）**：<br>① `MachOParser.swift:154,157` **`Data(contentsOf:…, options: .mappedIfSafe)`**（mmap 读，0 内存 ✓）<br>② `MachOSigner.swift:301` **`workingData.subdata(in: 0..<codeLimit)`**（复制出新 Data 再改，1× ✓）<br>⇒ **全程只有 1 份** ✓<br>⚠️ **上游也没有流式** ✗（`InputStream` / `FileHandle(forWriting` 全空 ✓）⇒ 说明 **1× 就够** ✓ | **跟** ✓ 已实施 `db2463a` —— 把 `BundleSigner` 的 `input` 与 `var executable` 改成 mmap 读 ✓ |
-| **2026-09-19** | 🔴🔴 **mmap 的统一判据** | — | — | **不是「哪里该用 mmap」，而是「这份 Data 会不会被原地写」** ✓<br>· **只读 ⇒ mmap 安全** ✓（签名器 input/executable ✓ / `readEntitlementsXML` ✓ / `inspectMachO` ✓ / 缓存条目 ✓）<br>· **原地写 ⇒ 必须整块读** ✓（`SigningWorkspace.rewriteExecutablePathReferences` ✓ —— R49 钉住 ✓）<br>⚠️ 违反它的后果：**SIGBUS 崩溃** ✗（构建 160 ✓） |
 | **2026-09-19** | **`ALTAppleAPISession` 与 anisette 的关系** | 认证时建会话，之后**替换/重建**它来更新 anisette ✓ | `AltSign` 的 `authenticate(... anisetteData: ALTAnisetteData ...)` 把 anisette 当**入参** ✓；`ALTAppleAPISession(dsid:authToken:anisetteData:xcodeVersion:)` 在**认证那一刻**建会话 ✓ ⇒ **库不管 anisette 的生命周期** ✗ | **已跟** ✓ —— `anisetteData` 只是会话的**一个字段**，调用方必须在**每次 Apple 工作前**替换它 ✓（AltStore 的做法：`session?.anisetteData = anisetteData` ✓）|
+
+| **2026-09-19** | 🔴🔴 **整个签名器（内核 ＋ 重签层）** | `Vendor/rork-sign` ＋ Seal 自写的 `RorkAppSigner` ✗ | **`SideSign` → `CodeSignKit`**（SideStore 在手机上签大包用的就是它 ✓） | **跟** ✓ —— 用户死命令「**签名器不一样你就换啊**」⇒ 整个换掉 ✓（详见**第九节** ✓）<br>⚠️ 代价：签名缓存 ✗、逐 bundle 诊断 ✗、FairPlay 补丁 ✗（**三个已知风险** ✓） |
 
 > **⚠️ 分清两种「Seal 多出来的东西」**（用户 2026-09-19 指示「比 SideStore 严格就去除」时）：
 >
@@ -174,3 +177,57 @@ gh api "repos/SideStore/SideStore/contents/<路径>" --jq '.content' | base64 -d
 - 「**两张表同源**」「**同一规则只落一条链路**」这类本仓历史坑的守卫；
 - 自替换 / 续签事务（`SelfReplacementTransaction`）；
 - 本地准备的**分段时间日志**（解压 / 改写 / 瘦身 / 归一化 —— 为 CPU 预算服务 ✓）。
+
+---
+
+## 九、🔴 **签名器已换成上游**（2026-09-19，用户死命令）
+
+> 原话：「**一个代码不漏地给我抄 不要打补丁 签名器不一样你就换啊 这个签名不是签不了大包吗**」
+> ＋「**禁止乱发明**」＋「**照抄吧**」。
+> 方案 **B**：**只抄 SideSign 的签名能力**，不带它的 anisette / 门户 ✓。
+
+### 9.1 换之前 → 换之后
+
+| | 换之前 | 换之后 |
+|---|---|---|
+| 签名内核 | `Vendor/rork-sign`（`rorkai/rork-sign` 0.6.5 ＋ **4 个文件**的 Seal 补丁 ✗） | **`Vendor/CodeSignKit`**（`mahee96/CodeSignKit`，**原样 vendor** ✓） |
+| 重签层 | `Seal/Infrastructure/Signing/RorkAppSigner.swift`（Seal 自写 ✗） | **`Vendor/SideSign`**（`mahee96/SideSign` ✓）＋ 薄适配 `SideSignAppSigner.swift` ✓ |
+| 内存策略 | 整块读 ＋ 原地改 ⇒ 峰值 **2.11 GB** ⇒ jetsam 批量杀后台 ✗ | **mmap 读 ＋ `subdata` 复制后改 ⇒ 全程 1 份** ✓（**R57** 钉住 ✓） |
+| 签名缓存 | `SigningCacheOptions`（`rork-sign` **独有** ✓） | **没有** ✗ ⇒ 每次**全量重签**（`SigningCacheStats` 恒 `(0,0)` ✓） |
+| 逐 bundle 诊断 | `AppSigningOptions.diagnostics` ✓ | **没有** ✗（上游 `verboseLog` 走 `print` ⇒ **进不了导出日志** ✗） |
+| FairPlay cryptid 清零 | 有补丁 ✓ | **没有** ✗ ⇒ **可能「装完启动崩」** ✗✗（**最高风险** ✓） |
+| 签名身份读取 | `RorkSigner.checkMachOCodeSignatures`（**整块读** ✗） | `CodeSignKit.MachOParser`（**mmap** ✓）—— **R55** 钉住 ✓ |
+
+### 9.2 为什么「整个仓库拿来」
+
+用户指示「**直接整个仓库拿来，不允许你有什么什么太大、什么什么太多的想法**」✓
+⇒ 上游仓库已放进 `upstream/`（7 个：`AltSign` / `AltStore` / `AnisetteKit` /
+`CodeSignKit` / `SideSign` / `SideStore` / `rork-sign` ✓），
+实际参与编译的是 `Vendor/` 下的**副本** ✓（`project.yml` 用 `path:` 引用 ✓）。
+
+### 9.3 `Vendor/SideSign` 的删减（方案 B）
+
+| 删掉 | 为什么 |
+|---|---|
+| `Sources/Anisette/`、`Sources/DeveloperPortal/` | Seal 用自己的 anisette（`AnisetteClient`）＋ `AltAppleAPI` ✓ |
+| `Models/{AnisetteData,Session,AuthSession,AuthDevice,CertificateRequest,CertificateType,DeveloperPortalResponses,AppID,AppGroup,ProfileType}.swift` | 属于上面两层 ✓ |
+| `Compatibility.swift`、`Constants.swift` 的 `Anisette` 段 | 同上 ✓ |
+| `Logging.swift` 的 `import AnisetteKit` ＋ `AnisetteKitLogging.setLogging` | 同上 ✓（⚠️ 注释里两个标识符曾被 `python -c` 的**反引号**掏空 ✗，2026-09-19 已修 ✓） |
+| `CLI/` ＋ `Package.swift` 的 `sidesign` 产品与 `executableTarget` | 整段建立在已删的门户层上 ⇒ **根本编译不过** ✗ |
+| `Tests/SideSignTests` 里 2 个用例（CSR / DeveloperPortal） | 同上 ✓（其余 3 个：`Device` 模型 ＋ 两个 `Archive` 往返 ⇒ **保留** ✓） |
+
+### 9.4 `Vendor/CodeSignKit` 的改动（**只有 Package.swift** ✓）
+
+其余**逐字节原样** ✓（`diff -r -w` 核实 ✓）。`Package.swift` 只改了一处：
+`swift-crypto` 由 `4.3.1` → **`4.5.2`** ✓ —— 不改会与根包冲突，CI 实报
+「gsacryptokit depends on swift-crypto 4.3.1 and root depends on 4.5.2」✗。
+
+### 9.5 🔴 换签名器带来的三个已知风险（**必须真机验证**）
+
+1. 🔴 **装完能不能启动** —— FairPlay `cryptid` 没清零 ✗（`CodeSignKit/MachOParser.swift:555`
+   只有「读」✓）；原型补丁见 `Vendor/rork-sign` 的历史提交 `b548021` ✓ —— **最高严重级** ✓；
+2. 🔴 **大包还会不会被 CPU 预算杀掉** —— 没有签名缓存 ⇒ 全量重签 ✗
+   （构建 147 实测：签抖音 90 秒 CPU / 166 秒，撞「180 秒内 50%」上限被系统杀掉 ✗）；
+3. 🟡 **日志里还能不能看出「死在哪个 bundle」** —— 逐 bundle 诊断没了 ✗
+   （只能靠 `SEAL-STAGE-001` 的阶段边界 ＋ 日志戛然而止推断 ✓）。
+

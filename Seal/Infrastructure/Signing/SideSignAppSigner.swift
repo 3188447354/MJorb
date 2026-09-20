@@ -38,16 +38,28 @@ enum SideSignAppSigner {
     }
 
     enum SignError: LocalizedError {
+        // ⚠️ 这 3 个 case 是**从 `RorkAppSigner.SignError` 迁过来的** ✓
+        //（2026-09-19 删 rork-sign 时 ✓）—— 调用方 `ApplePortalSigningService`
+        // 的报错文案与日志码都依赖它们 ✓，**文案一字不改** ✓。
+        case missingCertificate
+        case missingPrivateKey
         case invalidCertificate
         case missingMainProfile(String)
+        case identityImportFailed(String)
         case signFailed(String)
 
         var errorDescription: String? {
             switch self {
+            case .missingCertificate:
+                return "证书数据缺失，请重新登录 Apple ID 后重试"
+            case .missingPrivateKey:
+                return "私钥数据缺失，请重新登录 Apple ID 后重试"
             case .invalidCertificate:
-                return "证书数据无法解析（需要 DER 格式），请重新登录 Apple ID 后重试"
+                return "证书数据无法解析（PEM / DER 都试过了），请重新登录 Apple ID 后重试"
             case .missingMainProfile(let bundleID):
                 return "主应用描述文件缺失：\(bundleID)"
+            case .identityImportFailed(let detail):
+                return "证书导入失败：\(detail)"
             case .signFailed(let detail):
                 return "签名失败：\(detail)"
             }
@@ -119,4 +131,17 @@ enum SideSignAppSigner {
             throw SignError.signFailed(error.localizedDescription)
         }
     }
+}
+
+/// 一次重签里「新算的」与「缓存命中的」Mach-O 个数。
+///
+/// ⚠️ **从 `RorkAppSigner` 迁过来**（2026-09-19 删 rork-sign ✓）。
+/// **上游 `SideSign` / `CodeSignKit` 没有签名缓存** ✗
+///（rork-sign 的 `SigningCacheOptions` 是它独有的优化 ✓）⇒ 这里**恒为 `(0, 0)`** ✓。
+///
+/// 保留这个类型只是为了让调用方（`ApplePortalSigningService`）的日志与结构不用改 ✓ ——
+/// **将来若上游加上缓存，直接填真值即可** ✓。
+struct SigningCacheStats: Sendable {
+    let signed: Int
+    let cached: Int
 }

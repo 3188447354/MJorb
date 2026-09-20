@@ -1,4 +1,0 @@
-self-hosted-runner:
-  labels:
-    - blacksmith-4vcpu-windows-2025
-    - blacksmith-6vcpu-macos-latest

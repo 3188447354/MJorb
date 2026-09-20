@@ -469,9 +469,20 @@ Apple 已经接受了密码，只是要求走第二步（输验证码）。这�
 |---|---|
 | 助手卡片出现「iOS 17.4 以下：本机配对（Lockdown）」 | ✅ 版本分流生效 |
 | Seal「设置 → 设备 → 配对类型」= **本机配对** | ✅ 认成 lockdown 文件（有 `UDID`、无 `private_key`） |
-| Seal 日志 `[minimuxer] INFO: Lockdown pairing file detected` | ✅ 运行时走 lockdown 通道（不是 RPPairing） |
-| 日志出现 `RPPairing file detected` | ❌ 分流没生效（文件类型错了） |
-| iOS 17.4+ 的设备仍是远程配对 + `RPPairing file detected` | ✅ 回归项：没把新版本带偏 |
+| Seal 日志 `Seal 配对助手已自动写入配对信息，等待真实设备连接验证` | ✅ **文件导入成功**（失败会换成「…无法导入」＋错误码） |
+| 日志 `LocalDevVPN 通道正常（需连接 Wi-Fi）` | ✅ 通道验证通过 ⇒ 配对真的可用 |
+| 日志 `LocalDevVPN 检测失败｜<标题>｜<原因>` ＋ `SEAL-*` 码 | ❌ 通道不可用，按码归因 |
+| iOS 17.4+ 的设备仍是远程配对 | ✅ 回归项：没把新版本带偏 |
+
+> ⚠️ **不要去这份日志里找 `[minimuxer] …` 的行 —— 它们根本不在这里**（2026-09-20 查代码确认）。
+> `[minimuxer] INFO: Lockdown pairing file detected` / `RPPairing file detected` /
+> `no SideVPN endpoint detected` / `vpn peer:` 全部是 vendor 代码里的 `print()`（stdout）：
+> - `Minimuxer.start(pairingFile:logPath:)` 的 **`logPath` 是死参数** —— 传进去了但
+>   `Muxer.start` 一次都没用过，所以 `Logs/Minimuxer/` 目录是空的；
+> - 全仓**没有** stdout 重定向（只有 `upstream/SideStore/.../ConsoleLogger.swift` 有 `dup2`，
+>   而 `upstream/` 不参与编译）⇒ 这些行只进系统日志，**Windows 上拿不到**。
+> ⇒ **判据只能落在「用户拿得到」的通道上**（Seal 自己的日志 ＋ 界面），
+> 否则测试做完却无法判定成败。同一条规矩见 `AGENTS.md` §5「纯函数化才能测」的姊妹版。
 
 **注意**：🔴 **iOS 17.0–17.3.1 的 Lockdown 通道在 Seal 里从未跑过真机** —— 这一项是**第一次**验证它：
 文件能不能写入 Seal、能不能导入、装 App 能不能过、个性化 DDI 能不能挂上、续签能不能走通。
@@ -490,20 +501,30 @@ Apple 已经接受了密码，只是要求走第二步（输验证码）。这�
   且 `getPeer()` 还要 `testDeviceConnection` 确认可达；
 - 拿不到 ⇒ `DeviceEndpoint.clear()` ⇒ `Muxer` 的 `ListDevices` 回**空列表**
   ⇒ `idevice` 认为**没有设备** ⇒ 安装失败（症状很误导）。
-- **诊断日志**：`[minimuxer] [net] no SideVPN endpoint detected` ⇒ 就是 VPN 没起来；
-  正常时应有 `[minimuxer] [iface] vpn peer: <ip>`。
+- **怎么从日志看出「隧道没通」**（`[minimuxer]` 那两行看不到，原因见上面 ⚠️）：
+  - `[SEAL-PROFILE-320] … 中断于 dump，首个错误：NoDevice` —— 它走
+    `Provision.dumpProfiles → Device.getFirstDevice()`，**轮询满 15 秒拿不到设备**才会这么写；
+  - 配对检测最终会落到 `LocalDevVPN 检测失败｜<标题>｜<原因>` ＋ 一个 `SEAL-PAIR-*` 码。
+  - 两者同时出现 ⇒ **是隧道不通，不是配对文件的问题**（症状很像，别误判）。
 - ⇒ **开测前先确认 LocalDevVPN 是「已连接」状态**，否则后面所有失败都白分析 ✗。
 
-**⏱️ 「验证中」不是死机 —— 最坏要等约 3.5 分钟**（2026-09-20 查代码算出）：
-点了「检测连接」后 Seal 显示「验证中」，它在跑 `MinimuxerInstallChannel.diagnose()`，
-全程**有界但很慢**：
-- `Minimuxer.start` 有 **4 秒**超时；
-- 设备探测是 `for attempt in 0..<36`，每轮 = `readyDeviceIdentifier()`（`blockingCallTimeoutSeconds`
-  = **5 秒**）＋ 500ms 睡眠 ⇒ **36 × 5.5 ≈ 198 秒**；
-- ⇒ **最坏 ≈ 3.5 分钟**才给出成功/失败结论。
-- ⚠️ **设备连不上时恰好走最坏路径**（muxer 监听器已起、`ready` 为真，但设备不可达
-  ⇒ 每轮都把那 5 秒耗尽）—— 也就是 LocalDevVPN 没连上时的形态。
-- ⇒ **3.5 分钟内别急着判死** ✓；超过 3.5 分钟仍是「验证中」才算真卡住。
+**⏱️ 「验证中」不是死机 —— iOS 17.4 以下最坏要等 9–18 分钟**（2026-09-20 重算，原写 3.5 分钟偏小 ✗）：
+助手写入文件后，Seal **自己**就会进入验证（`SettingsViewModel` 导入成功后直接调
+`runInstallChannelCheck`，不用手点按钮），此时界面显示「验证中」，它在跑
+`MinimuxerInstallChannel.diagnose()`：
+- 设备探测是 `for attempt in 0..<36`，每轮 = `readyDeviceIdentifier()` ＋ 500ms 睡眠；
+- `readyDeviceIdentifier()` = `isReady()`（`offThread(5 秒)`）+ `fetchUDIDDetailed()`（`offThread(5 秒)`）；
+- ⚠️ **但那两个 5 秒只是「不再等」** —— 底下的同步 FFI 没有取消机制、仍在跑：
+  **lockdown 路径两者都会走 `Device.getFirstDevice()`，它要轮询 `deviceFetchTimeoutMs` = 15 秒**
+  才抛 `NoDevice`（`Minimuxer.ready()` / `fetchUDIDDetailed()` → `Device.swift`）。
+- ⇒ 设备不可达时每轮的真实耗时 ≈ **15 秒**（不是 5.5 秒）⇒ 36 轮 ≈ **9 分钟**；
+  两个调用都轮询 ⇒ 36 × 30 ≈ **18 分钟**。这些阻塞调用还会占满 Swift 协作线程池，
+  连 `Task.sleep` 的恢复都要排队 ⇒ **只会更慢，不会更快**。
+- ⇒ **远程配对（17.4+）才是 ~3.5 分钟**（它的 `ready()` / `fetchUDIDDetailed()` 直接返回、
+  不走 `getFirstDevice()`）—— **别把 17.4+ 的数字套到 lockdown 上** ✗。
+- ⚠️ 中途把 Seal 切后台 / 锁屏，iOS 会挂起进程 ⇒ 墙钟时间可以**再翻几倍**。
+- **判断标准**：界面**一直**停在「验证中」= 还在跑；**失败**会弹窗并把状态退回
+  「已导入，待验证」（`finishInstallChannelCheckWithFailure` → `markPendingValidation()`）。
 - **想立刻退出**：杀掉 Seal 重开 —— 重新加载时 `PairingStore.current()` 会把残留的
   `.validating` 归位成「已导入，待验证」（`PairingStore.swift:100`），不会一直显示「验证中」✓。
 

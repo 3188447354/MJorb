@@ -281,13 +281,19 @@ jobs:
           path: build/TestResults.xcresult
           retention-days: 14
 
-  # 签名内核（上游 `CodeSignKit`）+ 重签层（上游 `SideSign`）**自带**的测试。
-  # 在 macOS host 上用 SPM 直接 swift test，作为**签名核心的独立回归门**，
-  # 与主 App 完整门并行 —— 避免签名器演进悄悄破坏既有行为。
+  # 签名内核（上游 `CodeSignKit`）**自带**的测试：Mach-O 签名、CodeDirectory、
+  # CodeResources、DER、Requirements、签名校验 ✓。在 macOS host 上用 SPM 直接 swift test，
+  # 作为**签名核心的独立回归门**，与主 App 完整门并行 —— 避免签名器演进悄悄破坏既有行为。
   #
   # ⚠️ 本 job 原名 `rork-sign-tests`（2026-09-19 之前测的是 `Vendor/rork-sign` ✗）——
   # 用户死命令「签名器不一样你就换」之后，`Vendor/rork-sign` **整个目录已删除** ✗
-  # ⇒ 改成测**现在真正在跑的那两个包** ✓（`CodeSignKit` 才是签名内核 ✓）。
+  # ⇒ 改成测**现在真正在跑的签名内核** ✓。
+  #
+  # ⚠️ **2026-09-20 收窄：只留 `CodeSignKit`** ✗ —— `Vendor/SideSign` 的测试
+  # **上游自己就编译不过** ✓（CI 实报：缺 `import Foundation` ⇒ `cannot find 'FileManager'` ✓，
+  # 另有一处 key path 推断失败 ✓），而它剩下的用例测的是 `Device` 模型与 `Archive` 往返，
+  # **Seal 完全不用 `SideSign.Archive`** ✓ ⇒ 零价值 ✓。
+  # 按「**不要打补丁**」⇒ 删掉那一步（连同它的测试 target ✓），不给它加 `import` ✓。
   signer-tests:
     runs-on: macos-26
     timeout-minutes: 30
@@ -303,19 +309,13 @@ jobs:
       - name: Cache signer SwiftPM artifacts
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
-          path: |
-            Vendor/CodeSignKit/.build
-            Vendor/SideSign/.build
-          key: signer-spm-${{ runner.os }}-${{ hashFiles('Vendor/CodeSignKit/Package.resolved', 'Vendor/SideSign/Package.resolved') }}
+          path: Vendor/CodeSignKit/.build
+          key: signer-spm-${{ runner.os }}-${{ hashFiles('Vendor/CodeSignKit/Package.resolved') }}
           restore-keys: |
             signer-spm-${{ runner.os }}-
 
       - name: Run CodeSignKit unit tests
         working-directory: Vendor/CodeSignKit
-        run: swift test
-
-      - name: Run SideSign unit tests
-        working-directory: Vendor/SideSign
         run: swift test
 
   # 全绿后可选发布 GitHub Release：手动 dispatch 时勾选 publish_release。

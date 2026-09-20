@@ -24,6 +24,19 @@
   默认 `.disabled`）⇒ **根本没有那几行**；
   ② 进程被 CPU 预算杀掉 ⇒ **即使有也来不及落盘**。
   ⇒ 处置完全不同：① 接线（`d07b42f`）；② 减少 CPU 或分批。
+- 🔴 **新加一个 CI 门禁时，要预期它「第一次跑就红」—— 而且红的原因很可能在上游**（2026-09-20）。
+  换签名器后把 `rork-sign-tests` 改成 `signer-tests`（测 `CodeSignKit` ＋ `SideSign`），
+  **首次运行**就红 ✗ —— 但红的不是我们的改动：
+  `Vendor/SideSign/Tests/SideSignTests.swift` **上游自己就没写 `import Foundation`** ✗
+  （`cannot find 'FileManager' in scope` ✓），另有一处 `entries.map(\.filename)`
+  的 key path 推断失败 ✓。**那套测试上游大概从来没跑过** ✓。
+  ⇒ **判据：新门第一次红时，先分清「我的改动坏了」还是「这个门第一次照出了既有问题」** ✓
+  （看错误行落在**我们没碰过的文件**里 ⇒ 是后者 ✓）。
+  ⇒ 处置看**价值**：`SideSign` 剩下的用例只测 `Device` 模型与 `Archive` 往返，
+  而 **Seal 完全不用 `SideSign.Archive`** ✓ ⇒ 零价值 ⇒ **收窄门禁**（删掉那一步 ✓），
+  **不要为了让它变绿去给上游打补丁** ✗（用户死命令「不要打补丁」✓）。
+  ⚠️ 同一个门里 `CodeSignKit` 那步是**全绿**的 ✓ —— **门禁要分步，别把两个包塞一个 step** ✗，
+  否则一个包的缺陷会掩盖另一个包的结论 ✓。
 - 🔴 **删一个 vendor 目录里的一层时，要顺着依赖把「编译不过的残留」一次删干净**（2026-09-19）。
   删掉 `Vendor/SideSign` 的 anisette / 门户两层之后，**同一个仓库里还剩两处残留** ✗：
   `CLI/`（`import AnisetteKit` ＋ `DeveloperPortal` / `CertificateRequest` ✗）与

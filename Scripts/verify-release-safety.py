@@ -3143,12 +3143,16 @@ def violations(load=read):
     check("\n  signer-tests:" in ios,
           "R56: `ios.yml` 必须保留**签名内核的独立回归门**（`signer-tests`）✗ —— "
           "它测的是上游 `CodeSignKit`（Mach-O 签名 / CodeDirectory / CodeResources / "
-          "签名校验 ✓）与 `SideSign` ✓；删掉它等于「换签名器之后没有任何回归网」✗")
+          "签名校验 ✓）；删掉它等于「换签名器之后没有任何回归网」✗")
     check("working-directory: Vendor/CodeSignKit" in ios
-          and "working-directory: Vendor/SideSign" in ios,
-          "R56: `signer-tests` 必须真的测**现在在跑的那两个包**（`CodeSignKit` + `SideSign`）✗ —— "
+          and "working-directory: Vendor/rork-sign" not in ios
+          and "working-directory: Vendor/SideSign" not in ios,
+          "R56: `signer-tests` 必须真的测**签名内核 `Vendor/CodeSignKit`** ✗ —— "
           "只留 job 名而把 `working-directory` 指回已删的 `Vendor/rork-sign` 是最坏情况"
-          "（名字看着还在、其实什么都没测 ✗）")
+          "（名字看着还在、其实什么都没测 ✗）。"
+          "⚠️ **不测 `Vendor/SideSign`** ✓（2026-09-20）：它的测试**上游自己就编译不过** ✓"
+          "（缺 `import Foundation` ✓），且剩下的用例只测 `Device` 模型与 `Archive` 往返，"
+          "而 Seal **完全不用 `SideSign.Archive`** ✓ ⇒ 零价值 ✓")
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)

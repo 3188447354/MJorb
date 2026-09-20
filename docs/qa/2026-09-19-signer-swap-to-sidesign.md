@@ -137,3 +137,44 @@ signer-tests:
 - **没有**给上游代码打任何补丁 ✓（用户死命令「**不要打补丁**」✓）；
 - **没有**重建签名缓存 ✗（上游没有 ⇒ 不发明 ✓）；
 - **没有**改 `docs/qa/` 里的历史事故报告 ✓（那些是**当时**的记录，不改写历史 ✓）。
+
+---
+
+## 七、首次 CI 结果（run `35478381222`，提交 `3fdb4e1`）
+
+| job | 结果 |
+|---|---|
+| `build-package` | ✅ **6m44s** —— **签名器整个换掉之后编译通过** ✓，产物 `Seal-174` ✓ |
+| `swift-regression` | ✅ 9m13s —— 单测通过 ✓ |
+| `signer-tests` | ❌ 2m50s —— `CodeSignKit` 那步**全绿** ✓；**`SideSign` 那步挂了** ✗ |
+| `publish-release` | skipped（正常 ✓） |
+
+**⇒ 结论：换签名器在编译与单测层面是成立的** ✓ —— 本机没有 Swift 工具链，
+这是第一次真编译，通过了 ✓。**`Seal-174` 可以直接装真机测** ✓。
+
+### 7.1 `SideSign` 那步为什么挂（**上游自己的缺陷**，不是我们改坏的）
+
+```
+SideSignTests.swift:35:13: error: cannot find 'FileManager' in scope
+SideSignTests.swift:70:85: error: cannot find 'UUID' in scope
+SideSignTests.swift:51:41: error: cannot infer key path type from context
+```
+
+⇒ 上游那个测试文件**根本没写 `import Foundation`** ✓（它的 import 只有
+`Testing` / `@testable import SideSign` / `CodeSignKit` / `GSACryptoKit` ✓），
+另有一处 `entries.map(\.filename)` 的 key path 推断失败 ✓
+（**Swift 不支持从上下文推断这种 key path** —— 本仓技能里也记过同款 ✓）。
+
+**⇒ 这个 job 是 2026-09-19 新加的 ⇒ 一跑就把它照出来了** ✓ —— 这正是门禁的价值 ✓。
+
+### 7.2 处置：**收窄，不给上游打补丁**
+
+剩下的 3 个用例测的是 `Device` 模型与 `Archive` 读写往返 ——
+而 **Seal 完全不使用 `SideSign.Archive`** ✓（`grep` 为空 ✓），
+`Device` 也是 SideSign 自己的模型（Seal 用 `ALTDevice` ✓）⇒ **对 Seal 零价值** ✓。
+
+⇒ 按用户死命令「**不要打补丁**」⇒ **删掉那一步**（连同 `Tests/` 与 `Package.swift`
+的 `.testTarget` ✓），**不给它加 `import Foundation`** ✗。
+⇒ `signer-tests` 收窄为**只测 `Vendor/CodeSignKit`** ✓ —— 那才是签名内核，
+而且它在这次 CI 里**已经全绿** ✓。守卫 R56 同步收窄 ✓。
+

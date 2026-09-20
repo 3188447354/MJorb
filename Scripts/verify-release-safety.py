@@ -584,10 +584,14 @@ def violations(load=read):
           "reading it as 'not installed' deletes profiles of installed apps")
     # ④ 阳性对照必须**真的是设备查询**，且必须在删任何一份之前跑完。
     #    把 `== .installed` 改成 `= true` 能让对照永远通过 —— 通道不可信时照样全删。
-    check("let positiveControlPassed = await probeInstalled(bundleID: controlBundleID) == .installed"
-          in reclaim_body,
+    # ⚠️ **2026-09-20 跟进**：阳性对照改成「**带耗时的**探测 ＋ 再问一次同一个 ID」（R58 ✓）
+    # ⇒ 这里的两处文本要**一起**更新 ✗ —— 否则断言与锚点都会失配 ✓
+    #（**教训**：改任何一行之前，grep 守卫时不能只搜注释文案，**代码行本身就是锚点** ✗）。
+    check("let firstControlProbe = await probeInstalledWithDuration(bundleID: controlBundleID)"
+          in reclaim_body
+          and "let positiveControlPassed = firstControlProbe.probe == .installed" in reclaim_body,
           "R11: the positive control must be an actual probe of a definitely-installed app")
-    control_at = reclaim_body.find("probeInstalled(bundleID: controlBundleID)")
+    control_at = reclaim_body.find("probeInstalledWithDuration(bundleID: controlBundleID)")
     candidate_at = reclaim_body.find("ProfileReclaimPolicy.decision(")
     check(control_at != -1 and candidate_at != -1 and control_at < candidate_at,
           "R11: the positive control must run before any candidate is probed or deleted")
@@ -1587,6 +1591,26 @@ def violations(load=read):
     check("com.apple.Preferences" in cleaner_source and "com.apple.mobilesafari" in cleaner_source,
           "R44: 阳性对照失败时必须输出**判别性诊断**（拿系统 App 再问一次）—— "
           "否则「通道不可信」与「只有 Seal 自己查不到」在日志里分不开")
+
+    # R58: 阳性对照失败时，诊断里**必须带探测耗时**，并**再问同一个 ID 一次**（2026-09-20 真机）。
+    #
+    # `InstallProbe.unavailable` 把**超时**（`BlockingCall.bounded` 到点）与
+    # **抛错**（`isAppInstalled` throw）**折叠成同一个值** ✗
+    # ⇒ 真机日志里那句「阳性对照未通过」**分不出是哪一种** ✗，
+    # 而两者的处置完全不同：**超时** ⇒ 通道还没就绪 / 已死；**抛错** ⇒ 查询被拒 ✓。
+    #
+    # 真机构建 175 实测（`Seal-log(28).txt`）：两次中止都发生在**刚启动**
+    #（冷启动后 22 秒 / 自替换重启后 60 秒），且同行都带 `dump 尝试 N 次`；
+    # 16 秒后再跑就正常了 ⇒ **强烈指向「启动早期通道还没就绪」** ✓
+    # ⇒ **耗时是最便宜的判别器**（超时必然贴近上限、抛错是瞬时的 ✓），
+    #   而「再问一次同一个 ID」能把「瞬时失败」与「通道持续撒谎」分开 ✓。
+    check("probeInstalledWithDuration" in cleaner_source
+          and "第一次=" in cleaner_source
+          and "第二次=" in cleaner_source
+          and 'String(format: "(%.1fs)", seconds)' in cleaner_source,
+          "R58: 阳性对照失败时必须输出**带耗时的**探测结果（并再问同一个 ID 一次）✗ —— "
+          "否则「超时」与「抛错」在日志里分不开，"
+          "而真机实测中止都发生在刚启动、16 秒后就正常 ⇒ 分不出就没法定位 ✓")
 
     # R45: 重签前必须有「**分界日志**」（2026-09-19 真机，构建 147）。
     #
@@ -3542,7 +3566,7 @@ def main():
          "R11: the reclaim path must use the throwing isAppInstalled"),
         # 让阳性对照永远通过：对照形同虚设，通道不可信时照样全删。
         ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
-         "let positiveControlPassed = await probeInstalled(bundleID: controlBundleID) == .installed",
+         "let positiveControlPassed = firstControlProbe.probe == .installed",
          "let positiveControlPassed = true",
          "R11: the positive control must be an actual probe of a definitely-installed app"),
         # 中止改成「只记原因、继续往下删」：后面的候选（以及已经问过的那几条）
@@ -4331,6 +4355,12 @@ def main():
          "            for sample in [\"com.apple.Preferences\", \"com.apple.mobilesafari\"] {\n",
          "",
          "R44: 阳性对照失败时必须输出**判别性诊断**"),
+        # ── R58：阳性对照失败的诊断必须带耗时（2026-09-20 真机）──
+        # 去掉耗时：日志里「超时」与「抛错」又分不开了。
+        ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
+         'String(format: "(%.1fs)", seconds)',
+         "",
+         "R58: 阳性对照失败时必须输出**带耗时的**探测结果"),
         # ── R45：重签前的分界日志（2026-09-19）──
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "签名：开始重签（逐 Mach-O 串行）",

@@ -292,6 +292,35 @@ struct DeviceProfileCleaner: Sendable {
         }
     }
 
+    /// **带耗时的**探测结果 —— 只用于诊断串 ✓
+    ///
+    /// ⚠️ 为什么要耗时（2026-09-20，真机 `Seal-log(28).txt` 构建 175）：
+    /// `InstallProbe.unavailable` 把**超时**（`BlockingCall.bounded` 到点）
+    /// 与**抛错**（`isAppInstalled` throw）**折叠成同一个值** ✗
+    /// ⇒ 真机日志里那句「阳性对照未通过」**分不出是哪一种** ✗。
+    /// 而两者的处置完全不同：**超时** ⇒ 通道还没就绪 / 已死；**抛错** ⇒ 查询被拒。
+    /// ⇒ **耗时是最便宜的判别器：超时必然贴近上限，抛错是瞬时的** ✓。
+    ///
+    /// 真机实测规律（构建 175）：两次中止都发生在**刚启动**
+    ///（冷启动后 22 秒 / 自替换重启后 60 秒），且同行都带 `dump 尝试 N 次`；
+    /// 16 秒后再跑就正常了 ⇒ **强烈指向「启动早期通道还没就绪」** ✓。
+    struct TimedProbe {
+        let probe: ProfileReclaimPolicy.InstallProbe
+        let seconds: TimeInterval
+
+        var description: String {
+            "\(probe.logName)\(String(format: "(%.1fs)", seconds))"
+        }
+    }
+
+    private static func probeInstalledWithDuration(
+        bundleID: String
+    ) async -> TimedProbe {
+        let started = Date()
+        let probe = await probeInstalled(bundleID: bundleID)
+        return TimedProbe(probe: probe, seconds: Date().timeIntervalSince(started))
+    }
+
     private static func removeProfiles(
         keepingByBundleID: [String: String],
         protectedBundleIDs: Set<String>,
@@ -414,7 +443,8 @@ struct DeviceProfileCleaner: Sendable {
             summary.reclaimAborted = "无阳性对照 Bundle ID"
             return summary
         }
-        let positiveControlPassed = await probeInstalled(bundleID: controlBundleID) == .installed
+        let firstControlProbe = await probeInstalledWithDuration(bundleID: controlBundleID)
+        let positiveControlPassed = firstControlProbe.probe == .installed
         guard positiveControlPassed else {
             // ⚠️ **判别性诊断**（2026-09-19 真机，构建 141）：
             // 真机日志出现「阳性对照未通过（com.mjorb.seal.CT8QZ7352B 被答成未安装）」✗
@@ -430,12 +460,19 @@ struct DeviceProfileCleaner: Sendable {
             //
             // 结果写进 `reclaimAborted` —— 它已经会出现在摘要日志里（「回收中止：…」），
             // 不需要给这个类型新增 logger ✓。
+            // ① **再问同一个 ID 一次**（2026-09-20 补）：把「**瞬时**失败」与
+            //    「通道**持续**撒谎」分开 ✓ —— 两者的处置不同（前者等下一次维护即可 ✓，
+            //    后者要查连接重建 ✓）。真机构建 175 实测：两次中止都在**刚启动**
+            //（冷启动后 22 秒 / 自替换重启后 60 秒），16 秒后再跑就正常了 ✓。
+            let secondControlProbe = await probeInstalledWithDuration(bundleID: controlBundleID)
+            // ② 系统 App（原判据保留）
             var channelDiagnostics: [String] = []
             for sample in ["com.apple.Preferences", "com.apple.mobilesafari"] {
-                let sampleProbe = await probeInstalled(bundleID: sample)
+                let sampleProbe = await probeInstalledWithDuration(bundleID: sample)
                 channelDiagnostics.append("\(sample)=\(sampleProbe)")
             }
-            summary.reclaimAborted = "阳性对照未通过（\(controlBundleID) 被答成未安装）；"
+            summary.reclaimAborted = "阳性对照未通过（\(controlBundleID)："
+                + "第一次=\(firstControlProbe)、第二次=\(secondControlProbe)）；"
                 + "通道判别（系统 App）：" + channelDiagnostics.joined(separator: "、")
             return summary
         }

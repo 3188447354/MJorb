@@ -18,6 +18,13 @@ Seal carries a small compatibility/safety delta on top of the pinned Minimuxer r
 - Swift service wrappers retain the originating Rust device for the complete borrowed-client lifetime.
 - FFI string/buffer inputs are validated for null pointers, UTF-8, and `UInt32` length overflow.
 - Remote-pairing state is replaceable; changing the pairing file invalidates the cached RSD connection.
+- **Readiness probes poll with a dedicated short budget.** `Minimuxer.ready()` and
+  `Minimuxer.fetchUDIDDetailed()` pass `MuxerConstants.probeDeviceFetchTimeoutMs` (1 s) to
+  `Device.getFirstDevice(timeoutMs:)` instead of the 15 s default, and `ready()` evaluates the cheap
+  predicates before querying the device. Both call sites sit inside the 36-round retry loop in
+  `MinimuxerInstallChannel.diagnose()`, so the 15-second default turned the intended ~18-second wait
+  into 9–18 minutes on the Lockdown path (iOS 17.0–17.3.1, build 184). One-shot callers
+  (dump / install / DDI / JIT) keep the 15-second default. Guarded by `R61`.
 - Explicit Rust `unwrap`/`expect`/`panic` shortcuts are removed from the bridge boundary.
 - The checked-in RustBridge binary must be rebuilt with an iOS 16.0 deployment target and pass
   `Scripts/verify-rustbridge-minos.sh` and `Scripts/verify-rustbridge-symbols.sh` before replacement.

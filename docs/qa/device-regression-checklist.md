@@ -508,20 +508,25 @@ Apple 已经接受了密码，只是要求走第二步（输验证码）。这�
   - 两者同时出现 ⇒ **是隧道不通，不是配对文件的问题**（症状很像，别误判）。
 - ⇒ **开测前先确认 LocalDevVPN 是「已连接」状态**，否则后面所有失败都白分析 ✗。
 
-**⏱️ 「验证中」不是死机 —— iOS 17.4 以下最坏要等 9–18 分钟**（2026-09-20 重算，原写 3.5 分钟偏小 ✗）：
+**⏱️ 「验证中」要等多久**（2026-09-20 修）：
 助手写入文件后，Seal **自己**就会进入验证（`SettingsViewModel` 导入成功后直接调
-`runInstallChannelCheck`，不用手点按钮），此时界面显示「验证中」，它在跑
+`runInstallChannelCheck`，**不用手点按钮**），此时界面显示「验证中」，它在跑
 `MinimuxerInstallChannel.diagnose()`：
-- 设备探测是 `for attempt in 0..<36`，每轮 = `readyDeviceIdentifier()` ＋ 500ms 睡眠；
-- `readyDeviceIdentifier()` = `isReady()`（`offThread(5 秒)`）+ `fetchUDIDDetailed()`（`offThread(5 秒)`）；
-- ⚠️ **但那两个 5 秒只是「不再等」** —— 底下的同步 FFI 没有取消机制、仍在跑：
-  **lockdown 路径两者都会走 `Device.getFirstDevice()`，它要轮询 `deviceFetchTimeoutMs` = 15 秒**
-  才抛 `NoDevice`（`Minimuxer.ready()` / `fetchUDIDDetailed()` → `Device.swift`）。
-- ⇒ 设备不可达时每轮的真实耗时 ≈ **15 秒**（不是 5.5 秒）⇒ 36 轮 ≈ **9 分钟**；
-  两个调用都轮询 ⇒ 36 × 30 ≈ **18 分钟**。这些阻塞调用还会占满 Swift 协作线程池，
-  连 `Task.sleep` 的恢复都要排队 ⇒ **只会更慢，不会更快**。
-- ⇒ **远程配对（17.4+）才是 ~3.5 分钟**（它的 `ready()` / `fetchUDIDDetailed()` 直接返回、
-  不走 `getFirstDevice()`）—— **别把 17.4+ 的数字套到 lockdown 上** ✗。
+
+| 构建 | 最坏耗时 | 每轮探测的预算 |
+|---|---|---|
+| **修复后**（本分支下一个构建起） | **约 40 秒** | `probeDeviceFetchTimeoutMs` = **1 秒** ✓ |
+| **184 及更早** | **9–18 分钟** ✗ | `deviceFetchTimeoutMs` = 15 秒 ✗ |
+
+- 设备探测是 `for attempt in 0..<36`，每轮 = `readyDeviceIdentifier()` ＋ 500ms 睡眠
+  （**设计意图 = 给 RSD 握手约 18 秒**）；`readyDeviceIdentifier()` = `isReady()` + `fetchUDIDDetailed()`。
+- ⚠️ 那两个 `offThread(5 秒)` **只是「不再等」** —— 底下的同步 FFI 没有取消机制、仍在跑
+  ⇒ **真正决定每轮耗时的是「被包住那层的内部预算」**，不是外层超时 ✗。
+- ⇒ **有外层重试的地方，内层预算必须短**（重试本身就是等待）：就绪探测用 1 秒，
+  一次性路径（dump / 安装 / DDI / JIT）继续用 15 秒 ✓。守卫 **R61** 钉住四条判据
+  （含「`ready()` 里便宜判据必须在 `getFirstDevice()` 之前」✓）。
+- ⚠️ lockdown 路径下 `ready()` 与 `fetchUDIDDetailed()` **都会**轮询设备，
+  所以 184 及更早的「最坏路径」= 设备不可达 = **最常见的那条** ✗（远程配对 17.4+ 才直接返回）。
 - ⚠️ 中途把 Seal 切后台 / 锁屏，iOS 会挂起进程 ⇒ 墙钟时间可以**再翻几倍**。
 - **判断标准**：界面**一直**停在「验证中」= 还在跑；**失败**会弹窗并把状态退回
   「已导入，待验证」（`finishInstallChannelCheckWithFailure` → `markPendingValidation()`）。

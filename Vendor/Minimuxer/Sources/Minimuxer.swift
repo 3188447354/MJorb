@@ -42,15 +42,10 @@ public struct Minimuxer {
         if Muxer.isrppairing {
             return deviceConnection
         }
-        
-        let deviceExists: Bool
-        do {
-            _ = try Device.getFirstDevice()
-            deviceExists = true
-        } catch {
-            deviceExists = false
-        }
-        guard deviceConnection, deviceExists, Heartbeat.lastBeatSuccessful, Muxer.started, Muxer.usbmuxdReady else {
+
+        /// 统一的不就绪诊断行。抽成局部函数只为**保持两个分支的字段完全一致**
+        /// （排查时少一个字段就要重新猜一轮）。
+        func reportNotReady(deviceExists: String) {
             print(
                 "minimuxer not ready: " +
                 "conn=\(deviceConnection) " +
@@ -60,6 +55,30 @@ public struct Minimuxer {
                 "started=\(Muxer.started) " +
                 "ready=\(Muxer.usbmuxdReady)"
             )
+        }
+
+        // ⚠️ **判据顺序有意义**（Seal 本地加固，2026-09-20）：`Device.getFirstDevice()` 是这里
+        // **最贵**的一步（默认轮询 15 秒），而原先那个 guard 是**逻辑与** ⇒ 先把便宜且已经
+        // 为假的判据算完、直接返回，语义**完全不变**，但把「隧道没通时每轮白等 15 秒」
+        // 降到「每轮约 0 秒」。
+        // 原实现**无条件**先跑 `getFirstDevice()`，于是**最坏的那条路径**（设备不可达）
+        // 反而最慢：36 轮 × 15 秒 ⇒ 界面停在「验证中」十几分钟（真机 2026-09-20 已复现）。
+        guard deviceConnection, Heartbeat.lastBeatSuccessful, Muxer.started, Muxer.usbmuxdReady else {
+            reportNotReady(deviceExists: "unknown")
+            return false
+        }
+
+        // 前置条件都成立、只差设备本身 ⇒ 用**短预算**探测：探测不负责等待，
+        // 等待由外层那 36 轮重试负责（见 `MuxerConstants.probeDeviceFetchTimeoutMs`）。
+        let deviceExists: Bool
+        do {
+            _ = try Device.getFirstDevice(timeoutMs: MuxerConstants.probeDeviceFetchTimeoutMs)
+            deviceExists = true
+        } catch {
+            deviceExists = false
+        }
+        guard deviceExists else {
+            reportNotReady(deviceExists: "\(deviceExists)")
             return false
         }
         
@@ -135,7 +154,13 @@ public struct Minimuxer {
         if Muxer.isrppairing {
             return try RustIdevice.fetchUDIDDetailed()
         }
-        guard let udid = try Device.getFirstDevice().getUDID(), udid.isEmpty == false else {
+        // 短预算（Seal 本地加固，2026-09-20）：本函数只被**探测**路径调用 ——
+        // `MinimuxerInstallChannel.readyDeviceIdentifier()`（跑在 36 轮重试循环里）与
+        // `probeCachedSessionIfStale()`（外层 `offThread(5 秒)` 兜底）。
+        // 两处外层都已经有等待与重试 ⇒ 内层再烧 15 秒会把「约 18 秒」放大成「十几分钟」。
+        // ⚠️ `Device.getFirstDevice(...)` 这段**保持单行**：守卫 R61 用 squashed 文本断言它 ✓。
+        guard let udid = try Device.getFirstDevice(timeoutMs: MuxerConstants.probeDeviceFetchTimeoutMs)
+            .getUDID(), udid.isEmpty == false else {
             throw NSError(
                 domain: "minimuxer",
                 code: -1,

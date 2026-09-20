@@ -3236,6 +3236,62 @@ def violations(load=read):
           "⚠️ **不测 `Vendor/SideSign`** ✓（2026-09-20）：它的测试**上游自己就编译不过** ✓"
           "（缺 `import Foundation` ✓），且剩下的用例只测 `Device` 模型与 `Archive` 往返，"
           "而 Seal **完全不用 `SideSign.Archive`** ✓ ⇒ 零价值 ✓")
+
+    # R61: **就绪探测不许用 15 秒的设备轮询预算**（2026-09-20 真机，构建 184）✗
+    #
+    # 症状：iOS 17.0–17.3.1（lockdown 路径）配对后界面停在「验证中」**十几分钟**
+    # 没有任何结论（真机日志：12 分钟后既无成功行、也无失败行）—— 用户会直接判成死机 ✗。
+    #
+    # 根因：`MinimuxerInstallChannel.diagnose()` 的设备探测是 `for attempt in 0..<36`
+    # ＋ 500ms 睡眠（**设计意图 = 给 RSD 握手约 18 秒**），但每轮里的
+    # `Minimuxer.ready()` / `fetchUDIDDetailed()` 都要走 `Device.getFirstDevice()`，
+    # 而它默认轮询 `deviceFetchTimeoutMs`（**15 秒**）才抛 `NoDevice`
+    # ⇒ 36 轮 × 15 秒 ≈ **9 分钟**（两个调用都轮询则 ≈18 分钟）；
+    # 而且**设备不可达时每轮都走满** —— 最坏路径恰好是最常见的那条 ✗✗。
+    #
+    # ⇒ 四条判据，缺一不可：
+    #   ① 存在**专用**的短预算常量且 ≤ 2000ms；
+    #   ② `getFirstDevice` 可**显式传预算**（默认值仍必须是 15 秒 —— 一次性路径要用它）；
+    #   ③ `ready()` 与 `fetchUDIDDetailed()` 两个探测点都**显式**传短预算；
+    #   ④ `ready()` 里**便宜判据在前**：`getFirstDevice()` 必须出现在那个逻辑与 guard
+    #      **之后**（原实现无条件先跑它 ⇒ 隧道没通时每轮白等 15 秒 ✗）。
+    #
+    # ⚠️ **只查「传了短预算」会被骗** ✗：把上游写法（无条件先 `getFirstDevice()`）
+    # 和短预算**同时**留在文件里，③ 照样绿，而每轮仍然白等 15 秒 ✓
+    # ⇒ ④ 必须按**下标顺序**判 ✓（变异锚点就改这个顺序 ✓）。
+    probe_budget_match = re.search(
+        r"public static let probeDeviceFetchTimeoutMs: UInt16 = (\d+)",
+        load("Vendor/Minimuxer/Sources/Constants.swift"),
+    )
+    minimuxer_source = load("Vendor/Minimuxer/Sources/Minimuxer.swift")
+    ready_body = squash(section_or_empty(
+        minimuxer_source,
+        "public static func ready() -> Bool {",
+        "public static func setDebug(",
+    ))
+    detailed_body = squash(section_or_empty(
+        minimuxer_source,
+        "public static func fetchUDIDDetailed() throws -> String {",
+        "public static func testDeviceConnection(",
+    ))
+    cheap_guard = ("guard deviceConnection, Heartbeat.lastBeatSuccessful, "
+                   "Muxer.started, Muxer.usbmuxdReady else")
+    probe_call = "try Device.getFirstDevice(timeoutMs: MuxerConstants.probeDeviceFetchTimeoutMs)"
+    check(probe_budget_match is not None and int(probe_budget_match.group(1)) <= 2000,
+          "R61①: 必须有**专用**的探测预算 `probeDeviceFetchTimeoutMs` 且 ≤ 2000ms ✗ —— "
+          "就绪探测不负责等待，等待由外层那 36 轮重试负责 ✓")
+    check("timeoutMs: UInt16 = MuxerConstants.deviceFetchTimeoutMs"
+          in squash(load("Vendor/Minimuxer/Sources/Device.swift")),
+          "R61②: `getFirstDevice` 必须可**显式传预算**，且默认仍是 15 秒 ✗ —— "
+          "一次性路径（dump / 安装 / DDI / JIT）没有外层重试，多等是对的 ✓")
+    check(probe_call in ready_body and probe_call in detailed_body,
+          "R61③: `ready()` / `fetchUDIDDetailed()` 必须显式传**短预算** ✗ —— "
+          "它们在 36 轮探测循环里，用默认的 15 秒会让最坏路径变成十几分钟 ✗")
+    cheap_at = ready_body.find(cheap_guard)
+    check(cheap_at >= 0 and ready_body.find(probe_call) > cheap_at,
+          "R61④: `ready()` 里便宜判据必须在 `getFirstDevice()` **之前** ✗ —— "
+          "无条件先跑它会让「设备不可达」这条最坏路径每轮白等 15 秒（36 轮 ≈ 9 分钟）✗")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -4454,6 +4510,28 @@ def main():
          "# ",
          "## ",
          "R60b: `RELEASE_NOTES.md` 的**第一节版本必须等于 `MARKETING_VERSION`**"),
+        # ── R61：就绪探测必须用**短预算**、且**便宜判据在前**（2026-09-20 真机，构建 184）──
+        # ① 把**就绪探测**改回默认的 15 秒预算（= 上游写法）⇒ 每轮白等 15 秒、
+        #    36 轮 ≈ 9 分钟 ⇒ R61③ 失败 ✓。
+        #    ⚠️ 锚点写**完整调用**（含 `try` 与参数）✓ —— 只写 `getFirstDevice(` 会先命中
+        #    别处，且读起来不知道改的是哪个调用点 ✗。
+        #    ⚠️ `replace(old, new, 1)` 只改**第一处** ✓ —— 文件里第一处正是 `ready()` ✓
+        #    （`fetchUDIDDetailed()` 在它后面）⇒ ③ 会因 `ready_body` 里没有短预算而失败 ✓。
+        ("Vendor/Minimuxer/Sources/Minimuxer.swift",
+         "try Device.getFirstDevice(timeoutMs: MuxerConstants.probeDeviceFetchTimeoutMs)",
+         "try Device.getFirstDevice()",
+         "R61③: `ready()` / `fetchUDIDDetailed()` 必须显式传**短预算** ✗"),
+        # ② **只把预算改短、没改顺序**（探测仍无条件跑在便宜判据之前）⇒
+        #    ③ 照样绿（预算确实短了），但「隧道没通」这条最坏路径每轮仍要多付一轮探测 ⇒
+        #    R61④ 失败 ✓。**这条专门证明 ④ 不是空转** ✓
+        #    （否则「只查短预算」的写法能把上游顺序一起骗过去 ✗）。
+        ("Vendor/Minimuxer/Sources/Minimuxer.swift",
+         "        guard deviceConnection, Heartbeat.lastBeatSuccessful, "
+         "Muxer.started, Muxer.usbmuxdReady else {",
+         "        _ = try Device.getFirstDevice(timeoutMs: MuxerConstants.probeDeviceFetchTimeoutMs)\n"
+         "        guard deviceConnection, Heartbeat.lastBeatSuccessful, "
+         "Muxer.started, Muxer.usbmuxdReady else {",
+         "R61④: `ready()` 里便宜判据必须在 `getFirstDevice()` **之前** ✗"),
         # ── R45：重签前的分界日志（2026-09-19）──
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "签名：开始重签（逐 Mach-O 串行）",

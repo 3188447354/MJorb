@@ -84,6 +84,14 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
   底下很可能还在装。所以超时不得自动重试、`cancelsWorkOnTimeout: false` 的路径不得连带取消工作。
 - 未配对 / 未信任 / 握手失败 / 隧道不可达必须由 `classifyDiscoveryFailure` 分开归类，
   不许一律显示成「检查 Wi-Fi/LocalDevVPN」。
+- **有外层重试的地方，内层预算必须短**（2026-09-20 真机，构建 184）。就绪探测
+  （`Minimuxer.ready()` / `fetchUDIDDetailed()`）跑在 `diagnose()` 的 36 轮重试循环里，
+  却各自用 `Device.getFirstDevice()` 的默认轮询预算（**15 秒**）⇒ 把注释里写的
+  「约 18 秒」放大成 **9–18 分钟**，而且**设备不可达时每轮都走满**（最坏路径 = 最常见路径 ✗）。
+  现改为 `probeDeviceFetchTimeoutMs`（1 秒）＋ `ready()` 里**便宜判据提到最贵那步之前**；
+  守卫 **R61** 按**下标顺序**钉住（只查「传了短预算」会被上游顺序骗过去 ✗）。
+  **算预算时取「外层超时」与「被包住那层的内部轮询预算」的较大者** ——
+  外层 `offThread(seconds:)` 超时**不会**让里面停下来（`BlockingCall` 明文写着「FFI 仍在后台跑完」）。
 
 ### 续签
 - 免费账号 3-app 上限是**设备级、跨不同 Apple ID/team 累计**；判据在

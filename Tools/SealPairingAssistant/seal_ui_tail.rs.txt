@@ -40,6 +40,7 @@
             })
             .unwrap_or_else(|| "未连接 iPhone".to_string());
         let ios_version = value_for("ios_version").unwrap_or_else(|| "—".to_string());
+        let seal_lockdown_only = seal_ios_supports_remote_pairing(&ios_version) == Some(false);
         let udid = value_for("udid").unwrap_or_else(|| {
             selected_device
                 .as_ref()
@@ -310,6 +311,15 @@
                         egui::FontId::new(22.0, egui::FontFamily::Proportional),
                         seal_green,
                     );
+                    if seal_lockdown_only {
+                        ui.painter().text(
+                            status_center + egui::vec2(0.0, 30.0),
+                            egui::Align2::CENTER_CENTER,
+                            "iOS 17.4 以下：本机配对（Lockdown）",
+                            egui::FontId::new(15.0, egui::FontFamily::Proportional),
+                            text_secondary,
+                        );
+                    }
                 } else {
                     ui.painter().text(
                         status_center,
@@ -412,7 +422,7 @@
                         self.idevice_sender
                             .send(IdeviceCommands::GeneratePairingFile((
                                 dev,
-                                self.pairing_mode,
+                                seal_mode_for_ios(&ios_version, self.pairing_mode),
                             )))
                             .unwrap();
                     }

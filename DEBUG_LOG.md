@@ -367,6 +367,52 @@
 
 ## 历史记录
 
+### 2026-09-20 · 配对助手把「配对类型」藏了 ⇒ iOS 17.0–17.3.1 生成不出配对文件
+
+**现象**：设备是 iOS 17.0–17.3.1 时，Seal 配对助手的「生成并写入 Seal」必然拿不到配对文件，
+而界面只显示「已就绪」，一个字都不说为什么 ✗；App 里「设置 → 设备」还写着
+「仅支持 iOS 17 及以上设备配对」，把这些设备算成**支持** ✗。
+
+**根因**：远程配对（RPPairing）依赖 Apple 的 `CoreDeviceProxy`，**它是 iOS 17.4 才引入的** ✓
+（两处独立证据：固定上游 `idevice_pair` 0.1.14 的 README 写着 *"RPPairing for **iOS 17.4+**,
+Lockdown for older verions"*；pymobiledevice3 文档写着 17.0–17.3.1 *"predate the CoreDeviceProxy
+service"*，在 USB 上引导不了 ✓）。而 Seal 的 UI 覆盖层把上游的「配对类型」单选**删掉了**
+（`patch_upstream.py` 的 `forbidden` 列表里就有 `seal_pairing_mode` ✓），上游默认值又是硬编码的
+`pairing_mode: PairingMode::RemotePairing` ⇒ **只剩远程配对一条路** ✗。
+⚠️ 17.0–17.3.1 其实**有**完整可用的第二条链路（minimuxer 的 Lockdown 通道：`LockDownInstall`
+的 AFC 暂存 + instproxy 安装 + `post17::mount_personalized_ddi` 走 lockdown 的 usbmuxd ✓），
+只是**助手生成不出 Lockdown 文件**，用户拿不到入口 ✗。
+
+**修复**：
+- `Tools/SealPairingAssistant/patch_upstream.py`：注入两个纯函数
+  `seal_ios_supports_remote_pairing` / `seal_mode_for_ios`（解析 `ProductVersion` 的 major.minor：
+  **< 17.4 ⇒ Lockdown**、**≥ 17.4 ⇒ RemotePairing**、**版本读不到 ⇒ 保持上游默认** ✓ ——
+  未知时不改变既有行为 ✓），并加 **1 条 Rust 单测**（边界 17.0 / 17.3.1 / 17.4 / 17.7.2 / 18.6.2 / 26.7 / `—`）
+  + 4 个 `verify()` 标记。
+- `Tools/SealPairingAssistant/seal_ui_tail.rs.txt`：生成前按设备版本选模式；手机卡片在「已就绪」
+  下多一行「iOS 17.4 以下：本机配对（Lockdown）」✓。
+- `Seal/Features/Settings/PairingSettingsView.swift:96`：文案改成
+  「远程配对需要 iOS 17.4 及以上；iOS 17.0–17.3.1 会改用「本机配对」，iOS 16 及以下无法安装 Seal。」
+
+**⚠️ 新增一条坑位（子串守卫会误伤命名）**：`verify()` 的 `forbidden` 是**子串**匹配 ✗ ——
+辅助函数一开始叫 `seal_pairing_mode_for_ios`（含被禁串 `seal_pairing_mode`）⇒ 补丁脚本自己报
+`Minimal UI still contains removed surface: ['seal_pairing_mode']` ✓。
+**⇒ 在覆盖层里命名要避开被禁串**（改成 `seal_mode_for_ios` ✓）。
+（顺带证明：**那个报错是守卫在正常工作** ✓，不是误报机制坏了 ✗。）
+
+**格式链核对**（决定「会不会被静默认错类型」✓）：`idevice-0.1.61/src/pairing_file.rs` 里
+`#[serde(rename = "UDID")]` ✓、私钥键是 `HostPrivateKey`/`RootPrivateKey`（**没有** `private_key` ✓）
+⇒ Seal 侧 `PairingStore.inspect` 认成「本机配对」✓、`Muxer.start` 走 Lockdown 分支 ✓（不会误判成 RPPairing ✓）。
+
+**验证状态**：`python -m py_compile` ✓；按 CI 的方式（固定 commit `e3abb34` → 应用补丁 → `rustfmt
+--edition 2024`）解析 **0 error** ✓；对打补丁后的助手 `cargo check` **0 error** ✓
+（本机 `build.rs` 要调 `reg.exe` 编图标资源、被沙箱拦 ✗ ⇒ 临时把 build.rs 换空 + 补占位 DDI 文件，
+**只影响图标资源与 DDI 下载，不影响类型检查** ✓）；抽出的单测 `rustc --test` **1 passed** ✓；
+`Scripts/verify-release-safety.py` **PASS（452 断言 / 235 变异）** ✓。
+🔴 **真机待验（本次改动之后的第一件事）**：17.0–17.3.1 上的 **Lockdown 通道在 Seal 里从未跑过** ✗
+（`DEBUG_LOG`/`docs` 零记录）—— 配对助手现在会**自动**给这类设备生成 Lockdown 文件，
+文件能不能装上、DDI 能不能挂上、续签能不能走通，全部要真机确认 ✓。
+
 ### 2026-09-20 · 社群页两张码「贴合圆弧」（用户指定的观感调整）
 
 **现象**（用户指出）：赞赏码是「**一张正方形图片贴在圆弧框里**」✗ —— 150×150 的方图塞进

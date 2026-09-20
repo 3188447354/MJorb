@@ -515,7 +515,7 @@ Apple 已经接受了密码，只是要求走第二步（输验证码）。这�
 
 | 构建 | 最坏耗时 | 每轮探测的预算 |
 |---|---|---|
-| **修复后**（本分支下一个构建起） | **约 40 秒** | `probeDeviceFetchTimeoutMs` = **1 秒** ✓ |
+| **修复后**（构建 **186** 起） | **约 40 秒** | `probeDeviceFetchTimeoutMs` = **1 秒** ✓ |
 | **184 及更早** | **9–18 分钟** ✗ | `deviceFetchTimeoutMs` = 15 秒 ✗ |
 
 - 设备探测是 `for attempt in 0..<36`，每轮 = `readyDeviceIdentifier()` ＋ 500ms 睡眠

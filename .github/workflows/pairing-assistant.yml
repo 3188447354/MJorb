@@ -187,7 +187,15 @@ jobs:
             '未连接 iPhone',
             'with_decorations(false)',
             'ViewportCommand::Close',
-            '✦  生成并写入 Seal'
+            '✦  生成并写入 Seal',
+            # 2026-09-20：配对类型按设备版本分流（iOS 17.4 以下 ⇒ Lockdown）。
+            # 这 4 条与 patch_upstream.py 的 verify() 是**两道互相独立**的闸门 ——
+            # 只留 patch 那一道，就会出现「判据与实现一起被改掉、自洽了就算过」✗
+            # （R60b 的教训）。放在这里的是「外部」那一道。
+            'fn seal_ios_supports_remote_pairing',
+            'fn seal_mode_for_ios',
+            'seal_lockdown_only',
+            'seal_mode_for_ios(&ios_version, self.pairing_mode)'
           )
           foreach ($marker in $required) {
             if (-not $source.Contains($marker)) { throw "Required feature missing: $marker" }

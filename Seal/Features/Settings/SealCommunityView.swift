@@ -144,12 +144,19 @@ struct SealCommunityView: View {
 
     private var rewardCodeSheet: some View {
         VStack(spacing: 0) {
+            // ⚠️ **图片要「贴合圆弧」**（2026-09-20 用户要求）✗ ——
+            // 原来把 150×150 的方图塞进 170×170 的圆角框 ⇒ 四周留 **10pt 白边**，
+            // 方图的四个角**不跟圆弧走** ✗。
+            // ⇒ 去掉内边距、让图片**填满**外框，再用 `clipShape` 把四角**裁成圆弧** ✓。
+            // ⚠️ 用 `scaledToFill` 而不是 `scaledToFit`：将来换成**非正方形**图也不会留边 ✓
+            //（`scaledToFit` 会在短边留白 ✗ —— 那正是这次要修的现象 ✓）。
             Group {
                 if let image = UIImage(named: "SealCommunityReward") {
                     Image(uiImage: image)
                         .resizable()
-                        .scaledToFit()
-                        .frame(width: 150, height: 150)
+                        .scaledToFill()
+                        .frame(width: 170, height: 170)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 } else {
                     Text("赞赏码未加载")
                         .font(.footnote)
@@ -239,21 +246,31 @@ struct SealCommunityView: View {
 
     private var gzhCodeSheet: some View {
         VStack(spacing: 20) {
-            if let image = UIImage(named: "SealCommunityGzh") {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 240, height: 240)
-            } else {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(Color.sealSurfaceElevated)
-                    .frame(width: 240, height: 240)
-                    .overlay {
-                        Text("公众号二维码未加载")
-                            .font(.footnote)
-                            .foregroundStyle(Color.sealTextSecondary)
-                    }
+            // ⚠️ **圆弧框内包裹**（2026-09-20 用户要求）✗ ——
+            // 原来这里是一张**裸图** ✗（只有「未加载」的占位才带圆角 ✗），
+            // 与赞赏码**视觉不成套** ✗
+            // ⇒ 套上和赞赏码**同款**的圆角白框（图片填满 ＋ `clipShape` 裁四角 ✓）。
+            // ⚠️ 圆角取 **20**（240pt 宽按赞赏码 170→16 的比例放大 ✓，与下面占位一致 ✓）。
+            Group {
+                if let image = UIImage(named: "SealCommunityGzh") {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 240, height: 240)
+                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                } else {
+                    Text("公众号二维码未加载")
+                        .font(.footnote)
+                        .foregroundStyle(Color.sealTextSecondary)
+                }
             }
+            .frame(width: 240, height: 240)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(Color.sealHairline.opacity(0.6), lineWidth: 0.8)
+            }
+            .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
 
             Text("关注公众号，第一时间获取版本动态、教程与官方通知")
                 .font(.system(size: 14, weight: .regular))

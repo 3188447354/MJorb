@@ -67,7 +67,10 @@
         let seal_failed = matches!(seal_install_result, Some(Some(Err(_))));
         let is_processing = self.pending_seal_install || seal_installing;
         let has_device = selected_device.is_some();
-        let can_primary_action = has_device && !is_processing;
+        // 17.0–17.3.1 必须生成 Lockdown 文件；版本未知时若沿用上游默认的
+        // RemotePairing，会制造一个该系统根本无法使用的文件。因此先读到系统版本再允许生成。
+        let has_ios_version = ios_version != "—";
+        let can_primary_action = has_device && has_ios_version && !is_processing;
 
         let text_primary = Color32::from_rgb(18, 27, 44);
         let text_secondary = Color32::from_rgb(112, 123, 140);
@@ -363,6 +366,8 @@
                     "正在处理…"
                 } else if !has_device {
                     "连接 iPhone 后继续"
+                } else if !has_ios_version {
+                    "正在读取 iOS 版本…"
                 } else if !readiness_issues.is_empty() {
                     "重新检测"
                 } else if seal_installed || seal_failed {

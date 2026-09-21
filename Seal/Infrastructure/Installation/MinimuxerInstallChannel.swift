@@ -29,6 +29,33 @@ struct SelfReplacementInstallGate {
     }
 }
 
+/// RSD 的暂存区绑定同一条隧道会话，必须使用 Rust 合并入口；Lockdown 不存在 RSD
+/// 暂存区，必须依次走 AFC + installation_proxy。若两者混用，17.0–17.3.1 会直接
+/// 调到没有 RPPairing 文件的 Rust FFI，安装和续签均无法开始。
+enum PairingInstallTransport: Equatable {
+    case remotePairing
+    case lockdown
+}
+
+func pairingInstallTransport(isRemotePairing: Bool) -> PairingInstallTransport {
+    isRemotePairing ? .remotePairing : .lockdown
+}
+
+private func installIPAUsingActivePairingTransport(
+    bundleID: String,
+    ipaData: Data,
+    progress: @Sendable (Double) -> Void
+) throws {
+    switch pairingInstallTransport(isRemotePairing: Minimuxer.isRemotePairing) {
+    case .remotePairing:
+        try Minimuxer.stageAndInstall(bundleId: bundleID, ipaBytes: ipaData, progress: progress)
+    case .lockdown:
+        try Minimuxer.yeetAppAfc(bundleId: bundleID, ipaBytes: ipaData)
+        progress(1.0)
+        try Minimuxer.installIpa(bundleId: bundleID)
+    }
+}
+
 actor MinimuxerInstallChannel: InstallChannel {
     private let pairingStore: PairingStore
     private let logDirectory: URL
@@ -886,9 +913,9 @@ actor MinimuxerInstallChannel: InstallChannel {
                         context: "包 \(Self.megabyteText(ipaMB))，第 \(attempt)/\(maxAttempts) 次",
                         budget: mergedTimeout,
                         start: {
-                            try Minimuxer.stageAndInstall(
-                                bundleId: bundleID,
-                                ipaBytes: ipaData,
+                            try installIPAUsingActivePairingTransport(
+                                bundleID: bundleID,
+                                ipaData: ipaData,
                                 progress: syncProgress
                             )
                         }
@@ -905,7 +932,11 @@ actor MinimuxerInstallChannel: InstallChannel {
                     let heartbeat = beginInstallHeartbeat("安装", budget: mergedTimeout)
                     defer { heartbeat.cancel() }
                     let outcome = await offThread(seconds: mergedTimeout) {
-                        try Minimuxer.stageAndInstall(bundleId: bundleID, ipaBytes: ipaData, progress: syncProgress)
+                        try installIPAUsingActivePairingTransport(
+                            bundleID: bundleID,
+                            ipaData: ipaData,
+                            progress: syncProgress
+                        )
                     }
                     if case .some(.failure(let installError)) = outcome {
                         await log(

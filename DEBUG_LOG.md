@@ -2656,3 +2656,13 @@ static var currentBuildLabel: String {
 - **修复**：在 `SigningCoordinator` 新增 `selfReplacementFailure(_:)`，映射为 SEAL-SELF-105～108，兜底 SEAL-SELF-109，标题统一「Seal 自更新中止」；自更新安装分支 try/catch 捕获并转 `ImportFailure`。
 - **涉及文件**：`Seal/Core/Signing/SigningCoordinator.swift`。
 - **验证状态**：提交 `edc7971`，CI build-package / rork-sign-tests / swift-regression 全绿，回归测试未破坏。
+
+---
+
+### 2026-09-21 · iOS 17.0–17.3.1 已生成 Lockdown 文件仍不能安装/续签
+
+- **现象**：此前只修复了 Windows 配对助手按系统版本生成 Lockdown 文件；Seal 端仍可能导入仅含 UDID 的无效占位文件、没有把底层 usbmuxd 指向自己的本地监听器，并且主安装链路固定调用 RSD 专用的 `stageAndInstall`。因此 iOS 17.0–17.3.1 即使拿到 Lockdown 文件，也无法完成端到端安装。
+- **根因**：Lockdown 与 RPPairing 的协议边界没有贯彻到导入、启动和安装三处。前者需要完整 pair-verify 主机身份，依赖本地 usbmuxd 代理，且安装必须走 AFC 暂存加 installation_proxy；RSD 合并调用只适用于远程配对。
+- **修复**：① `PairingStore` 强制校验 UDID、HostID、SystemBUID 和四项证书/私钥材料；② `Muxer.start` 在 Lockdown listener 启动前设置 `USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015`；③ `MinimuxerInstallChannel` 按配对类型分流，Lockdown 使用 `yeetAppAfc` + `installIpa`，远程配对保留 `stageAndInstall`；④ 助手未读到系统版本时禁用生成，避免误产出远程配对文件；⑤ 新增 R62 守卫与单测。
+- **涉及文件**：`PairingStore.swift`、`Muxer.swift`、`Minimuxer.swift`、`MinimuxerInstallChannel.swift`、对应 Pairing/Installation 测试、`verify-release-safety.py`、配对助手覆盖与发布说明。
+- **验证状态**：静态守卫及 CI 编译/单测待运行；Windows 本机无 Xcode，iOS 17.0–17.3.1 的真实设备回归仍是最终验收条件。

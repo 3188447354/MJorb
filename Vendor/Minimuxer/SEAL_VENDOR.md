@@ -22,8 +22,18 @@ Seal carries a small compatibility/safety delta on top of the pinned Minimuxer r
   `Minimuxer.fetchUDIDDetailed()` pass `MuxerConstants.probeDeviceFetchTimeoutMs` (1 s) to
   `Device.getFirstDevice(timeoutMs:)` instead of the 15 s default, and `ready()` evaluates the cheap
   predicates before querying the device. Both call sites sit inside the 36-round retry loop in
-  `MinimuxerInstallChannel.diagnose()`, so the 15-second default turned the intended ~18-second wait
-  into 9–18 minutes on the Lockdown path (iOS 17.0–17.3.1, build 184). One-shot callers
+  `MinimuxerInstallChannel.diagnose()`. Two different quantities must be kept apart: the **wait** is
+  `min(outer bounded wait, inner budget)` — `isReady()` wraps `Minimuxer.ready()` in a 5-second
+  `offThread`, so the nominal upper bound was only **≈3.4 minutes** (36 × (5 s + 0.5 s sleep)) and the
+  15-second default never extended it; the **cost** is that each round abandons a blocking FFI which
+  keeps running for another 15 seconds, occupying a Swift cooperative-pool thread and delaying the
+  resumption of later `Task.sleep`s and timers. That is what dragged the field measurement to
+  **12+ minutes** on the Lockdown path (iOS 17.0–17.3.1, build 184) — the key win of the fix is
+  shrinking the abandoned call from 15 s to 1 s. `readyDeviceIdentifier()` begins with
+  `guard await isReady() else { return nil }`, so `fetchUDIDDetailed()` is never reached while
+  `ready()` is false — each round pays one probe only. After the fix the same path fails in
+  **~20–60 seconds** (≈20 s with the tunnel down,
+  ≈56 s with the tunnel up but the device unreachable). One-shot callers
   (dump / install / DDI / JIT) keep the 15-second default. Guarded by `R61`.
 - Explicit Rust `unwrap`/`expect`/`panic` shortcuts are removed from the bridge boundary.
 - The checked-in RustBridge binary must be rebuilt with an iOS 16.0 deployment target and pass

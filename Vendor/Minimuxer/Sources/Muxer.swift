@@ -108,6 +108,10 @@ public class Muxer {
             if remotePairing {
                 try RustIdevice.setRpPairingFile(pairingFile)
             } else {
+                // Lockdown 的 Device/RustAfc/RustInstProxy 均经 USBMUXD_SOCKET_ADDRESS
+                // 查找本地 usbmuxd。这里的监听器就是 Seal 暴露给它们的代理端点，必须在
+                // 启动前重定向；否则 iOS 17.0–17.3.1 会错误连接默认 socket，永远发现不到设备。
+                retargetUsbmuxdAddr()
                 Thread.detachNewThread { listenLoop(generation: startGeneration) }
                 Heartbeat.startBeat(generation: startGeneration)
             }

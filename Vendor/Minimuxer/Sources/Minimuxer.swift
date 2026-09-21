@@ -18,6 +18,10 @@ public struct Minimuxer {
     public static func describeError(_ error: MinimuxerError) -> String {
         return error.description
     }
+
+    /// 当前配对文件决定的传输协议。RemotePairing 走 RSD 合并安装；Lockdown 必须走
+    /// AFC 暂存 + installation_proxy，不能调用仅支持 RSD 的 Rust 合并入口。
+    public static var isRemotePairing: Bool { Muxer.isrppairing }
     
     public static func bindTunnelConfig(_ binding: TunnelConfigBinding) {
         IfaceScanner.shared.bindTunnelConfig(binding)
@@ -59,10 +63,12 @@ public struct Minimuxer {
 
         // ⚠️ **判据顺序有意义**（Seal 本地加固，2026-09-20）：`Device.getFirstDevice()` 是这里
         // **最贵**的一步（默认轮询 15 秒），而原先那个 guard 是**逻辑与** ⇒ 先把便宜且已经
-        // 为假的判据算完、直接返回，语义**完全不变**，但把「隧道没通时每轮白等 15 秒」
-        // 降到「每轮约 0 秒」。
+        // 为假的判据算完、直接返回，语义**完全不变**，但把「隧道没通时每轮都要白跑一趟
+        // 15 秒的阻塞探测」降到「每轮约 0 秒」。
         // 原实现**无条件**先跑 `getFirstDevice()`，于是**最坏的那条路径**（设备不可达）
-        // 反而最慢：36 轮 × 15 秒 ⇒ 界面停在「验证中」十几分钟（真机 2026-09-20 已复现）。
+        // 反而最慢：外层 `offThread(5 秒)` 只截断**等待**（名义上限 ≈ 3.4 分钟），
+        // 但每轮都会遗弃一个还要再跑 15 秒的阻塞 FFI、持续占着协作线程池 ⇒
+        // 真机「验证中」卡 **12 分钟以上**（构建 184 已复现，见 `DEBUG_LOG.md`）。
         guard deviceConnection, Heartbeat.lastBeatSuccessful, Muxer.started, Muxer.usbmuxdReady else {
             reportNotReady(deviceExists: "unknown")
             return false

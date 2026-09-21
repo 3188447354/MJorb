@@ -150,7 +150,7 @@ struct PairingStoreTests {
     }
 
     @Test
-    func importsUDIDOnlyPairingForRuntimeValidation() async throws {
+    func rejectsIncompleteLockdownPairingBeforeRuntimeValidation() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -163,9 +163,24 @@ struct PairingStoreTests {
         try data.write(to: source)
         let store = PairingStore(fileURL: root.appending(path: "Pairing.plist"))
 
-        let imported = try await store.importFile(at: source)
-        #expect(imported.deviceIdentifier == "device-123")
-        #expect(imported.isRemotePairing == false)
+        await #expect(throws: ImportFailure.self) {
+            try await store.importFile(at: source)
+        }
+    }
+
+    @Test
+    func lockdownSchemaRequiresAllPairVerifyMaterials() {
+        let complete = standardPairingDictionary(udid: "device-123")
+        #expect(PairingStore.isCompleteLockdownPairing(complete))
+
+        for key in [
+            "UDID", "HostID", "SystemBUID", "HostCertificate", "HostPrivateKey",
+            "RootCertificate", "RootPrivateKey"
+        ] {
+            var incomplete = complete
+            incomplete.removeValue(forKey: key)
+            #expect(PairingStore.isCompleteLockdownPairing(incomplete) == false, key)
+        }
     }
 
     @Test

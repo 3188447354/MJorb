@@ -436,12 +436,32 @@ actor PairingStore {
             in: dictionary,
             keys: ["private_key", "privateKey", "PrivateKey", "Private Key"]
         )
-        // RemotePairing 必须有 private_key；Lockdown 必须有 UDID。
-        // 仅有 HostID/SystemBUID 等辅助字段不构成完整配对文件。
-        guard hasRemotePrivateKey || udid?.isEmpty == false else {
+        if hasRemotePrivateKey {
+            return (udid, true)
+        }
+
+        // Lockdown 的 UDID 只用于匹配设备，并不能完成 pair-verify。旧实现会接受
+        // 仅含 UDID 的占位文件，随后在安装时才以无上下文的配对失败终止。要求完整
+        // 的主机身份与证书材料，才能保证 iOS 17.0–17.3.1 的本机配对真的可用。
+        guard let udid, udid.isEmpty == false,
+              isCompleteLockdownPairing(dictionary) else {
             throw Self.invalidFailure
         }
-        return (udid, hasRemotePrivateKey)
+        return (udid, false)
+    }
+
+    static func isCompleteLockdownPairing(_ dictionary: [String: Any]) -> Bool {
+        let requiredStrings = ["UDID", "HostID", "SystemBUID"]
+        let requiredData = [
+            "HostCertificate", "HostPrivateKey", "RootCertificate", "RootPrivateKey"
+        ]
+        return requiredStrings.allSatisfy { key in
+            guard let value = dictionary[key] as? String else { return false }
+            return value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        } && requiredData.allSatisfy { key in
+            guard let value = dictionary[key] as? Data else { return false }
+            return value.isEmpty == false
+        }
     }
 
     private static func firstStringRecursive(

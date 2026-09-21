@@ -3292,6 +3292,44 @@ def violations(load=read):
           "R61④: `ready()` 里便宜判据必须在 `getFirstDevice()` **之前** ✗ —— "
           "无条件先跑它会让「设备不可达」这条最坏路径每轮白等 15 秒（36 轮 ≈ 9 分钟）✗")
 
+    # R62: iOS 17.0–17.3.1 只支持 Lockdown。这个分支的三个必要条件必须同时存在：
+    # ① 文件中是可 pair-verify 的完整 Lockdown 身份，而非只有 UDID 的占位 plist；
+    # ② Device/RustAfc/RustInstProxy 指向 Seal 自己监听的 usbmuxd socket；
+    # ③ 安装不能误走只接受 RPPairing/RSD 的 Rust 合并入口，而要 AFC + instproxy。
+    pairing_store_source = strip_comments(load("Seal/Infrastructure/Pairing/PairingStore.swift"))
+    pairing_tests = load("SealTests/Pairing/PairingStoreTests.swift")
+    check("static func isCompleteLockdownPairing" in pairing_store_source
+          and all(key in pairing_store_source for key in (
+              "HostID", "SystemBUID", "HostCertificate", "HostPrivateKey",
+              "RootCertificate", "RootPrivateKey"
+          ))
+          and "func rejectsIncompleteLockdownPairingBeforeRuntimeValidation()" in pairing_tests,
+          "R62①: Lockdown 导入必须拒绝缺 pair-verify 身份材料的占位文件")
+    muxer_source = strip_comments(load("Vendor/Minimuxer/Sources/Muxer.swift"))
+    lockdown_start = section_or_empty(
+        muxer_source,
+        "if remotePairing {",
+        "print(\"[minimuxer] minimuxer has started!\")"
+    )
+    retarget_at = lockdown_start.find("retargetUsbmuxdAddr()")
+    listener_at = lockdown_start.find("Thread.detachNewThread { listenLoop")
+    check(retarget_at >= 0 and listener_at > retarget_at,
+          "R62②: Lockdown 启动必须先把 USBMUXD_SOCKET_ADDRESS 指向本地监听器")
+    channel_source = strip_comments(load("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift"))
+    transport_body = section_or_empty(
+        channel_source,
+        "private func installIPAUsingActivePairingTransport(",
+        "actor MinimuxerInstallChannel: InstallChannel"
+    )
+    check("switch pairingInstallTransport(isRemotePairing: Minimuxer.isRemotePairing)" in transport_body
+          and "case .remotePairing:" in transport_body
+          and "Minimuxer.stageAndInstall" in transport_body
+          and "case .lockdown:" in transport_body
+          and "Minimuxer.yeetAppAfc" in transport_body
+          and "Minimuxer.installIpa" in transport_body
+          and "func installationTransportFollowsPairingFileType()" in load("SealTests/Installation/InstallChannelDiagnosticClassificationTests.swift"),
+          "R62③: 安装必须按配对类型分流；Lockdown 不得调用 RSD 合并安装入口")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -3525,6 +3563,18 @@ def main():
          "Sacrifice: affected installed apps must be re-signed after the retry succeeds"),
     ]
     mutations += [
+        ("Seal/Infrastructure/Pairing/PairingStore.swift",
+         '"HostCertificate", "HostPrivateKey", "RootCertificate", "RootPrivateKey"',
+         '"HostCertificate", "RootCertificate"',
+         "R62①:"),
+        ("Vendor/Minimuxer/Sources/Muxer.swift",
+         "                retargetUsbmuxdAddr()\n                Thread.detachNewThread { listenLoop(generation: startGeneration) }",
+         "                Thread.detachNewThread { listenLoop(generation: startGeneration) }",
+         "R62②:"),
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "    case .lockdown:\n        try Minimuxer.yeetAppAfc(bundleId: bundleID, ipaBytes: ipaData)\n        progress(1.0)\n        try Minimuxer.installIpa(bundleId: bundleID)",
+         "    case .lockdown:\n        try Minimuxer.stageAndInstall(bundleId: bundleID, ipaBytes: ipaData, progress: progress)",
+         "R62③:"),
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "CertificateRequestFailurePolicy.requestFailure", "LegacyCertificateFailure.requestFailure",
          "both certificate creation paths must use the shared error policy"),

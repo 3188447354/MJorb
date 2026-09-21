@@ -172,4 +172,10 @@ struct InstallChannelDiagnosticClassificationTests {
             )
         )
     }
+
+    @Test
+    func installationTransportFollowsPairingFileType() {
+        #expect(pairingInstallTransport(isRemotePairing: true) == .remotePairing)
+        #expect(pairingInstallTransport(isRemotePairing: false) == .lockdown)
+    }
 }

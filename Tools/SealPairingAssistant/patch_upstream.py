@@ -178,6 +178,9 @@ def verify(root: pathlib.Path) -> None:
         "fn seal_mode_for_ios",
         "seal_lockdown_only",
         "seal_mode_for_ios(&ios_version, self.pairing_mode)",
+        "let has_ios_version = ios_version != \"—\";",
+        "has_device && has_ios_version && !is_processing",
+        "正在读取 iOS 版本…",
     ]
     missing = [item for item in required if item not in main]
     if missing:

@@ -195,7 +195,10 @@ jobs:
             'fn seal_ios_supports_remote_pairing',
             'fn seal_mode_for_ios',
             'seal_lockdown_only',
-            'seal_mode_for_ios(&ios_version, self.pairing_mode)'
+            'seal_mode_for_ios(&ios_version, self.pairing_mode)',
+            'let has_ios_version = ios_version != "—";',
+            'has_device && has_ios_version && !is_processing',
+            '正在读取 iOS 版本…'
           )
           foreach ($marker in $required) {
             if (-not $source.Contains($marker)) { throw "Required feature missing: $marker" }

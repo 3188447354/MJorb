@@ -234,6 +234,17 @@
 - **变异检查的期望文案必须与真实断言文案对得上**。`any(item.startswith(expected))` 是按前缀匹配的：文案写错会报成 `Guard failed mutation check`，看起来像「变异没被抓到」，实际是断言已被触发但消息不匹配。看到这条失败先核对真实消息，再改锚点。
 - **守卫脚本自己也会慢到被超时杀掉**。`violations()` 在变异检查里要跑 70+ 遍，每遍都 `rglob` 目录 + `strip_comments` 全部 Swift 源码（约 2MB 的纯 Python 字符循环）⇒ 近 3 分钟，超过默认命令超时被 SIGTERM（表现为「无任何输出、exit 1」，很容易误判成脚本崩了）。**每遍内的 `load` 与 `strip_comments` 结果都要缓存**（缓存必须限定在单遍作用域内 —— 跨遍缓存会读到陈旧文本，让变异检查静默失效；另外重绑 `load = load_cached` 前要先把原始 loader 存到另一个名字，否则闭包递归到自己）。`rglob` 结果在进程内只算一次。优化后 48 秒。
   ⚠️ **后续再加检查时这条还会复发**（2026-09-21：新检查对 80 个含 `#expect(` 的测试文件去注释 ⇒ 守卫从 4.6 分钟涨到 **9 分 26 秒**，实测）。**判据：往 `violations()` 里加任何「遍历全部测试文件 + 去注释」的检查之前，先数一遍它会命中多少个文件** —— `violations()` 的调用次数 = 变异条数（200+），单遍多 1 秒就是总时长多 4 分钟。修法是加 **raw 文本前置过滤**：先用廉价正则判「原文里有没有可能命中」，命中才去注释（该过滤必须是**可靠上界**：真违规的文本形态一定会在原文里出现）。
+- 🔴 **工作区被别的会话共用时，「只提交自己的文件」也不够 —— 守卫文件是共享的，里面会混进对方的断言**（2026-09-21 实测弄红一轮 CI，`build-package` 的第一步就挂）。
+  我在本地跑完守卫（461 断言 / 243 变异，**PASS**）之后、提交之前，另一个会话往 `Scripts/verify-release-safety.py` 里加了 **1 条检查 + 1 个变异锚点**（`overallProgress` 反向断言），**并把一条既有锚点的文本从旧签名改成新签名**（`stageElapsed(_ now: Date)` → `stageElapsed(at now: Date, startedAt:)`）。
+  ⇒ 我只提交自己那 3 个文件，**守卫里却带着指向对方新代码的锚点**，而对方的 `SigningProgressView.swift` 没提交 ⇒ CI 报
+  `FAIL: Mutation anchor missing: Seal/Features/Apps/SigningProgressView.swift` ✗。
+  **判据：本地守卫 PASS ≠ 提交树的守卫 PASS。** 提交前必须问两句 ——
+  ①「**这个共享文件在提交里是什么版本**」；②「**它引用的每个路径 / 锚点文本，在提交树里都存在吗**」。
+  - **便宜的取证手法**：`git cat-file -e <新提交>:<路径>` 逐个核对守卫 `load()` 的**全部**路径（本次 93 条，0 缺失）；
+    再把提交里的守卫与上一个远端尖端逐行 diff，**`-` 行必须为零**（`git diff <上一个尖端> <新提交> -- Scripts/verify-release-safety.py`）。
+    ⚠️ 光看 `+` 行不够 —— 本次致命的那一处是**既有锚点的文本被对方改写**，它表现为一行 `-` 一行 `+`。
+  - **根治**：用 `git worktree add --detach <远端尖端>` 建隔离副本，在副本里**重做**自己的守卫改动、在副本里跑守卫、再从副本推送 ✓（副本有自己的 index，完全绕开对方的工作区）。
+  - ⚠️ 顺带一条：`git worktree list` 里可能已有**上一轮会话遗留的副本**（本次停在旧提交且索引有残留）⇒ **不要复用/清理它**，另开新路径 ✓。
 - **两条链路各抄一份同一条规则 = 迟早漂移，而且漂移不会编译失败**。安装阶段的计时起点规则（进入 `.installing` 记一次、重复推送不重置、离开清空）原先在 `AppsViewModel.updateSigningStage` 与 `BatchRefreshSession.advanceStage` 各有一份拷贝。漂移后单签与批量的「已等待 m:ss」必有一个变成假象（永远 0:00，或带上上一项的等待时间），**没有任何编译 / 测试信号**。对策是抽成纯函数（`InstallStageTimeline`）两边共用，并让守卫断言「两处都调它」。
 - **源码文本断言守「形状」，单测守「行为」，两者不能互相替代**。`.inactive → .waitForForeground` 这条分支是「Seal 自续签永久停在 93%」的根因，修完当时**只有守卫里的字符串断言** —— 重构可以把它改成任何返回值，只要那行文字还在，守卫就绿。**凡是「错了不崩、只在真机上卡死」的分支，必须先把判断抽成可测的纯函数（如 `SelfInstallAutoBackground.step(for:)`）再写单测**；守卫那边同时断言「单测文件里的关键断言确实存在」，防止测试被删空后仍然全绿。
 - **副作用触发点不要挂在界面上 —— 界面会消失，副作用不该跟着消失**。Seal 自续签的「回主页」原先挂在 `SigningProgressView.onChange`。同一个版本里我给运行中的抽屉加了「取消」按钮（软取消：立即关界面，**已下发的安装由 installd 跑完**），于是用户在安装阶段点取消 ⇒ 界面消失 ⇒ 挂在界面上的触发点收不到后续阶段推进 ⇒ 替换静默失败。**判据：这个副作用是「状态到达某一点就该发生」，还是「用户看着界面时才该发生」**；前者必须放在状态层（ViewModel / Coordinator），界面只负责渲染。同类隐患还有：挂在界面上的埋点、上报、清理任务。**加了「关闭/取消」通道之后，要复查一遍有哪些副作用是挂在被关闭的那个界面上的。**
@@ -408,6 +419,14 @@
   **entitlements 整体静默丢失 + 诊断恒报空集**。⇒ 建这类字典时先问一句「这个产物的标识符
   还是不是调用方手里的那个」；改写链路里 original 与 mapped 是两个键域，查错域不会崩、
   只会静默空转。守卫 R24b 钉住「查询必须用 mapped ID」。
+- **逐帧 UI 的两条热路径：`TimelineView` 的作用域、和把 struct 挂在 `@Published` 上**。
+  ① `TimelineView(.animation(1/30))` 包住整张卡片 ⇒ 每帧重算卡片里所有与动画无关的东西
+  （身份行、运行时三行、全部文案判断）；时钟只该包住**真正逐帧的那几个叶子**。
+  ② 高频回调（AFC 上传进度）写 `signingSession?.installProgress` —— `SigningSession` 是
+  **struct**、宿主是 `@Published` ⇒ **每次赋值让整棵订阅树失效重算**，比第 ① 条更贵。
+  ⇒ 高频值要么在源头按"界面能表达的最小粒度"节流（整数百分比 ⇒ 1% 步进），
+  要么放进独立的轻量 model。**判据：这条回调一秒能来几次 × 每次会让多少 view 重算**；
+  乘积 > 一屏 view 数就是错的，哪怕它"看起来更流畅"了。
 
 ---
 
@@ -449,6 +468,14 @@
    `.preparingBundle` 的「这一步只在解压与改写文件，不联网、与 Apple ID 无关」——
    真机上抖音在这一步花 118 秒，用户曾据此判断"Apple ID 验证卡住"去重新验证，
    而那时 Seal 根本没碰 Apple（正是「重新验证 → 又被限流」死循环的入口）。
+   ⚠️ **写完当场自查出一处冲突并改掉**：初稿在证书 / App ID / 描述文件三行里写了
+   「遇到限流会自动等待重试，不必重新登录」—— 而本仓 09-19 已按 build 141 的证据把
+   1100 归回**会话过期**（两个不同 Apple ID、同一形态 ⇒ 不是账号级限流）。
+   运行中的说明行没有失败页的上下文，这种断言会把用户从「去『我的』重新验证」这条
+   唯一正确的路上劝开 ⇒ 改为中性描述，并加测试
+   `expectationTextNeverDissuadesReverificationOrBlamesRateLimit`（禁词：限流 / 不必重新 /
+   不需要重新 / 无需重新 / 不是登录）。**教训：新写的文案要和 `DEBUG_LOG` 里最近的
+   结论对齐，不能沿用本轮会话开头那份已被推翻的判断。**
 6. 生产者先接两处（`.preparingAppID` / `.preparingProfiles`），管道与 `onInstallProgress`
    **同形**：`sign → signOnce → provisioningProfiles` 与 `SigningCoordinator.signAndInstall`
    各加一个带默认值的尾参 ⇒ 既有调用点（含批量 / 续签两条链路）不必改。
@@ -2869,3 +2896,42 @@ SealTests/Pairing/PairingStoreTests.swift:182:82:
 说明新检查确实在跑、变异锚点确实会红 ✓。CI 编译与用例待下一轮确认。
 ⚠️ 加检查时把守卫从 4.6 分钟拖到 **9 分 26 秒**（见上「守卫自己的运行时」），
 已用 raw 文本前置过滤修回。
+
+### 2026-09-21 · 推送 `522e877` 的守卫在 CI 上红：共享守卫文件里混进了并行会话的锚点
+
+**现象**：`522e877` 的 iOS CI（run `35555995119`）—— `swift-regression` ✓、`signer-tests` ✓，
+但 `build-package` 的**第一步** `Check release safety invariants` **FAIL**：
+
+```
+Source regression checks: 462
+Guard mutation checks: 244
+FAIL: Mutation anchor missing: Seal/Features/Apps/SigningProgressView.swift
+  anchor='    private func stageElapsed(at now: Date, startedAt: Date?) -> TimeInterval {'
+```
+
+**根因（两层）**：
+
+1. 我在本地实测是 **461 断言 / 243 变异**，CI 上是 **462 / 244** ⇒ 守卫文件在「本地跑完」与「提交」之间**被改过**。
+2. 改它的是**另一个会话**：它加了 1 条 `SigningProgressBudget.overallProgress(` 反向断言 + 1 个配套变异锚点，
+   **并把一条既有锚点的文本从 `stageElapsed(_ now: Date)` 改写成新签名 `stageElapsed(at now: Date, startedAt:)`**。
+   我这次只提交自己的 3 个文件（`git add -- <paths>`，刻意排除对方的 7 个在制品）⇒
+   守卫里带着**指向对方新代码**的锚点，而对方的 `SigningProgressView.swift` 没进提交 ⇒ 锚点在提交树里找不到 ✗。
+
+**为什么第一版防护不够**：我只查了「守卫文件里有没有 `workUnits`」，而对方的锚点用的是
+`stageElapsed` / `overallProgress` —— **不含 `workUnits` 字样** ⇒ 关键词检查漏过。
+⇒ **判据：核对「共享文件有没有被对方改过」不能用对方功能的**关键字**去 grep**，
+要么把本地文件与「上一个远端尖端」逐行 diff（`-` 行必须为零），要么走隔离副本重做。
+
+**修法**：按技能用 `git worktree add --detach <远端尖端>` 建**隔离副本**（另开新路径，不动
+`git worktree list` 里上一轮遗留的副本），在副本里撤掉对方那 3 处改动（用「任一锚点不匹配就整体不写」
+的脚本，断言 7 项后落盘），在副本里跑守卫，再从副本推送 ✓。
+
+**教训**：见「常犯坑位」新增的那条。核心判据：**本地守卫 PASS ≠ 提交树的守卫 PASS**；
+提交前用 `git cat-file -e <提交>:<路径>` 核对守卫 `load()` 的全部路径（本次 93 条，0 缺失），
+并把提交里的守卫与上一个尖端逐行 diff（**`-` 行必须为零** —— 本次致命的正是「既有锚点被改写」，
+它藏在 `-` 行里，只看 `+` 行会漏）。
+
+**涉及文件**：`Scripts/verify-release-safety.py`。
+
+**验证状态**：隔离副本里守卫 **PASS（461 断言 / 243 变异）** —— 计数与本地实测一致
+（CI 那次是 462 / 244），证明对方那 1 条检查 + 1 个锚点确已撤净 ✓；CI 待确认。

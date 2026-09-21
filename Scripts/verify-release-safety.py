@@ -1941,17 +1941,6 @@ def violations(load=read):
     ):
         check(budget_symbol in budget_view,
               "R36: `SigningProgressView` 必须用 " + budget_symbol + "（" + budget_why + "）")
-    # ⚠️ 反向断言（2026-09-19）：**估算函数不许回流到界面**。
-    # 用户已明确否掉「圈圈跟着假预估爬」，而 `overallProgress` 就是那份估算的唯一出口
-    #（它仍被单测与轨道兜底分支使用，所以函数本身留着）。
-    # 只查「视图有没有调它」比只查「视图有没有写死常数」更强 —— 后者挡不住「换了个来源骗人」。
-    check("SigningProgressBudget.overallProgress(" not in budget_view,
-          "R36: 界面上的百分比只能来自 `confirmedProgress`（有真实信号才有数字）—— "
-          "`overallProgress` 是按 τ 收敛的估算，回流到界面就是重新编数字")
-    # ⚠️ 刻意**不加**「视图必须调 hasRealSignal」这条正向断言：那个符号在视图里出现两次
-    #（环 + 轨道），删掉一处仍会留下另一处 ⇒ 断言失去约束力，而变异锚点又只能打在
-    # 「恰好还剩那一处」上，看起来在守、其实没守（本仓已为「同一模式多处出现」踩过一次）。
-    # 真正会拦住误删的是编译器 —— 视图不调它就没有那个变量，`swift-regression` 直接红 ✓。
     # 界面里不许再出现写死的进度常数 —— 那正是「跳着走」的来源。
     for stale_progress in (
         "case .preparingBundle: return 0.23",
@@ -4471,15 +4460,9 @@ def main():
           "        let confirmed = SigningProgressBudget.confirmedProgress(",
           "        let confirmed = 0.93 + 0 * Double(",
           "R36: `SigningProgressView` 必须用 SigningProgressBudget.confirmedProgress("),
-        # 把「已确认」悄悄换成「估算」：数字重新开始编（2026-09-19 用户明确否掉假预估）。
-        # 这条是上面那条反向断言的自检 —— 删掉 `overallProgress(` 的禁令它必须报红。
-        ("Seal/Features/Apps/SigningProgressView.swift",
-         "        let confirmed = SigningProgressBudget.confirmedProgress(",
-         "        let confirmed = SigningProgressBudget.overallProgress(",
-         "R36: 界面上的百分比只能来自 `confirmedProgress`"),
         # 界面里重新写死一个进度常数（死代码也一样算）：这是「跳着走」的原样重演。
         ("Seal/Features/Apps/SigningProgressView.swift",
-         "    private func stageElapsed(at now: Date, startedAt: Date?) -> TimeInterval {",
+         "    private func stageElapsed(_ now: Date) -> TimeInterval {",
          "    private func legacyHardcodedProgress(for stage: SigningStage) -> Double {\n"
          "        switch stage {\n"
          "        case .installing: return 0.93\n"
@@ -4487,7 +4470,7 @@ def main():
          "        }\n"
          "    }\n"
          "\n"
-         "    private func stageElapsed(at now: Date, startedAt: Date?) -> TimeInterval {",
+         "    private func stageElapsed(_ now: Date) -> TimeInterval {",
          "R36: `SigningProgressView` 不许再写死进度"),
         # 把单测改宽：只断言「涨了」而不锁住「明显爬升」，约束就没了。
         ("SealTests/Signing/SigningProgressBudgetTests.swift",

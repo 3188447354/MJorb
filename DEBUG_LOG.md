@@ -2893,7 +2893,8 @@ SealTests/Pairing/PairingStoreTests.swift:182:82:
 `Scripts/verify-release-safety.py`（新增通用检查 + 变异锚点）。
 
 **验证状态**：守卫 **PASS（461 源码断言 + 243 变异）** —— 比加检查前多 1 条断言、1 个变异锚点，
-说明新检查确实在跑、变异锚点确实会红 ✓。CI 编译与用例待下一轮确认。
+说明新检查确实在跑、变异锚点确实会红 ✓。
+**CI ✓**（run `35557258917`：`swift-regression` ✓ ⇒ 编译与用例都过；`build-package` ✓ ⇒ 守卫在提交树上也过）。
 ⚠️ 加检查时把守卫从 4.6 分钟拖到 **9 分 26 秒**（见上「守卫自己的运行时」），
 已用 raw 文本前置过滤修回。
 
@@ -2934,4 +2935,5 @@ FAIL: Mutation anchor missing: Seal/Features/Apps/SigningProgressView.swift
 **涉及文件**：`Scripts/verify-release-safety.py`。
 
 **验证状态**：隔离副本里守卫 **PASS（461 断言 / 243 变异）** —— 计数与本地实测一致
-（CI 那次是 462 / 244），证明对方那 1 条检查 + 1 个锚点确已撤净 ✓；CI 待确认。
+（CI 那次是 462 / 244），证明对方那 1 条检查 + 1 个锚点确已撤净 ✓。
+**CI ✓**：run `35557258917` 全绿（`build-package` 4m49s 含守卫步骤 / `swift-regression` 9m0s / `signer-tests` 1m3s）。

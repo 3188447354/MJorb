@@ -270,11 +270,19 @@ jobs:
           # 用户 sha256sum -c SHA256SUMS.txt 直接报「没有那个文件」✗
           # （哈希本身是对的，所以这个错很难被发现 —— 只有真去 -c 才暴露）。
           # 本步骤 shell 是 pwsh（PS 7）⇒ UTF8 写出来是**无 BOM** 的 ✓
-          # （PS 5.1 的 UTF8 会带 BOM，那会同样让 -c 失败；
-          #  真要在 5.1 上跑，得用 [System.IO.File]::WriteAllText + UTF8Encoding($false)）。
-          Get-FileHash (Join-Path $out "Seal配对助手.exe") -Algorithm SHA256 |
-            ForEach-Object { "$($_.Hash.ToLower())  Seal配对助手.exe" } |
-            Set-Content (Join-Path $out "SHA256SUMS.txt") -Encoding UTF8
+          # （PS 5.1 的 UTF8 会带 BOM，那会同样让 -c 失败）。
+          # ⚠️ 但**光修编码不够**：`Set-Content` 在 Windows 上固定用 CRLF 行尾 ✗
+          # ⇒ 用户 sha256sum -c 报 `'Seal配对助手.exe'$'\r': No such file or directory`
+          # （⚠️ 哈希仍是对的 ⇒ 只有真去 -c 才暴露。2026-09-21 实测复现：
+          #  下载 run 35553633932 的产物，清单尾部是 \r\n，-c 直接失败）。
+          # ⇒ 改用 WriteAllText + UTF8Encoding($false)：行尾由我们指定为 LF、且无 BOM ✓
+          # （纯 .NET API，PS 5.1 / 7 行为一致）。
+          $sum = (Get-FileHash (Join-Path $out "Seal配对助手.exe") -Algorithm SHA256).Hash.ToLower()
+          [System.IO.File]::WriteAllText(
+            (Join-Path $out "SHA256SUMS.txt"),
+            "$sum  Seal配对助手.exe`n",
+            [System.Text.UTF8Encoding]::new($false)
+          )
 
       - name: Upload Windows pairing assistant
         uses: actions/upload-artifact@v7.0.1

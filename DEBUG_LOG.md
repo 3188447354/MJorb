@@ -233,6 +233,7 @@
 - **守卫里「扫到 0 个调用点」= 检查必然通过**。新写的实参顺序校验第一版正则用了 `(?<![A-Za-z0-9_.])signAndInstall\(`，而真实调用点全是 `coordinator.signAndInstall(`（前一个字符是 `.`），被反向断言全部排除 ⇒ 零调用点 ⇒ 零错误 ⇒ 绿。**凡是「遍历 + 断言」的守卫都必须一并断言「扫到了多少个」，并设下限**，否则改一个正则就能让它静默失效。
 - **变异检查的期望文案必须与真实断言文案对得上**。`any(item.startswith(expected))` 是按前缀匹配的：文案写错会报成 `Guard failed mutation check`，看起来像「变异没被抓到」，实际是断言已被触发但消息不匹配。看到这条失败先核对真实消息，再改锚点。
 - **守卫脚本自己也会慢到被超时杀掉**。`violations()` 在变异检查里要跑 70+ 遍，每遍都 `rglob` 目录 + `strip_comments` 全部 Swift 源码（约 2MB 的纯 Python 字符循环）⇒ 近 3 分钟，超过默认命令超时被 SIGTERM（表现为「无任何输出、exit 1」，很容易误判成脚本崩了）。**每遍内的 `load` 与 `strip_comments` 结果都要缓存**（缓存必须限定在单遍作用域内 —— 跨遍缓存会读到陈旧文本，让变异检查静默失效；另外重绑 `load = load_cached` 前要先把原始 loader 存到另一个名字，否则闭包递归到自己）。`rglob` 结果在进程内只算一次。优化后 48 秒。
+  ⚠️ **后续再加检查时这条还会复发**（2026-09-21：新检查对 80 个含 `#expect(` 的测试文件去注释 ⇒ 守卫从 4.6 分钟涨到 **9 分 26 秒**，实测）。**判据：往 `violations()` 里加任何「遍历全部测试文件 + 去注释」的检查之前，先数一遍它会命中多少个文件** —— `violations()` 的调用次数 = 变异条数（200+），单遍多 1 秒就是总时长多 4 分钟。修法是加 **raw 文本前置过滤**：先用廉价正则判「原文里有没有可能命中」，命中才去注释（该过滤必须是**可靠上界**：真违规的文本形态一定会在原文里出现）。
 - **两条链路各抄一份同一条规则 = 迟早漂移，而且漂移不会编译失败**。安装阶段的计时起点规则（进入 `.installing` 记一次、重复推送不重置、离开清空）原先在 `AppsViewModel.updateSigningStage` 与 `BatchRefreshSession.advanceStage` 各有一份拷贝。漂移后单签与批量的「已等待 m:ss」必有一个变成假象（永远 0:00，或带上上一项的等待时间），**没有任何编译 / 测试信号**。对策是抽成纯函数（`InstallStageTimeline`）两边共用，并让守卫断言「两处都调它」。
 - **源码文本断言守「形状」，单测守「行为」，两者不能互相替代**。`.inactive → .waitForForeground` 这条分支是「Seal 自续签永久停在 93%」的根因，修完当时**只有守卫里的字符串断言** —— 重构可以把它改成任何返回值，只要那行文字还在，守卫就绿。**凡是「错了不崩、只在真机上卡死」的分支，必须先把判断抽成可测的纯函数（如 `SelfInstallAutoBackground.step(for:)`）再写单测**；守卫那边同时断言「单测文件里的关键断言确实存在」，防止测试被删空后仍然全绿。
 - **副作用触发点不要挂在界面上 —— 界面会消失，副作用不该跟着消失**。Seal 自续签的「回主页」原先挂在 `SigningProgressView.onChange`。同一个版本里我给运行中的抽屉加了「取消」按钮（软取消：立即关界面，**已下发的安装由 installd 跑完**），于是用户在安装阶段点取消 ⇒ 界面消失 ⇒ 挂在界面上的触发点收不到后续阶段推进 ⇒ 替换静默失败。**判据：这个副作用是「状态到达某一点就该发生」，还是「用户看着界面时才该发生」**；前者必须放在状态层（ViewModel / Coordinator），界面只负责渲染。同类隐患还有：挂在界面上的埋点、上报、清理任务。**加了「关闭/取消」通道之后，要复查一遍有哪些副作用是挂在被关闭的那个界面上的。**
@@ -244,6 +245,7 @@
 - **把重复实现合并成一份时，记得同步更新按「出现次数」断言的守卫**。安装通道的无进度重载改为转发到带进度的实现后，`count("if Self.isTimeoutInstallError(error) {") == 2` 这条断言立刻失效（变成 1）。这是**预期内的失败**，改断言而不是把实现写回去。同理，给某个常量/片段加断言前先确认它在文件里出现几次 —— `logStore: logStore` 在 `AppContainer` 里同时出现在安装通道与签名协调器两处，全局匹配会让「只改安装通道那一处」的变异检不出来（本轮实际踩到，改用 `section()` 限定构造段）。
 - **`#if !targetEnvironment(simulator)` 的边界要按「模拟器切片编不编译」来划，别按「读起来像不像真机代码」**。同一类错误在 2026-09-16 一天内咬了两次（`diagnostic`、`isTimeoutInstallError`）：符号定义在 `#if !targetEnvironment(simulator)` **之内**，却被 `#if` **之外**的代码引用 ⇒ **`build-package` 全绿（只编设备切片）、只有 `swift-regression` 红**，一轮白等 13–16 分钟。**判据：写完一段与平台无关的辅助逻辑（错误归类、诊断文本、超时判定）时，先问「谁会调它」** —— 调用方在 `#if` 外，定义就必须在 `#if` 外。现在守卫有一条通用检查（`Simulator: device-only members ...`）：把「模拟器不编译」的行整段抹掉，再看有没有**只**在被抹掉部分里定义的顶层类型成员出现在抹后文本中。注意判定条件必须同时覆盖 `#if !targetEnvironment(simulator)` 的**整个分支**与 `#if targetEnvironment(simulator)` 的 **`#else` 分支** —— 只认前者会把 `bindTunnelConfiguration`（定义在 `!simulator` 里、调用点在同文件的 `#else` 里）误报成缺符号。
 - **`#expect(...)` 里不能出现 `mutating` 方法调用**。swift-testing 的 `#expect` 是**宏**：它把表达式重写成闭包、把子表达式绑成 `$0`/`$1`…，于是 `mutating` 成员作用在捕获值上编译不过 —— `error: cannot use mutating member on immutable value: '$0' is immutable`。修法是先把结果取到局部变量再断言：`let ok = gate.acquire(); #expect(ok)`。**这个错误同样只在 `swift-regression` 出现**（`build-package` 不编译测试 target），2026-09-16 紧随上一条之后踩到（`#expect(gate.acquire())`，95 条报错全是同一个宏展开）。守卫已加通用检查（`#expect must not call a mutating method ...`），mutating 方法名从 `Seal/` 里现取、不写死。
+- **`#expect(_:_:)` 的第二参数是 `Comment?`：字符串字面量（含 `"\(变量)"` 插值）可以，`String` 变量不行**。想给循环里的断言带上「是哪个键/哪一项失败」，很容易顺手写成 `#expect(cond, key)` —— 直接报 `error: cannot convert value of type 'String' to expected argument type 'Comment?'`（`Comment` 只遵循 `ExpressibleByStringLiteral` / `ExpressibleByStringInterpolation`，没有从 `String` 的隐式转换）。修法是插值：`#expect(cond, "缺少 \(key) 时不应判定为完整")` ✓。**与上一条同族：这个错误也只在 `swift-regression` 出现**（`build-package` 不编译测试 target，照绿），2026-09-21 踩到，一轮白等 4.5 分钟。⚠️ 同理 `sourceLocation:` 是**带标签**参数，不能当第二参数位置参数传（本仓正确写法：`#expect(failure.code == code, sourceLocation: sourceLocation)`）。已做成守卫通用检查（`#expect must not pass a bare identifier as its comment`，判据「实参以 `, 裸标识符` 结尾」，含变异锚点；上闸前在全仓 1185 处 `#expect` 上验证过零误报）。
 - **守卫的耗时波动本身就是故障源**。变异检查每一遍都会把所有源文件重新读一遍（200+ 文件 × 90 多遍 ≈ 2 万次磁盘读），而本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 同一份代码整轮耗时实测在 **61–117 秒**之间波动，已经贴到命令默认 120 秒超时（超时会被 SIGTERM，且**没有任何输出**，极易误判成脚本崩了）。对策：在 `main()` 里按路径缓存**基准内容**（每遍只有**一个**文件被替换成变异版本，所以不会读到陈旧文本），耗时降到 53 秒。⚠️ **不要**顺手把 `strip_comments` 的结果也跨遍缓存 —— 那会让被替换的那个文件读到基准版的去注释结果，变异检查静默失效（守卫全绿但什么都没检查）。
 - **日志必须写在「挂起 / 退出」之前，并且立刻 `flush()`**。Seal 自替换的「回主屏」终点是 `suspend`（进程被冻结）或 `exit(0)`（进程结束）—— 这两条路之后写的任何日志都出不来。所以「即将触发转场」这条**必须在 `triggerHomeTransition` 之前落盘**，每条日志都要 `flush()` 而不是只 `append`（`SealLogStore` 的 `append` 只写内存缓冲）。顺序反了、或只 append 不 flush，等价于这条链路仍然静默：下次真机排查又只剩「一片空白」。**判据：给一条「会静默卡死」的链路加日志时，先问「这段代码的终点是什么，日志有没有机会落盘」。**
 - **守卫断言要断「语义」，不要断「拼出来的文案」**。`check("case .standDown: return false" in squashed)` 这种拼接式断言，只要在分支里插一条日志就失效 —— 而报出来的失败信息看着像「语义坏了」，实际只是文案挪了位置，很容易把人带偏。改成 `section(squashed, "case .standDown:", "case .triggerTransition:")` 切出分支，再断言里面的**语义**（如 `"guard outcome == .wait else" in branch and "return }" in branch`）。要断顺序时用 `branch.index(a) < branch.index(b)`，同样不依赖日志措辞。
@@ -410,6 +412,72 @@
 ---
 
 ## 历史记录
+
+### 2026-09-21 · 签名抽屉的进度：从「假预估 vs 全程静止」换成「数工作单元」
+
+**背景**（用户要求：按视觉最佳 / 体验最好的方式做，并讨论文案设计）：
+2026-09-18 把进度改成「阶段内按 τ 指数收敛」→ 用户 09-19 反馈「圈圈不要假预估」→
+撤掉估算弧之后，**10 个阶段里 9 个的环完全静止**（只有 `.pushing` 有 AFC 字节真值），
+观感于是从"骗人"变成"像卡死"。两条路都不对，缺的是第三类数据：**可数对象**。
+
+**根因**：界面把「有没有真值」当成二值问题（有估算 / 没估算），而本仓多数阶段其实
+**有确定的分母** —— Phase 1 每个 bundle ID 一次循环、Phase 2 每份描述文件一次循环、
+重签每个 Mach-O 一次、解压按条目走。循环下标一直存在，只是**没人把它往上报**。
+
+**修复**：
+1. 新增值类型 `SigningWorkUnits{stage,done,total}`（`total<=0` 或 `done<0` ⇒ `fraction=nil`
+   ⇒ 表示「没有可信信号」而不是「0%」—— 报 0% 会被读成一步没做，方向完全不同）。
+2. `SigningProgressBudget` 加 `realFraction / hasRealSignal / confirmedProgress(…workUnits:)`：
+   优先级**只有一条**（可数对象 ＞ 字节 ＞ 无）。**字节只在 `.pushing` 采信**，
+   跨阶段的残留值由 `workUnits.stage` 挡掉 ⇒ 判据仍只有一处。
+   `overallProgress`（估算）**保留但退出生产路径**：轨道格内的兜底爬动仍用它，
+   删掉会逼出第二份收敛实现（「同一条规则两份实现」已踩 7 次）。
+3. 环改成**两种笔触且只有两种**：有真值 ⇒ 已确认弧 + 环心百分比；
+   无真值 ⇒ 72% 弧匀速转、**环心不放数字**（`selfReplacementInstallingRing` 通用化，
+   Seal 自替换仍在环心留「替换中」两字）。
+4. ⚠️ **性能收敛**（WWDC25 SwiftUI 那两条：Long View Body Updates / Unnecessary Updates）：
+   ① 30Hz `TimelineView` 原先包住**整张卡**（每帧重算 App 身份行 + 运行时卡片 + 全部文案）
+   ⇒ 现在时钟只留给两个叶子（环、5 格轨道），且**有真值时 `paused: true`**（值由状态驱动，
+   根本不需要帧）；② 「本阶段已用时 / 预期说明」是整秒信息 ⇒ 独立 **1Hz** 时钟；
+   ③ AFC 上传回调原先逐个写 `signingSession?.installProgress` —— `SigningSession` 是
+   **struct**、挂在 `@Published` 上 ⇒ 每个回调都让整张抽屉失效重算 ⇒ 改为**按 1% 步进采信**
+   （环只显示整数百分比，1% 就是它能表达的最小粒度）。
+5. 文案分层（用户选定「超 20 秒才追加预期行」）：`SigningStage.unitsText(_:)` 只在
+   **本阶段 + 有总量**时产出一行；`expectationText(isSealSelf:)` 由 1Hz 时钟在
+   `expectationThreshold = 20` 秒后追加。措辞纪律：**只说在做什么、和什么无关**，
+   不给 ETA、不说「马上 / 即将 / 已自动重试」。最关键一句是
+   `.preparingBundle` 的「这一步只在解压与改写文件，不联网、与 Apple ID 无关」——
+   真机上抖音在这一步花 118 秒，用户曾据此判断"Apple ID 验证卡住"去重新验证，
+   而那时 Seal 根本没碰 Apple（正是「重新验证 → 又被限流」死循环的入口）。
+6. 生产者先接两处（`.preparingAppID` / `.preparingProfiles`），管道与 `onInstallProgress`
+   **同形**：`sign → signOnce → provisioningProfiles` 与 `SigningCoordinator.signAndInstall`
+   各加一个带默认值的尾参 ⇒ 既有调用点（含批量 / 续签两条链路）不必改。
+7. UI 侧单向钳制：`updateWorkUnits` 丢弃**同阶段的倒退计数**（Phase 1 有"扩展降级 / 跳过"
+   分支，跳过后回报会让 `done` 变小 ⇒ 数字往回跳一格，正是「跳着走」的观感来源）。
+
+**守卫**：R36 加反向断言「界面里的百分比只能来自 `confirmedProgress`」
+（`overallProgress(` 出现在视图里即失败）+ 变异锚点：把那一行换成 `overallProgress(`
+必须报红。**刻意不加**「视图必须调 `hasRealSignal`」那条正向断言 —— 它在视图里出现两次，
+删一处仍留一处，断言会假装在守（该情形由编译器负责）。
+
+**涉及文件**：`Seal/Core/Signing/SigningProgressBudget.swift`、`SigningStage.swift`、
+`SigningSession.swift`、`Seal/Features/Apps/SigningProgressView.swift`、`AppsViewModel.swift`、
+`Seal/Core/Signing/SigningCoordinator.swift`、`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、
+`Scripts/verify-release-safety.py`；测试：`SealTests/Signing/SigningWorkUnitsProgressTests.swift`（新增）。
+
+**验证状态**：⚠️ 未编译（Windows 本机无 Swift 工具链）。静态核对已过：R36 四个必需符号在视图里
+各自存在、`confirmedProgress` 锚点唯一（`grep -c` = 1）、`overallProgress` 在视图里 0 次；
+守卫本地全量（含变异）结果见本轮回复。真机判据：签抖音时「已注册 i / 9 个 Bundle ID」
+应逐个跳动，`.preparingBundle` 满 20 秒后出现「不联网、与 Apple ID 无关」那句。
+
+**本轮明确没修（避免半招）**：
+- `.signing` 的真值：重签循环在 `Vendor/SideSign` 内部，Seal 侧只有总耗时没有分母
+  ⇒ 要接得动上游签名器的 `progress:`（代码注释里已留钩子与 `isUsefulSigningDiagnostic`）。
+- `.preparingBundle` 的条目计数：`SigningWorkspace.prepare` 目前没有回调入口，接它要再穿一层；
+  该阶段现在靠转弧 + 20 秒后的解释行兜住。
+- `.verifying` 的 8 项核对在 `InstalledAppDeviceVerifier` 里，同上未接。
+- 白色扫光**不加回来**：2026-09-18 用户实测否掉（「横杠的煽动效果不好看」「圆点走前面
+  中间都灰白了」—— 白扫过蓝，中段读成灰白）。动感一律由转弧承担。
 
 ### 2026-09-20 · 配对验证「验证中」十几分钟：**就绪探测用了 15 秒的预算**（构建 184）
 
@@ -2732,3 +2800,72 @@ Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift:51:88:
 **涉及文件**：`Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`。
 
 **验证状态**：待下一轮 CI 确认编译通过。
+
+### 2026-09-21 · `#expect` 第二参数是 `Comment?`：`String` 变量传不进去（CI 实报，仅 `swift-regression` 红）
+
+**现象**：推送 `bc7fcc9` 的 CI（run `35554045362`）—— `build-package` ✓（6m57s）、
+`signer-tests` ✓（1m0s），**只有 `swift-regression` 红**（4m28s），注解重复 20 次同一条：
+
+```
+SealTests/Pairing/PairingStoreTests.swift:182:82:
+  error: cannot convert value of type 'String' to expected argument type 'Comment?'
+```
+
+**根因**：swift-testing 的 `#expect(_:_:)` 第二个参数类型是 `Comment?`。
+`Comment` 遵循 `ExpressibleByStringLiteral` / `ExpressibleByStringInterpolation`
+⇒ **字符串字面量（含 `"\(变量)"` 插值）能构造 `Comment`，`String` 变量不能** ✗。
+我写的是 `#expect(PairingStore.isCompleteLockdownPairing(incomplete) == false, key)`
+—— 目的是用 `key` 标出「是哪个键被删掉后判定失败了」，结果把 `String` 变量直接塞进 `Comment?` 位置。
+
+**修法**：`#expect(..., "缺少 \(key) 时不应判定为完整的 Lockdown 配对文件")` ✓
+（本仓既有先例：`IPAParserServiceTests.swift` 的 `"…实际耗时 \(elapsed) 秒"`、
+`ProfileReclaimPolicyTests.swift`）。
+⚠️ 顺带确认：`sourceLocation:` 是**带标签**参数，也不能当第二参数位置参数传
+（`#expect(failure.code == code, sourceLocation: sourceLocation)` 才是对的 ✓）。
+
+**教训（与上一条同族，且更隐蔽）**：这又是一条**只在云构建暴露**的错误 ——
+`build-package` 根本不编译测试 target ⇒ **本轮 `build-package` 照绿**，只有 `swift-regression` 红。
+⇒ **给 `SealTests/**` 加带上下文的断言时，第二参数一律写成字符串字面量或插值**，
+不要传 `String` 变量 ✓。
+
+**已加守卫**：`Testing:` 段新增通用检查
+`#expect must not pass a bare identifier as its comment`，判据是
+「`#expect(...)` 的实参**以「, 裸标识符」结尾**」—— 只认结尾形态，所以既不误伤
+嵌套调用里的逗号（`#expect(State(id: "", p: "") == nil)`），也不误伤带标签参数
+（`#expect(x, sourceLocation: loc)` 结尾是 `: loc`）。
+⚠️ **加之前先在**全仓 **1185 处 `#expect`**（86 个测试文件）上跑过一遍只读扫描：
+**零误报** ✓ —— 这条「先量基数再上闸」的顺序不能省，否则新判据会把守卫自己弄红。
+另配变异锚点（把带插值的注释换回 `key`）证明该检查不是空转。
+
+**⚠️ 同一个检查还踩到第二个坑：守卫自己的运行时**
+
+新检查第一版对**所有含 `#expect(` 的测试文件**都调 `strip_cached` —— 而 `SealTests/` 里
+有 **80 个**这样的文件。`violations()` 在变异检查里要跑 **243 遍** ⇒ 每遍多剥 80 个文件
+（约 1.5 MB 纯 Python 字符循环）⇒ 守卫总时长从 4.6 分钟涨到 **9 分 26 秒**（实测）✗。
+⚠️ 守卫超时被 SIGTERM 时**没有任何输出**，很容易被误判成「脚本崩了」
+（见「常犯坑位」里 `守卫脚本自己也会慢到被超时杀掉` 那条）。
+
+⇒ 修法是加 **raw 文本前置过滤**：先看原文有没有 `,\s*标识符\s*(?:\)|//)`，命中才去注释。
+实测 **86 个文件 → 只剩 6 个（66 KB）** ✓ —— 干净文件零成本跳过，变异文件仍命中
+（用「把锚点文本替换成 `key` 后再问一次过滤」验证过）。
+
+**判据：往 `violations()` 里加任何「遍历全部测试文件 + 去注释」的检查之前，
+先数一遍它会命中多少个文件。** `violations()` 的调用次数 = 变异条数（200+），
+单遍多 1 秒就是总时长多 4 分钟。
+
+**顺带核对（同一轮做的防回归检查）**：收紧 `PairingStore.inspect` 后，逐条核对了
+`SealTests/Pairing/PairingStoreTests.swift` 里所有构造配对字典的地方 ——
+`standardPairingDictionary` 已含全部 7 个键（3 String + 4 Data）⇒ 既有「导入/校验/保护/删除」
+与「设备不匹配」两条测试不会被误伤 ✓；另两处故意造的不完整文件（`UDID`+`HostID`、
+只有 `HostID`）本来就断言抛 `ImportFailure` ✓。同时确认 `hasRemotePrivateKey` 用的是
+**精确键名**匹配（`private_key`/`privateKey`/`PrivateKey`/`Private Key`），
+不会把 Lockdown 的 `HostPrivateKey` 误判成远程配对文件 —— 这条由既有绿测试
+`importsValidatesProtectsAndRemovesStandardPairingFile`（断言 `isRemotePairing == false`）反证 ✓。
+
+**涉及文件**：`SealTests/Pairing/PairingStoreTests.swift`、
+`Scripts/verify-release-safety.py`（新增通用检查 + 变异锚点）。
+
+**验证状态**：守卫 **PASS（461 源码断言 + 243 变异）** —— 比加检查前多 1 条断言、1 个变异锚点，
+说明新检查确实在跑、变异锚点确实会红 ✓。CI 编译与用例待下一轮确认。
+⚠️ 加检查时把守卫从 4.6 分钟拖到 **9 分 26 秒**（见上「守卫自己的运行时」），
+已用 raw 文本前置过滤修回。

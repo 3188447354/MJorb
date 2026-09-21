@@ -1941,6 +1941,17 @@ def violations(load=read):
     ):
         check(budget_symbol in budget_view,
               "R36: `SigningProgressView` 必须用 " + budget_symbol + "（" + budget_why + "）")
+    # ⚠️ 反向断言（2026-09-19）：**估算函数不许回流到界面**。
+    # 用户已明确否掉「圈圈跟着假预估爬」，而 `overallProgress` 就是那份估算的唯一出口
+    #（它仍被单测与轨道兜底分支使用，所以函数本身留着）。
+    # 只查「视图有没有调它」比只查「视图有没有写死常数」更强 —— 后者挡不住「换了个来源骗人」。
+    check("SigningProgressBudget.overallProgress(" not in budget_view,
+          "R36: 界面上的百分比只能来自 `confirmedProgress`（有真实信号才有数字）—— "
+          "`overallProgress` 是按 τ 收敛的估算，回流到界面就是重新编数字")
+    # ⚠️ 刻意**不加**「视图必须调 hasRealSignal」这条正向断言：那个符号在视图里出现两次
+    #（环 + 轨道），删掉一处仍会留下另一处 ⇒ 断言失去约束力，而变异锚点又只能打在
+    # 「恰好还剩那一处」上，看起来在守、其实没守（本仓已为「同一模式多处出现」踩过一次）。
+    # 真正会拦住误删的是编译器 —— 视图不调它就没有那个变量，`swift-regression` 直接红 ✓。
     # 界面里不许再出现写死的进度常数 —— 那正是「跳着走」的来源。
     for stale_progress in (
         "case .preparingBundle: return 0.23",
@@ -2615,6 +2626,51 @@ def violations(load=read):
     check(not expect_mutations,
           "#expect must not call a mutating method — it is rewritten into a closure ("
           + " | ".join(expect_mutations) + ")")
+
+    # `#expect(_:_:)` 的第二参数是 `Comment?`：**字符串字面量（含 `"\(x)"` 插值）可以，
+    # `String` 变量不行**（2026-09-21 因此挂了一轮 CI，同样只在 `swift-regression` 暴露 ——
+    # `build-package` 不编译测试 target，照绿）。
+    #
+    # `Comment` 只遵循 `ExpressibleByStringLiteral` / `ExpressibleByStringInterpolation`，
+    # **没有从 `String` 的隐式转换** ⇒ 循环里想标出「是哪个键 / 哪一项失败」、
+    # 顺手写成 `#expect(cond, key)` 就会报
+    # `error: cannot convert value of type 'String' to expected argument type 'Comment?'`。
+    # 修法是插值：`#expect(cond, "缺少 \(key) 时…")` ✓。
+    #
+    # 判据：`#expect(...)` 的实参**以「, 裸标识符」结尾**即为违规。只认「结尾」形态 ⇒
+    # 既不误伤嵌套调用里的逗号（`#expect(State(id: "", p: "") == nil)`），
+    # 也不误伤带标签参数（`#expect(x, sourceLocation: loc)` 结尾是 `: loc`，不是裸标识符）✓。
+    # 加这条之前先在**全仓 1185 处 `#expect`** 上跑过一遍：**零误报** ✓。
+    comment_offenders = []
+    bare_comment = re.compile(r",\s*([A-Za-z_][A-Za-z0-9_]*)\s*$")
+    # ⚠️ 前置过滤：**先看原文里有没有「, 标识符」**，再决定要不要去注释。
+    # 这一步是**性能必需**，不是可选优化 —— 变异检查每一遍都会跑这个循环，
+    # 而 `SealTests/` 里 **80 个文件**含 `#expect(`，`strip_comments` 是纯 Python
+    # 字符循环（约 1–2 MB），会把守卫总时长推高 1–2 分钟，逼近命令超时（SIGTERM、
+    # 且没有任何输出，极易误判成脚本崩了 —— 见下面对守卫耗时的那段注释）。
+    # 实测：86 个文件 → 过滤后只剩 **6 个（66 KB）** ✓。
+    # 该过滤是**可靠上界**：违规意味着实参以 `, 标识符` 结尾，后面紧跟 `)`（或行尾注释
+    # 再跟 `)`）⇒ 原文里必然出现这两个形态之一（`\s` 含换行，多行写法同样命中）✓。
+    raw_hint = re.compile(r",\s*[A-Za-z_][A-Za-z0-9_]*\s*(?:\)|//)")
+    for source_path in swift_sources():
+        relative = source_path.relative_to(ROOT).as_posix()
+        if not relative.startswith("SealTests/"):
+            continue
+        raw = load_cached(relative)
+        if "#expect(" not in raw or raw_hint.search(raw) is None:
+            continue
+        source = strip_cached(relative)
+        for match in re.finditer(r"#expect\(", source):
+            close = match_paren(source, match.end() - 1)
+            if close == -1:
+                continue
+            hit = bare_comment.search(source[match.end():close])
+            if hit:
+                comment_offenders.append(relative + " -> " + hit.group(1))
+    check(not comment_offenders,
+          "#expect must not pass a bare identifier as its comment — the second parameter "
+          "is `Comment?` (use an interpolated string literal instead) ("
+          + " | ".join(comment_offenders) + ")")
 
     # `?? []` 的类型推断陷阱（2026-09-17 因此挂了一轮 CI，同样只在 `swift-regression` 暴露）。
     #
@@ -4415,9 +4471,15 @@ def main():
           "        let confirmed = SigningProgressBudget.confirmedProgress(",
           "        let confirmed = 0.93 + 0 * Double(",
           "R36: `SigningProgressView` 必须用 SigningProgressBudget.confirmedProgress("),
+        # 把「已确认」悄悄换成「估算」：数字重新开始编（2026-09-19 用户明确否掉假预估）。
+        # 这条是上面那条反向断言的自检 —— 删掉 `overallProgress(` 的禁令它必须报红。
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         "        let confirmed = SigningProgressBudget.confirmedProgress(",
+         "        let confirmed = SigningProgressBudget.overallProgress(",
+         "R36: 界面上的百分比只能来自 `confirmedProgress`"),
         # 界面里重新写死一个进度常数（死代码也一样算）：这是「跳着走」的原样重演。
         ("Seal/Features/Apps/SigningProgressView.swift",
-         "    private func stageElapsed(_ now: Date) -> TimeInterval {",
+         "    private func stageElapsed(at now: Date, startedAt: Date?) -> TimeInterval {",
          "    private func legacyHardcodedProgress(for stage: SigningStage) -> Double {\n"
          "        switch stage {\n"
          "        case .installing: return 0.93\n"
@@ -4425,7 +4487,7 @@ def main():
          "        }\n"
          "    }\n"
          "\n"
-         "    private func stageElapsed(_ now: Date) -> TimeInterval {",
+         "    private func stageElapsed(at now: Date, startedAt: Date?) -> TimeInterval {",
          "R36: `SigningProgressView` 不许再写死进度"),
         # 把单测改宽：只断言「涨了」而不锁住「明显爬升」，约束就没了。
         ("SealTests/Signing/SigningProgressBudgetTests.swift",
@@ -4896,6 +4958,13 @@ def main():
          "        let keptKeys = Set(keepMap.keys)",
          "        let keptKeys = Set(keepMaps.first?.keys ?? [])",
          "`?? []` after .keys/.values cannot type-check"),
+        # 把带插值的注释参数换回 `String` 变量：原样重演 2026-09-21 的
+        # `cannot convert value of type 'String' to expected argument type 'Comment?'`
+        # （同样只在 `swift-regression` 红，一轮白等 4.5 分钟）。
+        ("SealTests/Pairing/PairingStoreTests.swift",
+         r'                "缺少 \(key) 时不应判定为完整的 Lockdown 配对文件"',
+         "                key",
+         "#expect must not pass a bare identifier as its comment"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

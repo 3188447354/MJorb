@@ -179,7 +179,12 @@ struct PairingStoreTests {
         ] {
             var incomplete = complete
             incomplete.removeValue(forKey: key)
-            #expect(PairingStore.isCompleteLockdownPairing(incomplete) == false, key)
+            // ⚠️ 第二参数必须是 `Comment?`：**字符串字面量（含插值）可以，`String` 变量不行** ✗
+            // （2026-09-21 CI 实报 `cannot convert value of type 'String' to expected argument type 'Comment?'`）。
+            #expect(
+                PairingStore.isCompleteLockdownPairing(incomplete) == false,
+                "缺少 \(key) 时不应判定为完整的 Lockdown 配对文件"
+            )
         }
     }
 

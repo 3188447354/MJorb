@@ -2760,7 +2760,21 @@ static var currentBuildLabel: String {
 - **根因**：Lockdown 与 RPPairing 的协议边界没有贯彻到导入、启动和安装三处。前者需要完整 pair-verify 主机身份，依赖本地 usbmuxd 代理，且安装必须走 AFC 暂存加 installation_proxy；RSD 合并调用只适用于远程配对。
 - **修复**：① `PairingStore` 强制校验 UDID、HostID、SystemBUID 和四项证书/私钥材料；② `Muxer.start` 在 Lockdown listener 启动前设置 `USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015`；③ `MinimuxerInstallChannel` 按配对类型分流，Lockdown 使用 `yeetAppAfc` + `installIpa`，远程配对保留 `stageAndInstall`；④ 助手未读到系统版本时禁用生成，避免误产出远程配对文件；⑤ 新增 R62 守卫与单测。
 - **涉及文件**：`PairingStore.swift`、`Muxer.swift`、`Minimuxer.swift`、`MinimuxerInstallChannel.swift`、对应 Pairing/Installation 测试、`verify-release-safety.py`、配对助手覆盖与发布说明。
-- **验证状态**：静态守卫及 CI 编译/单测待运行；Windows 本机无 Xcode，iOS 17.0–17.3.1 的真实设备回归仍是最终验收条件。
+- **验证状态**：守卫 PASS；**CI ✓**（run `35557258917`：`build-package` ✓ 含守卫步骤、`swift-regression` ✓ 编译与用例全过、`signer-tests` ✓）。iOS 17.0–17.3.1 的**真实设备回归仍是最终验收条件**。
+- **补审计（2026-09-21 二轮，只读，为了不再重复审）** —— 逐条确认下列路径**本来就按配对类型分流、无需改动** ✓：
+  - `Install.getProvider()`：`Muxer.isrppairing ? RPInstall() : LockDownInstall()` ✓；
+    `yeetAppAfc`/`installIpa`/`removeApp` 都经它转发 ⇒ **这两个入口一直是正确的**。
+  - `Jit.getProvider()`、`Mounter.getProvider()`、`Provision.getProvider()` 同样都有 `isrppairing` 分流，
+    且 `LockDownMounter` / `LockDownProvision` 是**真实实现**（`Device` + `RustLockdown`/`RustMounter`/`RustMisagent`），不是空壳 ✓。
+  - **`Minimuxer.stageAndInstall` 是唯一没有分流的入口**（无条件 `RustIdevice.stageAndInstall`，RSD 专用）
+    ⇒ 这才坐实了「第三个断点」：旧代码对 Lockdown 调它必然失败 ✓（同文件里 `lookupApp` 都有分流，对比明显）。
+  - `LockDownMounter.startAutoMounter` 会等 `Muxer.usbmuxdReady`，再按 `ProductVersion` 分 `<17` / `>=17`；
+    **17.0–17.3.1 落在 `handlePost17Mount`**，它调 `rustBridgeMountPersonalizedDDI(… muxerAddr: MuxerConstants.usbmuxdSocket, deviceIp: DeviceEndpoint.shared.ip())`
+    —— 用的正是本轮修的那个本地 socket ✓，且显式传参、不依赖环境变量 ✓。
+  - 进度哨兵：本仓约定 `>1.0`（1.01）表示「上传结束、installd 即将安装」。Lockdown 分支发 `progress(1.0)`，
+    经 `syncProgress` 的 `if p >= 1.0 { onProgress(1.01) }` 正确转成哨兵 ✓（`>=` 与 `InstallStageBridge` 里
+    `>` 的差别是有意的：桥接那层收的是已转换过的值）。
+  - ⇒ **没有第四个功能性断点**；剩下的不确定性只在运行时（会话能否建起来、installd 认不认）。
 
 ### 2026-09-21 · `Minimuxer.reset()` 的 RSD 复位判据**恒为假** —— 那条恢复手段从未执行
 

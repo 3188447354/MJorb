@@ -7,6 +7,17 @@
 
 ## 常犯坑位
 
+- 🔴 **交付产物的校验清单：「内容对」≠「能用」**（2026-09-21，同一族第三次）。
+  `sha256sum -c` 的**验收动作只能是拿目标工具真的跑一次全 OK** ✓；
+  「哈希值看着对」不算验收 ✗ —— 已发生的两个实例**哈希本身都是对的**：
+  - ① `-Encoding ASCII` ⇒ 中文文件名被替换成 `Seal????.exe`（2026-09-20 修）；
+  - ② `Set-Content` 在 Windows 上**固定写 CRLF** ⇒ 文件名后多一个 `\r`（2026-09-21 修）。
+  两次都出在**生成侧**（`pairing-assistant.yml` 用 PowerShell 写清单），也都**只有真去 `-c` 才暴露**。
+  ⇒ 写这类生成步骤时，**编码与行尾都要显式指定**，别依赖默认值：
+  `[System.IO.File]::WriteAllText($p, $text, [System.Text.UTF8Encoding]::new($false))`，
+  文本里的换行写反引号 n ⇒ 一次同时避开 CRLF 与 BOM ✓
+  （⚠️ **PS 5.1 的 `UTF8` 带 BOM**，与 CRLF 一样会让 `-c` 失败）。
+
 - 🔴 **有外层重试的地方，内层预算必须短**（2026-09-20 真机，构建 184）。
   「就绪探测」跑在外层重试循环里，却各自用了**一次性路径**的长预算 ⇒ 真机界面卡
   **12 分钟以上**没结论 ✗，而且**设备不可达时每轮都走满**（最坏路径恰好是最常见的那条 ✗）。
@@ -431,6 +442,36 @@
 ---
 
 ## 历史记录
+
+### 2026-09-21 · 配对助手的校验清单：哈希对，但 `-c` 跑不通（编码修了，行尾没修）
+
+**现象**：下载配对助手产物后 `sha256sum -c SHA256SUMS.txt` 直接失败：
+`sha256sum: 'Seal配对助手.exe'$'\r': No such file or directory`（`FAILED open or read`）。
+**哈希本身是对的** ⇒ 不真去跑一次 `-c` 根本发现不了。
+
+**根因**：2026-09-20 只修了**编码**（`Set-Content -Encoding ASCII` → `UTF8`，
+避免中文文件名被替换成 `Seal????.exe`），但 `Set-Content` 在 Windows 上
+**固定使用 CRLF 行尾** ✗ ⇒ 清单里文件名后面多一个 `\r`
+⇒ 目标工具把 `Seal配对助手.exe\r` 当成文件名，报「没有那个文件」。
+（同族第二例：PS 5.1 的 `UTF8` 会带 BOM，同样让 `-c` 失败。）
+
+**修复**：`pairing-assistant.yml` 改用
+`[System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))`，
+文本用反引号 n 拼行 ⇒ **行尾由我们显式指定为 LF、且无 BOM** ✓
+（纯 .NET API，PS 5.1 / 7 行为一致）。
+
+**本地实证**（同一台机器、同一份内容）：
+
+| 写法 | 尾部字节 | 头部 | `-c` |
+|---|---|---|---|
+| `Set-Content -Encoding UTF8` | `\r\n` ✗ | 无 BOM | FAILED |
+| `WriteAllText` + `UTF8Encoding($false)` | `\n` ✓ | 无 BOM ✓ | **OK** ✓ |
+
+（另：下载 run `35553633932` 的产物复现了旧行为 —— 清单尾部确实是 `\r\n`。）
+
+**涉及文件**：`.github/workflows/pairing-assistant.yml`（+15/−3）。
+**验证状态**：修法已本地实证 ✓；本次**未重新构建助手**（只修生成侧，下次 dispatch 自然带上）；
+推送未触发任何工作流（`fix/**` 不在该 workflow 的 `push.branches`，且 `ios.yml` 的 `paths` 不含它）✓。
 
 ### 2026-09-21 · 签名抽屉的进度：从「假预估 vs 全程静止」换成「数工作单元」
 

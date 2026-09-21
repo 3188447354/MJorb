@@ -3330,6 +3330,34 @@ def violations(load=read):
           and "func installationTransportFollowsPairingFileType()" in load("SealTests/Installation/InstallChannelDiagnosticClassificationTests.swift"),
           "R62③: 安装必须按配对类型分流；Lockdown 不得调用 RSD 合并安装入口")
 
+    # R63: `Minimuxer.reset()` 里「清 RSD 缓存连接」的判据必须在 `Muxer.reset()` **之前**读
+    #（2026-09-21 审计发现）✗。
+    #
+    # 旧实现写成 `Muxer.reset()` 之后 `if Muxer.isrppairing { RustIdevice.invalidateConnection() }`
+    # ⇒ **恒为假**：`Muxer.reset()` 内部的 `teardownLocked()` 已经把 `_isrppairing` 清成
+    # `false`，之后再问只能是 false ✗ ⇒ 这条恢复手段**从未执行过**。
+    #
+    # 后果正是本仓三处注释反复记着的那个失败模式：`Install.resetProvider()` 只清 Swift 侧
+    # 对象、**清不掉 Rust 的会话缓存** ⇒ 重试一直复用同一条死连接 ⇒ 真机表现为
+    # 「安装静默卡住」（2026-09-17 那 9 分多钟的形态之一）✗。
+    #
+    # ⚠️ 光断言「有 invalidateConnection」不够 ✗ —— 旧代码也有它，只是永远走不到。
+    # ⇒ 必须按**下标顺序**判：读取点要在 `Muxer.reset()` 之前 ✓（R61④ 同款手法）。
+    reset_body = squash(section_or_empty(
+        strip_comments(minimuxer_source),
+        "public static func reset() {",
+        "public static func retargetUsbmuxdAddr()",
+    ))
+    reset_read_at = reset_body.find("let wasRemotePairing = Muxer.isrppairing")
+    reset_call_at = reset_body.find("Muxer.reset()")
+    check(reset_read_at >= 0
+          and reset_call_at > reset_read_at
+          and "if wasRemotePairing {" in reset_body
+          and "if Muxer.isrppairing {" not in reset_body,
+          "R63: 「清 RSD 缓存连接」的判据必须在 `Muxer.reset()` **之前**读 ✗ —— "
+          "`Muxer.reset()` 会把 remotePairing 清成 false，之后再问恒为假 ⇒ "
+          "`RustIdevice.invalidateConnection()` 永远不执行，重试一直复用死连接 ✗")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -3575,6 +3603,14 @@ def main():
          "    case .lockdown:\n        try Minimuxer.yeetAppAfc(bundleId: bundleID, ipaBytes: ipaData)\n        progress(1.0)\n        try Minimuxer.installIpa(bundleId: bundleID)",
          "    case .lockdown:\n        try Minimuxer.stageAndInstall(bundleId: bundleID, ipaBytes: ipaData, progress: progress)",
          "R62③:"),
+        ("Vendor/Minimuxer/Sources/Minimuxer.swift",
+         "        let wasRemotePairing = Muxer.isrppairing\n        Muxer.reset()",
+         "        Muxer.reset()\n        let wasRemotePairing = Muxer.isrppairing",
+         "R63:"),
+        ("Vendor/Minimuxer/Sources/Minimuxer.swift",
+         "        if wasRemotePairing {",
+         "        if Muxer.isrppairing {",
+         "R63:"),
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "CertificateRequestFailurePolicy.requestFailure", "LegacyCertificateFailure.requestFailure",
          "both certificate creation paths must use the shared error policy"),

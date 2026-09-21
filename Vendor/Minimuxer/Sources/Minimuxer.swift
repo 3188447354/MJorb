@@ -109,6 +109,12 @@ public struct Minimuxer {
     }
 
     public static func reset() {
+        // ⚠️ **必须在 `Muxer.reset()` 之前读**（Seal 本地加固，2026-09-21）✗ ——
+        // `Muxer.reset()` 内部的 `teardownLocked()` 会把 `_isrppairing` 清成 `false`，
+        // 之后再问就**恒为假** ⇒ 下面那条「清掉 Rust 的 RSD 缓存连接」永远不执行 ✗。
+        // 而本仓三处注释都写着它是清死连接的唯一杠杆（`Install.resetProvider()` 只清
+        // Swift 侧对象，清不掉 Rust 的会话缓存）⇒ 真机上表现为「重试一直复用死连接」。
+        let wasRemotePairing = Muxer.isrppairing
         Muxer.reset()
         DeviceEndpoint.shared.clear()
         Install.resetProvider()
@@ -116,7 +122,7 @@ public struct Minimuxer {
         JIT.resetProvider()
         Mounter.resetProvider()
         // RSD 缓存连接可能已随隧道断开；不复位会让重试一直复用死连接
-        if Muxer.isrppairing {
+        if wasRemotePairing {
             RustIdevice.invalidateConnection()
         }
     }

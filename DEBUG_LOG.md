@@ -2666,3 +2666,69 @@ static var currentBuildLabel: String {
 - **修复**：① `PairingStore` 强制校验 UDID、HostID、SystemBUID 和四项证书/私钥材料；② `Muxer.start` 在 Lockdown listener 启动前设置 `USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015`；③ `MinimuxerInstallChannel` 按配对类型分流，Lockdown 使用 `yeetAppAfc` + `installIpa`，远程配对保留 `stageAndInstall`；④ 助手未读到系统版本时禁用生成，避免误产出远程配对文件；⑤ 新增 R62 守卫与单测。
 - **涉及文件**：`PairingStore.swift`、`Muxer.swift`、`Minimuxer.swift`、`MinimuxerInstallChannel.swift`、对应 Pairing/Installation 测试、`verify-release-safety.py`、配对助手覆盖与发布说明。
 - **验证状态**：静态守卫及 CI 编译/单测待运行；Windows 本机无 Xcode，iOS 17.0–17.3.1 的真实设备回归仍是最终验收条件。
+
+### 2026-09-21 · `Minimuxer.reset()` 的 RSD 复位判据**恒为假** —— 那条恢复手段从未执行
+
+**现象（审计发现，非真机）**：`Minimuxer.reset()` 里写着
+
+```swift
+Muxer.reset()
+...
+if Muxer.isrppairing { RustIdevice.invalidateConnection() }
+```
+
+而 `Muxer.reset()` 内部的 `teardownLocked()` 已经把 `_isrppairing` 清成 `false`
+⇒ 那个 `if` **永远不成立** ⇒ `RustIdevice.invalidateConnection()` **从未被调用过**。
+
+**为什么后果严重**：本仓**三处**注释都指着它是「清掉 Rust 侧死连接」的唯一杠杆 ——
+`Install.resetProvider()` 只清 Swift 侧对象、**清不掉 Rust 的会话缓存**
+（`MinimuxerInstallChannel` 的 `probeCachedSessionIfStale` 注释、`Install.resetProvider()`
+调用点注释、以及 `MEMORY.md` 的「安装静默优先怀疑缓存的 RSD 连接」）。
+⇒ 重试一直复用同一条死连接，真机形态就是「安装静默卡住 / 大包空推」
+（2026-09-17 那 9 分多钟的成因之一）。
+
+**修法**：在 `Muxer.reset()` **之前**读出 `let wasRemotePairing = Muxer.isrppairing`，
+用这个快照做判据。语义完全不变，只是让原本声明的行为真的发生。
+
+**守卫 R63**（1 条断言 + 2 个变异锚点）：
+⚠️ 光断言「有 `invalidateConnection`」不够 ✗ —— 旧代码**也有**它，只是永远走不到
+（「代码看起来有恢复逻辑、其实恒假」是最容易漏掉的一种退化）。
+⇒ 按**下标顺序**判：读取点必须在 `Muxer.reset()` 之前（R61④ 同款手法）。
+变异锚点：① 把读取挪到 `Muxer.reset()` 之后；② 把 `if wasRemotePairing` 改回
+`if Muxer.isrppairing`。两者都已复核会红。
+
+**涉及文件**：`Vendor/Minimuxer/Sources/Minimuxer.swift`、`Scripts/verify-release-safety.py`。
+
+**验证状态**：守卫 PASS（460 源码断言 / 242 变异）；⚠️ **行为变化待真机确认** ——
+修复后 `Minimuxer.reset()` 在远程配对下会真的重建 RSD 连接，这正是注释声明的意图，
+但它是本轮唯一「改变了既有运行时行为」的改动。
+
+### 2026-09-21 · 透传闭包给 `@escaping` 目标：参数必须显式声明 `@escaping`（CI 实报）
+
+**现象**：本轮推送（`6d990e4`）的 iOS CI **5m20s 早失败**，两个 job 同一条错：
+
+```
+Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift:51:88:
+  error: passing non-escaping parameter 'progress' to function expecting an '@escaping' closure
+```
+
+**根因**：新增的 `installIPAUsingActivePairingTransport(...)` 把 `progress` 声明成
+`@Sendable (Double) -> Void` —— 而 **Swift 的闭包参数默认 non-escaping** ✗。
+它要透传给 `Minimuxer.stageAndInstall(bundleId:ipaBytes:progress:)`，那个参数是
+`@escaping (Double) -> Void` ⇒ non-escaping 传不进去。
+
+**修法**：`progress: @escaping @Sendable (Double) -> Void`
+（`@Sendable` 可以弱化成非 Sendable，方向安全；反过来不行）。
+
+**教训（值得记的通用形式）**：**本机没有 Swift 工具链 ⇒ 「透传闭包」这类错误
+只会在云构建暴露，而一轮 CI 是 5–16 分钟。**
+⇒ 写「把闭包参数转手传给另一个函数」的代码时，**先去看目标签名有没有 `@escaping`** ——
+这比 `?? []` 的类型推断陷阱更容易踩，因为**默认值恰好是反的**（默认 non-escaping）。
+
+**顺带确认**：同轮 CI 里 `ApplePortalSigningService.swift:754`（`unzipSeconds` 未使用）
+与 `SigningWorkspace.swift:897`（`fileManager` 未使用）两条 warning 是**既有**的，
+不在本轮改动文件里。
+
+**涉及文件**：`Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`。
+
+**验证状态**：待下一轮 CI 确认编译通过。

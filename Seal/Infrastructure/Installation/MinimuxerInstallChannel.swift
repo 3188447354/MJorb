@@ -41,10 +41,15 @@ func pairingInstallTransport(isRemotePairing: Bool) -> PairingInstallTransport {
     isRemotePairing ? .remotePairing : .lockdown
 }
 
+/// ⚠️ `progress` **必须带 `@escaping`**（2026-09-21，CI 实报）✗ ——
+/// `Minimuxer.stageAndInstall(bundleId:ipaBytes:progress:)` 的参数是 `@escaping`，
+/// 而 Swift 的闭包参数**默认 non-escaping** ⇒ 少了它编译失败：
+/// `passing non-escaping parameter 'progress' to function expecting an '@escaping' closure`。
+/// 本机没有 Swift 工具链，这类错误只在云构建暴露 ⇒ 透传闭包时先看目标签名。
 private func installIPAUsingActivePairingTransport(
     bundleID: String,
     ipaData: Data,
-    progress: @Sendable (Double) -> Void
+    progress: @escaping @Sendable (Double) -> Void
 ) throws {
     switch pairingInstallTransport(isRemotePairing: Minimuxer.isRemotePairing) {
     case .remotePairing:

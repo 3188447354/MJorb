@@ -33,6 +33,14 @@ struct BatchRefreshSession: Identifiable, Equatable, Sendable {
     var currentStage: SigningStage?
     /// 当前应用上传到设备的真实进度（0-1），仅 `.pushing` 阶段有值。
     var currentInstallProgress: Double?
+    /// 当前阶段内部**可数**的完成量（第 i / N 个 Bundle ID、第 i / N 份描述文件）。
+    /// 与单签的 `SigningSession.workUnits` 同一个类型、同一套采信规则。
+    var workUnits: SigningWorkUnits?
+    /// 进入当前阶段的时刻 —— 底部轨道格内的缓慢爬动以它为起点算。
+    ///
+    /// 与 `installStartedAt` 是两件事：那个只在 `.installing` 有值，供「已等待」计时；
+    /// 这个是**每个阶段**的起点，轨道每一格都要用它。
+    var stageStartedAt: Date?
     /// 进入 `.installing` 的时刻。installd 安装期间**没有任何进度回报**，
     /// 只能靠计时让「还在走」变成可见事实（2026-09-16 真机反馈「卡住没反应」）。
     var installStartedAt: Date?
@@ -84,8 +92,25 @@ extension BatchRefreshSession {
         if stage != .pushing {
             currentInstallProgress = nil
         }
+        if stage != currentStage {
+            // 换阶段 ⇒ 重置格内计时起点，并丢掉上一阶段的计数：
+            // 批量里下一个 App 可能重走同名阶段（如两项都要注册 Bundle ID），
+            // 残留的 `9 / 9` 会让新 App 的第一格直接画满 —— 与 `installProgress`
+            // 当年「切阶段后残留旧值」是同一类缺陷。
+            stageStartedAt = now
+            workUnits = nil
+        }
         currentStage = stage
         return tick
+    }
+
+    /// 记录阶段内的可数进度（与单签共用 `SigningWorkUnits.shouldAccept`）。
+    ///
+    /// 只在**与当前阶段一致**时采信：跨阶段的残留值会把新阶段从地板上拽回去。
+    mutating func recordWorkUnits(_ units: SigningWorkUnits) {
+        guard units.stage == currentStage else { return }
+        guard SigningWorkUnits.shouldAccept(units, over: workUnits) else { return }
+        workUnits = units
     }
 }
 

@@ -1588,6 +1588,11 @@ final class AppsViewModel: ObservableObject {
             batchRefreshSession?.total = total
             batchRefreshSession?.currentAppName = app.displayName
             batchRefreshSession?.recordInstallProgress(progress)
+        case .appWorkUnits(_, _, _, let units):
+            // 阶段内部的可数进度：只喂底部轨道，**不动阶段、不动任何计数**。
+            // index / app 这里用不上（会话已按 .appProgress 对齐到当前项），
+            // 采信与丢弃都集中在 `recordWorkUnits` 里。
+            batchRefreshSession?.recordWorkUnits(units)
         case .appProgress(let index, let total, let app, let stage):
             batchRefreshSession?.currentIndex = index
             batchRefreshSession?.total = total
@@ -1930,6 +1935,9 @@ final class AppsViewModel: ObservableObject {
                 },
                 onInstallProgress: { [weak self] progress in
                     await self?.updateInstallProgress(progress)
+                },
+                onWorkUnits: { [weak self] units in
+                    await self?.updateWorkUnits(units)
                 }
             )
             let action: SigningHistoryRecord.Action = isRenewal ? .renew : .sign
@@ -2096,7 +2104,27 @@ final class AppsViewModel: ObservableObject {
             }
             return
         }
+        // ⚠️ **按 1% 步进采信**（2026-09-19 性能收敛）：`SigningSession` 是 struct，
+        // 挂在 `@Published var signingSession` 上 ⇒ 每一次赋值都会让整张抽屉重算。
+        // AFC 回调可以每几毫秒来一次，全量转发的话「更流畅」反而制造掉帧；
+        // 环本来就只显示整数百分比，1% 就是它能表达的最小粒度。
+        let previous = signingSession?.installProgress ?? 0
+        guard progress - previous >= 0.01 else { return }
         signingSession?.installProgress = progress
+    }
+
+    /// 阶段内部的真实计数（第 i / N 个 Bundle ID、第 i / N 份描述文件）→ 刷新进度 UI。
+    ///
+    /// ⚠️ **同一阶段的倒退计数直接丢弃**：Phase 1 有「扩展失败就降级/跳过」的分支，
+    /// 跳过后再回报会让 `done` 变小 ⇒ 环上的数字往回跳一格，正是「跳着走」的观感来源。
+    /// 跨阶段的计数不在这里判（判据只有一处：`SigningProgressBudget` 会校验
+    /// `workUnits.stage` 与当前阶段一致，残留旧阶段的值不会被采信）。
+    private func updateWorkUnits(_ units: SigningWorkUnits) {
+        guard signingSession != nil else { return }
+        // 采信规则与批量共用一份（`SigningWorkUnits.shouldAccept`）：
+        // 两处各写一遍的话，改了一处另一处会静默漂移。
+        guard SigningWorkUnits.shouldAccept(units, over: signingSession?.workUnits) else { return }
+        signingSession?.workUnits = units
     }
 
     // SigningCoordinator 在证书序列号确定后回传（actor 上下文 → hop 回 MainActor 更新快照）

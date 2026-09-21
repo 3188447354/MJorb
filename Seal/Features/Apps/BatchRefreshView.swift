@@ -60,6 +60,19 @@ struct BatchRefreshView: View {
                 Text(viewModel.batchRefreshSession?.currentAppName ?? "当前 App")
                     .font(.system(size: 18, weight: .semibold))
                     .lineLimit(1)
+                // ★ 当前 App 的 5 格阶段轨道：与单签抽屉**同一个视图、同一张预算表**
+                //（`SigningStageTrack` → `SigningProgressBudget.bucketFill`）。
+                // 它只讲「手上这一个 App 走到哪一段」；整批进度照旧由上面的 `i / total`
+                // 和下面的队列承担，两件事不互相冒充。
+                if let session = viewModel.batchRefreshSession, let stage = session.currentStage {
+                    SigningStageTrack(
+                        stage: stage,
+                        realProgress: session.currentInstallProgress,
+                        workUnits: session.workUnits,
+                        stageStartedAt: session.stageStartedAt
+                    )
+                    .padding(.top, 4)
+                }
                 uploadProgressBlock
                 installWaitBlock
             }

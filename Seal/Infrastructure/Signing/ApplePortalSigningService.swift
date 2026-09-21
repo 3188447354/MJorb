@@ -503,7 +503,8 @@ actor ApplePortalSigningService {
         allowDroppingExtensions: Bool,
         persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void,
         persistRevokedSigningMaterial: @escaping @Sendable (AccountSecret, [String]) async throws -> Void,
-        progress: @escaping @Sendable (SigningStage) async -> Void
+        progress: @escaping @Sendable (SigningStage) async -> Void,
+        onWorkUnits: @escaping @Sendable (SigningWorkUnits) async -> Void = { _ in }
     ) async throws -> PortalSigningResult {
         let secretState = SigningSecretState(secret)
         let persistence: @Sendable (AccountSecret, String) async throws -> Void = {
@@ -531,7 +532,8 @@ actor ApplePortalSigningService {
                 allowDroppingExtensions: allowDroppingExtensions,
                 persistSigningMaterial: persistence,
                 persistRevokedSigningMaterial: revokedPersistence,
-                progress: progress
+                progress: progress,
+                onWorkUnits: onWorkUnits
             )
         } catch let failure as ImportFailure where failure.code == "SEAL-AUTH-107" {
             // ⚠️ **不能无差别替换文案**（2026-09-18 真机：用户因此陷入死循环）。
@@ -578,7 +580,8 @@ actor ApplePortalSigningService {
                 allowDroppingExtensions: allowDroppingExtensions,
                 persistSigningMaterial: persistence,
                 persistRevokedSigningMaterial: revokedPersistence,
-                progress: progress
+                progress: progress,
+                onWorkUnits: onWorkUnits
             )
         } catch ALTAppleAPIError.invalidAnisetteData {
             await anisetteProvider.resetProvisioning()
@@ -596,7 +599,8 @@ actor ApplePortalSigningService {
                     allowDroppingExtensions: allowDroppingExtensions,
                     persistSigningMaterial: persistence,
                     persistRevokedSigningMaterial: revokedPersistence,
-                    progress: progress
+                    progress: progress,
+                    onWorkUnits: onWorkUnits
                 )
             } catch let failure as ImportFailure {
                 throw failure
@@ -631,7 +635,8 @@ actor ApplePortalSigningService {
         allowDroppingExtensions: Bool,
         persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void,
         persistRevokedSigningMaterial: @escaping @Sendable (AccountSecret, [String]) async throws -> Void,
-        progress: @escaping @Sendable (SigningStage) async -> Void
+        progress: @escaping @Sendable (SigningStage) async -> Void,
+        onWorkUnits: @escaping @Sendable (SigningWorkUnits) async -> Void = { _ in }
     ) async throws -> PortalSigningResult {
         var stage: ApplePortalSigningStage = .account
         do {
@@ -840,7 +845,8 @@ actor ApplePortalSigningService {
                 allowDroppingExtensions: allowDroppingExtensions,
                 team: team,
                 session: session,
-                progress: progress
+                progress: progress,
+                onWorkUnits: onWorkUnits
             )
             try Task.checkCancellation()
             guard profilePreparation.profiles.contains(where: {
@@ -1694,7 +1700,8 @@ actor ApplePortalSigningService {
         allowDroppingExtensions: Bool,
         team: ALTTeam,
         session: ALTAppleAPISession,
-        progress: @escaping @Sendable (SigningStage) async -> Void
+        progress: @escaping @Sendable (SigningStage) async -> Void,
+        onWorkUnits: @escaping @Sendable (SigningWorkUnits) async -> Void = { _ in }
     ) async throws -> ProfilePreparation {
         guard let mainApplication = ALTApplication(fileURL: appURL) else {
             throw Self.failure(
@@ -1969,6 +1976,14 @@ actor ApplePortalSigningService {
                     }
                 }
                 preparedAppIDs.append((originalBundleID, mappedBundleID, appID))
+                // 真实信号：Bundle ID 是按个数推进的（抖音 = 主 App + 8 扩展 = 9 个）。
+                // 用**已就绪的个数**而不是循环下标 —— 丢扩展的分支会少产出，
+                // 分母取 `mappings.count` 时进度只会「走得慢一点」，不会假装已完成。
+                await onWorkUnits(SigningWorkUnits(
+                    stage: .preparingAppID,
+                    done: preparedAppIDs.count,
+                    total: mappings.count
+                ))
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -2015,6 +2030,12 @@ actor ApplePortalSigningService {
                     )
                 }
                 profiles.append(profile)
+                // 真实信号：描述文件也是一份一份取的，分母是 Phase 1 已就绪的个数。
+                await onWorkUnits(SigningWorkUnits(
+                    stage: .preparingProfiles,
+                    done: profiles.count,
+                    total: preparedAppIDs.count
+                ))
             } catch is CancellationError {
                 throw CancellationError()
             } catch let failure as ImportFailure {

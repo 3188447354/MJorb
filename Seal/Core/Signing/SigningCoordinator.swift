@@ -75,7 +75,11 @@ actor SigningCoordinator {
         // 进入长达数分钟的 installd 安装期，不补发就整段停在「传输中」（2026-09-16 真机反馈）。
         // 单签路径保持 false —— 它的 UI 自己订阅 1.01 哨兵（SigningProgressView.onChange
         // 据此触发 Seal 回主页），保持单一来源，避免同一事件两条路径都切阶段。
-        broadcastsInstallStage: Bool = false
+        broadcastsInstallStage: Bool = false,
+        // 阶段内部**可数**的完成量（第 i / N 个 Bundle ID、第 i / N 份描述文件）。
+        // 界面据此决定环上要不要给百分比：有出处才给数字，没有就转弧不报数
+        //（2026-09-19 设计讨论 —— 既不用假预估骗人，也不让界面全程静止）。
+        onWorkUnits: @escaping @Sendable (SigningWorkUnits) async -> Void = { _ in }
     ) async throws -> AppRecord {
         guard var app = try await appStore.fetchAll().first(where: { $0.id == appID }) else {
             throw Self.failure(
@@ -268,7 +272,8 @@ actor SigningCoordinator {
                     },
                     progress: { stage in
                         await progress(stage)
-                    }
+                    },
+                    onWorkUnits: onWorkUnits
                 )
             } catch let failure as ImportFailure where Self.isOrphanCertificateBlocking(failure) {
                 // 覆盖安装后 keychain 清空：远端仍存在的证书对本机永远不可用
@@ -329,7 +334,8 @@ actor SigningCoordinator {
                     },
                     progress: { stage in
                         await progress(stage)
-                    }
+                    },
+                    onWorkUnits: onWorkUnits
                 )
             }
 

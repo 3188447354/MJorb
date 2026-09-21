@@ -28,6 +28,11 @@ enum BatchRefreshEvent: Sendable {
     /// 混进阶段事件会让「阶段变化」这个低频信号被淹没，消费端也难以区分
     /// 「阶段推进了」和「同一个阶段里进度动了」。
     case appInstallProgress(index: Int, total: Int, app: AppRecord, progress: Double)
+    /// 阶段内部可数的完成量（第 i / N 个 Bundle ID、第 i / N 份描述文件）。
+    ///
+    /// 与 `appInstallProgress` 同样**单独一个事件**、不塞进 `appProgress`：它也是高频回调，
+    /// 混进阶段事件会把低频的「阶段推进」淹掉。
+    case appWorkUnits(index: Int, total: Int, app: AppRecord, units: SigningWorkUnits)
     case appSucceeded(index: Int, total: Int, app: AppRecord)
     case appFailed(index: Int, total: Int, app: AppRecord, failure: ImportFailure)
 }
@@ -283,7 +288,20 @@ actor RenewalCoordinator {
                         // 在 broadcastsInstallStage 之前）—— 写反了是编译错误，
                         // 而本机没有 Swift 工具链、build-package 又不编译测试 target，
                         // 只有守卫 R09 能提前拦住（2026-09-16 实际踩到一次）。
-                        broadcastsInstallStage: true
+                        broadcastsInstallStage: true,
+                        // 阶段内部**可数**的完成量（注册第 i / N 个 Bundle ID、取第 i / N
+                        // 份描述文件）。批量抽屉的轨道用它把那两格从「按 τ 慢爬」变成
+                        // 「一格一格跳」；没有它的阶段仍走估算，界面上不报百分比。
+                        onWorkUnits: { units in
+                            await progress(
+                                .appWorkUnits(
+                                    index: offset + 1,
+                                    total: queue.count,
+                                    app: latestApp,
+                                    units: units
+                                )
+                            )
+                        }
                     )
                     updatedRecord = updated
                     lastError = nil

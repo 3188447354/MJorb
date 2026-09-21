@@ -23,6 +23,14 @@ struct SigningSession: Identifiable, Equatable, Sendable {
     var status: Status
     /// 上传安装阶段的真实进度（0-1），仅 `.pushing` 阶段由安装通道 AFC 上传回传。
     var installProgress: Double?
+    /// 当前阶段内部**可数的**完成量（第 i / N 个 bundle ID、已重签 i / N 个可执行文件…）。
+    ///
+    /// 有了它，环上的每一个百分比都有出处；为 nil 时界面画不确定的转弧、**不给数字**
+    /// （2026-09-19 设计讨论：既不用假预估骗人，也不让界面全程静止）。
+    ///
+    /// 与 `installProgress` 同理，这里带着 `stage` 由消费侧校验 —— 残留上一阶段的
+    /// 计数会把进度从新阶段的地板拽回去，所以**不需要**在切阶段时清空它。
+    var workUnits: SigningWorkUnits?
     /// 进入 `.installing` 的时刻。installd 安装期间**没有任何进度回报**，
     /// 进度环只能停在 93%（或显示「替换中」）。这里记下起点，让 UI 至少能给出
     /// 「已等待 X 分 Y 秒」——把「没反应」和「正在装」区分开（2026-09-16 真机反馈）。

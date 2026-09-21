@@ -473,7 +473,68 @@
 **验证状态**：修法已本地实证 ✓；本次**未重新构建助手**（只修生成侧，下次 dispatch 自然带上）；
 推送未触发任何工作流（`fix/**` 不在该 workflow 的 `push.branches`，且 `ios.yml` 的 `paths` 不含它）✓。
 
+### 2026-09-21 · 批量续签抽屉加上「当前 App」的轨道；同一轮把「预期说明」整条撤掉
+
+**需求来源**（用户逐字）：「批量续签还是原来的 UI，但在队列上面加一个单独续签的轨道」
++「Seal 自续签逻辑不变，一样回主页，就是加个 UI」。
+
+**为什么值得做**：批量续签里每一格都没有反馈 —— 抽屉只有 `i / total` + 一句阶段名 +
+一行 App 名，而**一项在注册 Bundle ID 上可以停 25 秒、准备应用文件上可以停 118 秒**
+（抖音）。单签抽屉 09-18 起已经有五格轨道，批量却没有。
+
+**做法（刻意只做 UI）**：
+1. 把轨道从 `SigningProgressView` 抽成 `SigningStageTrack`（同文件内，`struct`），
+   两个抽屉都用它。**抽出来的理由不是复用好看，是防漂移** —— 格子的填充比例只许
+   `SigningProgressBudget.bucketFill` 一处给出；批量自己再画一条就是「同一条规则两份实现」
+   （本仓已为此踩过 7 次）。
+2. `BatchRefreshSession` 补两个字段：`stageStartedAt`（每个阶段的起点，格内爬动要用）与
+   `workUnits`。`advanceStage` 里**换阶段就重置这两个** —— 批量特有的坑：下一项会重走
+   同名阶段，上一项残留的 `9 / 9` 会让新 App 的第一格直接画满（与当年 `installProgress`
+   切阶段残留是同一类）。
+3. `RenewalCoordinator` 新增事件 `appWorkUnits(index:total:app:units:)`，把
+   `signAndInstall(onWorkUnits:)` 转出去。**单独一个事件而不是塞进 `appProgress`**：
+   它和 `appInstallProgress` 一样是高频回调，混进低频的「阶段推进」会把后者淹掉。
+4. 采信规则抽成 `SigningWorkUnits.shouldAccept(_:over:)`，单签的 `updateWorkUnits`
+   与批量的 `recordWorkUnits` 都调它 —— 「丢弃同阶段倒退计数」这条规则不许有两份。
+5. **Seal 自替换链路一行未动**：`.pushing/.installing` 的 `preparingSealUpdate`、
+   `persistPendingBatchResultForSealUpdate` 预记 `completed`、`InstallStageTimeline.Tick`
+   闸门、`returnToHomeAfterSealUpload` 全部保持原样。
+6. 同一轮按用户决定**整条撤掉「预期说明」**（`SigningStage.expectationText` +
+   `SigningProgressBudget.expectationThreshold` + 视图里的第三行 + 4 条相关单测）。
+   当初留它的理由是「`.preparingBundle` 被显示成『正在验证 Apple ID』⇒ 用户白等 118 秒
+   去重登」，而那个根因已由**阶段名本身**修掉；用一句解释去补一个已经正确的标题，
+   只是把抽屉堆满。**教训：文案层不该用来兜住数据层的错** —— 那次真正该修的（也修了）
+   是阶段归属，不是多加一行。
+
+**守卫（R64，新增 6 条 + 4 个变异锚点）**：批量抽屉必须出现 `SigningStageTrack(`、
+且**不许**自己引用 `SigningProgressBudget`；单签抽屉也必须经由它（抽了没人用＝原地留了两份）；
+`RenewalCoordinator` 必须真的传 `onWorkUnits:`（**只声明依赖不等于接上了** —— 不接上界面只是
+慢一点，没人会发现）；`BatchRefreshSession` 必须走共用的 `shouldAccept` 并记 `stageStartedAt`。
+
+**涉及文件**：`Seal/Features/Apps/SigningProgressView.swift`、`BatchRefreshView.swift`、
+`AppsViewModel.swift`、`Seal/Core/Renewal/BatchRefreshSession.swift`、`RenewalCoordinator.swift`、
+`Seal/Core/Signing/SigningProgressBudget.swift`、`SigningStage.swift`、
+`SealTests/Signing/SigningWorkUnitsProgressTests.swift`、`Scripts/verify-release-safety.py`。
+
+**验证状态**：⚠️ 未编译（Windows 本机无 Swift 工具链）。静态核对：锚点唯一性逐条 `grep -c` = 1、
+R36 四个必需符号仍在 `SigningProgressView.swift` 内（轨道本体就在该文件）、
+`overallProgress` 在该文件 0 次、`expectationText` 全仓 0 引用。本地守卫全量（含变异）**PASS：静态断言 468 条 + 变异自检 248 条**
+（条数比上一轮 +6 / +4，正好等于 R64 新增的断言与锚点 ⇒ 新守卫真的在跑，不是空挂）；
+跑完后又改过一次注释与单测断言，用**最终状态复跑一遍仍然 PASS**。
+**真机判据**：批量签抖音时，队列上方五格里第 2 格应在「准备应用文件」期间缓慢爬、
+第 3 格应在注册 Bundle ID 时一格一格跳（共 9 个 Bundle）；换到下一个 App 时整条回到起点。
+
+**本轮明确没做**：批量结果的「待确认」态（把 Seal 那行从预记 `completed` 改成结算态）——
+它要连恢复链一起改（`persistPendingBatchResultForSealUpdate` + `restorePendingBatchResultIfNeeded`
++ 载荷字段 + `BatchRefreshResult` 计数不变量），单翻载荷一处会造出「同一批次两个结论」，
+台账另记（任务 #11）。
+
+
+
 ### 2026-09-21 · 签名抽屉的进度：从「假预估 vs 全程静止」换成「数工作单元」
+
+> ⚠️ **同一天稍后**：本条目第 5 点的「预期说明」那一行**已被整条撤掉**
+> （见上一条 09-21 条目第 6 点）。下面那段留着是为了记清当时的判断与它被推翻的理由。
 
 **背景**（用户要求：按视觉最佳 / 体验最好的方式做，并讨论文案设计）：
 2026-09-18 把进度改成「阶段内按 τ 指数收敛」→ 用户 09-19 反馈「圈圈不要假预估」→
@@ -522,6 +583,28 @@
    各加一个带默认值的尾参 ⇒ 既有调用点（含批量 / 续签两条链路）不必改。
 7. UI 侧单向钳制：`updateWorkUnits` 丢弃**同阶段的倒退计数**（Phase 1 有"扩展降级 / 跳过"
    分支，跳过后回报会让 `done` 变小 ⇒ 数字往回跳一格，正是「跳着走」的观感来源）。
+8. 底部轨道只加**两条由真实事件驱动**的动效（用户在那份 HTML 审核稿上逐项挑定）：
+   ① **完成闪** —— 某格从不满跨到满（＝该分段真的全部走完、整格变绿）的那一刻，
+   0.45 秒亮度回落一次；它不推进任何数字，也不是循环动效。
+   ② **宽度缓动** 0.2s ease-out —— 只在 `animatesFill`（＝本阶段**有真实信号**、
+   轨道 `TimelineView` 处于 `paused`、值只在回调时跳一下）时挂；
+   没真值时轨道由 30Hz 逐帧重算，再叠一层动画就是两份时间基准互相拖。
+   ⚠️ **踩到的 SwiftUI 坑**：原先 `progressSegment` 用 `if/else` 返回
+   `CurrentSegmentFill` 或 `Capsule` 两种类型 —— 一格从「当前」翻成「已完成」时
+   **视图标识变了 ⇒ 实例被重建 ⇒ `@State` 归零**，完成闪永远慢不到那一拍（表现为干脆不响）。
+   ⇒ 分支收进同一个 `StageSegmentCell`（内部再 `if isCurrent`），身份连续，
+   `onChange(of: fill >= 1)` 才抓得到那条上升沿。**教训：凡要挂「一次性」动效的元素，
+   它的状态必须活过外观切换 —— 别用返回不同类型的方式画它的两种状态。**
+   ⚠️ 同一段里还有第二个坑：**「峰值 + 回落」不能写在同一轮** ——
+   `flashBrightness = 0.6` 紧跟 `withAnimation { flashBrightness = 0 }` 会被合并成
+   「0 → 0」（渲染只看到最终值，动画从旧值 0 走到新值 0）⇒ 峰值根本不上屏，闪等于没有。
+   改成回落排到下一个 runloop；用 `DispatchQueue.main.async` 而不是
+   `Task.sleep(nanoseconds: 16_000_000)`，因为本 App 的协作线程池常被同步 FFI 占住、
+   定时器恢复会推迟（AGENTS.md「安装」一节记过同一族机制），而主队列那一跳是确定性的。
+   ⚠️ **被当场否掉的三种形状（别再提）**：格宽按耗时加权（「不是很好看」）、
+   每阶段一格＝10 格（「格子太多很乱」）、连续长条＋刻线（回「用 5 个格子的」；
+   且它在实测里暴露「安装 8 秒完成 vs 预期 50 秒 ⇒ 剩余预期一次性退出分母 ⇒ 长条猛跳 18%」）。
+   轨道在长阶段里的缓慢死停**接受为代价** —— 安抚由环的转弧与「本阶段已用时」的秒数承担。
 
 **守卫**：R36 加反向断言「界面里的百分比只能来自 `confirmedProgress`」
 （`overallProgress(` 出现在视图里即失败）+ 变异锚点：把那一行换成 `overallProgress(`

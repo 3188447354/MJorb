@@ -47,4 +47,26 @@ enum SigningStage: String, CaseIterable, Equatable, Sendable {
             return "正在验证安装"
         }
     }
+
+    /// 真值行：这一步**在数什么**。
+    ///
+    /// 只在有可数对象、且计数确实属于当前阶段时才产出一行 —— 拿不出计数的阶段宁可空着，
+    /// 也不写一句「正在进行中」占位（那是用措辞假装信息）。
+    func unitsText(_ units: SigningWorkUnits?) -> String? {
+        guard let units, units.stage == self, units.total > 0 else { return nil }
+        switch self {
+        case .preparingBundle:
+            return "已处理 \(units.done) / \(units.total) 个文件"
+        case .preparingAppID:
+            return "已注册 \(units.done) / \(units.total) 个 Bundle ID"
+        case .preparingProfiles:
+            return "已取得 \(units.done) / \(units.total) 份描述文件"
+        case .signing:
+            return "已重签 \(units.done) / \(units.total) 个可执行文件"
+        case .verifying:
+            return "已核对 \(units.done) / \(units.total) 项"
+        case .waitingForChannel, .preparingAccount, .preparingCertificate, .pushing, .installing:
+            return nil
+        }
+    }
 }

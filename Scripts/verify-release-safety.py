@@ -1941,6 +1941,17 @@ def violations(load=read):
     ):
         check(budget_symbol in budget_view,
               "R36: `SigningProgressView` 必须用 " + budget_symbol + "（" + budget_why + "）")
+    # ⚠️ 反向断言（2026-09-19）：**估算函数不许回流到界面**。
+    # 用户已明确否掉「圈圈跟着假预估爬」，而 `overallProgress` 就是那份估算的唯一出口
+    #（它仍被单测与轨道兜底分支使用，所以函数本身留着）。
+    # 只查「视图有没有调它」比只查「视图有没有写死常数」更强 —— 后者挡不住「换了个来源骗人」。
+    check("SigningProgressBudget.overallProgress(" not in budget_view,
+          "R36: 界面上的百分比只能来自 `confirmedProgress`（有真实信号才有数字）—— "
+          "`overallProgress` 是按 τ 收敛的估算，回流到界面就是重新编数字")
+    # ⚠️ 刻意**不加**「视图必须调 hasRealSignal」这条正向断言：那个符号在视图里出现两次
+    #（环 + 轨道），删掉一处仍会留下另一处 ⇒ 断言失去约束力，而变异锚点又只能打在
+    # 「恰好还剩那一处」上，看起来在守、其实没守（本仓已为「同一模式多处出现」踩过一次）。
+    # 真正会拦住误删的是编译器 —— 视图不调它就没有那个变量，`swift-regression` 直接红 ✓。
     # 界面里不许再出现写死的进度常数 —— 那正是「跳着走」的来源。
     for stale_progress in (
         "case .preparingBundle: return 0.23",
@@ -3403,6 +3414,37 @@ def violations(load=read):
           "`Muxer.reset()` 会把 remotePairing 清成 false，之后再问恒为假 ⇒ "
           "`RustIdevice.invalidateConnection()` 永远不执行，重试一直复用死连接 ✗")
 
+    # R64: 批量续签抽屉的轨道必须**复用**单签那条，且批量链路必须真的把
+    # 「阶段内可数进度」接进会话（2026-09-21）。
+    #
+    # 两条各自都是本仓的老病：
+    #  ① 「同一条规则两份实现」—— 两个抽屉各算一份格子填充，改一处另一处静默失效；
+    #  ② 「只声明依赖不等于接上了」—— `signAndInstall` 有 `onWorkUnits` 形参，
+    #     批量调用点不传，轨道那两格就永远退回慢爬，而**界面上没人会发现** ✗。
+    batch_track_view = strip_comments(load("Seal/Features/Apps/BatchRefreshView.swift"))
+    check("SigningStageTrack(" in batch_track_view,
+          "R64: 批量续签抽屉必须复用共用的 `SigningStageTrack` ✗ —— 自己再画一条"
+          "就等于把 `bucketFill` 抄第二份，两处从此各说各话")
+    check("SigningProgressBudget" not in batch_track_view,
+          "R64: 批量抽屉不许自己算进度数值 ✗ —— 数值只能由共用的轨道视图给出")
+    single_track_view = strip_comments(load("Seal/Features/Apps/SigningProgressView.swift"))
+    check("SigningStageTrack(" in single_track_view,
+          "R64: 单签抽屉也必须经由共用的 `SigningStageTrack` ✗ —— 抽出来却没人用，"
+          "等于原地留下第二份实现")
+
+    renewal_source = strip_comments(load("Seal/Core/Renewal/RenewalCoordinator.swift"))
+    check("onWorkUnits: { units in" in renewal_source
+          and "case appWorkUnits(" in renewal_source,
+          "R64: 批量链路必须把阶段内的可数进度转成 `.appWorkUnits` 事件 ✗ —— "
+          "不接上，抽屉轨道在「注册 Bundle ID / 申请描述文件」两格仍是按 τ 慢爬")
+    batch_session_source = strip_comments(load("Seal/Core/Renewal/BatchRefreshSession.swift"))
+    check("SigningWorkUnits.shouldAccept(" in batch_session_source,
+          "R64: 批量采信计数必须走共用的 `SigningWorkUnits.shouldAccept` ✗ —— "
+          "与单签各写一份「丢弃倒退计数」，改一处另一处不会编译失败")
+    check("stageStartedAt = now" in batch_session_source,
+          "R64: `advanceStage` 必须记 `stageStartedAt` ✗ —— 没有每阶段起点，"
+          "轨道格内的爬动恒等于 0 秒，整条轨道会钉在地板上")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -4460,9 +4502,15 @@ def main():
           "        let confirmed = SigningProgressBudget.confirmedProgress(",
           "        let confirmed = 0.93 + 0 * Double(",
           "R36: `SigningProgressView` 必须用 SigningProgressBudget.confirmedProgress("),
+        # 把「已确认」悄悄换成「估算」：数字重新开始编（2026-09-19 用户明确否掉假预估）。
+        # 这条是上面那条反向断言的自检 —— 删掉 `overallProgress(` 的禁令它必须报红。
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         "        let confirmed = SigningProgressBudget.confirmedProgress(",
+         "        let confirmed = SigningProgressBudget.overallProgress(",
+         "R36: 界面上的百分比只能来自 `confirmedProgress`"),
         # 界面里重新写死一个进度常数（死代码也一样算）：这是「跳着走」的原样重演。
         ("Seal/Features/Apps/SigningProgressView.swift",
-         "    private func stageElapsed(_ now: Date) -> TimeInterval {",
+         "    private func stageElapsed(at now: Date, startedAt: Date?) -> TimeInterval {",
          "    private func legacyHardcodedProgress(for stage: SigningStage) -> Double {\n"
          "        switch stage {\n"
          "        case .installing: return 0.93\n"
@@ -4470,7 +4518,7 @@ def main():
          "        }\n"
          "    }\n"
          "\n"
-         "    private func stageElapsed(_ now: Date) -> TimeInterval {",
+         "    private func stageElapsed(at now: Date, startedAt: Date?) -> TimeInterval {",
          "R36: `SigningProgressView` 不许再写死进度"),
         # 把单测改宽：只断言「涨了」而不锁住「明显爬升」，约束就没了。
         ("SealTests/Signing/SigningProgressBudgetTests.swift",
@@ -4948,6 +4996,28 @@ def main():
          r'                "缺少 \(key) 时不应判定为完整的 Lockdown 配对文件"',
          "                key",
          "#expect must not pass a bare identifier as its comment"),
+        # ── R64：批量续签的轨道必须复用共用视图、且计数真的接上（2026-09-21）──
+        # ① 批量抽屉改回自己画一条轨道 ⇒ 同一条规则出现第二份实现 ✓ 报红。
+        ("Seal/Features/Apps/BatchRefreshView.swift",
+         "                    SigningStageTrack(",
+         "                    BatchStageTrackLegacy(",
+         "R64: 批量续签抽屉必须复用共用的 `SigningStageTrack`"),
+        # ② 批量调用点不再转发计数 ⇒ 界面上完全看不出来（轨道只是慢一点），
+        #    正是「只声明依赖不等于接上了」那一类 ⇒ 必须报红 ✓。
+        ("Seal/Core/Renewal/RenewalCoordinator.swift",
+         "onWorkUnits: { units in",
+         "onWorkUnitsDeprecated: { units in",
+         "R64: 批量链路必须把阶段内的可数进度转成 `.appWorkUnits` 事件"),
+        # ③ 批量自己另写一份采信规则（丢掉共用判据）⇒ 两处会漂移 ✓ 报红。
+        ("Seal/Core/Renewal/BatchRefreshSession.swift",
+         "        guard SigningWorkUnits.shouldAccept(units, over: workUnits) else { return }",
+         "        if units.done < 0 { return }",
+         "R64: 批量采信计数必须走共用的 `SigningWorkUnits.shouldAccept`"),
+        # ④ 每阶段起点不再记录 ⇒ 轨道格内的爬动恒从 0 秒开始，整条轨道钉在地板上 ✓ 报红。
+        ("Seal/Core/Renewal/BatchRefreshSession.swift",
+         "            stageStartedAt = now",
+         "            stageStartedAt = nil",
+         "R64: `advanceStage` 必须记 `stageStartedAt`"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

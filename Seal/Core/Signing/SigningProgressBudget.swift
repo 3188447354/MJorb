@@ -1,5 +1,38 @@
 import Foundation
 
+/// 一个阶段内部的**真实**完成量：已完成 / 总数。
+///
+/// 存在理由：界面不该在「假预估」与「全程静止」之间二选一（2026-09-19 设计讨论）。
+/// 本仓多数阶段其实**有可数的对象** —— 解压条目、待注册 bundle ID、待重签的可执行文件、
+/// 待核对的安装项。把这些计数报上来，环与数字就每一格都可解释。
+///
+/// ⚠️ 必须带 `stage`：消费侧只采信与当前阶段一致的计数。残留上一阶段的旧值会把进度从
+/// 新阶段的地板拽回去 —— 与 `installProgress` 当年「切阶段后残留旧值」是同一类缺陷。
+struct SigningWorkUnits: Equatable, Sendable {
+    let stage: SigningStage
+    let done: Int
+    let total: Int
+
+    /// 阶段内部完成比例（0–1）。`total <= 0` 或 `done < 0` 时返回 nil ⇒
+    /// 表示「这次没有可信信号」，界面退回不确定态，而不是画 0% 或除零。
+    var fraction: Double? {
+        guard total > 0, done >= 0 else { return nil }
+        return Swift.min(1, Double(done) / Double(total))
+    }
+}
+
+extension SigningWorkUnits {
+    /// 一条上报该不该采信 —— 单签与批量**共用这一份**判据（同一条规则抄两遍
+    /// 是本仓第 7 次踩坑的来源）。
+    ///
+    /// 丢弃「同一阶段的倒退计数」：Phase 1 有「扩展降级 / 跳过」分支，跳过后回报的
+    /// `done` 会变小 ⇒ 屏幕上的数字往回跳一格，正是「跳着走」的观感来源。
+    static func shouldAccept(_ next: SigningWorkUnits, over current: SigningWorkUnits?) -> Bool {
+        guard let current, current.stage == next.stage else { return true }
+        return next.done >= current.done
+    }
+}
+
 /// 签名 / 续签进度环与底部阶段轨道的**唯一**数值来源。
 ///
 /// ## 为什么需要它（2026-09-18 用户反馈「进度条跳着走、看着像卡住」）
@@ -183,6 +216,12 @@ enum SigningProgressBudget {
 
     /// 界面最终显示的进度（0–100）。
     ///
+    /// ⚠️ 2026-09-19：**生产路径不再用它显示数字** —— 数字一律走
+    /// `confirmedProgress(stage:realProgress:workUnits:)`（只有真实信号才给百分比）。
+    /// 保留它是因为「按时间收敛」这件事仍要有唯一出口（轨道格内填充经 `stageFraction`
+    /// 的兜底分支使用同一套公式），删掉就会逼出第二份收敛实现 —— 本仓已为
+    /// 「同一条规则两份实现」踩过 7 次。
+    ///
     /// - Parameter realProgress: 安装通道回传的真实上传进度（0–1）。**只有**
     ///   `Plan.usesRealProgress` 为真的阶段采信它，其余阶段一律忽略 —— 否则切到
     ///   别的阶段后残留的旧值会把进度拽回去。
@@ -211,6 +250,53 @@ enum SigningProgressBudget {
         return budget.floor + (budget.ceiling - budget.floor) * fraction
     }
 
+    /// 本阶段**真实**的完成比例（0–1）；没有可信信号时返回 nil。
+    ///
+    /// 优先级只有一条：`workUnits`（可数的对象）＞ 字节进度（仅 `usesRealProgress`
+    /// 的阶段采信）＞ nil。返回 nil 时界面**不给数字**、改画不确定的转弧 ——
+    /// 这是「假预估」与「全程静止」之外的第三条路（2026-09-19 设计讨论）。
+    static func realFraction(
+        stage: SigningStage,
+        realProgress: Double?,
+        workUnits: SigningWorkUnits?
+    ) -> Double? {
+        if let workUnits, workUnits.stage == stage, let fraction = workUnits.fraction {
+            return fraction
+        }
+        guard plan(for: stage).usesRealProgress, let realProgress else { return nil }
+        return clampUnit(realProgress)
+    }
+
+    /// 环能不能给这个数字：能 ⇒ 有真实信号；不能 ⇒ 转弧、环心不放数字。
+    static func hasRealSignal(
+        stage: SigningStage,
+        realProgress: Double?,
+        workUnits: SigningWorkUnits?
+    ) -> Bool {
+        realFraction(stage: stage, realProgress: realProgress, workUnits: workUnits) != nil
+    }
+
+    /// 带真实信号版的「已确认进度」（0–100）。
+    ///
+    /// 无真实信号时返回**地板值**，而不是按时间爬的估算 —— 屏幕上出现的每一个百分比
+    /// 都必须有出处。时间驱动的那一套只留给底部轨道格内的缓慢填充
+    /// （有界、且永远不会称「已完成」）。
+    static func confirmedProgress(
+        stage: SigningStage,
+        realProgress: Double?,
+        workUnits: SigningWorkUnits?
+    ) -> Double {
+        let budget = plan(for: stage)
+        guard let fraction = realFraction(
+            stage: stage,
+            realProgress: realProgress,
+            workUnits: workUnits
+        ) else {
+            return budget.floor
+        }
+        return budget.floor + (budget.ceiling - budget.floor) * fraction
+    }
+
     /// 本阶段是否处于「估算」状态。
     ///
     /// 界面据此决定要不要给当前格加扫光、给弧的前端加呼吸点：有真实上传进度的格子
@@ -226,12 +312,22 @@ enum SigningProgressBudget {
     static func stageFraction(
         stage: SigningStage,
         elapsed: TimeInterval,
-        realProgress: Double?
+        realProgress: Double?,
+        workUnits: SigningWorkUnits? = nil
     ) -> Double {
         let budget = plan(for: stage)
         let span = budget.ceiling - budget.floor
         guard span > 0 else { return 0 }
-        let value = overallProgress(stage: stage, elapsed: elapsed, realProgress: realProgress)
+        // 有真实信号就用真实的；没有才退回「按已过时间收敛」的格内填充。
+        // 这条兜底刻意**只**服务于轨道：它不产生百分比数字（数字走 `confirmedProgress`）。
+        if let fraction = realFraction(
+            stage: stage,
+            realProgress: realProgress,
+            workUnits: workUnits
+        ) {
+            return fraction
+        }
+        let value = estimatedProgress(stage: stage, elapsed: elapsed)
         return clampUnit((value - budget.floor) / span)
     }
 
@@ -248,14 +344,20 @@ enum SigningProgressBudget {
         _ bucket: Int,
         stage: SigningStage,
         elapsed: TimeInterval,
-        realProgress: Double?
+        realProgress: Double?,
+        workUnits: SigningWorkUnits? = nil
     ) -> Double {
         let budget = plan(for: stage)
         if bucket < budget.bucket { return 1 }
         if bucket > budget.bucket { return 0 }
         let total = bucketTotal(budget.bucket)
         guard total > 0 else { return 0 }
-        let fraction = stageFraction(stage: stage, elapsed: elapsed, realProgress: realProgress)
+        let fraction = stageFraction(
+            stage: stage,
+            elapsed: elapsed,
+            realProgress: realProgress,
+            workUnits: workUnits
+        )
         return clampUnit((Double(budget.indexInBucket) + fraction) / Double(total))
     }
 

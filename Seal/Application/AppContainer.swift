@@ -1,0 +1,294 @@
+import Foundation
+
+@MainActor
+struct AppContainer {
+    let appsViewModel: AppsViewModel
+    let settingsViewModel: SettingsViewModel
+    let certificateExportHandler: CertificateExportHandler
+
+    static func live(
+        arguments: [String] = ProcessInfo.processInfo.arguments
+    ) -> AppContainer {
+        if let testModel = AppsViewModel.uiTestModel(arguments: arguments) {
+            return AppContainer(
+                appsViewModel: testModel,
+                settingsViewModel: .preview(),
+                certificateExportHandler: CertificateExportHandler(
+                    keychain: KeychainVault(),
+                    signingPreferenceStore: SigningPreferenceStore()
+                )
+            )
+        }
+
+        do {
+            let fileManager = FileManager.default
+            guard let applicationSupport = fileManager.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            ).first else {
+                throw AppStoreError.invalidConfiguration
+            }
+            let sealDirectory = applicationSupport.appending(
+                path: AppConfiguration.Paths.applicationSupportSubdirectory,
+                directoryHint: .isDirectory
+            )
+            try fileManager.createDirectory(
+                at: sealDirectory,
+                withIntermediateDirectories: true
+            )
+            try CompleteFileProtector().protect(sealDirectory)
+
+            let appStore = try Self.makeAppStore(in: sealDirectory)
+            let fileStore = try AppFileStore.live()
+            let accountRepository = ProtectedAccountRepository(
+                fileURL: sealDirectory.appending(path: AppConfiguration.Paths.accountsFile)
+            )
+            let keychain = KeychainVault()
+            let signingPreferenceStore = SigningPreferenceStore()
+            let certificateExportHandler = CertificateExportHandler(
+                keychain: keychain,
+                signingPreferenceStore: signingPreferenceStore
+            )
+            let pairingStore = PairingStore(
+                fileURL: sealDirectory.appending(path: AppConfiguration.Paths.pairingFile)
+            )
+            let anisetteProvider = AnisetteV3Client()
+            // logStore 必须先于 installChannel 构造：安装链路（尤其自替换）现在会写日志。
+            // 在这之前它一行日志都没有 —— 真机卡住时只剩「签名产物核验通过」然后一片空白。
+            let logStore = SealLogStore(
+                fileURL: sealDirectory.appending(path: AppConfiguration.Paths.sealLogFile)
+            )
+            let installChannel = MinimuxerInstallChannel(
+                pairingStore: pairingStore,
+                logDirectory: sealDirectory.appending(
+                    path: AppConfiguration.Paths.minimuxerLogsSubdirectory,
+                    directoryHint: .isDirectory
+                ),
+                logStore: logStore
+            )
+            let operationCoordinator = OperationCoordinator()
+            let workflow = ImportWorkflow(
+                parser: IPAParserService(),
+                fileStore: fileStore,
+                appStore: appStore
+            )
+            // 启动即创建/更新 Documents/Seal-log.txt，让文件 App 中的 Seal 目录始终可见。
+            // flush 会先加载已有日志，不会因本次镜像而清空历史。
+            Task { await logStore.flush() }
+            // 自替换事务与旧版 handoff 共用同一文件路径；新事务存取器在读取时
+            // 自动把遗留 handoff 记录迁移成事务，无需保留旧存取器实例。
+            let identityReader = AppBundleSigningIdentityReader()
+            let transactionStore = SelfReplacementTransactionStore(
+                fileURL: sealDirectory.appending(path: "SelfSigningHandoff.json")
+            )
+            let selfReplacement = SelfReplacementCoordinator(
+                store: transactionStore,
+                identityReader: identityReader,
+                ipaIdentityReader: SignedIPAIdentityReader(bundleReader: identityReader),
+                installChannel: installChannel,
+                fileStore: fileStore,
+                keychain: keychain,
+                processID: SelfReplacementProcess.currentID
+            )
+            let signingCoordinator = SigningCoordinator(
+                appStore: appStore,
+                accountRepository: accountRepository,
+                keychain: keychain,
+                fileStore: fileStore,
+                installChannel: installChannel,
+                portal: ApplePortalSigningService(
+                    anisetteProvider: anisetteProvider,
+                    logStore: logStore
+                ),
+                logStore: logStore,
+                selfReplacement: selfReplacement
+            )
+            let refreshQueueStore = RefreshQueueStore(
+                fileURL: sealDirectory.appending(path: AppConfiguration.Paths.refreshQueueFile)
+            )
+            let signingHistoryStore = SigningHistoryStore(
+                fileURL: sealDirectory.appending(path: AppConfiguration.Paths.signingHistoryFile)
+            )
+            let notificationScheduler = ExpiryNotificationScheduler()
+            let notificationPreferences = NotificationPreferences()
+            let renewalCoordinator = RenewalCoordinator(
+                appStore: appStore,
+                signingCoordinator: signingCoordinator,
+                queueStore: refreshQueueStore,
+                defaultAccountIDProvider: {
+                    let activeID = await signingPreferenceStore.activeAccountID()
+                    if let activeID,
+                       let accounts = try? await accountRepository.fetchAll(),
+                       accounts.contains(where: { $0.id == activeID && AccountAvailabilityPolicy.isSelectable($0) }) {
+                        return activeID
+                    }
+                    if let accounts = try? await accountRepository.fetchAll(),
+                       let firstSelectable = accounts.first(where: { AccountAvailabilityPolicy.isSelectable($0) }) {
+                        return firstSelectable.id
+                    }
+                    return nil
+                },
+                accountsProvider: {
+                    (try? await accountRepository.fetchAll()) ?? []
+                },
+                // 批量续签的逐项成功日志（SEAL-RENEW-020）走这里。
+                // 漏传不会编译失败，只会让「批量到底成没成」重新变成日志里的空白 ——
+                // 守卫 R12 断言了这个实参存在。
+                logStore: logStore
+            )
+            let appRecordRecovery = AppRecordRecovery(
+                appStore: appStore,
+                fileStore: fileStore
+            )
+            let selfAppRegistrar = SelfAppMetadata.current().map {
+                SelfAppRegistrar(
+                    metadata: $0,
+                    appStore: appStore,
+                    accountRepository: accountRepository,
+                    fileStore: fileStore,
+                    selfReplacement: selfReplacement,
+                    profileCleaner: DeviceProfileCleaner(
+                        readRunningIdentity: {
+                            try identityReader.read(bundleURL: Bundle.main.bundleURL)
+                        }
+                    ),
+                    keychain: keychain,
+                    logStore: logStore
+                )
+            }
+            // 维护作业：记录恢复 / Seal 自注册 / 孤儿文件清理 / 设备端旧描述文件清理。
+            // 通过 MaintenanceGate 只在空闲时运行，永不阻塞用户的前台操作。
+            let maintenanceJob = AppMaintenanceJob(
+                gate: MaintenanceGate(coordinator: operationCoordinator),
+                appStore: appStore,
+                fileStore: fileStore,
+                recovery: appRecordRecovery,
+                selfAppRegistrar: selfAppRegistrar,
+                logStore: logStore,
+                profileSweeper: DeviceProfileCleaner(),
+                sealRunningProfileUUID: {
+                    guard let identity = try? identityReader.read(bundleURL: Bundle.main.bundleURL) else {
+                        return nil
+                    }
+                    return identity.mainTarget?.profileUUID
+                }
+            )
+
+            return AppContainer(
+                appsViewModel: AppsViewModel(
+                    workflow: workflow,
+                    appStore: appStore,
+                    fileStore: fileStore,
+                    accountRepository: accountRepository,
+                    keychain: keychain,
+                    signingCoordinator: signingCoordinator,
+                    installChannel: installChannel,
+                    renewalCoordinator: renewalCoordinator,
+                    logStore: logStore,
+                    signingHistoryStore: signingHistoryStore,
+                    notificationScheduler: notificationScheduler,
+                    notificationPreferences: notificationPreferences,
+                    signingPreferenceStore: signingPreferenceStore,
+                    operationCoordinator: operationCoordinator,
+                    maintenanceJob: maintenanceJob
+                ),
+                settingsViewModel: SettingsViewModel(
+                    accountRepository: accountRepository,
+                    keychain: keychain,
+                    accountClient: AppleAccountClient(
+                        anisetteProvider: anisetteProvider
+                    ),
+                    pairingStore: pairingStore,
+                    installChannel: installChannel,
+                    appStore: appStore,
+                    fileStore: fileStore,
+                    logStore: logStore,
+                    signingHistoryStore: signingHistoryStore,
+                    notificationScheduler: notificationScheduler,
+                    notificationPreferences: notificationPreferences,
+                    anisetteEnvironment: anisetteProvider,
+                    signingPreferenceStore: signingPreferenceStore,
+                    operationCoordinator: operationCoordinator,
+                    selfReplacementStore: transactionStore
+                ),
+                certificateExportHandler: certificateExportHandler
+            )
+        } catch {
+            let failure = ImportFailure(
+                title: "无法打开数据",
+                reason: "本地存储初始化失败：\(Self.readableStartupError(error))",
+                recovery: "重启 Seal 重试；如仍失败请检查设备剩余存储空间",
+                code: "SEAL-APP-001"
+            )
+            return AppContainer(
+                appsViewModel: AppsViewModel(startupFailure: failure),
+                settingsViewModel: SettingsViewModel(startupFailure: failure),
+                certificateExportHandler: CertificateExportHandler(
+                    keychain: KeychainVault(),
+                    signingPreferenceStore: SigningPreferenceStore()
+                )
+            )
+        }
+    }
+    private static func makeAppStore(in sealDirectory: URL) throws -> CoreDataAppStore {
+        let storeURL = sealDirectory.appending(path: "Seal.sqlite")
+        do {
+            return try CoreDataAppStore(storeURL: storeURL)
+        } catch {
+            try backupUnreadableSQLiteStore(
+                at: storeURL,
+                in: sealDirectory,
+                originalError: error
+            )
+            return try CoreDataAppStore(storeURL: storeURL)
+        }
+    }
+
+    private static func backupUnreadableSQLiteStore(
+        at storeURL: URL,
+        in sealDirectory: URL,
+        originalError: Error
+    ) throws {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: storeURL.path) else {
+            throw originalError
+        }
+
+        let recoveryDirectory = sealDirectory.appending(
+            path: "StorageRecovery-\(compactTimestamp())",
+            directoryHint: .isDirectory
+        )
+        try fileManager.createDirectory(
+            at: recoveryDirectory,
+            withIntermediateDirectories: true
+        )
+
+        var didMoveAnyFile = false
+        for suffix in ["", "-wal", "-shm"] {
+            let source = URL(fileURLWithPath: storeURL.path + suffix)
+            guard fileManager.fileExists(atPath: source.path) else { continue }
+            let destination = recoveryDirectory.appending(path: source.lastPathComponent)
+            if fileManager.fileExists(atPath: destination.path) {
+                try fileManager.removeItem(at: destination)
+            }
+            try fileManager.moveItem(at: source, to: destination)
+            didMoveAnyFile = true
+        }
+
+        guard didMoveAnyFile else { throw originalError }
+    }
+
+    private static func compactTimestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter.string(from: Date())
+    }
+
+    private static func readableStartupError(_ error: Error) -> String {
+        if let failure = error as? ImportFailure {
+            return failure.userMessage
+        }
+        return (error as NSError).localizedDescription
+    }
+}

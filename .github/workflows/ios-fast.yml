@@ -1,0 +1,136 @@
+name: iOS Fast IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      rebuild_rustbridge:
+        description: Rebuild RustBridge before packaging
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+concurrency:
+  group: ios-fast-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fast-ipa:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Cache Swift Package Manager dependencies
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/Developer/Xcode/DerivedData/Seal-*/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('project.yml') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      - name: Cache Rust toolchain and cargo artifacts
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.cargo/registry
+            ~/.cargo/git
+            Vendor/Minimuxer/RustBridge/target
+            Vendor/Minimuxer/RustBridge/lib/RustBridge.xcframework
+          # key 必须随 Rust 源码变化：actions/cache 只在 key 变化（miss）时保存
+          # 新缓存，否则 target/ 里的增量产物永远停留在第一次保存的快照
+          key: rustbridge-${{ runner.os }}-${{ hashFiles('Vendor/Minimuxer/RustBridge/Cargo.lock', 'Vendor/Minimuxer/RustBridge/Cargo.toml', 'Vendor/Minimuxer/RustBridge/Makefile', 'Vendor/Minimuxer/RustBridge/src/**') }}
+          restore-keys: |
+            rustbridge-${{ runner.os }}-
+
+      - name: Cache DerivedData for incremental builds
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: build/DerivedData
+          # 同上：Swift 源码变化时刷新缓存，让 Xcode 跨运行增量编译
+          key: deriveddata-${{ runner.os }}-${{ hashFiles('project.yml', 'Seal/**/*.swift', 'Vendor/Minimuxer/Sources/**/*.swift', 'Vendor/Minimuxer/RustBridge/MinimuxerBridge*.swift') }}
+          restore-keys: |
+            deriveddata-${{ runner.os }}-
+
+      - name: Select pinned Xcode 26.5
+        run: |
+          test -d /Applications/Xcode_26.5.app
+          sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
+          xcodebuild -version
+          test "$(xcodebuild -version | head -n 1)" = "Xcode 26.5"
+
+      - name: Install pinned XcodeGen
+        run: |
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/xcodegen.zip" \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip
+          echo "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 --check
+          ditto -x -k "$RUNNER_TEMP/xcodegen.zip" "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/xcodegen/bin/xcodegen" --version
+
+      - name: Ensure RustBridge matches Rust source
+        env:
+          RUST_TOOLCHAIN: 1.97.1
+        run: bash Scripts/ensure-rustbridge.sh
+
+      - name: Verify vendored RustBridge is present
+        run: |
+          test -f Vendor/Minimuxer/RustBridge/lib/RustBridge.xcframework/ios-arm64/librust_bridge.a
+          test -f Vendor/Minimuxer/RustBridge/lib/RustBridge.xcframework/ios-arm64-simulator/librust_bridge.a
+          # 诊断：列出全部 rust_bridge 符号（确认新 FFI 是否编入静态库）
+          xcrun nm -gU Vendor/Minimuxer/RustBridge/lib/RustBridge.xcframework/ios-arm64/librust_bridge.a 2>/dev/null | grep "rust_bridge" > rust_symbols.txt || true
+          wc -l rust_symbols.txt
+          grep -c "ota" rust_symbols.txt || true
+          tail -20 rust_symbols.txt
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Verify Seal minimum deployment target remains iOS 17
+        run: |
+          TARGET="$(xcodebuild \
+            -project Seal.xcodeproj \
+            -target Seal \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -showBuildSettings | awk -F ' = ' '/^[[:space:]]*IPHONEOS_DEPLOYMENT_TARGET = / { print $2; exit }')"
+          echo "Seal IPHONEOS_DEPLOYMENT_TARGET=$TARGET"
+          test "$TARGET" = "17.0"
+
+      - name: Refresh local SPM binary artifacts (避免缓存旧版 RustBridge 静态库)
+        run: |
+          # 只清源码 checkouts，保留 artifacts/（OpenSSL.xcframework 等二进制包）。
+          # 二进制包恢复依赖全局 SPM 缓存（key 仅 hash project.yml，长期命中不回写），
+          # 若整目录删除会在缓存快照陈旧时丢失二进制包，导致 ldid.cpp 报 openssl/err.h not found。
+          rm -rf build/DerivedData/SourcePackages/checkouts
+          # 清空产物与中间目录：DerivedData 缓存跨源码版本恢复时，
+          # 增量构建会把不再生成的产物（如 Assets.car）标记 stale 直接删除，
+          # 且资源编译可能被整体跳过 —— 产物必须每次从当前源码重新生成
+          rm -rf build/DerivedData/Build/Products build/DerivedData/Build/Intermediates.noindex
+      - name: Build fast unsigned IPA
+        run: SEAL_IPA_CONFIGURATION=Debug SEAL_SKIP_XCODEGEN=1 bash Scripts/build-unsigned-ipa.sh
+
+      - name: Verify unsigned IPA
+        run: bash Scripts/verify-ipa.sh build/Seal_*.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: Seal-${{ github.run_number }}
+          if-no-files-found: error
+          path: |
+            build/Seal_*.ipa
+            build/Seal_*.ipa.sha256
+            build/Seal-Info.plist
+          retention-days: 14

@@ -1,0 +1,193 @@
+name: Seal
+options:
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "17.0"
+configs:
+  Debug: debug
+  Release: release
+configFiles:
+  Debug: Config/Debug.xcconfig
+  Release: Config/Release.xcconfig
+packages:
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation
+    exactVersion: 0.9.20
+  AltSign:
+    url: https://github.com/sunuannian1/AltSign
+    revision: 87f61ceb1161d90f3c6b2e35bad7ebab15367a90
+  AnisetteKit:
+    # ⚠️ **改成 vendor 路径**（2026-09-19）—— 原因见 `Vendor/SideSign/Package.swift` 的注释：
+    # `SideSign` 声明的是 `branch: "main"`，与这里原来的固定 revision 冲突 ⇒ SwiftPM 解析失败 ✗。
+    # 上游自己在注释里就是用本地路径的 ✓。原 revision：`081200ec0cfcecc1fd7ef0dd8c5ddc62bd040c88`
+    path: Vendor/AnisetteKit
+  SideSign:
+    # ★ **上游（SideStore）的重签层** —— 它内部调用 `CodeSignKit` 完成真正的签名 ✓
+    # 依赖也全部 vendor 到 `Vendor/`（见 `Vendor/SideSign/Package.swift` ✓）
+    path: Vendor/SideSign
+  Crypto:
+    url: https://github.com/apple/swift-crypto
+    exactVersion: 4.5.2
+  Minimuxer:
+    path: Vendor/Minimuxer
+  # ⚠️ **`RorkSign` 已移除**（2026-09-19）—— 签名器换成了上游 SideStore 的
+  # `SideSign` + `CodeSignKit` ✓（用户死命令：「签名器不一样你就换」✓）。
+  # `Vendor/rork-sign` 目录也已删除 ✓。
+targets:
+  Seal:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Seal
+        excludes:
+          - "Resources/Anisette/*.so"
+    resources:
+      - path: Seal/Resources/Anisette
+    dependencies:
+      - package: ZIPFoundation
+      - package: AltSign
+        product: AltSign-Static
+      - package: AnisetteKit
+      - package: Minimuxer
+      - package: SideSign
+        product: SideSign
+      - package: Crypto
+        product: Crypto
+      - package: Crypto
+        product: CryptoExtras
+      - target: DeviceSupport
+    info:
+      path: Seal/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Seal
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        SealOriginalBundleIdentifier: com.mjorb.seal
+        CFBundleURLTypes:
+          - CFBundleURLName: com.mjorb.seal
+            CFBundleURLSchemes:
+              - seal
+              - sidestore
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: IPA Archive
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.apple.itunes.ipa
+              - public.zip-archive
+              - public.data
+        LSSupportsOpeningDocumentsInPlace: true
+        UIFileSharingEnabled: true
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.apple.itunes.ipa
+            UTTypeDescription: iOS App Archive
+            UTTypeConformsTo:
+              - public.zip-archive
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - ipa
+              public.mime-type:
+                - application/octet-stream
+                - application/x-itunes-ipa
+        ITSAppUsesNonExemptEncryption: false
+        NSLocalNetworkUsageDescription: Seal 通过本地通道连接此设备并安装应用。
+        NSPhotoLibraryAddUsageDescription: Seal 需要访问相册以保存赞赏码图片。
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mjorb.seal
+        PRODUCT_NAME: Seal
+        TARGETED_DEVICE_FAMILY: "1,2"
+        MARKETING_VERSION: 1.2.4
+        CURRENT_PROJECT_VERSION: 3
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: Seal/Resources/Seal.entitlements
+        # Xcode 16+ Debug 构建默认把代码拆进 <Name>.debug.dylib（预览调试用）。
+        # 侧载分发场景第三方签名工具常漏签根目录 dylib → 白图标+秒闪退。关闭之。
+        ENABLE_DEBUG_DYLIB: NO
+  DeviceSupport:
+    type: library.static
+    platform: iOS
+    deploymentTarget: "17.0"
+    dependencies:
+      - package: AltSign
+        product: OpenSSL
+    sources:
+      - path: Vendor/DeviceSupport/libimobiledevice/src
+      - path: Vendor/DeviceSupport/libimobiledevice/common
+      - path: Vendor/DeviceSupport/libimobiledevice-glue/src
+      - path: Vendor/DeviceSupport/libplist/src
+      - path: Vendor/DeviceSupport/libplist/libcnary
+      - path: Vendor/DeviceSupport/libusbmuxd/src/libusbmuxd.c
+    settings:
+      base:
+        PRODUCT_NAME: imobiledevice
+        EXECUTABLE_PREFIX: lib
+        SKIP_INSTALL: YES
+        GCC_C_LANGUAGE_STANDARD: gnu11
+        CLANG_CXX_LANGUAGE_STANDARD: c++14
+        GCC_ENABLE_CPP_EXCEPTIONS: YES
+        GCC_ENABLE_CPP_RTTI: YES
+        GCC_WARN_INHIBIT_ALL_WARNINGS: YES
+        GCC_PREPROCESSOR_DEFINITIONS:
+          - $(inherited)
+          - HAVE_CONFIG_H=1
+          - HAVE_OPENSSL=1
+          - HAVE_STPNCPY=1
+          - HAVE_STPCPY=1
+          - HAVE_VASPRINTF=1
+          - HAVE_ASPRINTF=1
+          - HAVE_GETIFADDRS=1
+          - HAVE_STRNDUP=1
+        HEADER_SEARCH_PATHS:
+          - $(PROJECT_DIR)/Vendor/DeviceSupport
+          - $(PROJECT_DIR)/Vendor/DeviceSupport/libplist/include
+          - $(PROJECT_DIR)/Vendor/DeviceSupport/libplist/src
+          - $(PROJECT_DIR)/Vendor/DeviceSupport/libplist/libcnary/include
+          - $(PROJECT_DIR)/Vendor/DeviceSupport/libimobiledevice
+          - $(PROJECT_DIR)/Vendor/DeviceSupport/libimobiledevice/include
+          - $(PROJECT_DIR)/Vendor/DeviceSupport/libimobiledevice/src
+          - $(PROJECT_DIR)/Vendor/DeviceSupport/libusbmuxd/include
+          - $(PROJECT_DIR)/Vendor/DeviceSupport/libimobiledevice-glue/include
+  SealTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: SealTests
+    dependencies:
+      - target: Seal
+      - package: ZIPFoundation
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mjorb.seal.tests
+        GENERATE_INFOPLIST_FILE: YES
+  SealUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: SealUITests
+    dependencies:
+      - target: Seal
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mjorb.seal.uitests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  Seal:
+    build:
+      targets:
+        Seal: all
+        SealTests: [test]
+        SealUITests: [test]
+    test:
+      gatherCoverageData: true
+      targets:
+        - SealTests
+        - SealUITests

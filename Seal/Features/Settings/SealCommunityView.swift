@@ -1,0 +1,418 @@
+import SwiftUI
+import UIKit
+
+
+
+struct SealCommunityView: View {
+    @Environment(\.openURL) private var openURL
+
+    @State private var showRewardCode = false
+    @State private var showGzhCode = false
+    @State private var saveCoordinator: AlbumSaveCoordinator?
+
+    @State private var alertTitle = ""
+    @State private var alertMessage = ""
+    @State private var showAlert = false
+
+    // ⚠️ **这两行必须指向同一个群** ✗ —— 它们是**两条路径**，不是「链接 + 备份」✓：
+    //   · `qqGroupNumber` → `mqqapi://card/show_pslcard?...&uin=<群号>&card_type=group`
+    //     （**主路径**：QQ 装了就直接打开群资料卡 ✓）
+    //   · `qqJoinURL` → 只在 **QQ 没装**、scheme 打不开时兜底 ✓
+    // ⇒ 2026-09-20 换群时踩到：短链换了新群、群号还留着旧的 ⇒ **主路径会跳进旧群** ✗✗
+    //   ⚠️ 短链 `qm.qq.com/q/XXXX` 是**不透明**的 ✗ —— 从链接本身**看不出群号** ✓，
+    //   要抓落地页里的 `群号: <digits>` 或 `"groupcode":"<digits>"` 才知道 ✓。
+    private let qqGroupNumber = "1051135067"
+    private let qqJoinURL = URL(string: "https://qm.qq.com/q/8HfHpTmOzu")
+    private let telegramURL = URL(string: "https://t.me/addlist/vQ5-N-_q0qYzNWNl")
+    private let rewardTitle = "请作者喝杯奶茶"
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 24) {
+                header
+                VStack(spacing: 12) {
+                    rewardCard
+                    gzhCard
+                    qqCard
+                    telegramCard
+                }
+                footerNote
+            }
+            .padding(20)
+        }
+        .navigationTitle("加入 Seal 社群")
+        .navigationBarTitleDisplayMode(.inline)
+        .sealScreenBackground()
+        .sheet(isPresented: $showRewardCode) { rewardCodeSheet }
+        .sheet(isPresented: $showGzhCode) { gzhCodeSheet }
+        .alert(alertTitle, isPresented: $showAlert) {
+            Button("好的", role: .cancel) { }
+        } message: {
+            Text(alertMessage)
+        }
+    }
+
+    private var header: some View {
+        VStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.sealSurfaceElevated)
+                    .frame(width: 84, height: 84)
+                Image("SealCommunityIcon")
+                    .resizable()
+                    .renderingMode(.template)
+                    .scaledToFit()
+                    .frame(width: 44, height: 44)
+                    .foregroundStyle(Color.sealAccent)
+            }
+            Text("加入 Seal 社群")
+                .font(.system(size: 22, weight: .bold))
+            Text("在这里相遇，让 Seal 走得更远")
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(Color.sealTextSecondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 4)
+    }
+
+    private var rewardCard: some View {
+        Button { showRewardCode = true } label: {
+            HStack(spacing: 14) {
+                iconBadge("heart.fill", tint: .white, background: Color.white.opacity(0.20))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(rewardTitle)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text("你的支持，是作者更新的动力")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(.white.opacity(0.82))
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+            }
+            .padding(16)
+            .background(Color.sealAccent, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var gzhCard: some View {
+        communityCard(
+            icon: "newspaper",
+            title: "关注公众号",
+            subtitle: "更新动态 · 使用教程 · 官方通知",
+            value: nil,
+            action: { showGzhCode = true }
+        )
+    }
+
+    private var qqCard: some View {
+        communityCard(
+            icon: "bubble.left.and.bubble.right",
+            title: "加入 QQ 群",
+            subtitle: "点击直接跳转 QQ 加群",
+            value: nil,
+            action: joinQQGroup
+        )
+    }
+
+    private var telegramCard: some View {
+        communityCard(
+            icon: "paperplane",
+            title: "加入 Telegram 频道",
+            subtitle: "国内需科学上网",
+            value: nil,
+            action: joinTelegram
+        )
+    }
+
+    private var footerNote: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(Color.sealTextSecondary)
+            Text("欢迎加入 Seal 社群，交流使用心得、反馈问题、获取最新动态。")
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(Color.sealTextSecondary)
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .background(Color.sealSurfaceElevated.opacity(0.6), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var rewardCodeSheet: some View {
+        VStack(spacing: 0) {
+            // ⚠️ **图片要「贴合圆弧」**（2026-09-20 用户要求）✗ ——
+            // 原来把 150×150 的方图塞进 170×170 的圆角框 ⇒ 四周留 **10pt 白边**，
+            // 方图的四个角**不跟圆弧走** ✗。
+            // ⇒ 去掉内边距、让图片**填满**外框，再用 `clipShape` 把四角**裁成圆弧** ✓。
+            // ⚠️ 用 `scaledToFill` 而不是 `scaledToFit`：将来换成**非正方形**图也不会留边 ✓
+            //（`scaledToFit` 会在短边留白 ✗ —— 那正是这次要修的现象 ✓）。
+            Group {
+                if let image = UIImage(named: "SealCommunityReward") {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 170, height: 170)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                } else {
+                    Text("赞赏码未加载")
+                        .font(.footnote)
+                        .foregroundStyle(Color.sealTextSecondary)
+                }
+            }
+            .frame(width: 170, height: 170)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.sealHairline.opacity(0.6), lineWidth: 0.8)
+            }
+            .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
+            .padding(.top, 8)
+
+            Text("Seal 社区 · 赞赏支持")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.sealTextSecondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .background(Color.sealSurfaceElevated, in: Capsule())
+                .padding(.top, 8)
+
+            Text("保存图片后，到微信「扫一扫」选择该图片即可")
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(Color.sealTextSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.top, 14)
+                .padding(.horizontal, 24)
+
+            HStack(spacing: 12) {
+                Button("支付宝支付") { openAlipay() }
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(alipayBlue)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .background(alipayBlue.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                Button("打开微信") { openWechat() }
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(wechatGreen)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .background(wechatGreen.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 24)
+            .padding(.top, 18)
+
+            Button {
+                saveCodeToAlbum(imageName: "SealCommunityReward")
+            } label: {
+                Text("保存到相册")
+            }
+            .sealPrimaryAction(cornerRadius: 14)
+            .padding(.horizontal, 24)
+            .padding(.top, 12)
+
+            Button("关闭") { showRewardCode = false }
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(Color.sealTextSecondary)
+                .padding(.top, 6)
+                .padding(.bottom, 12)
+        }
+        .padding(.top, 16)
+        .presentationDetents([.medium, .large])
+    }
+
+    private func openAlipay() {
+        guard let url = URL(string: "https://qr.alipay.com/fkx11863lft7h3izxgreqbe") else { return }
+        openURL(url)
+    }
+
+    private func openWechat() {
+        guard let url = URL(string: "weixin://") else { return }
+        UIApplication.shared.open(url) { opened in
+            if !opened {
+                Task { @MainActor in
+                    presentAlert("无法打开微信", "请先安装微信，或在微信内点右上角「+」→「扫一扫」手动赞赏")
+                }
+            }
+        }
+    }
+
+    private var alipayBlue: Color { Color(red: 22 / 255.0, green: 119 / 255.0, blue: 1.0) }
+    private var wechatGreen: Color { Color(red: 7 / 255.0, green: 193 / 255.0, blue: 96 / 255.0) }
+
+    
+
+    private var gzhCodeSheet: some View {
+        VStack(spacing: 20) {
+            // ⚠️ **圆弧框内包裹**（2026-09-20 用户要求）✗ ——
+            // 原来这里是一张**裸图** ✗（只有「未加载」的占位才带圆角 ✗），
+            // 与赞赏码**视觉不成套** ✗
+            // ⇒ 套上和赞赏码**同款**的圆角白框（图片填满 ＋ `clipShape` 裁四角 ✓）。
+            // ⚠️ 圆角取 **20**（240pt 宽按赞赏码 170→16 的比例放大 ✓，与下面占位一致 ✓）。
+            Group {
+                if let image = UIImage(named: "SealCommunityGzh") {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 240, height: 240)
+                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                } else {
+                    Text("公众号二维码未加载")
+                        .font(.footnote)
+                        .foregroundStyle(Color.sealTextSecondary)
+                }
+            }
+            .frame(width: 240, height: 240)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(Color.sealHairline.opacity(0.6), lineWidth: 0.8)
+            }
+            .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
+
+            Text("关注公众号，第一时间获取版本动态、教程与官方通知")
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(Color.sealTextSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+
+            Text("保存图片后，到微信「扫一扫」选择该图片即可关注")
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(Color.sealTextSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+
+            Button {
+                saveCodeToAlbum(imageName: "SealCommunityGzh")
+            } label: {
+                Text("保存到相册")
+            }
+            .sealPrimaryAction(cornerRadius: 14)
+            .padding(.horizontal, 24)
+
+            Button("关闭") { showGzhCode = false }
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(Color.sealTextSecondary)
+                .padding(.bottom, 12)
+        }
+        .padding(.top, 24)
+        .presentationDetents([.medium, .large])
+    }
+
+    private func iconBadge(_ systemName: String, tint: Color, background: Color) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .fill(background)
+                .frame(width: 46, height: 46)
+            Image(systemName: systemName)
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(tint)
+        }
+    }
+
+    private func communityCard(
+        icon: String,
+        title: String,
+        subtitle: String?,
+        value: String?,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                iconBadge(icon, tint: Color.sealAccent, background: Color.sealAccent.opacity(0.12))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.system(size: 13, weight: .regular))
+                            .foregroundStyle(Color.sealTextSecondary)
+                    }
+                }
+                Spacer(minLength: 8)
+                if let value {
+                    Text(value)
+                        .font(.system(size: 14, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Color.sealTextSecondary)
+                }
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(16)
+            .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func joinQQGroup() {
+        // qm.qq.com 短链在系统浏览器里会先落到展示群二维码的落地页（即「扫一扫」），
+        // 再唤起 QQ；改用 mqqapi scheme 直接打开 QQ 群资料卡，跳过中间落地页。
+        let scheme = URL(string: "mqqapi://card/show_pslcard?src_type=internal&version=1&uin=\(qqGroupNumber)&card_type=group&source=external")
+        if let scheme {
+            UIApplication.shared.open(scheme) { opened in
+                if !opened, let fallback = qqJoinURL {
+                    openURL(fallback)
+                }
+            }
+        }
+    }
+
+    private func joinTelegram() {
+        if let url = telegramURL {
+            openURL(url)
+        }
+    }
+
+    private func saveCodeToAlbum(imageName: String) {
+        guard let image = UIImage(named: imageName) else {
+            presentAlert("保存失败", "图片未加载，请稍后重试")
+            return
+        }
+        let coordinator = AlbumSaveCoordinator { error in
+            Task { @MainActor in
+                handleSaveResult(error == nil)
+            }
+        }
+        saveCoordinator = coordinator
+        UIImageWriteToSavedPhotosAlbum(
+            image,
+            coordinator,
+            #selector(AlbumSaveCoordinator.image(_:didFinishSavingWithError:contextInfo:)),
+            nil
+        )
+    }
+
+    private func handleSaveResult(_ success: Bool) {
+        if success {
+            presentAlert("已保存到相册", "感谢你的支持")
+        } else {
+            presentAlert("保存失败", "请在系统设置中允许 Seal 访问相册后重试")
+        }
+    }
+
+    private func presentAlert(_ title: String, _ message: String) {
+        alertTitle = title
+        alertMessage = message
+        showAlert = true
+    }
+}
+
+private final class AlbumSaveCoordinator: NSObject, @unchecked Sendable {
+    private let completion: @Sendable (Error?) -> Void
+
+    init(completion: @escaping @Sendable (Error?) -> Void) {
+        self.completion = completion
+    }
+
+    @objc func image(_ image: UIImage, didFinishSavingWithError error: Error?, contextInfo: UnsafeRawPointer) {
+        completion(error)
+    }
+}

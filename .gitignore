@@ -1,0 +1,34 @@
+.worktrees/
+# 本地 AI 助手的工作数据（记忆、缓存）。属于本机环境，不进仓库。
+.workbuddy-ai/
+.DS_Store
+DerivedData/
+build/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+Seal.xcodeproj/
+.swiftpm/
+.build/
+# RustBridge host-side cargo cache (local type-check only; CI rebuilds the iOS .a)
+Vendor/Minimuxer/RustBridge/target/
+.vendor-cache/
+dist/
+Vendor/Build/
+*.p12
+*.mobileprovision
+Auth.json
+PairingFile.plist
+*.pairing
+*.log
+__pycache__/
+*.py[cod]
+
+# Build artifacts & logs
+build*.txt
+build_logs_*/
+artifacts*.json
+*.ipa
+
+# AI dev workspace (forks, temp assets, screenshots)
+.dev-workspace/

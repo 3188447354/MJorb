@@ -1,0 +1,371 @@
+# Vendor/rork-sign 相对上游 rorkai/rork-sign 0.6.5 的完整差异
+# 生成命令：diff --strip-trailing-cr -u upstream/rork-sign/Sources/RorkSign/<f> Vendor/rork-sign/Sources/RorkSign/<f>
+# ⚠️ 必须用 --strip-trailing-cr：两边换行符不同，不加会把整个文件算成差异 ✗
+
+================================================================================
+### MachO/MachOSigner.swift
+================================================================================
+--- upstream/rork-sign/Sources/RorkSign/MachO/MachOSigner.swift	2026-09-19 12:59:37.473959500 +0800
++++ Vendor/rork-sign/Sources/RorkSign/MachO/MachOSigner.swift	2026-09-12 10:42:18.921518500 +0800
+@@ -365,16 +365,24 @@
+ private func thinSigningCacheInput(_ data: Data) throws -> Data {
+     let layout = try readThinSigningLayout(data)
+     var output = data
++    // Force FairPlay cryptid to 0 before the CodeDirectory page hashes are
++    // computed: a decrypted image that still advertises cryptid=1 makes dyld
++    // attempt FairPlay decryption with the wrong account and crash at launch.
++    // A sideloaded image is decrypted by definition, so a non-zero id is a
++    // stale FairPlay flag; ldid applies the same normalization under -D.
++    // Clear it on every signing path so prepare/final see identical bytes.
++    try clearFairPlayCryptid(in: &output, header: layout.header)
+     let signatureCommandOffset: Int
+-    let codeLimit: UInt64
++    let hasExistingSignature: Bool
++    let rawCodeLimit: UInt64
+ 
+     if let existingSignatureCommandOffset = layout.codeSignatureCommandOffset {
+         guard Int(layout.codeSignatureDataOffset) <= output.count else {
+             throw RorkSignError.invalidMachO("Existing LC_CODE_SIGNATURE points past the file.")
+         }
+         signatureCommandOffset = existingSignatureCommandOffset
+-        codeLimit = UInt64(layout.codeSignatureDataOffset)
+-        output.removeSubrange(Int(codeLimit)..<output.count)
++        rawCodeLimit = UInt64(layout.codeSignatureDataOffset)
++        hasExistingSignature = true
+     } else {
+         guard let firstContentOffset = layout.firstContentOffset,
+               firstContentOffset >= layout.commandRegionEnd,
+@@ -387,7 +395,16 @@
+         try output.writeUInt32LE(UInt32(Constants.linkeditDataCommandSize), at: signatureCommandOffset + 4)
+         try output.writeUInt32LE(layout.header.commandCount + 1, at: 16)
+         try output.writeUInt32LE(layout.header.commandSize + UInt32(Constants.linkeditDataCommandSize), at: 20)
+-        codeLimit = alignUp(UInt64(output.count), alignment: 16)
++        rawCodeLimit = alignUp(UInt64(output.count), alignment: 16)
++        hasExistingSignature = false
++    }
++
++    // Reproduce ldid Allocate (ldid.cpp:1464-1473): keep the cache-key prefix
++    // exactly aligned with the code limit used by the real signing pass.
++    let codeLimit = hasExistingSignature ? layout.adjustedCodeLimit(rawCodeLimit) : rawCodeLimit
++    if hasExistingSignature {
++        output.removeSubrange(Int(codeLimit)..<output.count)
++    } else {
+         output.append(Data(repeating: 0, count: Int(codeLimit) - output.count))
+     }
+ 
+@@ -458,6 +475,14 @@
+     static let fatMagic64: UInt32 = 0xcafebabf
+     static let lcSegment64: UInt32 = 0x19
+     static let lcCodeSignature: UInt32 = 0x1d
++    static let lcEncryptionInfo: UInt32 = 0x21
++    static let lcEncryptionInfo64: UInt32 = 0x2c
++    // encryption_info_command[_64]: cmd@0 cmdsize@4 cryptoff@8 cryptsize@12
++    // cryptid@16 (identical layout in both 32- and 64-bit variants).
++    static let encryptionInfoCryptidOffset = 16
++    // Smallest command size that still contains cryptid (32-bit variant is 20).
++    static let encryptionInfoMinimumCommandSize = 20
++    static let lcSymtab: UInt32 = 0x2
+     static let lcLoadDylib: UInt32 = 0xc
+     static let lcLoadWeakDylib: UInt32 = 0x80000018
+     static let mhExecuteFileType: UInt32 = 2
+@@ -467,6 +492,7 @@
+     static let loadCommandSize = 8
+     static let dylibCommandSize = 24
+     static let linkeditDataCommandSize = 16
++    static let symtabCommandSize = 24
+     static let segmentCommand64Size = 72
+     static let section64Size = 80
+     static let fatHeaderSize = 8
+@@ -495,11 +521,27 @@
+     var codeSignatureCommandOffset: Int?
+     var codeSignatureDataOffset: UInt32 = 0
+     var codeSignatureDataSize: UInt32 = 0
++    /// LC_SYMTAB string-table end (stroff+strsize) when present and non-empty.
++    /// Reproduces ldid's symbol-table adjacency rule (ldid.cpp:1464-1473).
++    var symbolTableStringEnd: UInt64?
+     var linkeditCommandOffset: Int?
+     var linkeditFileOffset: UInt64 = 0
+     var executableSegmentLimit: UInt64 = 0
+     var embeddedInfoPlist: Data = Data()
+ 
++    /// Applies ldid's symbol-table adjacency rule (ldid.cpp `Allocate`,
++    /// lines 1464-1473): when the symbol string table ends within 0x10 bytes
++    /// of the tentative code limit (adjacent to the signature region), shrink
++    /// the limit to the string-table end to prevent page-aligned corruption.
++    /// `&-` mirrors C `size_t` unsigned wraparound.
++    func adjustedCodeLimit(_ base: UInt64) -> UInt64 {
++        guard let end = symbolTableStringEnd else { return base }
++        if end <= base, end >= base &- 0x10 {
++            return end
++        }
++        return base
++    }
++
+     /// Returns the CodeDirectory executable-segment flags for this image.
+     ///
+     /// The flags are intentionally derived from the final entitlement XML, not
+@@ -899,6 +941,15 @@
+             layout.codeSignatureCommandOffset = offset
+             layout.codeSignatureDataOffset = dataOffset
+             layout.codeSignatureDataSize = dataSize
++        } else if command == Constants.lcSymtab && commandSize >= Constants.symtabCommandSize {
++            // symtab_command: symoff@8, nsyms@12, stroff@16, strsize@20 (little-endian)
++            guard let stringOffset = data.readUInt32LE(at: offset + 16),
++                  let stringSize = data.readUInt32LE(at: offset + 20) else {
++                throw RorkSignError.invalidMachO("LC_SYMTAB payload is malformed.")
++            }
++            if stringOffset != 0 || stringSize != 0 {
++                layout.symbolTableStringEnd = UInt64(stringOffset) + UInt64(stringSize)
++            }
+         } else if command == Constants.lcSegment64 && commandSize >= Constants.segmentCommand64Size {
+             try readSegmentLayout(data, commandOffset: offset, commandSize: commandSize, layout: &layout)
+         }
+@@ -943,6 +994,33 @@
+     }
+ }
+ 
++/// Zeroes the FairPlay `cryptid` of every LC_ENCRYPTION_INFO(_64) command.
++///
++/// Sideloaded inputs are expected to be decrypted, but some decrypted images
++/// still carry `cryptid = 1`. Left untouched, `dyld` tries FairPlay decryption
++/// with the new (mismatched) account and kills the process at launch. The field
++/// lives inside the signed code region, so it must be cleared before CodeDirectory
++/// page hashing. Returns how many encryption commands advertised a non-zero id.
++@discardableResult
++private func clearFairPlayCryptid(in data: inout Data, header: ThinHeader) throws -> Int {
++    var cleared = 0
++    try forEachLoadCommand(in: data, header: header) { offset, command, commandSize in
++        guard command == Constants.lcEncryptionInfo || command == Constants.lcEncryptionInfo64,
++              commandSize >= Constants.encryptionInfoMinimumCommandSize else {
++            return
++        }
++        let cryptidOffset = offset + Constants.encryptionInfoCryptidOffset
++        guard let cryptid = data.readUInt32LE(at: cryptidOffset) else {
++            throw RorkSignError.invalidMachO("LC_ENCRYPTION_INFO payload is malformed.")
++        }
++        if cryptid != 0 {
++            try data.writeUInt32LE(0, at: cryptidOffset)
++            cleared += 1
++        }
++    }
++    return cleared
++}
++
+ /// Extracts `LC_SEGMENT_64` metadata used by code signing.
+ ///
+ /// The signer needs three independent pieces of segment state: the first file
+@@ -1040,16 +1118,24 @@
+ 
+     let layout = try readThinSigningLayout(data)
+     var output = data
++    // Force FairPlay cryptid to 0 before the CodeDirectory page hashes are
++    // computed: a decrypted image that still advertises cryptid=1 makes dyld
++    // attempt FairPlay decryption with the wrong account and crash at launch.
++    // A sideloaded image is decrypted by definition, so a non-zero id is a
++    // stale FairPlay flag; ldid applies the same normalization under -D.
++    // Clear it on every signing path so prepare/final see identical bytes.
++    try clearFairPlayCryptid(in: &output, header: layout.header)
+     let signatureCommandOffset: Int
+-    let codeLimit: UInt64
++    let hasExistingSignature: Bool
++    let rawCodeLimit: UInt64
+ 
+     if let existingSignatureCommandOffset = layout.codeSignatureCommandOffset {
+         guard Int(layout.codeSignatureDataOffset) <= output.count else {
+             throw RorkSignError.invalidMachO("Existing LC_CODE_SIGNATURE points past the file.")
+         }
+         signatureCommandOffset = existingSignatureCommandOffset
+-        codeLimit = UInt64(layout.codeSignatureDataOffset)
+-        output.removeSubrange(Int(codeLimit)..<output.count)
++        rawCodeLimit = UInt64(layout.codeSignatureDataOffset)
++        hasExistingSignature = true
+     } else {
+         guard let firstContentOffset = layout.firstContentOffset,
+               firstContentOffset >= layout.commandRegionEnd,
+@@ -1062,7 +1148,16 @@
+         try output.writeUInt32LE(UInt32(Constants.linkeditDataCommandSize), at: signatureCommandOffset + 4)
+         try output.writeUInt32LE(layout.header.commandCount + 1, at: 16)
+         try output.writeUInt32LE(layout.header.commandSize + UInt32(Constants.linkeditDataCommandSize), at: 20)
+-        codeLimit = alignUp(UInt64(output.count), alignment: 16)
++        rawCodeLimit = alignUp(UInt64(output.count), alignment: 16)
++        hasExistingSignature = false
++    }
++
++    // Reproduce ldid Allocate (ldid.cpp:1464-1473): shrink the code limit when
++    // the symbol string table is adjacent to the signature region.
++    let codeLimit = hasExistingSignature ? layout.adjustedCodeLimit(rawCodeLimit) : rawCodeLimit
++    if hasExistingSignature {
++        output.removeSubrange(Int(codeLimit)..<output.count)
++    } else {
+         output.append(Data(repeating: 0, count: Int(codeLimit) - output.count))
+     }
+ 
+@@ -1162,16 +1257,24 @@
+ 
+     let layout = try readThinSigningLayout(data)
+     var output = data
++    // Force FairPlay cryptid to 0 before the CodeDirectory page hashes are
++    // computed: a decrypted image that still advertises cryptid=1 makes dyld
++    // attempt FairPlay decryption with the wrong account and crash at launch.
++    // A sideloaded image is decrypted by definition, so a non-zero id is a
++    // stale FairPlay flag; ldid applies the same normalization under -D.
++    // Clear it on every signing path so prepare/final see identical bytes.
++    try clearFairPlayCryptid(in: &output, header: layout.header)
+     let signatureCommandOffset: Int
+-    let codeLimit: UInt64
++    let hasExistingSignature: Bool
++    let rawCodeLimit: UInt64
+ 
+     if let existingSignatureCommandOffset = layout.codeSignatureCommandOffset {
+         guard Int(layout.codeSignatureDataOffset) <= output.count else {
+             throw RorkSignError.invalidMachO("Existing LC_CODE_SIGNATURE points past the file.")
+         }
+         signatureCommandOffset = existingSignatureCommandOffset
+-        codeLimit = UInt64(layout.codeSignatureDataOffset)
+-        output.removeSubrange(Int(codeLimit)..<output.count)
++        rawCodeLimit = UInt64(layout.codeSignatureDataOffset)
++        hasExistingSignature = true
+     } else {
+         guard let firstContentOffset = layout.firstContentOffset,
+               firstContentOffset >= layout.commandRegionEnd,
+@@ -1184,7 +1287,16 @@
+         try output.writeUInt32LE(UInt32(Constants.linkeditDataCommandSize), at: signatureCommandOffset + 4)
+         try output.writeUInt32LE(layout.header.commandCount + 1, at: 16)
+         try output.writeUInt32LE(layout.header.commandSize + UInt32(Constants.linkeditDataCommandSize), at: 20)
+-        codeLimit = alignUp(UInt64(output.count), alignment: 16)
++        rawCodeLimit = alignUp(UInt64(output.count), alignment: 16)
++        hasExistingSignature = false
++    }
++
++    // Reproduce ldid Allocate (ldid.cpp:1464-1473): shrink the code limit when
++    // the symbol string table is adjacent to the signature region.
++    let codeLimit = hasExistingSignature ? layout.adjustedCodeLimit(rawCodeLimit) : rawCodeLimit
++    if hasExistingSignature {
++        output.removeSubrange(Int(codeLimit)..<output.count)
++    } else {
+         output.append(Data(repeating: 0, count: Int(codeLimit) - output.count))
+     }
+ 
+
+================================================================================
+### Bundle/AppBundleSigner.swift
+================================================================================
+--- upstream/rork-sign/Sources/RorkSign/Bundle/AppBundleSigner.swift	2026-09-19 12:59:37.353563700 +0800
++++ Vendor/rork-sign/Sources/RorkSign/Bundle/AppBundleSigner.swift	2026-09-19 10:28:45.356525500 +0800
+@@ -824,7 +824,18 @@
+         guard FileManager.default.fileExists(atPath: executableURL.path) else {
+             return ""
+         }
+-        let executableEntitlementsXML = try MachOSigner.readEntitlementsXML(Data(contentsOf: executableURL))
++        // ⚠️ **`.mappedIfSafe`（mmap）而不是整块读入**（2026-09-19，Seal 侧真机证据）。
++        //
++        // 本函数只需要 Mach-O 的**头部 / load commands**（entitlements 就在里面）✗，
++        // 却把**整个可执行文件**搬进内存 —— 而抖音的 `AwemeCore.framework` 有上百 MB ✗。
++        // 真机崩溃点正好是「**刚开始签 `AwemeCore.framework`**」那一刻 ✓，
++        // 崩溃日志里 `Footprint: 152.94 MB -> 1109.84 MB (+956.91 MB)` ✓。
++        //
++        // `.mappedIfSafe` 走 mmap：**不复制、不占常驻内存** ✓，按页调入 ✓；
++        // 系统不支持映射时**自动退化成普通读取** ✓ ⇒ **语义完全一致** ✓。
++        let executableEntitlementsXML = try MachOSigner.readEntitlementsXML(
++            Data(contentsOf: executableURL, options: .mappedIfSafe)
++        )
+         if !executableEntitlementsXML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+             return executableEntitlementsXML
+         }
+
+================================================================================
+### Bundle/BundleSigner.swift
+================================================================================
+--- upstream/rork-sign/Sources/RorkSign/Bundle/BundleSigner.swift	2026-09-19 12:59:37.362811900 +0800
++++ Vendor/rork-sign/Sources/RorkSign/Bundle/BundleSigner.swift	2026-09-19 10:37:09.324162400 +0800
+@@ -303,7 +303,10 @@
+     ) throws {
+         let fileManager = FileManager.default
+         let attributes = try fileManager.attributesOfItem(atPath: url.path)
+-        let input = try Data(contentsOf: url)
++        // ⚠️ `.mappedIfSafe`（2026-09-19）：这是**签名主路径**，每个 Mach-O 都会走到 ✗。
++        // 这份数据要拿去算缓存键、再拿去签名；mmap 下**在真正改写之前都不复制** ✓，
++        // 改写时 Swift 的 COW 照常复制 ✓ ⇒ **语义完全一致** ✓。
++        let input = try Data(contentsOf: url, options: .mappedIfSafe)
+         let cacheKey = try context.signatureCache?.makeKey(
+             input: input,
+             bundleIdentifier: bundleIdentifier,
+@@ -413,7 +416,9 @@
+     /// Reads the current executable entitlements before the signature is replaced.
+     private static func originalEntitlementsXML(at executableURL: URL) throws -> String {
+         do {
+-            return try MachOSigner.readEntitlementsXML(Data(contentsOf: executableURL))
++            return try MachOSigner.readEntitlementsXML(
++                Data(contentsOf: executableURL, options: .mappedIfSafe)
++            )
+         } catch {
+             return ""
+         }
+@@ -681,7 +686,9 @@
+             throw RorkSignError.invalidBundle("Host executable does not exist: \(url.path).")
+         }
+         do {
+-            _ = try RorkSigner.inspectMachO(Data(contentsOf: url))
++            // ⚠️ `.mappedIfSafe`（2026-09-19）：这里**只解析头部**判「是不是合法 Mach-O」✗，
++            // 却把整个可执行文件读进内存 —— 抖音的 framework 有上百 MB ✗。
++            _ = try RorkSigner.inspectMachO(Data(contentsOf: url, options: .mappedIfSafe))
+         } catch {
+             throw RorkSignError.invalidBundle("Host executable is not a supported Mach-O: \(url.path).")
+         }
+@@ -711,7 +718,13 @@
+         }
+ 
+         let fileManager = FileManager.default
+-        var executable = try Data(contentsOf: executableURL)
++        // ⚠️ **`.mappedIfSafe`（mmap）**（2026-09-19，与 Seal 侧同一处修法）。
++        //
++        // 这里读的是**根 bundle 的可执行文件**（抖音的 `AwemeCore` 有上百 MB ✗）。
++        // 它确实是 `var`（下面可能改写 load commands ✓），但**常见路径不改**
++        //（`dylibLoadCommandsToRemove` 为空）⇒ mmap 下就**一次复制都不发生** ✓；
++        // 真改写时 Swift 的 COW 会照常复制 ✓ ⇒ **语义完全一致** ✓。
++        var executable = try Data(contentsOf: executableURL, options: .mappedIfSafe)
+         if !options.dylibLoadCommandsToRemove.isEmpty {
+             executable = try RorkSigner.removeDylibLoadCommands(
+                 from: executable,
+@@ -1015,7 +1028,10 @@
+         originalEntitlementsXML: String
+     ) throws -> String {
+         let bundleIdentifier = try bundle.requireIdentifier()
+-        if let entitlementsXML = entitlementsByBundleIdentifier[bundleIdentifier] {
++        if let entitlementsXML = entitlementsByBundleIdentifier[bundleIdentifier]
++            ?? entitlementsByBundleIdentifier.first(where: {
++                $0.key.caseInsensitiveCompare(bundleIdentifier) == .orderedSame
++            })?.value {
+             return entitlementsXML
+         }
+         if isRoot, !defaultEntitlementsXML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+@@ -1041,7 +1057,10 @@
+         guard let identifier = bundle.identifier else {
+             return nil
+         }
+-        if let exactProfile = provisioningProfilesByBundleIdentifier[identifier] {
++        if let exactProfile = provisioningProfilesByBundleIdentifier[identifier]
++            ?? provisioningProfilesByBundleIdentifier.first(where: {
++                $0.key.caseInsensitiveCompare(identifier) == .orderedSame
++            })?.value {
+             return exactProfile
+         }
+         return isRoot ? rootProvisioningProfile : nil
+
+================================================================================
+### Bundle/BundleSignatureCache.swift
+================================================================================
+--- upstream/rork-sign/Sources/RorkSign/Bundle/BundleSignatureCache.swift	2026-09-19 12:59:37.359810300 +0800
++++ Vendor/rork-sign/Sources/RorkSign/Bundle/BundleSignatureCache.swift	2026-09-19 10:37:09.334023400 +0800
+@@ -82,7 +82,9 @@
+             return nil
+         }
+         let url = entryURL(for: key)
+-        guard let data = try? Data(contentsOf: url),
++        // ⚠️ `.mappedIfSafe`（2026-09-19）：条目里存的是**已签名 Mach-O 的副本** ✗，
++        // 大包时可能很大；mmap 不复制 ✓，解析（`decoder.decode`）按页调入 ✓。
++        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
+               let entry = try? decoder.decode(Entry.self, from: data),
+               entry.key == key.digest,
+               let signed = Data(base64Encoded: entry.signedMachOBase64),
+

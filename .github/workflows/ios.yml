@@ -1,0 +1,377 @@
+name: iOS
+
+on:
+  pull_request:
+  # 特性/发布分支推送即自动跑完整门（PR 驱动之外的第二条通路）。
+  # 排除 main：main 由 ios-fast.yml 负责出包。
+  # publish-release 仍只在 workflow_dispatch 触发，push 路径绝不会自动发布 Release。
+  #
+  # 时间预算（2026-09-14 实测调整）：原先测试步骤嵌在 build-package 里，同一份代码被全量构建两遍
+  # （xcodebuild test 走 Debug、build-unsigned-ipa 走 Release，DerivedData 增量互相用不上），
+  # 串行叠加后 push 一次要 20m33s。现在测试拆成独立的 swift-regression job 与 build-package **并行**，
+  # 墙钟时间取 max 而非 sum：实测 20m33s → 9m38s（build-package 8m59s / swift-regression 7m38s）。
+  #
+  # 注意：build-package 比 swift-regression 还长，所以「跳过测试」省不到任何墙钟时间。
+  # 因此**不做按路径判定的闸门**（曾短暂加过 classify-change，实测无收益且会漏跑 UI 回归），
+  # 每次 push 都跑全量：速度一样、覆盖更全、逻辑更简单。
+  push:
+    branches-ignore: [main]
+    paths:
+      - "Seal/**"
+      - "SealTests/**"
+      - "SealUITests/**"
+      # ⚠️ **必须是 `Vendor/**`**（2026-09-19 修正）✗ —— 原来只列了 `Vendor/Minimuxer/**`，
+      # 于是「改了 `Vendor/CodeSignKit/Package.swift`」**根本不触发 CI** ✗✗。
+      # 而现在 `Vendor/` 里已经有**签名器**（`SideSign` / `CodeSignKit` ✓）和它的一串依赖
+      #（`GSACryptoKit` / `libdeflate` / `AnisetteKit` ✓）
+      # ⇒ 改它们却不跑 CI = 可能把坏代码推上去而毫无察觉 ✗。
+      # ⇒ 改成整目录匹配 ✓（`paths` 只决定**要不要触发**，不影响构建耗时 ✓）。
+      - "Vendor/**"
+      - "project.yml"
+      - "Config/**"
+      - "Scripts/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "两个门全绿后发布 GitHub Release（IPA 永久保留，不受 artifact 30 天限制）"
+        type: boolean
+        default: false
+      release_tag:
+        description: "Release 标签（留空则自动 v<版本>，须与 MARKETING_VERSION 对齐）"
+        type: string
+        default: ""
+      prerelease:
+        description: "标记为预发布版本"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-package:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Check release safety invariants
+        run: python3 Scripts/verify-release-safety.py
+
+      - name: Cache Rust toolchain and cargo artifacts
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.cargo/registry
+            ~/.cargo/git
+            Vendor/Minimuxer/RustBridge/target
+            Vendor/Minimuxer/RustBridge/lib/RustBridge.xcframework
+          key: rustbridge-${{ runner.os }}-${{ hashFiles('Vendor/Minimuxer/RustBridge/Cargo.lock', 'Vendor/Minimuxer/RustBridge/Cargo.toml', 'Vendor/Minimuxer/RustBridge/Makefile', 'Vendor/Minimuxer/RustBridge/src/**') }}
+          restore-keys: |
+            rustbridge-${{ runner.os }}-
+
+      # Xcode 编译产物缓存（Release）。build-unsigned-ipa.sh 以 build/DerivedData 为
+      # derivedDataPath，这里连同 SPM 依赖缓存一起存：命中后第三方依赖不再重编、
+      # 业务源码走 Xcode 增量编译，全量编译（约 8-9 分钟）可望降到几分钟。
+      # key 只押配置类文件（project.yml / xcconfig / Info.plist），改业务代码不换 key，
+      # 由 Xcode 自行按源文件差异增量；restore-keys 兜底最近一次缓存。
+      - name: Cache Xcode DerivedData and SwiftPM (Release)
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            build/DerivedData
+          key: xcode-release-${{ runner.os }}-${{ hashFiles('project.yml', 'Config/*.xcconfig', 'Seal/Resources/Info.plist') }}
+          restore-keys: |
+            xcode-release-${{ runner.os }}-
+
+      - name: Select pinned Xcode 26.5
+        run: |
+          test -d /Applications/Xcode_26.5.app
+          sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
+          xcodebuild -version
+          test "$(xcodebuild -version | head -n 1)" = "Xcode 26.5"
+
+      - name: Install pinned Rust inspection tools
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component llvm-tools-preview
+          rustup default 1.97.1
+          rustc --version --verbose
+
+      - name: Audit vendored RustBridge FFI source
+        run: bash Scripts/audit-rustbridge-source.sh
+
+      - name: Ensure RustBridge matches Rust source
+        env:
+          RUST_TOOLCHAIN: 1.97.1
+        run: bash Scripts/ensure-rustbridge.sh
+
+      - name: Verify vendored RustBridge supports iOS 16
+        run: MAX_IOS_VERSION=16.0 bash Scripts/verify-rustbridge-minos.sh
+
+      - name: Verify vendored RustBridge typed FFI symbols
+        run: bash Scripts/verify-rustbridge-symbols.sh
+
+      - name: Install pinned XcodeGen
+        run: |
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/xcodegen.zip" \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip
+          echo "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 --check
+          ditto -x -k "$RUNNER_TEMP/xcodegen.zip" "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/xcodegen/bin/xcodegen" --version
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      # 部署目标/设备族断言：showBuildSettings 只跑一次，落盘后再提取多个字段。
+      - name: Verify deployment targets
+        run: |
+          xcodebuild -project Seal.xcodeproj -target Seal \
+            -configuration Debug -sdk iphonesimulator -showBuildSettings \
+            > "$RUNNER_TEMP/seal-settings.txt"
+
+          SEAL_TARGET="$(awk -F ' = ' '/^[[:space:]]*IPHONEOS_DEPLOYMENT_TARGET = / { print $2; exit }' "$RUNNER_TEMP/seal-settings.txt")"
+          echo "Seal IPHONEOS_DEPLOYMENT_TARGET=$SEAL_TARGET"
+          test "$SEAL_TARGET" = "17.0"
+          # UIDeviceFamily 改由 TARGETED_DEVICE_FAMILY 构建设置注入（消除 Info.plist 覆盖警告），断言仍为 iPhone+iPad
+          SEAL_FAMILY="$(awk -F ' = ' '/^[[:space:]]*TARGETED_DEVICE_FAMILY = / { print $2; exit }' "$RUNNER_TEMP/seal-settings.txt")"
+          echo "Seal TARGETED_DEVICE_FAMILY=$SEAL_FAMILY"
+          test "$SEAL_FAMILY" = "1,2"
+
+      # 单元 + UI 回归已拆到独立的 swift-regression job（见下），此处只负责出包。
+      - name: Build unsigned IPA
+        run: SEAL_IPA_CONFIGURATION=Release SEAL_SKIP_XCODEGEN=1 bash Scripts/build-unsigned-ipa.sh
+
+      - name: Verify unsigned IPA
+        run: bash Scripts/verify-ipa.sh build/Seal_*.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: Seal-${{ github.run_number }}
+          if-no-files-found: error
+          path: |
+            build/Seal_*.ipa
+            build/Seal_*.ipa.sha256
+            build/Seal-Info.plist
+          retention-days: 30
+
+      - name: Upload build metadata
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: Seal-Build-Metadata-${{ github.run_number }}
+          if-no-files-found: warn
+          path: |
+            build/Seal_*.ipa.sha256
+            build/Seal-Info.plist
+          retention-days: 14
+
+  # 单元 + UI 回归门。从 build-package 里拆出来独立成 job，与它**并行**跑：
+  # 原先测试嵌在 build-package 内，等于「先 Debug 全量构建+测试、再等 Release 全量构建」串行叠加。
+  # 实测并行后总时长 20m33s → 9m38s；且 build-package 比本 job 更长，
+  # 所以每次 push 都跑全量也**不额外增加墙钟时间**（取 max 而非 sum）。
+  # 注意：本 job 是发布的前置（publish-release 的 needs 含它），不得从 needs 里摘掉。
+  swift-regression:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Cache Swift Package Manager dependencies
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/Developer/Xcode/DerivedData/Seal-*
+          key: xcode-debug-${{ runner.os }}-${{ hashFiles('project.yml') }}
+          restore-keys: |
+            xcode-debug-${{ runner.os }}-
+
+      - name: Cache Rust toolchain and cargo artifacts
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.cargo/registry
+            ~/.cargo/git
+            Vendor/Minimuxer/RustBridge/target
+            Vendor/Minimuxer/RustBridge/lib/RustBridge.xcframework
+          key: rustbridge-${{ runner.os }}-${{ hashFiles('Vendor/Minimuxer/RustBridge/Cargo.lock', 'Vendor/Minimuxer/RustBridge/Cargo.toml', 'Vendor/Minimuxer/RustBridge/Makefile', 'Vendor/Minimuxer/RustBridge/src/**') }}
+          restore-keys: |
+            rustbridge-${{ runner.os }}-
+
+      # 必须：本仓允许预编译 RustBridge.xcframework 落后于 Rust 源码，
+      # ensure-rustbridge.sh 会按源码指纹发现不一致并当场重编。
+      # 漏跑这一步会链接到缺符号的旧库，报一堆 `_rust_bridge_*` undefined symbols。
+      # 2026-09-14 实测：把测试拆成独立 job 时漏了它 → build-package 成功而本 job 链接失败。
+      - name: Ensure RustBridge matches Rust source
+        env:
+          RUST_TOOLCHAIN: 1.97.1
+        run: bash Scripts/ensure-rustbridge.sh
+
+      - name: Select pinned Xcode 26.5
+        run: |
+          test -d /Applications/Xcode_26.5.app
+          sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
+          xcodebuild -version
+          test "$(xcodebuild -version | head -n 1)" = "Xcode 26.5"
+
+      - name: Install pinned XcodeGen
+        run: |
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/xcodegen.zip" \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip
+          echo "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 --check
+          ditto -x -k "$RUNNER_TEMP/xcodegen.zip" "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/xcodegen/bin/xcodegen" --version
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Run Swift unit and UI regression tests
+        run: |
+          SIMULATOR_UDID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(device["udid"] for runtime, devices in d.items() if "iOS-26-5" in runtime for device in devices if device.get("isAvailable") and device.get("name", "").startswith("iPhone")))')"
+          xcrun simctl boot "$SIMULATOR_UDID" || true
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+          rm -rf build/TestResults.xcresult
+          mkdir -p build
+          # 落盘日志供下一步提炼失败原因（tee 保留 xcodebuild 的退出码，pipefail 保证失败可见）
+          set -o pipefail
+          xcodebuild test \
+            -project Seal.xcodeproj \
+            -scheme Seal \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -parallel-testing-enabled NO \
+            -resultBundlePath build/TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            OTHER_SWIFT_FLAGS='$(inherited) -continue-building-after-errors' \
+            2>&1 | tee build/TestLog.txt
+
+      # GitHub 的原始日志要登录才能看，注解不用。把编译错误与失败用例提炼成 ::error::，
+      # 失败原因会直接显示在 run 页上，避免「只知道 exit 65、不知道哪条挂了」。
+      - name: Surface failures as annotations
+        if: failure()
+        run: |
+          LOG=build/TestLog.txt
+          if [ ! -f "$LOG" ]; then
+            echo "::error::测试步骤未产出日志（失败可能发生在 xcodebuild 之前的脚本位置）"
+            exit 0
+          fi
+          { grep -nE "error:|fatal error:|Testing failed|Test Case .* failed|Assertion Failure" "$LOG" | head -20 || true; } \
+            | while IFS= read -r line; do echo "::error::$line"; done
+          echo "----- 日志尾部 80 行 -----"
+          tail -80 "$LOG"
+
+      - name: Upload regression test result bundle
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: Seal-TestResults-${{ github.run_number }}
+          if-no-files-found: warn
+          path: build/TestResults.xcresult
+          retention-days: 14
+
+  # 签名内核（上游 `CodeSignKit`）**自带**的测试：Mach-O 签名、CodeDirectory、
+  # CodeResources、DER、Requirements、签名校验 ✓。在 macOS host 上用 SPM 直接 swift test，
+  # 作为**签名核心的独立回归门**，与主 App 完整门并行 —— 避免签名器演进悄悄破坏既有行为。
+  #
+  # ⚠️ 本 job 原名 `rork-sign-tests`（2026-09-19 之前测的是 `Vendor/rork-sign` ✗）——
+  # 用户死命令「签名器不一样你就换」之后，`Vendor/rork-sign` **整个目录已删除** ✗
+  # ⇒ 改成测**现在真正在跑的签名内核** ✓。
+  #
+  # ⚠️ **2026-09-20 收窄：只留 `CodeSignKit`** ✗ —— `Vendor/SideSign` 的测试
+  # **上游自己就编译不过** ✓（CI 实报：缺 `import Foundation` ⇒ `cannot find 'FileManager'` ✓，
+  # 另有一处 key path 推断失败 ✓），而它剩下的用例测的是 `Device` 模型与 `Archive` 往返，
+  # **Seal 完全不用 `SideSign.Archive`** ✓ ⇒ 零价值 ✓。
+  # 按「**不要打补丁**」⇒ 删掉那一步（连同它的测试 target ✓），不给它加 `import` ✓。
+  signer-tests:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Select pinned Xcode 26.5
+        run: |
+          test -d /Applications/Xcode_26.5.app
+          sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
+          swift --version
+
+      - name: Cache signer SwiftPM artifacts
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: Vendor/CodeSignKit/.build
+          key: signer-spm-${{ runner.os }}-${{ hashFiles('Vendor/CodeSignKit/Package.resolved') }}
+          restore-keys: |
+            signer-spm-${{ runner.os }}-
+
+      - name: Run CodeSignKit unit tests
+        working-directory: Vendor/CodeSignKit
+        run: swift test
+
+  # 全绿后可选发布 GitHub Release：手动 dispatch 时勾选 publish_release。
+  # Release 资产永久保留，弥补 upload-artifact 30 天自动过期；只下载+上传，用 ubuntu 即可。
+  publish-release:
+    # swift-regression 必须在 needs 里：测试已从 build-package 拆出，
+    # 否则发布可能在 UI 回归还没跑完时就发出去。
+    needs: [build-package, signer-tests, swift-regression]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Download unsigned IPA artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: Seal-${{ github.run_number }}
+          path: release
+
+      - name: Publish GitHub Release via gh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          INPUT_TAG: ${{ inputs.release_tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          RUN_NUMBER: ${{ github.run_number }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ls -la release
+          VER="$(python3 -c "import plistlib;print(plistlib.load(open('release/Seal-Info.plist','rb'))['CFBundleShortVersionString'])")"
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then TAG="v${VER}"; fi
+          if [ "${TAG#v}" != "$VER" ]; then
+            echo "Release tag must match the IPA marketing version" >&2
+            exit 1
+          fi
+          # 发布正文唯一来源。缺文件时 `cat` 只会留下一行 "No such file or directory"，
+          # 看不出是文档被删了还是 checkout 出问题 —— 显式判空并给出可执行的下一步。
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "::error::RELEASE_NOTES.md 缺失或为空：它是发布正文唯一来源（见 AGENTS.md「版本与发布」）。补写本次版本正文后重跑本 job。"
+            exit 1
+          fi
+          # ⚠️ **只取「第一个 `# 版本：…` 标题」那一节**（2026-09-20 修）✗ ——
+          # 原来是 `cat` **整个文件** ✗ ⇒ **更新弹窗会把所有历史版本全列出来**
+          #（实测 74 行 / 5 个版本 ✗），而且旧版本文案里带 `installation_proxy` / `installd`
+          # 这类**内部术语** ✗✗ —— 那是给开发者看的，不该出现在用户弹窗里 ✓。
+          # 判据：`RELEASE_NOTES.md` **最新的版本必须写在文件最上面** ✓（守卫钉住 ✓）。
+          NOTES="$(awk '/^# /{ if (found) exit; found=1 } found' RELEASE_NOTES.md \
+            | sed -e '/^---[[:space:]]*$/d' -e 's/[[:space:]]*$//' | cat -s)"
+          ARGS=(--title "Seal $TAG" --notes "$NOTES")
+          if [ "$PRERELEASE" = "true" ]; then ARGS+=(--prerelease); fi
+          gh release create "$TAG" "${ARGS[@]}" --repo sunuannian1/Seal-Releases \
+            release/Seal_*.ipa \
+            release/Seal_*.ipa.sha256 \
+            release/Seal-Info.plist
+          echo "published $TAG"

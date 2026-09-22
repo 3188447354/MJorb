@@ -1,0 +1,52 @@
+{
+  "object": {
+    "pins": [
+      {
+        "package": "KeychainAccess",
+        "repositoryURL": "https://github.com/kishikawakatsumi/KeychainAccess.git",
+        "state": {
+          "branch": null,
+          "revision": "84e546727d66f1adc5439debad16270d0fdd04e7",
+          "version": "4.2.2"
+        }
+      },
+      {
+        "package": "LaunchAtLogin",
+        "repositoryURL": "https://github.com/sindresorhus/LaunchAtLogin.git",
+        "state": {
+          "branch": null,
+          "revision": "e8171b3e38a2816f579f58f3dac1522aa39efe41",
+          "version": "4.2.0"
+        }
+      },
+      {
+        "package": "Nuke",
+        "repositoryURL": "https://github.com/kean/Nuke.git",
+        "state": {
+          "branch": null,
+          "revision": "c1c36dff9fa838c9d5d01a4096a9a9bab84d5a5e",
+          "version": "11.0.1"
+        }
+      },
+      {
+        "package": "swift-argument-parser",
+        "repositoryURL": "https://github.com/apple/swift-argument-parser.git",
+        "state": {
+          "branch": null,
+          "revision": "8f4d2753f0e4778c76d5f05ad16c74f707390531",
+          "version": "1.2.3"
+        }
+      },
+      {
+        "package": "TelemetryDeck",
+        "repositoryURL": "https://github.com/TelemetryDeck/SwiftClient",
+        "state": {
+          "branch": null,
+          "revision": "501270cd33082c3fa430b724e849855482ed051c",
+          "version": "2.9.3"
+        }
+      }
+    ]
+  },
+  "version": 1
+}

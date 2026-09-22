@@ -1,0 +1,784 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXAggregateTarget section */
+		ED77B4B88587C894E85C361023D67C53 /* Sparkle */ = {
+			isa = PBXAggregateTarget;
+			buildConfigurationList = 2C8D06A2289713323892B3638F08AC0B /* Build configuration list for PBXAggregateTarget "Sparkle" */;
+			buildPhases = (
+			);
+			dependencies = (
+			);
+			name = Sparkle;
+		};
+/* End PBXAggregateTarget section */
+
+/* Begin PBXBuildFile section */
+		01A6B167EF9613254D827A8F166A3B92 /* Pods-AltServer-umbrella.h in Headers */ = {isa = PBXBuildFile; fileRef = AA4A34B7F7D8B402381C69AC2679EDAB /* Pods-AltServer-umbrella.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		2E53A61707C24CB86CE962F1C11EEF87 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 034CFF5A9584FCD3F6149B272960ADE0 /* Security.framework */; };
+		65B5A64F496A9E1114CEFCE6D0538EA4 /* STPrivilegedTask.m in Sources */ = {isa = PBXBuildFile; fileRef = C703E585F5F89563609DFC5144627796 /* STPrivilegedTask.m */; settings = {COMPILER_FLAGS = "-w -Xanalyzer -analyzer-disable-all-checks"; }; };
+		7988291F7523D2315E2D407B48FD01C7 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 973601ED4FF5E2F8474B23A41E3585B9 /* Cocoa.framework */; };
+		89A0AD3548ADC0D4B22D0AA0F1412115 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 973601ED4FF5E2F8474B23A41E3585B9 /* Cocoa.framework */; };
+		B4C865347925FC687B7C09EFDAEEF774 /* Pods-AltServer-dummy.m in Sources */ = {isa = PBXBuildFile; fileRef = A0C3A950D86282BDC06220FCE42BA36C /* Pods-AltServer-dummy.m */; };
+		CE5C326BD3A4B7A05D18DC9BB42E2E70 /* STPrivilegedTask-dummy.m in Sources */ = {isa = PBXBuildFile; fileRef = 845888B258D5AD0287604FCD4A37B38B /* STPrivilegedTask-dummy.m */; };
+		EF662217257FA52C063BB15A6A0FA60F /* STPrivilegedTask-umbrella.h in Headers */ = {isa = PBXBuildFile; fileRef = C5DBE281696F8E63900C2609E429DC59 /* STPrivilegedTask-umbrella.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		F155D0A2C3D2E7966375C0CA7924F21F /* STPrivilegedTask.h in Headers */ = {isa = PBXBuildFile; fileRef = 12C0B533FEE6B0674312A24154B30CEB /* STPrivilegedTask.h */; settings = {ATTRIBUTES = (Public, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		18B68B010CC4900F26AFC2813D233E5B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BFDFE7DC352907FC980B868725387E98 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = ED77B4B88587C894E85C361023D67C53;
+			remoteInfo = Sparkle;
+		};
+		C61181BF3E920EB19543710E32C34D90 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BFDFE7DC352907FC980B868725387E98 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 05327B1DB6967DBAA19D1ED734FDBD96;
+			remoteInfo = STPrivilegedTask;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		01E56853E46B4E291A15A329AC209AE9 /* SPUStandardUpdaterController.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SPUStandardUpdaterController.h; path = Sparkle.framework/Versions/B/Headers/SPUStandardUpdaterController.h; sourceTree = "<group>"; };
+		034CFF5A9584FCD3F6149B272960ADE0 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.0.sdk/System/Library/Frameworks/Security.framework; sourceTree = DEVELOPER_DIR; };
+		074399F93D948309B74C93CBBE27F6CA /* SPUUpdatePermissionRequest.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SPUUpdatePermissionRequest.h; path = Sparkle.framework/Versions/B/Headers/SPUUpdatePermissionRequest.h; sourceTree = "<group>"; };
+		0C37AFAADB29E7EDBA8AEB1BC4C16E67 /* SPUUpdateCheck.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SPUUpdateCheck.h; path = Sparkle.framework/Versions/B/Headers/SPUUpdateCheck.h; sourceTree = "<group>"; };
+		12C0B533FEE6B0674312A24154B30CEB /* STPrivilegedTask.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = STPrivilegedTask.h; sourceTree = "<group>"; };
+		17823CBA172792B0417FE17FA06D462F /* SUVersionDisplayProtocol.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SUVersionDisplayProtocol.h; path = Sparkle.framework/Versions/B/Headers/SUVersionDisplayProtocol.h; sourceTree = "<group>"; };
+		1792746E303CAEFD5AFE50033AB5F080 /* Sparkle.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = Sparkle.h; path = Sparkle.framework/Versions/B/Headers/Sparkle.h; sourceTree = "<group>"; };
+		1A5C856E2022CBC0BF3FC1C634113465 /* Pods-AltServer-acknowledgements.markdown */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; path = "Pods-AltServer-acknowledgements.markdown"; sourceTree = "<group>"; };
+		1DC3107FA447F0230CFD1DB7ADB83BFB /* SPUStandardUserDriver.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SPUStandardUserDriver.h; path = Sparkle.framework/Versions/B/Headers/SPUStandardUserDriver.h; sourceTree = "<group>"; };
+		24565CDE9A90B49C53D8BACDB386C3C2 /* SUVersionComparisonProtocol.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SUVersionComparisonProtocol.h; path = Sparkle.framework/Versions/B/Headers/SUVersionComparisonProtocol.h; sourceTree = "<group>"; };
+		2467B61EB0A6DF57E399E9641A336B78 /* SPUUserDriver.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SPUUserDriver.h; path = Sparkle.framework/Versions/B/Headers/SPUUserDriver.h; sourceTree = "<group>"; };
+		29F63A8EEB14302D36205A8F7AB6077A /* Sparkle.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = Sparkle.release.xcconfig; sourceTree = "<group>"; };
+		32E60845FAB53A426F0D94E1898AF342 /* SPUUserUpdateState.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SPUUserUpdateState.h; path = Sparkle.framework/Versions/B/Headers/SPUUserUpdateState.h; sourceTree = "<group>"; };
+		4620A106E3E12B24C9CBAB75D2B3AC22 /* SUAppcastItem.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SUAppcastItem.h; path = Sparkle.framework/Versions/B/Headers/SUAppcastItem.h; sourceTree = "<group>"; };
+		46D963A92910C8E082DD61F4FAD69D85 /* Pods-AltServer.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = "Pods-AltServer.release.xcconfig"; sourceTree = "<group>"; };
+		476E02B09064EFC6C977937BEB5E93D3 /* Pods-AltServer-Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = "Pods-AltServer-Info.plist"; sourceTree = "<group>"; };
+		4DB59D427CFF892A049652EE50DC5067 /* Sparkle.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = Sparkle.framework; sourceTree = "<group>"; };
+		5D455B69CE56348C91790FCF673930D9 /* SPUUpdaterDelegate.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SPUUpdaterDelegate.h; path = Sparkle.framework/Versions/B/Headers/SPUUpdaterDelegate.h; sourceTree = "<group>"; };
+		5E2F8DFA4192AEC0206AE6D93C99469D /* SPUDownloadData.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SPUDownloadData.h; path = Sparkle.framework/Versions/B/Headers/SPUDownloadData.h; sourceTree = "<group>"; };
+		6381B90D20EE30AC7E973CC485050312 /* STPrivilegedTask-Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = "STPrivilegedTask-Info.plist"; sourceTree = "<group>"; };
+		6A7E561910CA8ED37E60B8BF454F816E /* Pods-AltServer.modulemap */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.module; path = "Pods-AltServer.modulemap"; sourceTree = "<group>"; };
+		6AB65B30D4713F8D18806A7ABCFAACBE /* SUAppcast.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SUAppcast.h; path = Sparkle.framework/Versions/B/Headers/SUAppcast.h; sourceTree = "<group>"; };
+		7A00D41C8913E723E822464334F38D58 /* SUUpdatePermissionResponse.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SUUpdatePermissionResponse.h; path = Sparkle.framework/Versions/B/Headers/SUUpdatePermissionResponse.h; sourceTree = "<group>"; };
+		845888B258D5AD0287604FCD4A37B38B /* STPrivilegedTask-dummy.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = "STPrivilegedTask-dummy.m"; sourceTree = "<group>"; };
+		85A00873E2E7070044AB957B61318309 /* SUUpdaterDelegate.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SUUpdaterDelegate.h; path = Sparkle.framework/Versions/B/Headers/SUUpdaterDelegate.h; sourceTree = "<group>"; };
+		8EBF5043034AFB3A6A8F28C373BF0EC0 /* Pods-AltServer */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; name = "Pods-AltServer"; path = Pods_AltServer.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		8ED2881AD4B36402B04639DAE798E133 /* Pods-AltServer-frameworks.sh */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.script.sh; path = "Pods-AltServer-frameworks.sh"; sourceTree = "<group>"; };
+		973601ED4FF5E2F8474B23A41E3585B9 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.0.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
+		9B5BD538E93470B22D7F9C419C22B2CE /* Pods-AltServer.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = "Pods-AltServer.debug.xcconfig"; sourceTree = "<group>"; };
+		9D4AADA54FE80E1BA54004289BB5877F /* SPUUpdater.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SPUUpdater.h; path = Sparkle.framework/Versions/B/Headers/SPUUpdater.h; sourceTree = "<group>"; };
+		9D940727FF8FB9C785EB98E56350EF41 /* Podfile */ = {isa = PBXFileReference; explicitFileType = text.script.ruby; includeInIndex = 1; indentWidth = 2; lastKnownFileType = text; name = Podfile; path = ../Podfile; sourceTree = SOURCE_ROOT; tabWidth = 2; xcLanguageSpecificationIdentifier = xcode.lang.ruby; };
+		A0C3A950D86282BDC06220FCE42BA36C /* Pods-AltServer-dummy.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = "Pods-AltServer-dummy.m"; sourceTree = "<group>"; };
+		AA4A34B7F7D8B402381C69AC2679EDAB /* Pods-AltServer-umbrella.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = "Pods-AltServer-umbrella.h"; sourceTree = "<group>"; };
+		AEDD500CD2067565955E6D7D98AC0B3D /* Pods-AltServer-acknowledgements.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = "Pods-AltServer-acknowledgements.plist"; sourceTree = "<group>"; };
+		B38BBCF4B21CED5BD86B1ED5E1C1E883 /* STPrivilegedTask.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = STPrivilegedTask.debug.xcconfig; sourceTree = "<group>"; };
+		B53C78B17D384530612BC3018214411B /* SUErrors.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SUErrors.h; path = Sparkle.framework/Versions/B/Headers/SUErrors.h; sourceTree = "<group>"; };
+		B6952CEFB3E02AF5B08BAF0DFE693421 /* SUUpdater.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SUUpdater.h; path = Sparkle.framework/Versions/B/Headers/SUUpdater.h; sourceTree = "<group>"; };
+		B6B893EF19970E9E8BBE0AC26973C8A1 /* SUStandardVersionComparator.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SUStandardVersionComparator.h; path = Sparkle.framework/Versions/B/Headers/SUStandardVersionComparator.h; sourceTree = "<group>"; };
+		C5DBE281696F8E63900C2609E429DC59 /* STPrivilegedTask-umbrella.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = "STPrivilegedTask-umbrella.h"; sourceTree = "<group>"; };
+		C703E585F5F89563609DFC5144627796 /* STPrivilegedTask.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = STPrivilegedTask.m; sourceTree = "<group>"; };
+		C856E47408140B4F9D46EDA13E65B3A3 /* Sparkle.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = Sparkle.debug.xcconfig; sourceTree = "<group>"; };
+		CAC23EC7621C671B491BBD6029BEFA01 /* SPUStandardUserDriverDelegate.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SPUStandardUserDriverDelegate.h; path = Sparkle.framework/Versions/B/Headers/SPUStandardUserDriverDelegate.h; sourceTree = "<group>"; };
+		D48839F43D3C4E7F49EB44895E28A6B2 /* STPrivilegedTask.modulemap */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.module; path = STPrivilegedTask.modulemap; sourceTree = "<group>"; };
+		ECB81C33948E641ABE3B268D296018CC /* STPrivilegedTask */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; name = STPrivilegedTask; path = STPrivilegedTask.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		ED18148A19F11F18612C18C91C3462FE /* SUExport.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SUExport.h; path = Sparkle.framework/Versions/B/Headers/SUExport.h; sourceTree = "<group>"; };
+		ED947CEEF85266B1A4477BCCCF101250 /* STPrivilegedTask.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = STPrivilegedTask.release.xcconfig; sourceTree = "<group>"; };
+		F73032393F83B827924422DBE28B3927 /* SPUUpdaterSettings.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = SPUUpdaterSettings.h; path = Sparkle.framework/Versions/B/Headers/SPUUpdaterSettings.h; sourceTree = "<group>"; };
+		FF4F8D370AEF08FAC279BB0209FDD772 /* STPrivilegedTask-prefix.pch */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = "STPrivilegedTask-prefix.pch"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		456A82DE4D0D63E1E1037718FFB2FB59 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				89A0AD3548ADC0D4B22D0AA0F1412115 /* Cocoa.framework in Frameworks */,
+				2E53A61707C24CB86CE962F1C11EEF87 /* Security.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B4003AFCB9F522E788B96A187A008761 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7988291F7523D2315E2D407B48FD01C7 /* Cocoa.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		1D281C0AD37A1E1642A843E92C7DBA89 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				4DB59D427CFF892A049652EE50DC5067 /* Sparkle.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		1E12AC3A52D2A0F27E63BFDD37F52887 /* Pods-AltServer */ = {
+			isa = PBXGroup;
+			children = (
+				6A7E561910CA8ED37E60B8BF454F816E /* Pods-AltServer.modulemap */,
+				1A5C856E2022CBC0BF3FC1C634113465 /* Pods-AltServer-acknowledgements.markdown */,
+				AEDD500CD2067565955E6D7D98AC0B3D /* Pods-AltServer-acknowledgements.plist */,
+				A0C3A950D86282BDC06220FCE42BA36C /* Pods-AltServer-dummy.m */,
+				8ED2881AD4B36402B04639DAE798E133 /* Pods-AltServer-frameworks.sh */,
+				476E02B09064EFC6C977937BEB5E93D3 /* Pods-AltServer-Info.plist */,
+				AA4A34B7F7D8B402381C69AC2679EDAB /* Pods-AltServer-umbrella.h */,
+				9B5BD538E93470B22D7F9C419C22B2CE /* Pods-AltServer.debug.xcconfig */,
+				46D963A92910C8E082DD61F4FAD69D85 /* Pods-AltServer.release.xcconfig */,
+			);
+			name = "Pods-AltServer";
+			path = "Target Support Files/Pods-AltServer";
+			sourceTree = "<group>";
+		};
+		4B742CB94AD9375A8057D9B0C5E0290E /* STPrivilegedTask */ = {
+			isa = PBXGroup;
+			children = (
+				12C0B533FEE6B0674312A24154B30CEB /* STPrivilegedTask.h */,
+				C703E585F5F89563609DFC5144627796 /* STPrivilegedTask.m */,
+				C73C99CFC70D12A122B72EE7D3EC16C3 /* Support Files */,
+			);
+			name = STPrivilegedTask;
+			path = STPrivilegedTask;
+			sourceTree = "<group>";
+		};
+		9977BC3B29AD79160B1EE86C5C291BA5 /* Targets Support Files */ = {
+			isa = PBXGroup;
+			children = (
+				1E12AC3A52D2A0F27E63BFDD37F52887 /* Pods-AltServer */,
+			);
+			name = "Targets Support Files";
+			sourceTree = "<group>";
+		};
+		9DEEA395954C71555EB881F43EF3C4E6 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				8EBF5043034AFB3A6A8F28C373BF0EC0 /* Pods-AltServer */,
+				ECB81C33948E641ABE3B268D296018CC /* STPrivilegedTask */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		AAE0F39C16B1CFC786CDAC15F005F739 /* Sparkle */ = {
+			isa = PBXGroup;
+			children = (
+				1792746E303CAEFD5AFE50033AB5F080 /* Sparkle.h */,
+				5E2F8DFA4192AEC0206AE6D93C99469D /* SPUDownloadData.h */,
+				01E56853E46B4E291A15A329AC209AE9 /* SPUStandardUpdaterController.h */,
+				1DC3107FA447F0230CFD1DB7ADB83BFB /* SPUStandardUserDriver.h */,
+				CAC23EC7621C671B491BBD6029BEFA01 /* SPUStandardUserDriverDelegate.h */,
+				0C37AFAADB29E7EDBA8AEB1BC4C16E67 /* SPUUpdateCheck.h */,
+				074399F93D948309B74C93CBBE27F6CA /* SPUUpdatePermissionRequest.h */,
+				9D4AADA54FE80E1BA54004289BB5877F /* SPUUpdater.h */,
+				5D455B69CE56348C91790FCF673930D9 /* SPUUpdaterDelegate.h */,
+				F73032393F83B827924422DBE28B3927 /* SPUUpdaterSettings.h */,
+				2467B61EB0A6DF57E399E9641A336B78 /* SPUUserDriver.h */,
+				32E60845FAB53A426F0D94E1898AF342 /* SPUUserUpdateState.h */,
+				6AB65B30D4713F8D18806A7ABCFAACBE /* SUAppcast.h */,
+				4620A106E3E12B24C9CBAB75D2B3AC22 /* SUAppcastItem.h */,
+				B53C78B17D384530612BC3018214411B /* SUErrors.h */,
+				ED18148A19F11F18612C18C91C3462FE /* SUExport.h */,
+				B6B893EF19970E9E8BBE0AC26973C8A1 /* SUStandardVersionComparator.h */,
+				7A00D41C8913E723E822464334F38D58 /* SUUpdatePermissionResponse.h */,
+				B6952CEFB3E02AF5B08BAF0DFE693421 /* SUUpdater.h */,
+				85A00873E2E7070044AB957B61318309 /* SUUpdaterDelegate.h */,
+				24565CDE9A90B49C53D8BACDB386C3C2 /* SUVersionComparisonProtocol.h */,
+				17823CBA172792B0417FE17FA06D462F /* SUVersionDisplayProtocol.h */,
+				1D281C0AD37A1E1642A843E92C7DBA89 /* Frameworks */,
+				DB20785170690616476004273081F4D5 /* Support Files */,
+			);
+			name = Sparkle;
+			path = Sparkle;
+			sourceTree = "<group>";
+		};
+		B6DB0F5D9C3485B4DD4E98EE6790793C /* OS X */ = {
+			isa = PBXGroup;
+			children = (
+				973601ED4FF5E2F8474B23A41E3585B9 /* Cocoa.framework */,
+				034CFF5A9584FCD3F6149B272960ADE0 /* Security.framework */,
+			);
+			name = "OS X";
+			sourceTree = "<group>";
+		};
+		C080C886C9E2F80D52E3E86A62E5B711 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				B6DB0F5D9C3485B4DD4E98EE6790793C /* OS X */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		C0A8C1805F1C301ECE3A98DAEFE29444 /* Pods */ = {
+			isa = PBXGroup;
+			children = (
+				AAE0F39C16B1CFC786CDAC15F005F739 /* Sparkle */,
+				4B742CB94AD9375A8057D9B0C5E0290E /* STPrivilegedTask */,
+			);
+			name = Pods;
+			sourceTree = "<group>";
+		};
+		C73C99CFC70D12A122B72EE7D3EC16C3 /* Support Files */ = {
+			isa = PBXGroup;
+			children = (
+				D48839F43D3C4E7F49EB44895E28A6B2 /* STPrivilegedTask.modulemap */,
+				845888B258D5AD0287604FCD4A37B38B /* STPrivilegedTask-dummy.m */,
+				6381B90D20EE30AC7E973CC485050312 /* STPrivilegedTask-Info.plist */,
+				FF4F8D370AEF08FAC279BB0209FDD772 /* STPrivilegedTask-prefix.pch */,
+				C5DBE281696F8E63900C2609E429DC59 /* STPrivilegedTask-umbrella.h */,
+				B38BBCF4B21CED5BD86B1ED5E1C1E883 /* STPrivilegedTask.debug.xcconfig */,
+				ED947CEEF85266B1A4477BCCCF101250 /* STPrivilegedTask.release.xcconfig */,
+			);
+			name = "Support Files";
+			path = "../Target Support Files/STPrivilegedTask";
+			sourceTree = "<group>";
+		};
+		CF1408CF629C7361332E53B88F7BD30C = {
+			isa = PBXGroup;
+			children = (
+				9D940727FF8FB9C785EB98E56350EF41 /* Podfile */,
+				C080C886C9E2F80D52E3E86A62E5B711 /* Frameworks */,
+				C0A8C1805F1C301ECE3A98DAEFE29444 /* Pods */,
+				9DEEA395954C71555EB881F43EF3C4E6 /* Products */,
+				9977BC3B29AD79160B1EE86C5C291BA5 /* Targets Support Files */,
+			);
+			sourceTree = "<group>";
+		};
+		DB20785170690616476004273081F4D5 /* Support Files */ = {
+			isa = PBXGroup;
+			children = (
+				C856E47408140B4F9D46EDA13E65B3A3 /* Sparkle.debug.xcconfig */,
+				29F63A8EEB14302D36205A8F7AB6077A /* Sparkle.release.xcconfig */,
+			);
+			name = "Support Files";
+			path = "../Target Support Files/Sparkle";
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXHeadersBuildPhase section */
+		188CA570E55AE01B8AD7CE1575B09A18 /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				01A6B167EF9613254D827A8F166A3B92 /* Pods-AltServer-umbrella.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C3766E6514BA7C5E5284BED4936AB1ED /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F155D0A2C3D2E7966375C0CA7924F21F /* STPrivilegedTask.h in Headers */,
+				EF662217257FA52C063BB15A6A0FA60F /* STPrivilegedTask-umbrella.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXHeadersBuildPhase section */
+
+/* Begin PBXNativeTarget section */
+		05327B1DB6967DBAA19D1ED734FDBD96 /* STPrivilegedTask */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C47405FE8D46205AF373C7A6F9B2D4D2 /* Build configuration list for PBXNativeTarget "STPrivilegedTask" */;
+			buildPhases = (
+				C3766E6514BA7C5E5284BED4936AB1ED /* Headers */,
+				BD1B17E0C28987C7C661898490FBF903 /* Sources */,
+				456A82DE4D0D63E1E1037718FFB2FB59 /* Frameworks */,
+				9C8AAED31893BD044B204B4B2C970AAA /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = STPrivilegedTask;
+			productName = STPrivilegedTask;
+			productReference = ECB81C33948E641ABE3B268D296018CC /* STPrivilegedTask */;
+			productType = "com.apple.product-type.framework";
+		};
+		89B529DD288896C2EFC49575065F70FB /* Pods-AltServer */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1922DC49ED081FCA80AEBA4A5D9270AB /* Build configuration list for PBXNativeTarget "Pods-AltServer" */;
+			buildPhases = (
+				188CA570E55AE01B8AD7CE1575B09A18 /* Headers */,
+				DFCDA7C7A710D3371BD2CDCB8366A4D0 /* Sources */,
+				B4003AFCB9F522E788B96A187A008761 /* Frameworks */,
+				F0A5D6C0C481C2FC6FCF89D0DDD295FD /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				64E8768C3EBC58E599F9DE6B775B9928 /* PBXTargetDependency */,
+				4DC49DB1C3F44AEB05C7D39794C04F43 /* PBXTargetDependency */,
+			);
+			name = "Pods-AltServer";
+			productName = Pods_AltServer;
+			productReference = 8EBF5043034AFB3A6A8F28C373BF0EC0 /* Pods-AltServer */;
+			productType = "com.apple.product-type.framework";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		BFDFE7DC352907FC980B868725387E98 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = 4821239608C13582E20E6DA73FD5F1F9 /* Build configuration list for PBXProject "Pods" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = CF1408CF629C7361332E53B88F7BD30C;
+			minimizedProjectReferenceProxies = 0;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 9DEEA395954C71555EB881F43EF3C4E6 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				89B529DD288896C2EFC49575065F70FB /* Pods-AltServer */,
+				ED77B4B88587C894E85C361023D67C53 /* Sparkle */,
+				05327B1DB6967DBAA19D1ED734FDBD96 /* STPrivilegedTask */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		9C8AAED31893BD044B204B4B2C970AAA /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F0A5D6C0C481C2FC6FCF89D0DDD295FD /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		BD1B17E0C28987C7C661898490FBF903 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				65B5A64F496A9E1114CEFCE6D0538EA4 /* STPrivilegedTask.m in Sources */,
+				CE5C326BD3A4B7A05D18DC9BB42E2E70 /* STPrivilegedTask-dummy.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DFCDA7C7A710D3371BD2CDCB8366A4D0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B4C865347925FC687B7C09EFDAEEF774 /* Pods-AltServer-dummy.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		4DC49DB1C3F44AEB05C7D39794C04F43 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = Sparkle;
+			target = ED77B4B88587C894E85C361023D67C53 /* Sparkle */;
+			targetProxy = 18B68B010CC4900F26AFC2813D233E5B /* PBXContainerItemProxy */;
+		};
+		64E8768C3EBC58E599F9DE6B775B9928 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = STPrivilegedTask;
+			target = 05327B1DB6967DBAA19D1ED734FDBD96 /* STPrivilegedTask */;
+			targetProxy = C61181BF3E920EB19543710E32C34D90 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		325C034DFEAA05BF7CA8253BB431229E /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 29F63A8EEB14302D36205A8F7AB6077A /* Sparkle.release.xcconfig */;
+			buildSettings = {
+				ARCHS = "$(ARCHS_STANDARD_64_BIT)";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		3E7B804148F5A93E48474D8EBFA073A6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = B38BBCF4B21CED5BD86B1ED5E1C1E883 /* STPrivilegedTask.debug.xcconfig */;
+			buildSettings = {
+				ARCHS = "$(ARCHS_STANDARD_64_BIT)";
+				"CODE_SIGN_IDENTITY[sdk=appletvos*]" = "";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "";
+				"CODE_SIGN_IDENTITY[sdk=watchos*]" = "";
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				ENABLE_MODULE_VERIFIER = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_PREFIX_HEADER = "Target Support Files/STPrivilegedTask/STPrivilegedTask-prefix.pch";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Target Support Files/STPrivilegedTask/STPrivilegedTask-Info.plist";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
+				MODULEMAP_FILE = "Target Support Files/STPrivilegedTask/STPrivilegedTask.modulemap";
+				PRODUCT_MODULE_NAME = STPrivilegedTask;
+				PRODUCT_NAME = STPrivilegedTask;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) ";
+				SWIFT_INSTALL_OBJC_HEADER = YES;
+				SWIFT_VERSION = 5.0;
+				VERSIONING_SYSTEM = "apple-generic";
+				VERSION_INFO_PREFIX = "";
+			};
+			name = Debug;
+		};
+		4322AFBDA90201C67553D41C9A18133D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"POD_CONFIGURATION_DEBUG=1",
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 11;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRIP_INSTALLED_PRODUCT = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				SYMROOT = "${SRCROOT}/../build";
+			};
+			name = Debug;
+		};
+		8AD9C17B57BD4A12889292805D2FC541 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 9B5BD538E93470B22D7F9C419C22B2CE /* Pods-AltServer.debug.xcconfig */;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = NO;
+				ARCHS = "$(ARCHS_STANDARD_64_BIT)";
+				"CODE_SIGN_IDENTITY[sdk=appletvos*]" = "";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "";
+				"CODE_SIGN_IDENTITY[sdk=watchos*]" = "";
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				ENABLE_MODULE_VERIFIER = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				INFOPLIST_FILE = "Target Support Files/Pods-AltServer/Pods-AltServer-Info.plist";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MACH_O_TYPE = staticlib;
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
+				MODULEMAP_FILE = "Target Support Files/Pods-AltServer/Pods-AltServer.modulemap";
+				OTHER_LDFLAGS = "";
+				OTHER_LIBTOOLFLAGS = "";
+				PODS_ROOT = "$(SRCROOT)";
+				PRODUCT_BUNDLE_IDENTIFIER = "org.cocoapods.${PRODUCT_NAME:rfc1034identifier}";
+				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				VERSIONING_SYSTEM = "apple-generic";
+				VERSION_INFO_PREFIX = "";
+			};
+			name = Debug;
+		};
+		9CCE531BE58ACF0CC51FFC3EAD2C3D58 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = ED947CEEF85266B1A4477BCCCF101250 /* STPrivilegedTask.release.xcconfig */;
+			buildSettings = {
+				ARCHS = "$(ARCHS_STANDARD_64_BIT)";
+				"CODE_SIGN_IDENTITY[sdk=appletvos*]" = "";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "";
+				"CODE_SIGN_IDENTITY[sdk=watchos*]" = "";
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				ENABLE_MODULE_VERIFIER = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_PREFIX_HEADER = "Target Support Files/STPrivilegedTask/STPrivilegedTask-prefix.pch";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Target Support Files/STPrivilegedTask/STPrivilegedTask-Info.plist";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
+				MODULEMAP_FILE = "Target Support Files/STPrivilegedTask/STPrivilegedTask.modulemap";
+				PRODUCT_MODULE_NAME = STPrivilegedTask;
+				PRODUCT_NAME = STPrivilegedTask;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) ";
+				SWIFT_INSTALL_OBJC_HEADER = YES;
+				SWIFT_VERSION = 5.0;
+				VERSIONING_SYSTEM = "apple-generic";
+				VERSION_INFO_PREFIX = "";
+			};
+			name = Release;
+		};
+		A72BC2EB21B073E4F3814CEBA825B6BB /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 46D963A92910C8E082DD61F4FAD69D85 /* Pods-AltServer.release.xcconfig */;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = NO;
+				ARCHS = "$(ARCHS_STANDARD_64_BIT)";
+				"CODE_SIGN_IDENTITY[sdk=appletvos*]" = "";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "";
+				"CODE_SIGN_IDENTITY[sdk=watchos*]" = "";
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				ENABLE_MODULE_VERIFIER = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				INFOPLIST_FILE = "Target Support Files/Pods-AltServer/Pods-AltServer-Info.plist";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MACH_O_TYPE = staticlib;
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
+				MODULEMAP_FILE = "Target Support Files/Pods-AltServer/Pods-AltServer.modulemap";
+				OTHER_LDFLAGS = "";
+				OTHER_LIBTOOLFLAGS = "";
+				PODS_ROOT = "$(SRCROOT)";
+				PRODUCT_BUNDLE_IDENTIFIER = "org.cocoapods.${PRODUCT_NAME:rfc1034identifier}";
+				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				VERSIONING_SYSTEM = "apple-generic";
+				VERSION_INFO_PREFIX = "";
+			};
+			name = Release;
+		};
+		BC0705CA9DCEB294F3F562DEF9A4F84D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = C856E47408140B4F9D46EDA13E65B3A3 /* Sparkle.debug.xcconfig */;
+			buildSettings = {
+				ARCHS = "$(ARCHS_STANDARD_64_BIT)";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		F49A149436715316D845E10B5263C8DB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"POD_CONFIGURATION_RELEASE=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 11;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRIP_INSTALLED_PRODUCT = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				SYMROOT = "${SRCROOT}/../build";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1922DC49ED081FCA80AEBA4A5D9270AB /* Build configuration list for PBXNativeTarget "Pods-AltServer" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8AD9C17B57BD4A12889292805D2FC541 /* Debug */,
+				A72BC2EB21B073E4F3814CEBA825B6BB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		2C8D06A2289713323892B3638F08AC0B /* Build configuration list for PBXAggregateTarget "Sparkle" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BC0705CA9DCEB294F3F562DEF9A4F84D /* Debug */,
+				325C034DFEAA05BF7CA8253BB431229E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		4821239608C13582E20E6DA73FD5F1F9 /* Build configuration list for PBXProject "Pods" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4322AFBDA90201C67553D41C9A18133D /* Debug */,
+				F49A149436715316D845E10B5263C8DB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C47405FE8D46205AF373C7A6F9B2D4D2 /* Build configuration list for PBXNativeTarget "STPrivilegedTask" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3E7B804148F5A93E48474D8EBFA073A6 /* Debug */,
+				9CCE531BE58ACF0CC51FFC3EAD2C3D58 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = BFDFE7DC352907FC980B868725387E98 /* Project object */;
+}

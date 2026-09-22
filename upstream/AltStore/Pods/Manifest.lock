@@ -1,0 +1,28 @@
+PODS:
+  - Sparkle (2.3.2)
+  - STPrivilegedTask (1.0.8)
+
+DEPENDENCIES:
+  - Sparkle (~> 2.3)
+  - STPrivilegedTask (from `https://github.com/rileytestut/STPrivilegedTask.git`)
+
+SPEC REPOS:
+  trunk:
+    - Sparkle
+
+EXTERNAL SOURCES:
+  STPrivilegedTask:
+    :git: https://github.com/rileytestut/STPrivilegedTask.git
+
+CHECKOUT OPTIONS:
+  STPrivilegedTask:
+    :commit: 02ab5081c4f1d7f6a70f5413c88d32dbbea66f4c
+    :git: https://github.com/rileytestut/STPrivilegedTask.git
+
+SPEC CHECKSUMS:
+  Sparkle: b36a51855e81585a1c38e32e53101d36c00f4304
+  STPrivilegedTask: 3a3f6add7c567b1be8c326328eb3dd6dc5daed91
+
+PODFILE CHECKSUM: 674a33b62daf912ddb206901e86a330860f2a0e5
+
+COCOAPODS: 1.16.2

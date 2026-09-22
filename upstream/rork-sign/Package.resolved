@@ -1,0 +1,60 @@
+{
+  "originHash" : "867382a3e84f4df3e122fe74d07e088cad834fd2e9bcb6d9ece7b337f2f65320",
+  "pins" : [
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser.git",
+      "state" : {
+        "revision" : "6a52f3251125d74daf04fcbd5e6f08a75d074382",
+        "version" : "1.8.2"
+      }
+    },
+    {
+      "identity" : "swift-asn1",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-asn1.git",
+      "state" : {
+        "revision" : "a9a5efd40eaf558a2bcd48d64b1d1646be686008",
+        "version" : "1.7.1"
+      }
+    },
+    {
+      "identity" : "swift-crypto",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/rorkai/swift-crypto.git",
+      "state" : {
+        "revision" : "f171fca4c1718d685c495350fe9136a3fda6f262",
+        "version" : "4.5.0-rork.1"
+      }
+    },
+    {
+      "identity" : "swift-log",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-log.git",
+      "state" : {
+        "revision" : "92448c359f00ebe36ae97d3bd9086f13c7692b5a",
+        "version" : "1.13.2"
+      }
+    },
+    {
+      "identity" : "swift-system",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-system.git",
+      "state" : {
+        "revision" : "7502b711c92a17741fa625d722b0ccbd595d8ed1",
+        "version" : "1.7.2"
+      }
+    },
+    {
+      "identity" : "swift-zip-archive",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/rorkai/swift-zip-archive.git",
+      "state" : {
+        "revision" : "8e1b462cee9875e8a4ef991df1a43ba884cc70bb",
+        "version" : "0.8.1-rork.4"
+      }
+    }
+  ],
+  "version" : 3
+}

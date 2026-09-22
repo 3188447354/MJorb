@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>INEnums</key>
+	<array/>
+	<key>INIntentDefinitionModelVersion</key>
+	<string>1.2</string>
+	<key>INIntentDefinitionNamespace</key>
+	<string>KyhEWE</string>
+	<key>INIntentDefinitionSystemVersion</key>
+	<string>23D56</string>
+	<key>INIntentDefinitionToolsBuildVersion</key>
+	<string>15F31d</string>
+	<key>INIntentDefinitionToolsVersion</key>
+	<string>15.4</string>
+	<key>INIntents</key>
+	<array>
+		<dict>
+			<key>INIntentCategory</key>
+			<string>generic</string>
+			<key>INIntentDescriptionID</key>
+			<string>62S1rm</string>
+			<key>INIntentIneligibleForSuggestions</key>
+			<true/>
+			<key>INIntentLastParameterTag</key>
+			<integer>3</integer>
+			<key>INIntentName</key>
+			<string>RefreshAll</string>
+			<key>INIntentResponse</key>
+			<dict>
+				<key>INIntentResponseCodes</key>
+				<array>
+					<dict>
+						<key>INIntentResponseCodeConciseFormatString</key>
+						<string>All apps have been refreshed.</string>
+						<key>INIntentResponseCodeConciseFormatStringID</key>
+						<string>3WMWsJ</string>
+						<key>INIntentResponseCodeFormatString</key>
+						<string>All apps have been refreshed.</string>
+						<key>INIntentResponseCodeFormatStringID</key>
+						<string>BjInD3</string>
+						<key>INIntentResponseCodeName</key>
+						<string>success</string>
+						<key>INIntentResponseCodeSuccess</key>
+						<true/>
+					</dict>
+					<dict>
+						<key>INIntentResponseCodeConciseFormatString</key>
+						<string>${localizedDescription}</string>
+						<key>INIntentResponseCodeConciseFormatStringID</key>
+						<string>GJdShK</string>
+						<key>INIntentResponseCodeFormatString</key>
+						<string>${localizedDescription}</string>
+						<key>INIntentResponseCodeFormatStringID</key>
+						<string>oXAiOU</string>
+						<key>INIntentResponseCodeName</key>
+						<string>failure</string>
+					</dict>
+				</array>
+				<key>INIntentResponseLastParameterTag</key>
+				<integer>3</integer>
+				<key>INIntentResponseParameters</key>
+				<array>
+					<dict>
+						<key>INIntentResponseParameterDisplayName</key>
+						<string>Localized Description</string>
+						<key>INIntentResponseParameterDisplayNameID</key>
+						<string>wdy22v</string>
+						<key>INIntentResponseParameterDisplayPriority</key>
+						<integer>1</integer>
+						<key>INIntentResponseParameterName</key>
+						<string>localizedDescription</string>
+						<key>INIntentResponseParameterTag</key>
+						<integer>3</integer>
+						<key>INIntentResponseParameterType</key>
+						<string>String</string>
+					</dict>
+				</array>
+			</dict>
+			<key>INIntentTitle</key>
+			<string>Refresh All Apps</string>
+			<key>INIntentTitleID</key>
+			<string>2b6Xto</string>
+			<key>INIntentType</key>
+			<string>Custom</string>
+			<key>INIntentVerb</key>
+			<string>Do</string>
+		</dict>
+	</array>
+	<key>INTypes</key>
+	<array/>
+</dict>
+</plist>

@@ -10,6 +10,8 @@ actor SelfAppRegistrar {
     private let profileCleaner: (any SelfReplacementProfileCleaning)?
     private let keychain: KeychainVault?
     private let logStore: SealLogStore?
+    private let pendingBatchResultStore: PendingBatchResultStore?
+    private let refreshQueueStore: RefreshQueueStore?
 
     // 固定 ID，确保 Seal 记录和文件夹路径始终一致，不会出现多个文件夹
     private let fixedSealID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
@@ -25,7 +27,9 @@ actor SelfAppRegistrar {
         selfReplacement: (any SelfReplacing)? = nil,
         profileCleaner: (any SelfReplacementProfileCleaning)? = nil,
         keychain: KeychainVault? = nil,
-        logStore: SealLogStore? = nil
+        logStore: SealLogStore? = nil,
+        pendingBatchResultStore: PendingBatchResultStore? = nil,
+        refreshQueueStore: RefreshQueueStore? = nil
     ) {
         self.metadata = metadata
         self.appStore = appStore
@@ -35,6 +39,8 @@ actor SelfAppRegistrar {
         self.profileCleaner = profileCleaner
         self.keychain = keychain
         self.logStore = logStore
+        self.pendingBatchResultStore = pendingBatchResultStore
+        self.refreshQueueStore = refreshQueueStore
     }
 
     func ensureRegistered() async throws {
@@ -240,6 +246,7 @@ actor SelfAppRegistrar {
             return false
         case .closeAsNotInstalled:
             try await selfReplacement.closeAsNotInstalled()
+            await settlePendingBatchSealResult(to: .failed)
             try? await logStore?.append(
                 category: .installation,
                 level: .warning,
@@ -258,6 +265,7 @@ actor SelfAppRegistrar {
             return false
         case .settle:
             let settled = try await selfReplacement.settle()
+            await settlePendingBatchSealResult(to: .completed)
             if let main = settled.installedIdentity.mainTarget {
                 let expiry = SealLogTextFormatter.diagnosticTimestamp(main.profileExpirationDate)
                 try? await logStore?.append(
@@ -300,6 +308,28 @@ actor SelfAppRegistrar {
             )
             try await selfReplacement.finishCleanup(cleanup)
             return true
+        }
+    }
+
+    private func settlePendingBatchSealResult(to state: BatchRefreshSession.Item.State) async {
+        guard let pendingBatchResultStore else { return }
+        do {
+            let settled = try await pendingBatchResultStore.settleSeal(to: state)
+            guard settled.isEmpty == false else { return }
+            _ = try await refreshQueueStore?.recoverInterrupted(settled: settled)
+            let conclusion = state == .completed ? "成功" : "失败"
+            try? await logStore?.append(
+                category: .renewal,
+                message: "批量续签：Seal 已由新进程身份核验结算为\(conclusion)",
+                code: "SEAL-RENEW-028"
+            )
+        } catch {
+            try? await logStore?.append(
+                category: .renewal,
+                level: .warning,
+                message: "批量续签：Seal 自替换结算未能写回结果，稍后将按未知项提示核验",
+                code: "SEAL-RENEW-029"
+            )
         }
     }
 

@@ -116,9 +116,9 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
   当前进程绝不自判成功；`requireRecovery` 保持 pending 是有意的（等下次启动再评估），
   但**任何永不满足的判据都不得留在 pending** —— 那会让 `create()` 永久抛 `alreadySubmitted`
   把自续签锁死（旧版 handoff 迁移就是这么修的：迁移即终态）。
-- 批量结果持久化里 Seal 那一项目前被**预先**记成 `completed`（`AppsViewModel.persistPendingBatchResultForSealUpdate`），
-  这是为消除 2026-09-17「同一批次给出互相矛盾结论」而做的取舍；要改成「待确认」必须连恢复链路一起改，
-  不能只翻这一处。
+- 批量结果持久化里 Seal 那一项必须是 `awaitingSealConfirmation`，由新进程的
+  `SelfAppRegistrar` 读取真实运行包身份后才结算为 `completed`/`failed`；结算与
+  `RefreshQueueStore` 恢复必须一起更新，绝不让旧进程预先宣布成功。
 
 ## 4. 描述文件 / 证书 / 日志
 

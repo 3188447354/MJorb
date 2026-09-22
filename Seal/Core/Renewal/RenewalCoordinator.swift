@@ -7,6 +7,8 @@ struct BatchRefreshResult: Equatable, Sendable {
     /// 本轮**根本没执行**、等用户先处理的项（缺可用账号等）。
     /// 与 `failed` 分开计数：「试过了没成」和「没试，缺前置条件」需要不同的下一步动作。
     let needsAction: Int
+    /// Seal 覆盖安装已提交，等待新进程读回实际运行身份；它既不是成功也不是失败。
+    let awaitingConfirmation: Int
 
     /// 仍未成功（失败 + 待处理）。保留原有语义供既有 UI 使用。
     var remaining: Int { max(0, total - succeeded) }
@@ -14,7 +16,7 @@ struct BatchRefreshResult: Equatable, Sendable {
     /// 每一项都必须落进恰好一个桶里。等式不成立就说明有项被静默丢了 ——
     /// 这正是旧实现「批量续签完成，其实有应用没被处理」的病根。
     var isBalanced: Bool {
-        succeeded + failed + needsAction == total
+        succeeded + failed + needsAction + awaitingConfirmation == total
     }
 }
 
@@ -34,6 +36,7 @@ enum BatchRefreshEvent: Sendable {
     /// 混进阶段事件会把低频的「阶段推进」淹掉。
     case appWorkUnits(index: Int, total: Int, app: AppRecord, units: SigningWorkUnits)
     case appRenewalExecutionPath(index: Int, total: Int, app: AppRecord, path: RenewalExecutionPath)
+    case appAwaitingSealConfirmation(index: Int, total: Int, app: AppRecord)
     case appSucceeded(index: Int, total: Int, app: AppRecord)
     case appFailed(index: Int, total: Int, app: AppRecord, failure: ImportFailure)
 }
@@ -95,9 +98,18 @@ actor RenewalCoordinator {
         appIDs: [UUID],
         progress: @escaping @Sendable (BatchRefreshEvent) async -> Void
     ) async throws -> BatchRefreshResult {
+        try await refresh(appIDs: appIDs, progress: progress)
+    }
+
+    /// 指定应用的续签入口。单项续签、失败项重试与“全部续签”都复用同一规划、排序、
+    /// 持久化与 Seal-last 结算规则；调用方只决定选择哪几项。
+    func refresh(
+        appIDs: [UUID],
+        progress: @escaping @Sendable (BatchRefreshEvent) async -> Void
+    ) async throws -> BatchRefreshResult {
         let apps = try await appStore.fetchAll()
-        let failedIDs = Set(appIDs)
-        let queue = try await makeQueue(apps: apps).filter { failedIDs.contains($0.appID) }
+        let selectedIDs = Set(appIDs)
+        let queue = try await makeQueue(apps: apps).filter { selectedIDs.contains($0.appID) }
         return try await run(queue: queue, progress: progress)
     }
 
@@ -187,6 +199,7 @@ actor RenewalCoordinator {
         var succeeded = 0
         var failed = 0
         var needsAction = 0
+        var awaitingConfirmation = 0
 
         for (offset, item) in queue.enumerated() {
             try Task.checkCancellation()
@@ -340,7 +353,24 @@ actor RenewalCoordinator {
             }
 
             if let updated = updatedRecord {
-                // 成功
+                if updated.isSeal {
+                    // 自替换会杀掉当前进程；只有新进程读取运行包身份并与候选相符后，
+                    // 才能写 completed。队列保持 running，交给启动期对账结算。
+                    awaitingConfirmation += 1
+                    try? await logStore?.append(
+                        category: .renewal,
+                        message: "批量续签：Seal 覆盖安装已提交，等待新进程核验运行包身份",
+                        code: "SEAL-RENEW-027"
+                    )
+                    await progress(
+                        .appAwaitingSealConfirmation(
+                            index: offset + 1,
+                            total: queue.count,
+                            app: updated
+                        )
+                    )
+                    continue
+                }
                 try await queueStore.markCompleted(appID: item.appID)
                 succeeded += 1
                 // 逐项成功留痕（含描述文件身份）。
@@ -396,7 +426,8 @@ actor RenewalCoordinator {
             total: queue.count,
             succeeded: succeeded,
             failed: failed,
-            needsAction: needsAction
+            needsAction: needsAction,
+            awaitingConfirmation: awaitingConfirmation
         )
     }
 

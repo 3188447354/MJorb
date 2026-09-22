@@ -827,6 +827,12 @@ final class AppsViewModel: ObservableObject {
     func requestSigning(for app: AppRecord) async {
         guard signingTask == nil, batchRefreshTask == nil else { return }
         await load(force: true)
+        // 已安装应用的单项续签与“全部续签/重试失败项”必须共用同一个队列：
+        // 这样 profile-only、完整重签、Seal-last 与启动期自替换结算不会各走一份规则。
+        if app.belongsInInstalledList {
+            startBatchRefresh(appIDs: [app.id])
+            return
+        }
         let availableAccounts = accounts.filter { AccountAvailabilityPolicy.isSelectable($0) }
         guard availableAccounts.isEmpty == false else {
             alertFailure = ImportFailure(
@@ -1444,11 +1450,9 @@ final class AppsViewModel: ObservableObject {
         guard let renewalCoordinator else { return }
         // ⚠️ **顺序：先恢复批量续签结果，再结算队列。**
         //
-        // Seal 自己替换自己时，进程必然在队列项还是 `running` 的时候被杀 —— 但那一项的
-        // 结果其实已经写进持久化载荷了（`SEAL-RENEW-023`，Seal 那一项被显式记成 completed）。
-        // 若先降级，同一个批次会给出两份互相矛盾的结论（2026-09-17 真机实测）：
-        // 日志报「1 个应用的结果未知，需要重新核验」、队列里留下幽灵条目，
-        // 而结果抽屉同时显示 `succeeded: 2, failed: 0`。
+        // Seal 自己替换自己时，进程必然在队列项还是 `running` 的时候被杀。当前实现先由
+        // `SelfAppRegistrar` 读取新运行包身份，再把 `awaitingSealConfirmation` 结算成终态；
+        // 这里仅消费已经由新进程确认的终态，绝不让旧进程伪造成功。
         restorePendingBatchResultIfNeeded()
         let settled = settledQueueStates(from: loadPendingBatchResultPayload())
         do {
@@ -1507,7 +1511,7 @@ final class AppsViewModel: ObservableObject {
             }
             let result: BatchRefreshResult
             if let appIDs {
-                result = try await renewalCoordinator.refreshFailedItems(appIDs: appIDs, progress: progress)
+                result = try await renewalCoordinator.refresh(appIDs: appIDs, progress: progress)
             } else {
                 result = try await renewalCoordinator.refreshAll(progress: progress)
             }
@@ -1520,13 +1524,20 @@ final class AppsViewModel: ObservableObject {
                     code: "SEAL-RENEW-001"
                 )
             } else {
-                batchRefreshSession?.status = .completed(result)
+                if result.awaitingConfirmation > 0 {
+                    // 不能让旧进程关闭并清掉载荷。Seal 的结果只能由下一次启动中
+                    // `SelfAppRegistrar` 读真实运行包身份后结算。
+                    batchRefreshSession?.status = .preparingSealUpdate
+                    persistPendingBatchResultForSealUpdate()
+                } else {
+                    batchRefreshSession?.status = .completed(result)
+                }
                 // 计数分桶写进日志：`total == succeeded + failed + needsAction` 不成立就说明
                 // 有项被静默丢了 —— 这正是旧实现「批量续签完成」却漏跑应用的病根。
                 try? await logStore?.append(
                     category: .renewal,
-                    level: (result.failed == 0 && result.needsAction == 0) ? .info : .warning,
-                    message: "续签完成：共 \(result.total)，成功 \(result.succeeded)，失败 \(result.failed)，未执行 \(result.needsAction)",
+                    level: (result.failed == 0 && result.needsAction == 0 && result.awaitingConfirmation == 0) ? .info : .warning,
+                    message: "续签完成：共 \(result.total)，成功 \(result.succeeded)，失败 \(result.failed)，未执行 \(result.needsAction)，等待 Seal 新进程核验 \(result.awaitingConfirmation)",
                     code: "SEAL-RENEW-009"
                 )
                 if result.needsAction > 0 {
@@ -1598,6 +1609,19 @@ final class AppsViewModel: ObservableObject {
             batchRefreshSession?.total = total
             batchRefreshSession?.currentAppName = app.displayName
             batchRefreshSession?.currentRenewalExecutionPath = path
+        case .appAwaitingSealConfirmation(let index, let total, let app):
+            batchRefreshSession?.currentIndex = index
+            batchRefreshSession?.total = total
+            batchRefreshSession?.currentAppName = app.displayName
+            batchRefreshSession?.currentInstallProgress = nil
+            batchRefreshSession?.installStartedAt = nil
+            batchRefreshSession?.status = .preparingSealUpdate
+            updateBatchItem(
+                appID: app.id,
+                name: app.displayName,
+                isSeal: true,
+                state: .awaitingSealConfirmation
+            )
         case .appProgress(let index, let total, let app, let stage):
             if batchRefreshSession?.currentIndex != index {
                 batchRefreshSession?.currentRenewalExecutionPath = nil
@@ -1709,10 +1733,10 @@ final class AppsViewModel: ObservableObject {
                 "id": item.id.uuidString,
                 "name": item.name,
                 "isSeal": item.isSeal,
-                "state": item.isSeal ? "completed" : item.state.storageValue
+                "state": item.isSeal ? BatchRefreshSession.Item.State.awaitingSealConfirmation.storageValue : item.state.storageValue
             ]
         }
-        let succeeded = max(session.succeeded + 1, itemPayload.filter { ($0["state"] as? String) == "completed" }.count)
+        let succeeded = itemPayload.filter { ($0["state"] as? String) == "completed" }.count
         let payload: [String: Any] = [
             "succeeded": succeeded,
             "failed": session.failed,
@@ -1726,7 +1750,7 @@ final class AppsViewModel: ObservableObject {
         if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: Self.pendingBatchResultFileURL, options: .atomic)
         }
-        Task { try? await logStore?.append(category: .renewal, level: .info, message: "批量续签结果已持久化（共 \(session.total)，成功 \(succeeded)，失败 \(session.failed)，明细 \(itemPayload.count) 项）", code: "SEAL-RENEW-023") }
+        Task { try? await logStore?.append(category: .renewal, level: .info, message: "批量续签结果已持久化（共 \(session.total)，成功 \(succeeded)，失败 \(session.failed)，Seal 等待新进程核验，明细 \(itemPayload.count) 项）", code: "SEAL-RENEW-023") }
     }
 
     /// 读取「待恢复的批量续签结果」载荷。
@@ -1772,6 +1796,9 @@ final class AppsViewModel: ObservableObject {
         let succeeded = payload["succeeded"] as? Int ?? 0
         let failed = payload["failed"] as? Int ?? 0
         let total = payload["total"] as? Int ?? max(succeeded + failed, 0)
+        let awaitingConfirmation = (payload["items"] as? [[String: Any]] ?? []).filter {
+            BatchRefreshSession.Item.State(storageValue: $0["state"] as? String) == .awaitingSealConfirmation
+        }.count
         var restored = BatchRefreshSession()
         // 旧持久化载荷没有 needsAction 字段，但计数不变量 `成功+失败+未执行 == 总数` 成立，
         // 因此第三个桶可以直接由差值还原（旧载荷的差值本来就是「未完成」）。
@@ -1779,7 +1806,8 @@ final class AppsViewModel: ObservableObject {
             total: total,
             succeeded: succeeded,
             failed: failed,
-            needsAction: max(0, total - succeeded - failed)
+            needsAction: max(0, total - succeeded - failed - awaitingConfirmation),
+            awaitingConfirmation: awaitingConfirmation
         ))
         restored.currentIndex = total
         restored.total = total

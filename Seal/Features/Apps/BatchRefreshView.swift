@@ -275,7 +275,7 @@ struct BatchRefreshView: View {
     private func symbol(for state: BatchRefreshSession.Item.State) -> String {
         switch state {
         case .completed: return "✓"
-        case .running, .preparingSealUpdate: return "●"
+        case .running, .preparingSealUpdate, .awaitingSealConfirmation: return "●"
         case .waiting: return "○"
         case .failed: return "!"
         }
@@ -286,6 +286,7 @@ struct BatchRefreshView: View {
         case .completed: return isSeal ? "已更新" : "已完成"
         case .running: return runningStageTitle(stage)
         case .preparingSealUpdate: return "即将更新"
+        case .awaitingSealConfirmation: return "等待新版本核验"
         case .waiting: return "等待中"
         case .failed: return "失败"
         }
@@ -303,7 +304,7 @@ struct BatchRefreshView: View {
     private func color(for state: BatchRefreshSession.Item.State) -> Color {
         switch state {
         case .completed: return .sealSuccess
-        case .running, .preparingSealUpdate: return .sealAccent
+        case .running, .preparingSealUpdate, .awaitingSealConfirmation: return .sealAccent
         case .waiting: return .sealTextSecondary
         case .failed: return .sealDanger
         }

@@ -65,26 +65,26 @@ actor RefreshQueueStore {
     ///
     /// ## ⚠️ 有**已定论**的结果时不许降级（2026-09-17 真机实测）
     ///
-    /// Seal **自己替换自己**时，进程必然在队列项还是 `running` 的时候被杀 ——
-    /// 但那一项的结果其实**已经写进持久化载荷**了（`SEAL-RENEW-023`，Seal 那一项被
-    /// 显式记成 `completed`）。旧实现盲目降级，于是同一个批次出现自相矛盾的两份结论：
+    /// Seal **自己替换自己**时，进程必然在队列项还是 `running` 的时候被杀。新进程
+    /// 只有在读取真实运行包身份后，才会把那一项的终态写进持久化载荷。若队列恢复早于
+    /// 核验，它可能已经被降级为 `unknown`，因此已知终态同样必须能覆盖 `unknown`。
     ///
     /// - 日志报「1 个应用的结果未知，需要重新核验」（假警报）
     /// - 队列文件里留下一个幽灵条目
     /// - 而结果抽屉同时显示 `succeeded: 2, failed: 0`
     ///
-    /// ⇒ 传入 `settled` 的项按**已知结论**结算，只有真正没有结论的才降级为 `unknown`。
+    /// ⇒ 传入 `settled` 的项按**已知结论**结算，只有真正没有结论的 `running` 项才降级为 `unknown`。
     ///
     /// - Parameter settled: 已经从持久化载荷拿到结论的项（appID → 状态）。
     @discardableResult
     func recoverInterrupted(settled: [UUID: RefreshQueueItem.State] = [:]) throws -> RecoveryOutcome {
         var items = try load()
         var outcome = RecoveryOutcome()
-        for index in items.indices where items[index].state == .running {
+        for index in items.indices where items[index].state == .running || items[index].state == .unknown {
             if let known = settled[items[index].appID] {
                 items[index].state = known
                 outcome.settledFromResult += 1
-            } else {
+            } else if items[index].state == .running {
                 items[index].state = .unknown
                 outcome.downgraded += 1
             }

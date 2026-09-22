@@ -106,6 +106,9 @@ struct AppContainer {
             let refreshQueueStore = RefreshQueueStore(
                 fileURL: sealDirectory.appending(path: AppConfiguration.Paths.refreshQueueFile)
             )
+            let pendingBatchResultStore = PendingBatchResultStore(
+                fileURL: sealDirectory.appending(path: "PendingBatchResult.json")
+            )
             let signingHistoryStore = SigningHistoryStore(
                 fileURL: sealDirectory.appending(path: AppConfiguration.Paths.signingHistoryFile)
             )
@@ -153,7 +156,9 @@ struct AppContainer {
                         }
                     ),
                     keychain: keychain,
-                    logStore: logStore
+                    logStore: logStore,
+                    pendingBatchResultStore: pendingBatchResultStore,
+                    refreshQueueStore: refreshQueueStore
                 )
             }
             // 维护作业：记录恢复 / Seal 自注册 / 孤儿文件清理 / 设备端旧描述文件清理。

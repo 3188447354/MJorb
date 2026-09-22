@@ -38,4 +38,38 @@ enum PendingBatchResultPayload {
         }
         return states
     }
+
+    /// 新进程完成 Seal 自替换身份核验后，才允许为那一项写入终态。
+    ///
+    /// 只结算明确处于 `awaitingSealConfirmation` 的 Seal 项，避免启动时把旧载荷里
+    /// 已完成/正在运行的无关项误改写。计数从条目重新计算，杜绝旧进程的乐观计数残留。
+    static func settlingSeal(
+        in payload: [String: Any],
+        to state: BatchRefreshSession.Item.State
+    ) -> [String: Any]? {
+        guard state == .completed || state == .failed,
+              var items = payload[Key.items] as? [[String: Any]] else { return nil }
+
+        var changed = false
+        for index in items.indices {
+            let isSeal = items[index]["isSeal"] as? Bool ?? false
+            let itemState = BatchRefreshSession.Item.State(storageValue: items[index][Key.state] as? String)
+            guard isSeal, itemState == .awaitingSealConfirmation else { continue }
+            items[index][Key.state] = state.storageValue
+            changed = true
+        }
+        guard changed else { return nil }
+
+        var updated = payload
+        updated[Key.items] = items
+        updated["succeeded"] = items.filter {
+            BatchRefreshSession.Item.State(storageValue: $0[Key.state] as? String) == .completed
+        }.count
+        updated["failed"] = items.filter {
+            BatchRefreshSession.Item.State(storageValue: $0[Key.state] as? String) == .failed
+        }.count
+        updated["total"] = max(payload["total"] as? Int ?? 0, items.count)
+        updated["timestamp"] = Date().timeIntervalSince1970
+        return updated
+    }
 }

@@ -16,6 +16,8 @@ struct BatchRefreshSession: Identifiable, Equatable, Sendable {
             case completed
             case failed
             case preparingSealUpdate
+            /// Seal 覆盖安装已经下发；只能由新进程读取运行包身份后结算。
+            case awaitingSealConfirmation
         }
 
         let id: UUID
@@ -138,6 +140,7 @@ extension BatchRefreshSession.Item.State {
         case .completed: return "completed"
         case .failed: return "failed"
         case .preparingSealUpdate: return "preparingSealUpdate"
+        case .awaitingSealConfirmation: return "awaitingSealConfirmation"
         }
     }
 
@@ -150,7 +153,7 @@ extension BatchRefreshSession.Item.State {
         switch self {
         case .completed: return .completed
         case .failed: return .failed
-        case .waiting, .running, .preparingSealUpdate: return nil
+        case .waiting, .running, .preparingSealUpdate, .awaitingSealConfirmation: return nil
         }
     }
 
@@ -160,6 +163,7 @@ extension BatchRefreshSession.Item.State {
         case "completed": self = .completed
         case "failed": self = .failed
         case "preparingSealUpdate": self = .preparingSealUpdate
+        case "awaitingSealConfirmation": self = .awaitingSealConfirmation
         default: self = .waiting
         }
     }

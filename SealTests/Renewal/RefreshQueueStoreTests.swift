@@ -104,6 +104,18 @@ struct RefreshQueueStoreTests {
         #expect(reloaded.first(where: { $0.appID == stillUnknown.appID })?.state == .unknown)
     }
 
+    @Test
+    func verifiedResultCanReplaceAnEarlierUnknownState() async throws {
+        let store = makeStore()
+        let seal = RefreshQueueItem(appID: UUID(), accountID: UUID(), state: .unknown)
+        try await store.replace(with: [seal])
+
+        let outcome = try await store.recoverInterrupted(settled: [seal.appID: .completed])
+
+        #expect(outcome.settledFromResult == 1)
+        #expect(try await store.load().first?.state == .completed)
+    }
+
     /// 结算过的项**不能**再留在 `outstanding()` 里：否则恢复流程会重做已经成功的应用。
     @Test
     func settledItemsLeaveOutstanding() async throws {

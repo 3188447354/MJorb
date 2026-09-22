@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-09-23 批量续签 Seal 自替换被旧进程提前结算
+
+- **现象**：批量续签到 Seal 时，旧进程在覆盖安装阶段把 Seal 预先写成 `completed`；候选包尚未由新进程验证，结果抽屉、队列与真实运行包可能互相矛盾。
+- **根因**：`AppsViewModel.persistPendingBatchResultForSealUpdate` 为回避中断后 `running` 幽灵项，直接伪造 Seal 成功；启动顺序又先恢复续签队列、后执行 `SelfAppRegistrar`，真实身份核验来不及参与结算。
+- **修复**：新增 `awaitingSealConfirmation` 持久化状态与 `PendingBatchResultStore`；`RenewalCoordinator` 将 Seal 保持为待新进程核验，`SelfAppRegistrar` 仅在真实候选身份匹配后结算成功、候选未落盘结算失败；启动先运行自注册再恢复队列，并允许已验证结论覆盖先前的 `unknown`。
+- **涉及文件**：`Seal/Core/Renewal/`、`Seal/Infrastructure/Renewal/RefreshQueueStore.swift`、`Seal/Features/Apps/AppsViewModel.swift`、`Seal/Features/Apps/AppsRootView.swift`、`Seal/Application/AppContainer.swift`、续签单测。
+- **验证状态**：新增载荷结算与未知状态回写单测；Windows 本机无 Swift/Xcode 工具链，待完整 GitHub Actions 编译、Swift 回归和真机自替换回归。
+
+---
+
 ## 常犯坑位
 
 - 🔴 **交付产物的校验清单：「内容对」≠「能用」**（2026-09-21，同一族第三次）。

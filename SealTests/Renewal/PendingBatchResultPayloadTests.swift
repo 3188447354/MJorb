@@ -13,18 +13,15 @@ struct PendingBatchResultPayloadTests {
         ["succeeded": 2, "failed": 0, "total": 2, "items": items]
     }
 
-    /// 载荷里 **Seal 自己那一项被写入侧显式记成 `completed`**
-    /// （`persistPendingBatchResult` 里 `item.isSeal ? "completed" : …`）——
-    /// 因为自替换成功时进程已经死了，没机会写自己的状态。
-    /// 这正是「队列里它是 running、载荷里它是 completed」的来源。
+    /// Seal 自替换尚未由新进程核验前，绝不能提前结算为成功。
     @Test
-    func sealItemIsSettledAsCompleted() {
+    func awaitingSealConfirmationIsNotSettled() {
         let sealID = UUID()
         let states = PendingBatchResultPayload.settledQueueStates(from: payload([
-            ["id": sealID.uuidString, "name": "Seal", "isSeal": true, "state": "completed"],
+            ["id": sealID.uuidString, "name": "Seal", "isSeal": true, "state": "awaitingSealConfirmation"],
         ]))
 
-        #expect(states[sealID] == .completed)
+        #expect(states[sealID] == nil)
     }
 
     /// 只收「已定论」的两态。`running` / `waiting` / `preparingSealUpdate` 都没有结论
@@ -96,9 +93,45 @@ struct PendingBatchResultPayloadTests {
             let restored = BatchRefreshSession.Item.State(storageValue: state.storageValue)
             #expect(restored.settledQueueState == state.settledQueueState)
         }
-        // 未定论的三态必须都没有 settled 值
-        for state in [BatchRefreshSession.Item.State.waiting, .running, .preparingSealUpdate] {
+        // 未定论的四态必须都没有 settled 值
+        for state in [BatchRefreshSession.Item.State.waiting, .running, .preparingSealUpdate, .awaitingSealConfirmation] {
             #expect(state.settledQueueState == nil)
         }
+    }
+
+    @Test
+    func newProcessCanSettleOnlyTheAwaitingSealItem() {
+        let seal = UUID()
+        let other = UUID()
+        let original = payload([
+            ["id": other.uuidString, "name": "A", "isSeal": false, "state": "completed"],
+            ["id": seal.uuidString, "name": "Seal", "isSeal": true, "state": "awaitingSealConfirmation"],
+        ])
+
+        let settled = try #require(
+            PendingBatchResultPayload.settlingSeal(in: original, to: .completed)
+        )
+        let items = try #require(settled["items"] as? [[String: Any]])
+
+        #expect(items.first(where: { ($0["id"] as? String) == other.uuidString })?["state"] as? String == "completed")
+        #expect(items.first(where: { ($0["id"] as? String) == seal.uuidString })?["state"] as? String == "completed")
+        #expect(settled["succeeded"] as? Int == 2)
+        #expect(settled["failed"] as? Int == 0)
+    }
+
+    @Test
+    func failedSelfReplacementIsPersistedAsFailedInsteadOfSuccess() {
+        let seal = UUID()
+        let original = payload([
+            ["id": seal.uuidString, "name": "Seal", "isSeal": true, "state": "awaitingSealConfirmation"],
+        ])
+
+        let settled = try #require(
+            PendingBatchResultPayload.settlingSeal(in: original, to: .failed)
+        )
+
+        #expect(settled["succeeded"] as? Int == 0)
+        #expect(settled["failed"] as? Int == 1)
+        #expect(PendingBatchResultPayload.settledQueueStates(from: settled)[seal] == .failed)
     }
 }

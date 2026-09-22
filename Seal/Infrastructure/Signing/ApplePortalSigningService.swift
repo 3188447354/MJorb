@@ -368,7 +368,7 @@ actor ApplePortalSigningService {
 
     private static func diagnosticDate(_ date: Date?) -> String {
         guard let date else { return "缺失" }
-        return ISO8601DateFormatter().string(from: date)
+        return SealLogTextFormatter.diagnosticTimestamp(date)
     }
 
     /// 命中 1100「会话已过期」后的退避间隔。

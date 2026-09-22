@@ -431,11 +431,10 @@ actor RenewalCoordinator {
     /// 证明不了它真的把 UUID 与时间写了出来。
     static func describeProfile(_ record: AppRecord) -> String {
         let uuid = record.provisioningProfileUUID ?? "未知"
-        let formatter = ISO8601DateFormatter()
         let created = record.provisioningProfileCreationDate
-            .map { formatter.string(from: $0) } ?? "未知"
+            .map { SealLogTextFormatter.diagnosticTimestamp($0) } ?? "未知"
         let expires = record.provisioningProfileExpirationDate
-            .map { formatter.string(from: $0) } ?? "未知"
+            .map { SealLogTextFormatter.diagnosticTimestamp($0) } ?? "未知"
         return "\(uuid)（创建 \(created)，到期 \(expires)）"
     }
 

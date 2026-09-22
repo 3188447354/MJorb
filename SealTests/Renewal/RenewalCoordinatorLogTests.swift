@@ -81,10 +81,10 @@ struct RenewalCoordinatorLogTests {
         #expect(text.contains("到期"))
     }
 
-    /// 时间必须是 ISO8601（能和 Apple 门户返回的时间直接对照），
+    /// 时间必须是 ISO8601 北京时间（能和 Apple 门户返回的时间直接对照），
     /// 不是本地化格式 —— 导出日志的人可能不在中文环境里读它。
     @Test
-    func datesAreISO8601NotLocalized() {
+    func datesAreBeijingISO8601NotLocalized() {
         let created = Date(timeIntervalSince1970: 1_789_622_938)
         let text = RenewalCoordinator.describeProfile(
             makeRecord(profileUUID: "UUID", created: created)
@@ -93,6 +93,6 @@ struct RenewalCoordinatorLogTests {
         // 单字符字面量会同时匹配 `String.contains(_: Character)` 与
         // `StringProtocol.contains(_: String)`，让 `#expect` 的宏展开变得难以预料
         // （见 2026-09-16 那次 `contains(where:)` 的教训）。完整串既无歧义又更强。
-        #expect(text.contains("2026-09-17T05:28:58Z"))
+        #expect(text.contains("2026-09-17T13:28:58+08:00"))
     }
 }

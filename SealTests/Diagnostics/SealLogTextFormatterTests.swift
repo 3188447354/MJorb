@@ -22,6 +22,15 @@ struct SealLogTextFormatterTests {
         )
     }
 
+    @Test
+    func diagnosticTimestampUsesBeijingISO8601() {
+        let timestamp = Date(timeIntervalSince1970: 1_789_622_938)
+
+        #expect(
+            SealLogTextFormatter.diagnosticTimestamp(timestamp) == "2026-09-17T13:28:58+08:00"
+        )
+    }
+
     // MARK: - 表头
 
     @Test

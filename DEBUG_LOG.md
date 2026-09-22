@@ -443,6 +443,20 @@
 
 ## 历史记录
 
+### 2026-09-23 · 日志首列是北京时间，签名/profile 业务时间却混用了 UTC
+
+- **现象**：导出日志表头与每条记录首列均标注并输出北京时间，但“描述文件创建/到期”、
+  “证书生效/到期”和 Seal 自替换结算的同一时间字段使用默认 `ISO8601DateFormatter`，
+  输出 `Z`（UTC）。同一行相差 8 小时，容易被误判为续签日期异常。
+- **根因**：日志导出层有 `Asia/Shanghai` 格式化器，而各签名/续签写入点各自直接格式化
+  `Date`，默认回落到 UTC；没有共享的“日志业务时间”约定。
+- **修复**：新增 `SealLogTextFormatter.diagnosticTimestamp`，固定 `Asia/Shanghai`、
+  `en_US_POSIX`、`yyyy-MM-dd'T'HH:mm:ssXXXXX`；完整签名核验、profile-only 批量自证、
+  Seal 自替换结算、Portal 描述文件与证书诊断全部改走该入口。
+- **涉及文件**：`SealLogEntry.swift`、`SigningCoordinator.swift`、`RenewalCoordinator.swift`、
+  `SelfAppRegistrar.swift`、`ApplePortalSigningService.swift`、对应日志单测与发布说明。
+- **验证状态**：静态核验已确认没有剩余生产日志 UTC 格式化点；完整 iOS CI 与新构建真机日志待验证。
+
 ### 2026-09-22 · Seal 自替换启动对账没有终态日志，无法从导出证据确认是否续签成功
 
 **现象**：`Seal-log(36).txt` 记录了 Seal 新包上传、回主屏与旧进程退出，以及批量结果恢复；

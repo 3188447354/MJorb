@@ -476,7 +476,7 @@ actor SigningCoordinator {
 
             try? await logStore?.append(
                 category: .installation,
-                message: "签名产物核验通过：证书 …\(SigningCertificateSelectionPolicy.normalizedSerialNumber(portalResult.certificateSerialNumber).suffix(8))，主描述文件到期 \(ISO8601DateFormatter().string(from: portalResult.expirationDate))；继续使用本次签名前启动的缓存设备通道安装"
+                message: "签名产物核验通过：证书 …\(SigningCertificateSelectionPolicy.normalizedSerialNumber(portalResult.certificateSerialNumber).suffix(8))，主描述文件到期 \(SealLogTextFormatter.diagnosticTimestamp(portalResult.expirationDate))；继续使用本次签名前启动的缓存设备通道安装"
             )
             // 覆盖安装 Seal 会终止当前进程；安装前强制镜像，确保本轮证书/profile
             // 证据以及受影响应用恢复结果已经写入 Documents/Seal-log.txt。

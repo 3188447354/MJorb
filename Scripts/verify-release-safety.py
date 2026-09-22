@@ -701,9 +701,9 @@ def violations(load=read):
           and "provisioningProfileUUID" in profile_body
           and "provisioningProfileCreationDate" in profile_body
           and "provisioningProfileExpirationDate" in profile_body
-          and "ISO8601DateFormatter" in profile_body,
+          and profile_body.count("SealLogTextFormatter.diagnosticTimestamp") == 2,
           "R12: the per-item success line must carry the profile identity (UUID + creation "
-          "+ expiry), ISO8601-formatted so it can be compared with Apple's portal")
+          "+ expiry), Beijing ISO8601-formatted so it can be compared with Apple's portal")
     # 实参漏传不会编译失败，只会让这条日志重新变成空白 —— 与 `reclaimSealOrphans`
     # 属同一类静默失效（见 R11 ⑦）。必须限定在 `RenewalCoordinator` 的构造块里查：
     # `logStore: logStore` 在 `AppContainer` 里出现 8 次，全局匹配会让
@@ -724,8 +724,8 @@ def violations(load=read):
     check("func profileIdentityIncludesUUIDAndBothDates()" in log_tests
           and "func missingDatesAreSpelledOutRatherThanOmitted()" in log_tests,
           "R12: the per-item success line needs a real unit test for its profile identity")
-    check('"2026-09-17T05:28:58Z"' in log_tests,
-          "R12: the ISO8601 unit test must assert the full form, not a single character")
+    check('"2026-09-17T13:28:58+08:00"' in log_tests,
+          "R12: the Beijing ISO8601 unit test must assert the full form, not a single character")
 
     # ② 轮询日志必须保持删除状态（2026-09-17 真机日志量化）。
     #
@@ -3983,23 +3983,22 @@ def main():
          "let expires = record.provisioningProfileExpirationDate",
          "let expires: Date? = nil",
          "R12: the per-item success line must carry the profile identity"),
-        # 把 ISO8601 换成本地化格式：导出日志的人可能不在中文环境里，
-        # 而且没法直接和 Apple 门户返回的时间对照。
+        # 让创建时间不再走统一的北京时间 ISO8601 格式化器：日志会重新混用时区。
         ("Seal/Core/Renewal/RenewalCoordinator.swift",
-         "let formatter = ISO8601DateFormatter()",
-         "let formatter = DateFormatter()",
+         "SealLogTextFormatter.diagnosticTimestamp($0)",
+         "String(describing: $0)",
          "R12: the per-item success line must carry the profile identity"),
         # 构造点漏传日志库：编译不失败，只是这条日志重新变空白。
         ("Seal/Application/AppContainer.swift",
          "                logStore: logStore\n            )\n            let appRecordRecovery = AppRecordRecovery(",
          "                logStore: nil\n            )\n            let appRecordRecovery = AppRecordRecovery(",
          "R12: the batch coordinator must be given a log store"),
-        # 把那条 ISO8601 单测改宽成单字符断言：源码断言仍然全绿，
+        # 把那条北京时间 ISO8601 单测改宽成单字符断言：源码断言仍然全绿，
         # 但测试已经守不住「时间真的是 ISO8601」了（单字符会同时匹配 Character 重载）。
         ("SealTests/Renewal/RenewalCoordinatorLogTests.swift",
-         '        #expect(text.contains("2026-09-17T05:28:58Z"))',
+         '        #expect(text.contains("2026-09-17T13:28:58+08:00"))',
          '        #expect(text.contains("T"))',
-         "R12: the ISO8601 unit test must assert the full form"),
+         "R12: the Beijing ISO8601 unit test must assert the full form"),
         # ── R12：轮询日志降噪（2026-09-17 真机日志量化：30% 是噪音）──
         # 把「有待恢复数据才留痕」改回无条件留痕：`load()` 每 9 秒一次，
         # 立刻回到「三成日志是噪音、真实信号被挤出环形缓冲」的状态。

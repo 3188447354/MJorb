@@ -100,7 +100,7 @@ struct PendingBatchResultPayloadTests {
     }
 
     @Test
-    func newProcessCanSettleOnlyTheAwaitingSealItem() {
+    func newProcessCanSettleOnlyTheAwaitingSealItem() throws {
         let seal = UUID()
         let other = UUID()
         let original = payload([
@@ -120,7 +120,7 @@ struct PendingBatchResultPayloadTests {
     }
 
     @Test
-    func failedSelfReplacementIsPersistedAsFailedInsteadOfSuccess() {
+    func failedSelfReplacementIsPersistedAsFailedInsteadOfSuccess() throws {
         let seal = UUID()
         let original = payload([
             ["id": seal.uuidString, "name": "Seal", "isSeal": true, "state": "awaitingSealConfirmation"],

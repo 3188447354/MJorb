@@ -1007,9 +1007,8 @@ def violations(load=read):
 
     # R17: 「批量续签被自己替换中断」不许自相矛盾（2026-09-17 真机，构建 102）。
     #
-    # Seal 自己替换自己时，进程**必然**在队列项还是 `running` 的时候被杀 —— 但那一项的
-    # 结果其实已经写进持久化载荷了（`SEAL-RENEW-023`，Seal 那一项被显式记成 completed）。
-    # 旧实现盲目把 running 降级为 unknown，于是同一个批次给出三份互相矛盾的结论：
+    # Seal 自己替换自己时，进程**必然**在队列项还是 `running` 的时候被杀。旧进程只可写
+    # `awaitingSealConfirmation`，新进程核验真实运行包身份后才可结算终态。
     #   日志「上次续签被中断，1 个应用的结果未知，需要重新核验」   ← 假警报
     #   队列文件里留下一个幽灵条目（其实成功的那一项）
     #   结果抽屉同时显示 completed(total: 2, succeeded: 2, failed: 0)
@@ -1037,10 +1036,11 @@ def violations(load=read):
     check("static func settledQueueStates(from payload: [String: Any]?)" in payload_source,
           "R17: the pending payload must be mappable to queue states — that mapping is "
           "what lets the queue recovery settle instead of guessing")
-    # 只映射「已定论」的两态。把 `running` 也映射上就等于「替那个正在被杀死的项宣布结果」。
+    # 只映射「已定论」的两态。把 `running` 或 `awaitingSealConfirmation` 映射上都等于
+    # 替那个尚未由新进程核验的项宣布结果。
     check("case .completed: return .completed" in batch_session_source
           and "case .failed: return .failed" in batch_session_source
-          and "case .waiting, .running, .preparingSealUpdate: return nil" in batch_session_source,
+          and "case .waiting, .running, .preparingSealUpdate, .awaitingSealConfirmation: return nil" in batch_session_source,
           "R17: only settled states may be mapped — mapping `running` would claim a result "
           "for the very item that was killed mid-flight")
     check("if let known = settled[items[index].appID] {" in queue_store_source
@@ -1072,7 +1072,8 @@ def violations(load=read):
           "cannot prove the state that comes out")
     payload_tests = load("SealTests/Renewal/PendingBatchResultPayloadTests.swift")
     check("func onlySettledStatesAreMapped()" in payload_tests
-          and "func sealItemIsSettledAsCompleted()" in payload_tests,
+          and "func awaitingSealConfirmationIsNotSettled()" in payload_tests
+          and "func newProcessCanSettleOnlyTheAwaitingSealItem() throws" in payload_tests,
           "R17: the payload mapping needs real unit tests")
 
     # R18: 安装等待「明显超常」的记录（2026-09-17 加，**只记日志、不改变行为**）。
@@ -3591,8 +3592,8 @@ def main():
          "if let uuid = existing.provisioningProfileUUID,",
          "D: settlement must compare profile identity and expiry"),
         ("Seal/Features/Apps/AppsViewModel.swift",
-         "needsAction: max(0, total - succeeded - failed)",
-         "remaining: max(0, total - succeeded - failed)",
+         "needsAction: max(0, total - succeeded - failed - awaitingConfirmation)",
+         "remaining: max(0, total - succeeded - failed - awaitingConfirmation)",
          "G: every BatchRefreshResult construction site"),
         ("Seal/Core/Signing/SigningCoordinator.swift",
          "if advancesInstalledSnapshot {",

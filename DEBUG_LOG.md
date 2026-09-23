@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-09-24 共享描述文件改动遗漏 profile-only 记录调用
+
+- **现象**：共享主描述文件改动首次 CI 编译失败，`ProfileOnlyRenewalRecordUpdater` 无法解析 `SigningTargetRecord.init(binding:)`。
+- **根因**：为共享模式增加“实际签名 Bundle ID”参数时，把既有初始化器改成带默认参数的单一重载；Swift 对函数引用 `SigningTargetRecord.init(binding:)` 不再将其识别为可推断的映射闭包。
+- **修复**：恢复显式 `init(binding:)` 兼容入口，内部传入 profile 自身 Bundle ID；共享模式仍显式传扩展实际 Bundle ID。profile-only 继续保持每个 Bundle 独立 profile 和独立签名记录。
+- **涉及文件**：`Seal/Core/Signing/SigningTargetRecord.swift`、`Seal/Core/Renewal/ProfileOnlyRenewalRecordUpdater.swift`。
+- **验证状态**：前两次 CI 已定位并证实为唯一编译错误；待修复后的完整 GitHub Actions 编译与回归。
+
+---
+
 ## 2026-09-24 多扩展 IPA 续签重复消耗 Apple 门户配额
 
 - **现象**：普通 IPA 含多个扩展时，续签会按主应用及每个扩展分别请求 Apple App ID 和描述文件；免费账号不仅等待长，也更容易碰到 App ID 配额。

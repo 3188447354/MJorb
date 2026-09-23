@@ -717,7 +717,9 @@ actor ApplePortalSigningService {
         let requestedAt = Date()
         let preparation = try await provisioningProfiles(
             mappings: prepared.bundleIDMappings,
+            originalMainBundleID: app.originalBundleIdentifier,
             mappedMainBundleID: prepared.mappedMainBundleID,
+            extensionProfileStrategy: .independentProfiles,
             appName: app.displayName,
             appURL: prepared.appURL,
             workspace: prepared,

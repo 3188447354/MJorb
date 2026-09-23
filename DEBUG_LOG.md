@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-09-23 配对文件导入在 LocalDevVPN 未连接时长期显示验证中
+
+- **现象**：Windows 配对助手已将可解析的配对文件写入 Seal，但 LocalDevVPN 未连接时，设置页立即切为“验证中”；用户无法区分“文件已导入”与“设备尚不可达”。
+- **根因**：自动写入、手动导入和启动轻量检查都在导入成功后无条件调用完整 `runInstallChannelCheck`。该调用先写入 `.validating`，之后才探测 LocalDevVPN 与真实设备。
+- **修复**：新增 `PairingValidationStartPolicy`。被动导入/启动检查先以短 TCP 探测判断 LocalDevVPN 隧道；不可达时保持 `.unverified`（“已导入，待验证”），可达才启动完整验证。用户主动点击 LocalDevVPN 检测仍不跳过完整验证。
+- **涉及文件**：`Seal/Infrastructure/Pairing/PairingValidationStartPolicy.swift`、`Seal/Features/Settings/SettingsViewModel.swift`、`SealTests/Pairing/PairingStoreTests.swift`、`project.yml`、`RELEASE_NOTES.md`。
+- **验证状态**：新增纯规则回归用例；Windows 本机无 Xcode，待 GitHub Actions 完整编译/Swift 回归，以及“未连 VPN 导入 → 待验证；连接 VPN 后验证成功”真机回归。
+
+---
+
 ## 2026-09-23 Seal 结算结果更新触发双抽屉
 
 - **现象**：批量自续签首次打开时先出现并立即关闭“等待核验”抽屉，随后才出现“Seal 已更新”。

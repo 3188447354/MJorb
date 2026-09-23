@@ -157,6 +157,7 @@ final class SettingsViewModel: ObservableObject {
     private let accountClient: AppleAccountClient?
     private let pairingStore: PairingStore?
     private let installChannel: (any InstallChannel)?
+    private let pairingTunnelProbe: any VPNOnDemandActivating
     private let appStore: (any AppStore)?
     private let fileStore: AppFileStore?
     private let logStore: SealLogStore?
@@ -189,13 +190,15 @@ final class SettingsViewModel: ObservableObject {
         anisetteEnvironment: any AnisetteEnvironmentManaging,
         signingPreferenceStore: SigningPreferenceStore,
         operationCoordinator: OperationCoordinator? = nil,
-        selfReplacementStore: SelfReplacementTransactionStore? = nil
+        selfReplacementStore: SelfReplacementTransactionStore? = nil,
+        pairingTunnelProbe: any VPNOnDemandActivating = LocalDevVPNOnDemandActivator()
     ) {
         self.accountRepository = accountRepository
         self.keychain = keychain
         self.accountClient = accountClient
         self.pairingStore = pairingStore
         self.installChannel = installChannel
+        self.pairingTunnelProbe = pairingTunnelProbe
         self.appStore = appStore
         self.fileStore = fileStore
         self.logStore = logStore
@@ -218,6 +221,7 @@ final class SettingsViewModel: ObservableObject {
         accountClient = nil
         pairingStore = nil
         installChannel = nil
+        pairingTunnelProbe = LocalDevVPNOnDemandActivator()
         appStore = nil
         fileStore = nil
         logStore = nil
@@ -239,6 +243,7 @@ final class SettingsViewModel: ObservableObject {
         accountClient = nil
         pairingStore = nil
         installChannel = nil
+        pairingTunnelProbe = LocalDevVPNOnDemandActivator()
         appStore = nil
         fileStore = nil
         logStore = nil
@@ -388,7 +393,10 @@ final class SettingsViewModel: ObservableObject {
     func performLightweightLaunchCheck() async {
         await load(force: true)
         guard pairingRecord != nil, diagnosticState != .running else { return }
-        await runInstallChannelCheck(successMessage: "LocalDevVPN 正常")
+        await validateImportedPairingWhenTunnelAvailable(
+            successMessage: "LocalDevVPN 正常",
+            waitingMessage: "配对信息已导入，等待 LocalDevVPN 连接后验证"
+        )
     }
 
     var activeAccount: AppleAccountRecord? {
@@ -2026,7 +2034,10 @@ final class SettingsViewModel: ObservableObject {
             )
             logs = (try? await logStore?.entries()) ?? logs
             refreshLogExportText()
-            await runInstallChannelCheck(successMessage: "LocalDevVPN 通道正常（需连接 Wi-Fi）")
+            await validateImportedPairingWhenTunnelAvailable(
+                successMessage: "LocalDevVPN 通道正常（需连接 Wi-Fi）",
+                waitingMessage: "配对信息已导入，等待 LocalDevVPN 连接后验证"
+            )
             return true
         } catch let failure as ImportFailure {
             try? FileManager.default.removeItem(at: inboxURL)
@@ -2082,7 +2093,10 @@ final class SettingsViewModel: ObservableObject {
             )
             logs = (try? await logStore?.entries()) ?? logs
             refreshLogExportText()
-            await runInstallChannelCheck(successMessage: "LocalDevVPN 通道正常（需连接 Wi-Fi）")
+            await validateImportedPairingWhenTunnelAvailable(
+                successMessage: "LocalDevVPN 通道正常（需连接 Wi-Fi）",
+                waitingMessage: "配对信息已导入，等待 LocalDevVPN 连接后验证"
+            )
             return true
         } catch let failure as ImportFailure {
             alertFailure = failure
@@ -2304,6 +2318,24 @@ final class SettingsViewModel: ObservableObject {
             return
         }
         await runInstallChannelCheck(successMessage: "LocalDevVPN 正常")
+    }
+
+    private func validateImportedPairingWhenTunnelAvailable(
+        successMessage: String,
+        waitingMessage: String
+    ) async {
+        let tunnelReachable = await pairingTunnelProbe.probeTunnel()
+        guard PairingValidationStartPolicy.shouldStartAutomatically(
+            tunnelReachable: tunnelReachable
+        ) else {
+            diagnosticState = .idle
+            installDiagnostics = .empty
+            try? await logStore?.append(category: .pairing, message: waitingMessage)
+            logs = (try? await logStore?.entries()) ?? logs
+            refreshLogExportText()
+            return
+        }
+        await runInstallChannelCheck(successMessage: successMessage)
     }
 
     private func runInstallChannelCheck(successMessage: String) async {

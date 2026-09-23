@@ -4,6 +4,16 @@ import Testing
 
 struct PairingStoreTests {
     @Test
+    func automaticValidationWaitsForReachableTunnel() {
+        #expect(
+            PairingValidationStartPolicy.shouldStartAutomatically(tunnelReachable: false) == false
+        )
+        #expect(
+            PairingValidationStartPolicy.shouldStartAutomatically(tunnelReachable: true)
+        )
+    }
+
+    @Test
     func importsValidatesProtectsAndRemovesStandardPairingFile() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

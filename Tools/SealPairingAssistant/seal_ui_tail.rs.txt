@@ -328,7 +328,7 @@
                 ui.painter().text(
                     ready_badge.center(),
                     egui::Align2::CENTER_CENTER,
-                    if device_ready { "可继续" } else { &status_text },
+                    if seal_installed { "完成" } else if device_ready { "可继续" } else { &status_text },
                     egui::FontId::new(13.0, egui::FontFamily::Proportional),
                     if device_ready { seal_green } else { status_color },
                 );
@@ -441,7 +441,7 @@
                     );
                 }
                 let guidance = if seal_installed {
-                    "配对已完成，可以回到 Seal 继续操作。"
+                    ""
                 } else if let Some(issue) = readiness_issues.first() {
                     *issue
                 } else if !has_device {
@@ -492,40 +492,42 @@
                     egui::pos2(card_rect.center().x, card_rect.bottom() - 66.0),
                     egui::vec2(420.0, 48.0),
                 );
-                let primary_response = ui.put(
-                    button_rect,
-                    egui::Button::new(
-                        RichText::new(button_text)
-                            .size(17.0)
-                            .strong()
-                            .color(Color32::WHITE),
-                    )
-                    .fill(button_fill)
-                    .stroke(egui::Stroke::new(0.0_f32, Color32::TRANSPARENT))
-                    .corner_radius(8),
-                );
-                if can_primary_action
-                    && primary_response.clicked()
-                    && let Some(dev) = selected_device.clone()
-                {
-                    if !readiness_issues.is_empty() {
-                        self.refresh_device_state(dev);
-                    } else {
-                        self.reset_pairing_state();
-                        self.pending_seal_install = true;
-                        self.pairing_file_message = Some("正在生成配对文件…".to_string());
-                        self.idevice_sender
-                            .send(IdeviceCommands::InstalledApps((
-                                dev.clone(),
-                                self.supported_app_names(),
-                            )))
-                            .unwrap();
-                        self.idevice_sender
-                            .send(IdeviceCommands::GeneratePairingFile((
-                                dev,
-                                seal_mode_for_ios(&ios_version, self.pairing_mode),
-                            )))
-                            .unwrap();
+                if !seal_installed {
+                    let primary_response = ui.put(
+                        button_rect,
+                        egui::Button::new(
+                            RichText::new(button_text)
+                                .size(17.0)
+                                .strong()
+                                .color(Color32::WHITE),
+                        )
+                        .fill(button_fill)
+                        .stroke(egui::Stroke::new(0.0_f32, Color32::TRANSPARENT))
+                        .corner_radius(8),
+                    );
+                    if can_primary_action
+                        && primary_response.clicked()
+                        && let Some(dev) = selected_device.clone()
+                    {
+                        if !readiness_issues.is_empty() {
+                            self.refresh_device_state(dev);
+                        } else {
+                            self.reset_pairing_state();
+                            self.pending_seal_install = true;
+                            self.pairing_file_message = Some("正在生成配对文件…".to_string());
+                            self.idevice_sender
+                                .send(IdeviceCommands::InstalledApps((
+                                    dev.clone(),
+                                    self.supported_app_names(),
+                                )))
+                                .unwrap();
+                            self.idevice_sender
+                                .send(IdeviceCommands::GeneratePairingFile((
+                                    dev,
+                                    seal_mode_for_ios(&ios_version, self.pairing_mode),
+                                )))
+                                .unwrap();
+                        }
                     }
                 }
 

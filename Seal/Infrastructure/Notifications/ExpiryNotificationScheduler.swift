@@ -61,6 +61,10 @@ final class ExpiryNotificationScheduler {
             .filter { $0.hasPrefix(identifierPrefix) }
         center.removePendingNotificationRequests(withIdentifiers: existing)
         guard enabled else { return }
+        let authorization = await authorizationStatus()
+        guard authorization == .authorized || authorization == .provisional || authorization == .ephemeral else {
+            return
+        }
 
         for plan in planner.plans(for: apps, now: Date()) {
             let content = UNMutableNotificationContent()

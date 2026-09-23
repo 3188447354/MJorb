@@ -179,14 +179,15 @@ jobs:
             'PairingMode::RemotePairing',
             'SealPairing.mobiledevicepairing',
             'fn setup_windows_process_identity',
+            'fn setup_windows_native_corners',
             'fn setup_windows_window_icon',
             'with_transparent(false)',
             'with_resizable(false)',
             'with_icon(egui::IconData',
             'SetCurrentProcessExplicitAppUserModelID',
             'WM_SETICON',
-            'CreateRoundRectRgn',
-            'SetWindowRgn',
+            'SetClassLongPtrW',
+            'seal_taskbar_icon_applied',
             'pending_seal_install',
             'seal_icon_texture',
             'phone_texture',
@@ -215,6 +216,9 @@ jobs:
           }
           if ($source.Contains('DWMSBT_TRANSIENTWINDOW')) {
             throw "Windows material backdrop would replace the native Seal window shape"
+          }
+          if ($source.Contains('CreateRoundRectRgn') -or $source.Contains('SetWindowRgn') -or $source.Contains('with_transparent(true)')) {
+            throw "Seal pairing window must remain opaque and use Windows native corners"
           }
           if ($source.Contains('RichText::new(&pairing_file).monospace()')) {
             throw "Raw pairing material is still rendered in the UI"

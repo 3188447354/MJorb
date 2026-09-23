@@ -145,8 +145,35 @@ fn setup_windows_process_identity() {
 fn setup_windows_process_identity() {}
 
 #[cfg(windows)]
-fn setup_windows_window_icon(cc: &eframe::CreationContext<'_>) {
+fn setup_windows_native_corners(cc: &eframe::CreationContext<'_>) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::ffi::c_void;
+
+    #[link(name = "dwmapi")]
+    unsafe extern "system" {
+        fn DwmSetWindowAttribute(hwnd: *mut c_void, attribute: u32, value: *const c_void, size: u32) -> i32;
+    }
+
+    let Ok(window_handle) = cc.window_handle() else { return; };
+    let RawWindowHandle::Win32(handle) = window_handle.as_raw() else { return; };
+    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+    const DWMWCP_DEFAULT: i32 = 0;
+    let corner = DWMWCP_DEFAULT;
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            handle.hwnd.get() as *mut c_void,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &corner as *const _ as *const c_void,
+            std::mem::size_of_val(&corner) as u32,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn setup_windows_native_corners(_cc: &eframe::CreationContext<'_>) {}
+
+#[cfg(windows)]
+fn setup_windows_window_icon() -> bool {
     use std::ffi::c_void;
 
     #[link(name = "kernel32")]
@@ -156,32 +183,23 @@ fn setup_windows_window_icon(cc: &eframe::CreationContext<'_>) {
 
     #[link(name = "user32")]
     unsafe extern "system" {
+        fn GetActiveWindow() -> *mut c_void;
         fn LoadImageW(instance: *mut c_void, name: *const u16, image_type: u32, width: i32, height: i32, flags: u32) -> *mut c_void;
         fn SendMessageW(hwnd: *mut c_void, message: u32, wparam: usize, lparam: isize) -> isize;
-        fn GetClientRect(hwnd: *mut c_void, rect: *mut ClientRect) -> i32;
-        fn CreateRoundRectRgn(left: i32, top: i32, right: i32, bottom: i32, width: i32, height: i32) -> *mut c_void;
-        fn SetWindowRgn(hwnd: *mut c_void, region: *mut c_void, redraw: i32) -> i32;
+        fn SetClassLongPtrW(hwnd: *mut c_void, index: i32, value: isize) -> isize;
     }
-
-    #[repr(C)]
-    struct ClientRect { left: i32, top: i32, right: i32, bottom: i32 }
 
     const IMAGE_ICON: u32 = 1;
     const LR_DEFAULTSIZE: u32 = 0x0040;
     const WM_SETICON: u32 = 0x0080;
     const ICON_SMALL: usize = 0;
     const ICON_BIG: usize = 1;
+    const GCLP_HICON: i32 = -14;
+    const GCLP_HICONSM: i32 = -34;
 
-    cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(std::sync::Arc::new(egui::IconData {
-        rgba: SEAL_ICON_RGBA.to_vec(),
-        width: SEAL_ICON_SIZE[0] as u32,
-        height: SEAL_ICON_SIZE[1] as u32,
-    }))));
-
-    let Ok(window_handle) = cc.window_handle() else { return; };
-    let RawWindowHandle::Win32(handle) = window_handle.as_raw() else { return; };
-    let hwnd = handle.hwnd.get() as *mut c_void;
     unsafe {
+        let hwnd = GetActiveWindow();
+        if hwnd.is_null() { return false; }
         let icon = LoadImageW(
             GetModuleHandleW(std::ptr::null()),
             1usize as *const u16,
@@ -193,20 +211,16 @@ fn setup_windows_window_icon(cc: &eframe::CreationContext<'_>) {
         if !icon.is_null() {
             let _ = SendMessageW(hwnd, WM_SETICON, ICON_SMALL, icon as isize);
             let _ = SendMessageW(hwnd, WM_SETICON, ICON_BIG, icon as isize);
-        }
-        // This is a physical 8px window mask, not a painted imitation of a rounded corner.
-        let mut client = ClientRect { left: 0, top: 0, right: 0, bottom: 0 };
-        if GetClientRect(hwnd, &mut client) != 0 {
-            let region = CreateRoundRectRgn(0, 0, client.right + 1, client.bottom + 1, 16, 16);
-            if !region.is_null() {
-                let _ = SetWindowRgn(hwnd, region, 1);
-            }
+            let _ = SetClassLongPtrW(hwnd, GCLP_HICONSM, icon as isize);
+            let _ = SetClassLongPtrW(hwnd, GCLP_HICON, icon as isize);
+            return true;
         }
     }
+    false
 }
 
 #[cfg(not(windows))]
-fn setup_windows_window_icon(_cc: &eframe::CreationContext<'_>) {}
+fn setup_windows_window_icon() -> bool { true }
 """
     seal_theme, setup_count = re.subn(
         r"(?s)#\[cfg\(windows\)\]\nfn setup_windows_backdrop.*?\n#\[cfg\(not\(windows\)\)\]\nfn setup_windows_backdrop\(_cc: &eframe::CreationContext<'_>\) \{\}\n",
@@ -246,16 +260,16 @@ fn setup_windows_window_icon(_cc: &eframe::CreationContext<'_>) {}
     creation_anchor = """        Box::new(|cc| {\n            setup_custom_fonts(&cc.egui_ctx);\n            Ok(Box::new(app))\n        }),\n"""
     creation_replacement = """        Box::new(|cc| {\n            setup_custom_fonts(&cc.egui_ctx);\n            setup_seal_theme(&cc.egui_ctx);\n            setup_windows_backdrop(cc);\n            Ok(Box::new(app))\n        }),\n"""
     creation_replacement = creation_replacement.replace(
-        "setup_windows_backdrop(cc)", "setup_windows_window_icon(cc)"
+        "setup_windows_backdrop(cc)", "setup_windows_native_corners(cc)"
     )
     text = replace_once(text, creation_anchor, creation_replacement, "Seal visual setup")
 
     init_anchor = "        show_logs: false,\n"
-    init_replacement = "        show_logs: false,\n        pending_seal_install: false,\n        seal_icon_texture: None,\n        phone_texture: None,\n"
+    init_replacement = "        show_logs: false,\n        pending_seal_install: false,\n        seal_taskbar_icon_applied: false,\n        seal_icon_texture: None,\n        phone_texture: None,\n"
     text = replace_once(text, init_anchor, init_replacement, "pending Seal install init")
 
     struct_anchor = "    show_logs: bool,\n}"
-    struct_replacement = "    show_logs: bool,\n    pending_seal_install: bool,\n    seal_icon_texture: Option<egui::TextureHandle>,\n    phone_texture: Option<egui::TextureHandle>,\n}"
+    struct_replacement = "    show_logs: bool,\n    pending_seal_install: bool,\n    seal_taskbar_icon_applied: bool,\n    seal_icon_texture: Option<egui::TextureHandle>,\n    phone_texture: Option<egui::TextureHandle>,\n}"
     text = replace_once(text, struct_anchor, struct_replacement, "pending Seal install field")
 
     reset_anchor = "        self.validation_ip_input.clear();\n"
@@ -375,14 +389,14 @@ def verify(root: pathlib.Path) -> None:
         'supported_apps.insert("Seal".to_string(), "SealPairing.mobiledevicepairing".to_string());',
         "fn setup_seal_theme",
         "fn setup_windows_process_identity",
+        "fn setup_windows_native_corners",
         "fn setup_windows_window_icon",
         "with_transparent(false)",
         "with_resizable(false)",
         "with_icon(egui::IconData",
         "SetCurrentProcessExplicitAppUserModelID",
         "WM_SETICON",
-        "CreateRoundRectRgn",
-        "SetWindowRgn",
+        "SetClassLongPtrW",
         'rust_i18n::set_locale("zh-cn");',
         '"Seal 配对助手"',
         "pending_seal_install",
@@ -415,6 +429,10 @@ def verify(root: pathlib.Path) -> None:
     missing = [item for item in required if item not in main]
     if missing:
         raise RuntimeError(f"Seal/upstream feature verification failed: {missing}")
+
+    for marker in ("CreateRoundRectRgn", "SetWindowRgn", "with_transparent(true)"):
+        if marker in main:
+            raise RuntimeError(f"unsupported custom window treatment remains: {marker}")
 
     marker = 'supported_apps.insert("Seal".to_string(), "SealPairing.mobiledevicepairing".to_string());'
     if main.count(marker) != 2:

@@ -1,4 +1,7 @@
         self.ensure_seal_textures(ctx);
+        if !self.seal_taskbar_icon_applied {
+            self.seal_taskbar_icon_applied = setup_windows_window_icon();
+        }
         let seal_icon_texture = self.seal_icon_texture.clone();
 
         let mut pending_selection: Option<(String, UsbmuxdDevice)> = None;
@@ -95,11 +98,11 @@
             (Some("开始配对"), environment_ready, false)
         };
 
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::TRANSPARENT)).show(ctx, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_rgb(247, 250, 252))).show(ctx, |ui| {
             let full_rect = ui.max_rect();
             let title_h = 58.0;
-            ui.painter().rect_filled(full_rect, 8.0, Color32::from_rgb(247, 250, 252));
-            ui.painter().rect_stroke(full_rect.shrink(0.5), 8.0, egui::Stroke::new(1.0_f32, Color32::from_rgb(215, 225, 233)), egui::StrokeKind::Inside);
+            ui.painter().rect_filled(full_rect, 0.0, Color32::from_rgb(247, 250, 252));
+            ui.painter().rect_stroke(full_rect.shrink(0.5), 0.0, egui::Stroke::new(1.0_f32, Color32::from_rgb(215, 225, 233)), egui::StrokeKind::Inside);
             ui.painter().line_segment([egui::pos2(full_rect.left(), full_rect.top() + title_h), egui::pos2(full_rect.right(), full_rect.top() + title_h)], egui::Stroke::new(1.0_f32, divider));
 
             let drag_rect = egui::Rect::from_min_max(full_rect.min, egui::pos2(full_rect.right() - 124.0, full_rect.top() + title_h));

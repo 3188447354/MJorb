@@ -65,6 +65,10 @@ jobs:
           if (-not $buildScript.Contains('res.set_icon("icon.ico")')) {
             throw "Pinned upstream no longer embeds icon.ico into the Windows executable"
           }
+          $sealIcon = Resolve-Path "Seal/Resources/Assets.xcassets/AppIcon.appiconset/SealIcon-1024.png"
+          if ((Get-FileHash $sealIcon -Algorithm SHA256).Hash -eq (Get-FileHash "upstream/idevice_pair/icon.png" -Algorithm SHA256).Hash) {
+            throw "Rounded runtime icon was not generated from the Seal feather icon"
+          }
 
       - name: Apply Seal overlay
         shell: pwsh
@@ -175,7 +179,7 @@ jobs:
             'PairingMode::RemotePairing',
             'SealPairing.mobiledevicepairing',
             'fn setup_windows_backdrop',
-            'DWMSBT_TRANSIENTWINDOW',
+            'with_transparent(true)',
             'pending_seal_install',
             'seal_icon_texture',
             'phone_texture',
@@ -201,6 +205,9 @@ jobs:
           )
           foreach ($marker in $required) {
             if (-not $source.Contains($marker)) { throw "Required feature missing: $marker" }
+          }
+          if ($source.Contains('DWMSBT_TRANSIENTWINDOW')) {
+            throw "Windows material backdrop would make the transparent corners rectangular"
           }
           if ($source.Contains('RichText::new(&pairing_file).monospace()')) {
             throw "Raw pairing material is still rendered in the UI"

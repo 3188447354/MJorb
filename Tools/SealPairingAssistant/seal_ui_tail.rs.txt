@@ -96,7 +96,8 @@
         };
 
         egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::TRANSPARENT)).show(ctx, |ui| {
-            let full_rect = ui.max_rect();
+            // A transparent perimeter lets the native viewport expose actual rounded corners.
+            let full_rect = ui.max_rect().shrink(1.0);
             let title_h = 58.0;
             ui.painter().rect_filled(full_rect, 14.0, Color32::from_rgb(247, 250, 252));
             ui.painter().rect_stroke(full_rect.shrink(0.5), 14.0, egui::Stroke::new(1.0_f32, Color32::from_rgb(215, 225, 233)), egui::StrokeKind::Inside);
@@ -122,7 +123,7 @@
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::new(size, egui::FontFamily::Proportional), color);
                 response
             };
-            if control(ui, refresh_rect, "seal-refresh", "↻", 18.0, seal_blue, Color32::from_rgb(229, 242, 248)).on_hover_text("重新检测").clicked() && let Some(dev) = selected_device.clone() { self.refresh_device_state(dev); }
+            if control(ui, refresh_rect, "seal-refresh", "↻", 15.0, seal_blue, Color32::from_rgb(229, 242, 248)).on_hover_text("重新检测").clicked() && let Some(dev) = selected_device.clone() { self.refresh_device_state(dev); }
             if control(ui, min_rect, "seal-minimize", "−", 21.0, text_primary, Color32::from_rgb(232, 240, 245)).on_hover_text("最小化").clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); }
             if control(ui, close_rect, "seal-close", "×", 23.0, text_primary, Color32::from_rgb(251, 232, 232)).on_hover_text("退出").clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
 

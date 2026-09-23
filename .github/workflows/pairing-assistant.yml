@@ -178,13 +178,11 @@ jobs:
             'DWMSBT_TRANSIENTWINDOW',
             'pending_seal_install',
             'seal_icon_texture',
-            'phone_texture',
             'include_bytes!("seal_assets/seal_icon_ui.rgba")',
-            'include_bytes!("seal_assets/iphone_model.rgba")',
             'install_pairing_file_to_seal_if_ready',
             '生成并写入 Seal',
             '已写入 Seal',
-            '未连接 iPhone',
+            '等待连接',
             'with_decorations(false)',
             'ViewportCommand::Close',
             '✦  生成并写入 Seal',
@@ -197,8 +195,12 @@ jobs:
             'seal_lockdown_only',
             'seal_mode_for_ios(&ios_version, self.pairing_mode)',
             'let has_ios_version = ios_version != "—";',
-            'has_device && has_ios_version && !is_processing',
-            '正在读取 iOS 版本…'
+            'has_device && has_ios_version && !environment_checking && !is_processing',
+            '"开发者模式"',
+            '"无线调试"',
+            '"开发者支持文件"',
+            '正在读取 iOS 版本…',
+            '基于 jkcoxson/idevice_pair 0.1.14 二次开发'
           )
           foreach ($marker in $required) {
             if (-not $source.Contains($marker)) { throw "Required feature missing: $marker" }
@@ -214,7 +216,10 @@ jobs:
             'seal_view_logs',
             'seal_pairing_ready',
             'seal_pairing_mode',
-            '写入已安装应用'
+            '写入已安装应用',
+            'phone_texture',
+            'IPHONE_MODEL',
+            'iphone_model.rgba'
           )
           foreach ($marker in $removed) {
             if ($source.Contains($marker)) { throw "Removed minimal UI surface is still visible: $marker" }
@@ -227,9 +232,6 @@ jobs:
           }
           if (-not (Test-Path upstream/idevice_pair/src/seal_assets/seal_icon_ui.rgba)) {
             throw "Seal UI icon raw asset is missing"
-          }
-          if (-not (Test-Path upstream/idevice_pair/src/seal_assets/iphone_model.rgba)) {
-            throw "Seal iPhone model raw asset is missing"
           }
 
       - name: Verify Windows PE
@@ -260,7 +262,7 @@ jobs:
           Rust: ${env:RUST_TOOLCHAIN}
           Target: Windows x64
           Icon: bundled Seal icon asset
-          UI: Seal v13 1:1 glass pairing assistant
+          UI: Seal v14 product pairing assistant
 
           Windows prerequisite:
           Install Apple website iTunes / Apple Mobile Device support as required by upstream idevice_pair.

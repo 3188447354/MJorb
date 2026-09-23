@@ -757,6 +757,12 @@ def violations(load=read):
           and "hasRestoredPendingBatchResult = false" in view_model_code,
           "R12: the already-restored flag must be set on restore and cleared on dismiss, "
           "otherwise the skip warning either repeats or goes missing")
+    # 2026-09-23：Seal 自替换结算会让同一份持久化载荷从「等待核验」更新为
+    # 「已完成」。此时若重建一个 UUID，`.sheet(item:)` 会先撤掉旧抽屉、再呈现新抽屉，
+    # 真机表现为等待抽屉闪一下后又弹一次结果。更新内容必须保留既有 sheet 身份。
+    check("BatchRefreshSession(id: batchRefreshSession?.id ?? UUID())" in restore_body,
+          "R12: a settled pending result must preserve the visible batch sheet identity — "
+          "a new UUID makes SwiftUI dismiss and present a second drawer")
 
     # R13: 「Apple 要求双重认证」必须走专门的分类与提示（2026-09-17 真机取证，构建 95）。
     #

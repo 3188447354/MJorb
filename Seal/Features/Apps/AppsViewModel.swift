@@ -1823,7 +1823,9 @@ final class AppsViewModel: ObservableObject {
         }
         guard let payload = pendingPayload else { return }
         let result = PendingBatchResultPayload.restoredResult(from: payload)
-        var restored = BatchRefreshSession()
+        // 载荷结算后必须保留同一张抽屉的身份。换 UUID 会让 SwiftUI 认为旧 sheet
+        // 已结束、需要再展示一张新 sheet，造成“先闪一下等待核验、再弹已更新”。
+        var restored = BatchRefreshSession(id: batchRefreshSession?.id ?? UUID())
         // 旧持久化载荷没有 needsAction 字段，但计数不变量 `成功+失败+未执行 == 总数` 成立，
         // 因此第三个桶可以直接由差值还原（旧载荷的差值本来就是「未完成」）。
         restored.status = .completed(result)

@@ -140,10 +140,9 @@ struct RootTabView: View {
         lastLaunchCheckAt = Date()
         defer { launchCheckInProgress = false }
 
-        // 并行执行两个 ViewModel 的启动检查，避免串行等待
-        async let settingsCheck: Void = settingsViewModel.performLightweightLaunchCheck()
-        async let appsCheck: Void = appsViewModel.performLightweightLaunchCheck()
-        _ = await (settingsCheck, appsCheck)
+        // AppsRootView 负责应用页启动的严格顺序：自替换身份对账 → 队列恢复 → 读取结果。
+        // 这里若并行 load，会让旧的 awaiting 载荷先被展示，首次打开就与结算后的真实状态竞争。
+        await settingsViewModel.performLightweightLaunchCheck()
     }
 
 }

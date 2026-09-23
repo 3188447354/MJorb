@@ -548,10 +548,6 @@ final class AppsViewModel: ObservableObject {
         return values
     }
 
-    func performLightweightLaunchCheck() async {
-        await load(force: true)
-    }
-
     func refreshUnsignedApps() async {
         await load(force: true)
     }
@@ -585,12 +581,14 @@ final class AppsViewModel: ObservableObject {
                 }
             }
         } catch {
-            try? await logStore?.append(
-                category: .system,
-                level: .warning,
-                message: "已安装页设备核验未完成，已保留当前列表。诊断：\(InstalledAppRefreshFailure.diagnostic(for: error))",
-                code: "SEAL-INSTALL-707"
-            )
+            if InstalledAppRefreshFailure.shouldLogDiagnostic(for: error) {
+                try? await logStore?.append(
+                    category: .system,
+                    level: .warning,
+                    message: "已安装页设备核验未完成，已保留当前列表。诊断：\(InstalledAppRefreshFailure.diagnostic(for: error))",
+                    code: "SEAL-INSTALL-707"
+                )
+            }
             if userInitiated {
                 alertFailure = ImportFailure(
                     title: "\u{65E0}\u{6CD5}\u{5237}\u{65B0}\u{5DF2}\u{5B89}\u{88C5}\u{5E94}\u{7528}",

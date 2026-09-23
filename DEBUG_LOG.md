@@ -5,6 +5,26 @@
 
 ---
 
+## 2026-09-23 Seal 自替换首次启动仍展示旧等待状态
+
+- **现象**：真机完成 Seal 覆盖安装后，第一次打开新包时结果抽屉仍可能显示“等待新版本核验”；关闭并重新打开才显示已更新。
+- **根因**：`RootTabView` 的启动检查与 `AppsRootView` 的恢复链路同时调用 `AppsViewModel.load()`。前者可在 `SelfAppRegistrar` 用真实运行包完成结算之前读取旧的 `awaitingSealConfirmation` 载荷并展示，形成首屏竞态。
+- **修复**：根标签页不再对应用页发起并行加载；应用页独占且严格串行执行“自替换身份对账 → 队列恢复 → 读取/展示批量结果”。设置页轻量检查保留，不影响账号与环境刷新。
+- **涉及文件**：`Seal/App/RootTabView.swift`、`RELEASE_NOTES.md`。
+- **验证状态**：根因由真实首开行为与启动调用图确认；待 GitHub Actions 完整编译与真机一次自替换首开回归。
+
+---
+
+## 2026-09-23 已安装页预期冷却状态重复写入告警
+
+- **现象**：构建 1.2.8 (16) 真机日志中，首次设备应用查询超时后，用户连续下拉或页面任务取消会继续记录多条 `SEAL-INSTALL-707`，但列表已按设计保留且没有弹窗。
+- **根因**：设备核验的冷却和并发门正确防止了不可取消 FFI 叠加，但 `AppsViewModel` 将首次超时、冷却中、查询已在进行与 `CancellationError` 一律视为同等级日志告警。
+- **修复**：将日志判定抽为 `InstalledAppRefreshFailure.shouldLogDiagnostic`。首次超时及其他可行动设备错误继续记录；冷却中、查询已在进行和页面取消属于保护机制的预期状态，静默结束并保留列表。
+- **涉及文件**：`Seal/Core/Apps/InstalledAppRefreshFailure.swift`、`Seal/Features/Apps/AppsViewModel.swift`、`SealTests/InstalledApps/InstalledAppRefreshFailureTests.swift`、`project.yml`、`RELEASE_NOTES.md`。
+- **验证状态**：已补纯函数回归用例；待 GitHub Actions 完整编译与真机连续下拉回归。
+
+---
+
 ## 2026-09-23 自替换结算与结果恢复并发竞态
 
 - **现象**：构建 1.2.7 (15) 真机日志中，`SEAL-RENEW-028` 已记录 Seal 自替换由新进程身份核验结算成功，但随后关闭结果抽屉仍记录“成功 2、等待 Seal 核验 1”。

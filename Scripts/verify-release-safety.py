@@ -1065,6 +1065,21 @@ def violations(load=read):
           "R17: the payload must be restored and read BEFORE the queue is settled — "
           "Seal kills itself mid-batch, so the running item's result only exists in the "
           "payload; settling first marks it 'unknown'")
+    # 首开还必须先完成自替换结算，不能由根标签页抢先 load 并展示旧的 awaiting 载荷。
+    # 这是 2026-09-23 真机首开仍显示“等待新版本核验”的根因：两条启动任务并发，
+    # 结算后的载荷虽已落盘，首屏却已经拿到旧结果。应用页是唯一结果恢复入口。
+    root_tab_code = strip_comments(load("Seal/App/RootTabView.swift"))
+    apps_root_code = strip_comments(load("Seal/Features/Apps/AppsRootView.swift"))
+    startup_maintenance_at = apps_root_code.find("await viewModel.runMaintenanceIfIdle()")
+    startup_recovery_at = apps_root_code.find("await viewModel.recoverInterruptedQueueIfNeeded()")
+    startup_load_at = apps_root_code.find("await viewModel.load()", startup_recovery_at)
+    check("appsViewModel.performLightweightLaunchCheck()" not in root_tab_code
+          and startup_maintenance_at != -1
+          and startup_recovery_at != -1
+          and startup_load_at != -1
+          and startup_maintenance_at < startup_recovery_at < startup_load_at,
+          "R17: first launch must settle self replacement before restoring the batch result; "
+          "RootTabView must not race it with an AppsViewModel load")
     check("static func restoredResult(from payload: [String: Any]) -> BatchRefreshResult" in payload_source
           and "static func restorationFingerprint(from payload: [String: Any]) -> String?" in payload_source
           and "func settledSealPayloadRestoresAsFullyCompletedResult() throws" in load("SealTests/Renewal/PendingBatchResultPayloadTests.swift")

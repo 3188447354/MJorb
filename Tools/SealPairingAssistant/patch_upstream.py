@@ -79,7 +79,7 @@ def patch_main(path: pathlib.Path) -> None:
     text = replace_once(text, font_function_end, seal_theme, "Seal theme injection")
 
     options_anchor = "    let mut options = eframe::NativeOptions::default();\n"
-    options_replacement = """    let mut options = eframe::NativeOptions::default();\n    options.viewport = options\n        .viewport\n        .clone()\n        .with_inner_size([1180.0, 860.0])\n        .with_min_inner_size([980.0, 720.0])\n        .with_transparent(true)\n        .with_decorations(false);\n"""
+    options_replacement = """    let mut options = eframe::NativeOptions::default();\n    options.viewport = options\n        .viewport\n        .clone()\n        .with_inner_size([920.0, 700.0])\n        .with_min_inner_size([760.0, 620.0])\n        .with_transparent(true)\n        .with_decorations(false);\n"""
     text = replace_once(text, options_anchor, options_replacement, "native viewport setup")
     text = replace_once(
         text,
@@ -159,8 +159,8 @@ def verify(root: pathlib.Path) -> None:
         "include_bytes!(\"seal_assets/seal_icon_ui.rgba\")",
         "fn ensure_seal_textures",
         "fn install_pairing_file_to_seal_if_ready",
-        "生成并写入 Seal",
-        "已写入 Seal",
+        "生成配对并交给 Seal",
+        '"完成".to_string()',
         "等待连接",
         "GeneratePairingFile",
         "InstallPairingFile",
@@ -197,6 +197,9 @@ def verify(root: pathlib.Path) -> None:
         "seal_pairing_ready",
         "seal_pairing_mode",
         "写入已安装应用",
+        "已写入 Seal",
+        "✦  生成并写入 Seal",
+        "▢  复制",
         "phone_texture",
         "IPHONE_MODEL",
         "iphone_model.rgba",

@@ -180,12 +180,11 @@ jobs:
             'seal_icon_texture',
             'include_bytes!("seal_assets/seal_icon_ui.rgba")',
             'install_pairing_file_to_seal_if_ready',
-            '生成并写入 Seal',
-            '已写入 Seal',
+            '生成配对并交给 Seal',
+            '"完成".to_string()',
             '等待连接',
             'with_decorations(false)',
             'ViewportCommand::Close',
-            '✦  生成并写入 Seal',
             # 2026-09-20：配对类型按设备版本分流（iOS 17.4 以下 ⇒ Lockdown）。
             # 这 4 条与 patch_upstream.py 的 verify() 是**两道互相独立**的闸门 ——
             # 只留 patch 那一道，就会出现「判据与实现一起被改掉、自洽了就算过」✗
@@ -217,6 +216,9 @@ jobs:
             'seal_pairing_ready',
             'seal_pairing_mode',
             '写入已安装应用',
+            '已写入 Seal',
+            '✦  生成并写入 Seal',
+            '▢  复制',
             'phone_texture',
             'IPHONE_MODEL',
             'iphone_model.rgba'

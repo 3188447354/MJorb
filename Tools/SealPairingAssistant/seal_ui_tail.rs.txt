@@ -92,7 +92,7 @@
         } else if seal_installing {
             "正在写入 Seal…".to_string()
         } else if seal_installed {
-            "已写入 Seal".to_string()
+            "完成".to_string()
         } else if seal_failed {
             "写入失败".to_string()
         } else if !readiness_issues.is_empty() {
@@ -123,13 +123,13 @@
             .frame(egui::Frame::new().fill(Color32::TRANSPARENT))
             .show(ctx, |ui| {
                 let full_rect = ui.max_rect();
-                let window_radius = 20.0;
-                let title_h = 76.0;
+                let window_radius = 10.0;
+                let title_h = 64.0;
 
                 ui.painter().rect_filled(
                     full_rect,
                     window_radius,
-                    Color32::from_rgba_unmultiplied(240, 247, 252, 213),
+                    Color32::from_rgba_unmultiplied(246, 250, 253, 238),
                 );
                 ui.painter().rect_stroke(
                     full_rect.shrink(0.5),
@@ -167,8 +167,8 @@
 
                 if let Some(dev) = selected_device.clone() {
                     let refresh_rect = egui::Rect::from_min_size(
-                        egui::pos2(full_rect.right() - 224.0, full_rect.top() + 24.0),
-                        egui::vec2(40.0, 38.0),
+                    egui::pos2(full_rect.right() - 208.0, full_rect.top() + 14.0),
+                        egui::vec2(36.0, 36.0),
                     );
                     if ui
                         .put(
@@ -184,8 +184,8 @@
                 }
 
                 let title_icon_rect = egui::Rect::from_min_size(
-                    full_rect.left_top() + egui::vec2(36.0, 30.0),
-                    egui::vec2(38.0, 38.0),
+                    full_rect.left_top() + egui::vec2(24.0, 16.0),
+                    egui::vec2(32.0, 32.0),
                 );
                 if let Some(texture) = &seal_icon_texture {
                     ui.put(title_icon_rect, egui::Image::new((texture.id(), title_icon_rect.size())));
@@ -200,21 +200,21 @@
                     );
                 }
                 ui.painter().text(
-                    egui::pos2(title_icon_rect.right() + 18.0, title_icon_rect.center().y + 1.0),
+                    egui::pos2(title_icon_rect.right() + 12.0, title_icon_rect.center().y + 1.0),
                     egui::Align2::LEFT_CENTER,
                     t!("app_title"),
-                    egui::FontId::new(25.0, egui::FontFamily::Proportional),
+                    egui::FontId::new(18.0, egui::FontFamily::Proportional),
                     text_primary,
                 );
 
-                let control_y = full_rect.top() + 24.0;
-                let control_size = egui::vec2(44.0, 38.0);
+                let control_y = full_rect.top() + 14.0;
+                let control_size = egui::vec2(38.0, 36.0);
                 let close_rect = egui::Rect::from_min_size(
-                    egui::pos2(full_rect.right() - 58.0, control_y),
+                    egui::pos2(full_rect.right() - 48.0, control_y),
                     control_size,
                 );
-                let max_rect = close_rect.translate(egui::vec2(-52.0, 0.0));
-                let min_rect = close_rect.translate(egui::vec2(-104.0, 0.0));
+                let max_rect = close_rect.translate(egui::vec2(-42.0, 0.0));
+                let min_rect = close_rect.translate(egui::vec2(-84.0, 0.0));
                 if ui
                     .put(
                         min_rect,
@@ -244,98 +244,37 @@
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
 
-                let card_width = (full_rect.width() * 0.75).clamp(720.0, 900.0);
-                let card_height = (full_rect.height() - 150.0).clamp(650.0, 730.0);
+                let card_width = (full_rect.width() - 120.0).clamp(620.0, 740.0);
+                let card_height = (full_rect.height() - title_h - 76.0).clamp(520.0, 560.0);
                 let card_rect = egui::Rect::from_center_size(
-                    egui::pos2(full_rect.center().x, full_rect.top() + title_h + card_height / 2.0 + 10.0),
+                    egui::pos2(full_rect.center().x, full_rect.top() + title_h + card_height / 2.0 + 8.0),
                     egui::vec2(card_width, card_height),
                 );
 
-                ui.painter().rect_filled(
-                    card_rect.translate(egui::vec2(0.0, 10.0)),
-                    18.0,
-                    Color32::from_rgba_unmultiplied(86, 132, 190, 22),
-                );
-                ui.painter().rect_filled(
-                    card_rect,
-                    18.0,
-                    Color32::from_rgba_unmultiplied(255, 255, 255, 166),
-                );
-                ui.painter().rect_stroke(
-                    card_rect,
-                    18.0,
-                    egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 240)),
-                    egui::StrokeKind::Inside,
-                );
                 ui.painter().text(
-                    card_rect.center_top() + egui::vec2(0.0, 42.0),
+                    card_rect.center_top() + egui::vec2(0.0, 18.0),
                     egui::Align2::CENTER_CENTER,
-                    "设备配对",
+                    "设备已连接",
                     egui::FontId::new(13.0, egui::FontFamily::Proportional),
                     seal_green,
                 );
                 ui.painter().text(
-                    card_rect.center_top() + egui::vec2(0.0, 88.0),
+                    card_rect.center_top() + egui::vec2(0.0, 58.0),
                     egui::Align2::CENTER_CENTER,
-                    &device_name,
-                    egui::FontId::new(30.0, egui::FontFamily::Proportional),
+                    "准备配对",
+                    egui::FontId::new(28.0, egui::FontFamily::Proportional),
                     text_primary,
                 );
-
-                let status_center = card_rect.center_top() + egui::vec2(0.0, 130.0);
-                if status_text.starts_with("iOS ") && status_text.ends_with("已就绪") {
-                    ui.painter().text(
-                        status_center + egui::vec2(-70.0, 0.0),
-                        egui::Align2::RIGHT_CENTER,
-                        format!("iOS {ios_version}"),
-                        egui::FontId::new(22.0, egui::FontFamily::Proportional),
-                        text_secondary,
-                    );
-                    ui.painter().circle_filled(status_center + egui::vec2(0.0, 0.0), 4.0, seal_green);
-                    ui.painter().text(
-                        status_center + egui::vec2(26.0, 0.0),
-                        egui::Align2::LEFT_CENTER,
-                        "已就绪",
-                        egui::FontId::new(22.0, egui::FontFamily::Proportional),
-                        seal_green,
-                    );
-                    if seal_lockdown_only {
-                        ui.painter().text(
-                            status_center + egui::vec2(0.0, 30.0),
-                            egui::Align2::CENTER_CENTER,
-                            "iOS 17.4 以下：本机配对（Lockdown）",
-                            egui::FontId::new(15.0, egui::FontFamily::Proportional),
-                            text_secondary,
-                        );
-                    }
-                } else {
-                    ui.painter().text(
-                        status_center,
-                        egui::Align2::CENTER_CENTER,
-                        &status_text,
-                        egui::FontId::new(21.0, egui::FontFamily::Proportional),
-                        status_color,
-                    );
-                }
+                ui.painter().text(
+                    card_rect.center_top() + egui::vec2(0.0, 88.0),
+                    egui::Align2::CENTER_CENTER,
+                    "确认设备状态后，配对凭据将直接交给 Seal。",
+                    egui::FontId::new(14.0, egui::FontFamily::Proportional),
+                    text_secondary,
+                );
 
                 let detail_width = card_width.min(620.0);
                 let detail_left = card_rect.center().x - detail_width / 2.0;
-                let detail_top = card_rect.top() + 175.0;
-                let detail_rect = egui::Rect::from_min_size(
-                    egui::pos2(detail_left, detail_top),
-                    egui::vec2(detail_width, 144.0),
-                );
-                ui.painter().rect_filled(
-                    detail_rect,
-                    12.0,
-                    Color32::from_rgba_unmultiplied(255, 255, 255, 116),
-                );
-                ui.painter().rect_stroke(
-                    detail_rect,
-                    12.0,
-                    egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 220)),
-                    egui::StrokeKind::Inside,
-                );
                 let mode_text = if !has_ios_version {
                     "检测中"
                 } else if seal_lockdown_only {
@@ -343,6 +282,58 @@
                 } else {
                     "远程配对"
                 };
+                let device_rect = egui::Rect::from_min_size(
+                    egui::pos2(detail_left, card_rect.top() + 118.0),
+                    egui::vec2(detail_width, 92.0),
+                );
+                ui.painter().rect_filled(device_rect, 15.0, Color32::from_rgba_unmultiplied(255, 255, 255, 192));
+                ui.painter().text(
+                    device_rect.left_top() + egui::vec2(28.0, 34.0),
+                    egui::Align2::LEFT_CENTER,
+                    &device_name,
+                    egui::FontId::new(23.0, egui::FontFamily::Proportional),
+                    text_primary,
+                );
+                ui.painter().text(
+                    device_rect.left_top() + egui::vec2(28.0, 62.0),
+                    egui::Align2::LEFT_CENTER,
+                    format!("iOS {ios_version} · {mode_text}"),
+                    egui::FontId::new(14.0, egui::FontFamily::Proportional),
+                    text_secondary,
+                );
+                let device_ready = environment_ready && !seal_failed;
+                let ready_badge = egui::Rect::from_center_size(
+                    device_rect.right_center() + egui::vec2(-48.0, 0.0),
+                    egui::vec2(72.0, 34.0),
+                );
+                ui.painter().rect_filled(
+                    ready_badge,
+                    17.0,
+                    if device_ready { Color32::from_rgb(225, 246, 237) } else { Color32::from_rgb(241, 231, 220) },
+                );
+                ui.painter().text(
+                    ready_badge.center(),
+                    egui::Align2::CENTER_CENTER,
+                    if device_ready { "已就绪" } else { &status_text },
+                    egui::FontId::new(13.0, egui::FontFamily::Proportional),
+                    if device_ready { seal_green } else { status_color },
+                );
+                let detail_top = card_rect.top() + 315.0;
+                let detail_rect = egui::Rect::from_min_size(
+                    egui::pos2(detail_left, detail_top),
+                    egui::vec2(detail_width, 126.0),
+                );
+                ui.painter().rect_filled(
+                    detail_rect,
+                    15.0,
+                    Color32::from_rgba_unmultiplied(255, 255, 255, 116),
+                );
+                ui.painter().rect_stroke(
+                    detail_rect,
+                    15.0,
+                    egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 220)),
+                    egui::StrokeKind::Inside,
+                );
                 let developer_text = match &self.dev_mode_enabled {
                     None if !has_device => "待连接",
                     None => "检测中",
@@ -368,7 +359,7 @@
                     ("开发者支持文件", support_text, matches!(self.ddi_mounted, Some(Ok(())))),
                 ];
                 for (index, (label, value, ready)) in detail_rows.iter().enumerate() {
-                    let y = detail_top + 24.0 + index as f32 * 48.0;
+                    let y = detail_top + 22.0 + index as f32 * 42.0;
                     ui.painter().circle_filled(
                         egui::pos2(detail_left + 21.0, y),
                         4.0,
@@ -390,13 +381,13 @@
                     );
                     if index < 2 {
                         ui.painter().line_segment(
-                            [egui::pos2(detail_left + 20.0, y + 24.0), egui::pos2(detail_rect.right() - 20.0, y + 24.0)],
+                            [egui::pos2(detail_left + 20.0, y + 21.0), egui::pos2(detail_rect.right() - 20.0, y + 21.0)],
                             egui::Stroke::new(1.0_f32, divider),
                         );
                     }
                 }
 
-                let progress_top = card_rect.top() + 354.0;
+                let progress_top = card_rect.top() + 236.0;
                 let progress_gap = 8.0;
                 let segment_width = (detail_width - 3.0 * progress_gap) / 4.0;
                 let completed_steps = if seal_installed {
@@ -435,16 +426,8 @@
                         if index <= current_step { text_primary } else { text_secondary },
                     );
                 }
-                ui.painter().text(
-                    egui::pos2(card_rect.center().x, progress_top + 61.0),
-                    egui::Align2::CENTER_CENTER,
-                    format!("配对方式：{mode_text}"),
-                    egui::FontId::new(14.0, egui::FontFamily::Proportional),
-                    text_secondary,
-                );
-
                 let guidance = if seal_installed {
-                    "已写入 Seal。回到 iPhone 打开 Seal 自动导入，首次使用时验证设备。"
+                    "配对已完成，可以回到 Seal 继续操作。"
                 } else if let Some(issue) = readiness_issues.first() {
                     *issue
                 } else if !has_device {
@@ -456,12 +439,12 @@
                 } else if seal_failed {
                     "Seal 未收到凭据。保持连接后重试，并在手机上打开 Seal。"
                 } else {
-                    "按 iOS 版本自动配对，完成后直接写入 Seal。"
+                    "按 iOS 版本自动配对，完成后交给 Seal。"
                 };
                 ui.painter().text(
                     egui::Rect::from_center_size(
-                        egui::pos2(card_rect.center().x, progress_top + 95.0),
-                        egui::vec2(detail_width, 42.0),
+                        egui::pos2(card_rect.center().x, detail_rect.bottom() + 18.0),
+                        egui::vec2(detail_width, 22.0),
                     ).center(),
                     egui::Align2::CENTER_CENTER,
                     guidance,
@@ -480,9 +463,9 @@
                 } else if !readiness_issues.is_empty() {
                     "检查并修复准备项"
                 } else if seal_installed || seal_failed {
-                    "重新生成"
+                    "重新生成配对文件"
                 } else {
-                    "生成并写入 Seal"
+                    "生成配对并交给 Seal"
                 };
                 let button_fill = if can_primary_action {
                     seal_blue
@@ -490,32 +473,20 @@
                     Color32::from_rgb(160, 178, 198)
                 };
                 let button_rect = egui::Rect::from_center_size(
-                    egui::pos2(card_rect.center().x, card_rect.bottom() - 112.0),
-                    egui::vec2(520.0, 70.0),
+                    egui::pos2(card_rect.center().x, card_rect.bottom() - 66.0),
+                    egui::vec2(420.0, 48.0),
                 );
-                if can_primary_action {
-                    ui.painter().rect_filled(
-                        button_rect.translate(egui::vec2(0.0, 9.0)),
-                        22.0,
-                        Color32::from_rgba_unmultiplied(0, 122, 255, 42),
-                    );
-                }
-                let display_button_text = if button_text == "生成并写入 Seal" {
-                    "✦  生成并写入 Seal"
-                } else {
-                    button_text
-                };
                 let primary_response = ui.put(
                     button_rect,
                     egui::Button::new(
-                        RichText::new(display_button_text)
-                            .size(25.0)
+                        RichText::new(button_text)
+                            .size(17.0)
                             .strong()
                             .color(Color32::WHITE),
                     )
                     .fill(button_fill)
                     .stroke(egui::Stroke::new(0.0_f32, Color32::TRANSPARENT))
-                    .corner_radius(22),
+                    .corner_radius(8),
                 );
                 if can_primary_action
                     && primary_response.clicked()
@@ -557,19 +528,19 @@
                 }
 
                 let line_width = card_width.min(610.0);
-                let line_y = card_rect.bottom() - 46.0;
+                let line_y = card_rect.bottom() - 28.0;
                 let line_start = card_rect.center().x - line_width / 2.0;
                 ui.painter().line_segment(
                     [egui::pos2(line_start, line_y), egui::pos2(line_start + line_width, line_y)],
                     egui::Stroke::new(1.0_f32, divider),
                 );
 
-                let udid_y = line_y + 25.0;
+                let udid_y = line_y + 15.0;
                 ui.painter().text(
                     egui::pos2(line_start + 8.0, udid_y),
                     egui::Align2::LEFT_CENTER,
                     "UDID",
-                    egui::FontId::new(18.0, egui::FontFamily::Proportional),
+                    egui::FontId::new(13.0, egui::FontFamily::Proportional),
                     text_secondary,
                 );
                 let udid_display = if udid.chars().count() > 28 {
@@ -580,27 +551,28 @@
                     udid.clone()
                 };
                 ui.painter().text(
-                    egui::pos2(line_start + 120.0, udid_y),
+                    egui::pos2(line_start + 54.0, udid_y),
                     egui::Align2::LEFT_CENTER,
                     &udid_display,
                     egui::FontId::new(14.0, egui::FontFamily::Monospace),
                     text_primary,
                 );
                 let copy_rect = egui::Rect::from_min_size(
-                    egui::pos2(line_start + line_width - 132.0, udid_y - 20.0),
-                    egui::vec2(116.0, 40.0),
+                    egui::pos2(line_start + line_width - 96.0, udid_y - 18.0),
+                    egui::vec2(84.0, 36.0),
                 );
                 if udid != "—"
                     && ui
                         .put(
                             copy_rect,
                             egui::Button::new(
-                                RichText::new("▢  复制")
-                                    .size(18.0)
+                                RichText::new("复制")
+                                    .size(14.0)
                                     .strong()
                                     .color(seal_blue),
                             )
-                            .frame(false),
+                            .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 156))
+                            .corner_radius(8),
                         )
                         .clicked()
                 {

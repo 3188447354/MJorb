@@ -33,6 +33,12 @@ def replace_tail_once(text: str, anchor: str, replacement: str, description: str
 
 def patch_cargo(path: pathlib.Path) -> None:
     text = path.read_text(encoding="utf-8")
+    text = replace_once(
+        text,
+        'name = "idevice_pair"\n',
+        'name = "seal-pairing-assistant"\n',
+        "Seal package identity",
+    )
     anchor = 'rust-i18n = "3"\n'
     addition = 'raw-window-handle = "0.6.2"\n'
     if addition not in text:
@@ -62,7 +68,7 @@ def patch_build(path: pathlib.Path) -> None:
     icon_anchor = '        res.set_icon("icon.ico");\n'
     icon_replacement = icon_anchor + """        res.set("FileDescription", "Seal 配对助手");
         res.set("ProductName", "Seal 配对助手");
-        res.set("InternalName", "SealPairingAssistant");
+        res.set("InternalName", "Seal 配对助手");
         res.set("OriginalFilename", "Seal配对助手.exe");
         res.set("FileVersion", "1.0.0.0");
         res.set("ProductVersion", "1.0.0.0");
@@ -136,7 +142,7 @@ fn setup_windows_process_identity() {
         fn SetCurrentProcessExplicitAppUserModelID(app_id: *const u16) -> i32;
     }
 
-    // This must run before eframe creates the window, otherwise Windows can reuse idevice_pair's taskbar group.
+    // This must run before eframe creates the window, otherwise Windows can reuse an unrelated taskbar group.
     let app_id: Vec<u16> = "Seal.PairingAssistant\\0".encode_utf16().collect();
     unsafe { let _ = SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr()); }
 }
@@ -157,8 +163,9 @@ fn setup_windows_native_corners(cc: &eframe::CreationContext<'_>) {
     let Ok(window_handle) = cc.window_handle() else { return; };
     let RawWindowHandle::Win32(handle) = window_handle.as_raw() else { return; };
     const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
-    const DWMWCP_DEFAULT: i32 = 0;
-    let corner = DWMWCP_DEFAULT;
+    // Windows owns this small radius; there is no alpha mask, clipping, or custom-painted corner.
+    const DWMWCP_ROUND_SMALL: i32 = 3;
+    let corner = DWMWCP_ROUND_SMALL;
     unsafe {
         let _ = DwmSetWindowAttribute(
             handle.hwnd.get() as *mut c_void,
@@ -390,6 +397,7 @@ def verify(root: pathlib.Path) -> None:
         "fn setup_seal_theme",
         "fn setup_windows_process_identity",
         "fn setup_windows_native_corners",
+        "DWMWCP_ROUND_SMALL",
         "fn setup_windows_window_icon",
         "with_transparent(false)",
         "with_resizable(false)",
@@ -430,7 +438,12 @@ def verify(root: pathlib.Path) -> None:
     if missing:
         raise RuntimeError(f"Seal/upstream feature verification failed: {missing}")
 
-    for marker in ("CreateRoundRectRgn", "SetWindowRgn", "with_transparent(true)"):
+    for marker in (
+        "CreateRoundRectRgn",
+        "SetWindowRgn",
+        "with_transparent(true)",
+        "DWMWCP_DEFAULT",
+    ):
         if marker in main:
             raise RuntimeError(f"unsupported custom window treatment remains: {marker}")
 
@@ -451,10 +464,12 @@ def verify(root: pathlib.Path) -> None:
         raise RuntimeError(f"Minimal UI still contains removed surface: {present}")
     if 'raw-window-handle = "0.6.2"' not in cargo:
         raise RuntimeError("Windows backdrop dependency missing")
+    if 'name = "seal-pairing-assistant"' not in cargo or 'name = "idevice_pair"' in cargo:
+        raise RuntimeError("Seal package identity was not applied")
     for marker in [
         'res.set("FileDescription", "Seal 配对助手")',
         'res.set("ProductName", "Seal 配对助手")',
-        'res.set("InternalName", "SealPairingAssistant")',
+        'res.set("InternalName", "Seal 配对助手")',
         'res.set("OriginalFilename", "Seal配对助手.exe")',
         "winres::VersionInfo::FILEVERSION",
         "winres::VersionInfo::PRODUCTVERSION",
@@ -465,7 +480,7 @@ def verify(root: pathlib.Path) -> None:
 
 def main() -> int:
     if len(sys.argv) != 2:
-        print("usage: patch_upstream.py <idevice_pair checkout>", file=sys.stderr)
+        print("usage: patch_upstream.py <upstream checkout>", file=sys.stderr)
         return 2
 
     root = pathlib.Path(sys.argv[1]).resolve()
@@ -484,7 +499,7 @@ def main() -> int:
         'app_title = "Seal Pairing Assistant"',
     )
     verify(root)
-    print(f"Seal HTML-matched UI v14 overlay applied to idevice_pair {UPSTREAM_COMMIT}")
+    print(f"Seal pairing overlay applied to pinned upstream revision {UPSTREAM_COMMIT}")
     return 0
 
 

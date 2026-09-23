@@ -118,10 +118,10 @@ jobs:
           def packages(lock):
               return lock.get("package", [])
 
-          def root(lock):
-              matches = [p for p in packages(lock) if p.get("name") == "idevice_pair"]
+          def root(lock, name):
+              matches = [p for p in packages(lock) if p.get("name") == name]
               if len(matches) != 1:
-                  raise SystemExit(f"Expected one idevice_pair root package, found {len(matches)}")
+                  raise SystemExit(f"Expected one {name} root package, found {len(matches)}")
               return matches[0]
 
           def identity(p):
@@ -132,8 +132,8 @@ jobs:
                   p.get("checksum"),
               )
 
-          original_root = root(original)
-          current_root = root(current)
+          original_root = root(original, "idevice_pair")
+          current_root = root(current, "seal-pairing-assistant")
 
           if current_root.get("version") != "0.1.14":
               raise SystemExit(f"Unexpected overlaid root version: {current_root.get('version')}")
@@ -144,7 +144,7 @@ jobs:
               identity(p) for p in packages(original) if p.get("name") != "idevice_pair"
           )
           current_third_party = collections.Counter(
-              identity(p) for p in packages(current) if p.get("name") != "idevice_pair"
+              identity(p) for p in packages(current) if p.get("name") != "seal-pairing-assistant"
           )
           if original_third_party != current_third_party:
               raise SystemExit("Third-party dependency versions changed while normalizing Cargo.lock")
@@ -180,6 +180,7 @@ jobs:
             'SealPairing.mobiledevicepairing',
             'fn setup_windows_process_identity',
             'fn setup_windows_native_corners',
+            'DWMWCP_ROUND_SMALL',
             'fn setup_windows_window_icon',
             'with_transparent(false)',
             'with_resizable(false)',
@@ -217,8 +218,8 @@ jobs:
           if ($source.Contains('DWMSBT_TRANSIENTWINDOW')) {
             throw "Windows material backdrop would replace the native Seal window shape"
           }
-          if ($source.Contains('CreateRoundRectRgn') -or $source.Contains('SetWindowRgn') -or $source.Contains('with_transparent(true)')) {
-            throw "Seal pairing window must remain opaque and use Windows native corners"
+          if ($source.Contains('CreateRoundRectRgn') -or $source.Contains('SetWindowRgn') -or $source.Contains('with_transparent(true)') -or $source.Contains('DWMWCP_DEFAULT')) {
+            throw "Seal pairing window must remain opaque and use Windows native small corners"
           }
           if ($source.Contains('RichText::new(&pairing_file).monospace()')) {
             throw "Raw pairing material is still rendered in the UI"
@@ -252,7 +253,7 @@ jobs:
       - name: Verify Windows PE
         shell: pwsh
         run: |
-          $exe = Resolve-Path upstream/idevice_pair/target/release/idevice_pair.exe
+          $exe = Resolve-Path upstream/idevice_pair/target/release/seal-pairing-assistant.exe
           $bytes = [IO.File]::ReadAllBytes($exe)
           if ($bytes.Length -lt 1024) { throw "Executable is unexpectedly small" }
           if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw "Missing MZ header" }
@@ -262,7 +263,7 @@ jobs:
           $expected = @{
             FileDescription = 'Seal 配对助手'
             ProductName = 'Seal 配对助手'
-            InternalName = 'SealPairingAssistant'
+            InternalName = 'Seal 配对助手'
             OriginalFilename = 'Seal配对助手.exe'
             FileVersion = '1.0.0.0'
             ProductVersion = '1.0.0.0'
@@ -278,7 +279,7 @@ jobs:
         run: |
           $out = Join-Path $PWD "build/Seal-Pairing-Assistant-Windows-x64"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          Copy-Item upstream/idevice_pair/target/release/idevice_pair.exe (Join-Path $out "Seal配对助手.exe")
+          Copy-Item upstream/idevice_pair/target/release/seal-pairing-assistant.exe (Join-Path $out "Seal配对助手.exe")
           $upstreamReadme = "upstream/idevice_pair/README.md"
           $upstreamReadmeText = Get-Content $upstreamReadme -Raw
           if ($upstreamReadmeText -notmatch '(?ms)^## License\s+.*MIT License') { throw "Pinned upstream license declaration changed" }

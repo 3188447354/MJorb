@@ -73,7 +73,7 @@ def patch_main(path: pathlib.Path) -> None:
     text = replace_once(text, font_function_end, seal_theme, "Seal theme injection")
 
     options_anchor = "    let mut options = eframe::NativeOptions::default();\n"
-    options_replacement = """    let mut options = eframe::NativeOptions::default();\n    options.viewport = options\n        .viewport\n        .clone()\n        .with_inner_size([1180.0, 860.0])\n        .with_min_inner_size([980.0, 720.0])\n        .with_transparent(true)\n        .with_decorations(false);\n"""
+    options_replacement = """    let mut options = eframe::NativeOptions::default();\n    options.viewport = options\n        .viewport\n        .clone()\n        .with_inner_size([820.0, 720.0])\n        .with_min_inner_size([820.0, 680.0])\n        .with_transparent(true)\n        .with_decorations(false);\n"""
     text = replace_once(text, options_anchor, options_replacement, "native viewport setup")
     text = replace_once(
         text,
@@ -163,8 +163,9 @@ def verify(root: pathlib.Path) -> None:
         "include_bytes!(\"seal_assets/iphone_model.rgba\")",
         "fn ensure_seal_textures",
         "fn install_pairing_file_to_seal_if_ready",
-        "生成并写入 Seal",
-        "已写入 Seal",
+        "开始配对",
+        "配对请求未获允许",
+        "现在可关闭此窗口",
         "未连接 iPhone",
         "GeneratePairingFile",
         "InstallPairingFile",
@@ -176,11 +177,11 @@ def verify(root: pathlib.Path) -> None:
         "PairingMode::RemotePairing",
         "fn seal_ios_supports_remote_pairing",
         "fn seal_mode_for_ios",
-        "seal_lockdown_only",
         "seal_mode_for_ios(&ios_version, self.pairing_mode)",
         "let has_ios_version = ios_version != \"—\";",
-        "has_device && has_ios_version && !is_processing",
-        "正在读取 iOS 版本…",
+        "let environment_ready = has_device",
+        "配对请求未获允许",
+        "再次发起配对",
     ]
     missing = [item for item in required if item not in main]
     if missing:
@@ -225,7 +226,7 @@ def main() -> int:
         'app_title = "Seal Pairing Assistant"',
     )
     verify(root)
-    print(f"Seal 1:1 glass UI v13 overlay applied to idevice_pair {UPSTREAM_COMMIT}")
+    print(f"Seal HTML-matched UI v14 overlay applied to idevice_pair {UPSTREAM_COMMIT}")
     return 0
 
 

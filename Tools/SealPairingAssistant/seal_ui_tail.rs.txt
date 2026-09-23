@@ -1,6 +1,5 @@
         self.ensure_seal_textures(ctx);
         let seal_icon_texture = self.seal_icon_texture.clone();
-        let phone_texture = self.phone_texture.clone();
 
         let mut pending_selection: Option<(String, UsbmuxdDevice)> = None;
         if let Some(devices) = self.devices.as_ref()
@@ -10,56 +9,26 @@
         {
             pending_selection = Some((name.clone(), dev.clone()));
         }
-
-        let preview_device_name = pending_selection
-            .as_ref()
-            .map(|(name, _)| name.clone())
-            .unwrap_or_else(|| self.selected_device.clone());
-        let selected_device = self
-            .devices
-            .as_ref()
-            .and_then(|devices| devices.get(&preview_device_name))
-            .cloned();
-
+        let preview_device_name = pending_selection.as_ref().map(|(name, _)| name.clone()).unwrap_or_else(|| self.selected_device.clone());
+        let selected_device = self.devices.as_ref().and_then(|devices| devices.get(&preview_device_name)).cloned();
         let value_for = |key: &str| -> Option<String> {
-            self.device_info.as_ref().and_then(|info| {
-                info.iter()
-                    .find(|(item_key, _)| item_key == key)
-                    .map(|(_, value)| value.clone())
-            })
+            self.device_info.as_ref().and_then(|info| info.iter().find(|(item_key, _)| item_key == key).map(|(_, value)| value.clone()))
         };
-
         let device_name = value_for("device_name")
             .filter(|value| !value.is_empty())
-            .or_else(|| {
-                if preview_device_name.is_empty() {
-                    None
-                } else {
-                    Some(preview_device_name.clone())
-                }
-            })
+            .or_else(|| (!preview_device_name.is_empty()).then(|| preview_device_name.clone()))
             .unwrap_or_else(|| "未连接 iPhone".to_string());
         let ios_version = value_for("ios_version").unwrap_or_else(|| "—".to_string());
-        let seal_lockdown_only = seal_ios_supports_remote_pairing(&ios_version) == Some(false);
-        let udid = value_for("udid").unwrap_or_else(|| {
-            selected_device
-                .as_ref()
-                .map(|dev| dev.udid.clone())
-                .unwrap_or_else(|| "—".to_string())
-        });
+        let udid = value_for("udid").unwrap_or_else(|| selected_device.as_ref().map(|dev| dev.udid.clone()).unwrap_or_else(|| "—".to_string()));
 
-        let mut readiness_issues: Vec<String> = Vec::new();
-        if matches!(self.wireless_enabled, Some(Err(_))) {
-            readiness_issues.push("无线调试未启用".to_string());
-        }
+        let mut readiness_issues = Vec::new();
+        if matches!(self.wireless_enabled, Some(Err(_))) { readiness_issues.push("无线调试未启用"); }
         match &self.dev_mode_enabled {
-            Some(Ok(false)) => readiness_issues.push("开发者模式未启用".to_string()),
-            Some(Err(_)) => readiness_issues.push("开发者模式检测失败".to_string()),
+            Some(Ok(false)) => readiness_issues.push("开发者模式未启用"),
+            Some(Err(_)) => readiness_issues.push("开发者模式检测失败"),
             _ => {}
         }
-        if matches!(self.ddi_mounted, Some(Err(_))) {
-            readiness_issues.push("开发者磁盘映像未挂载".to_string());
-        }
+        if matches!(self.ddi_mounted, Some(Err(_))) { readiness_issues.push("开发者支持文件未就绪"); }
 
         let seal_install_result = self.install_res.get("Seal");
         let seal_installing = matches!(seal_install_result, Some(None));
@@ -67,447 +36,185 @@
         let seal_failed = matches!(seal_install_result, Some(Some(Err(_))));
         let is_processing = self.pending_seal_install || seal_installing;
         let has_device = selected_device.is_some();
-        // 17.0–17.3.1 必须生成 Lockdown 文件；版本未知时若沿用上游默认的
-        // RemotePairing，会制造一个该系统根本无法使用的文件。因此先读到系统版本再允许生成。
         let has_ios_version = ios_version != "—";
-        let can_primary_action = has_device && has_ios_version && !is_processing;
+        let environment_checking = self.wireless_enabled.is_none() || self.dev_mode_enabled.is_none() || self.ddi_mounted.is_none();
+        let environment_ready = has_device && has_ios_version && !environment_checking && readiness_issues.is_empty();
+        let pairing_message = self.pairing_file_message.as_deref().filter(|_| !is_processing && !seal_installed && !seal_failed);
+        let pairing_rejected = pairing_message.is_some_and(|message| {
+            let message = message.to_lowercase();
+            message.contains("pair") && (message.contains("declined") || message.contains("rejected") || message.contains("authenticate"))
+        });
+        let has_pairing_failure = pairing_message.is_some();
 
-        let text_primary = Color32::from_rgb(18, 27, 44);
-        let text_secondary = Color32::from_rgb(112, 123, 140);
-        let divider = Color32::from_rgba_unmultiplied(205, 216, 229, 150);
-        let seal_blue = Color32::from_rgb(0, 122, 255);
-        let seal_green = Color32::from_rgb(31, 185, 84);
-        let seal_red = Color32::from_rgb(220, 72, 72);
+        let text_primary = Color32::from_rgb(23, 32, 51);
+        let text_secondary = Color32::from_rgb(113, 128, 150);
+        let divider = Color32::from_rgb(226, 233, 238);
+        let seal_blue = Color32::from_rgb(43, 131, 178);
+        let seal_green = Color32::from_rgb(40, 151, 120);
+        let seal_red = Color32::from_rgb(208, 95, 95);
+        let pending_gray = Color32::from_rgb(215, 226, 233);
 
-        let status_text = if !has_device {
-            "未连接 iPhone".to_string()
-        } else if self.pending_seal_install {
-            self.pairing_file_message
-                .clone()
-                .unwrap_or_else(|| "正在处理…".to_string())
-        } else if seal_installing {
-            "正在写入 Seal…".to_string()
-        } else if seal_installed {
-            "已写入 Seal".to_string()
+        let (intro_state, intro_title, intro_text, badge_text, badge_fill, badge_text_color) = if seal_installed {
+            ("已完成", "配对完成", "现在可关闭此窗口，回到 iPhone 的 Seal 继续操作。", "完成", Color32::from_rgb(225, 245, 237), seal_green)
         } else if seal_failed {
-            "写入失败".to_string()
-        } else if !readiness_issues.is_empty() {
-            format!("需要处理 {} 项", readiness_issues.len())
-        } else if self.wireless_enabled.is_none()
-            || self.dev_mode_enabled.is_none()
-            || self.ddi_mounted.is_none()
-        {
-            if ios_version == "—" {
-                "正在检测…".to_string()
-            } else {
-                format!("iOS {ios_version} · 正在检测")
-            }
-        } else if ios_version == "—" {
-            "已就绪".to_string()
-        } else {
-            format!("iOS {ios_version} · 已就绪")
-        };
-
-        let status_color = if seal_installed {
-            seal_green
-        } else if seal_failed || !readiness_issues.is_empty() || !has_device {
-            seal_red
+            ("需要处理", "重新生成配对文件", "Seal 未收到配对文件，请保持设备连接后重试。", "需重试", Color32::from_rgb(250, 234, 234), seal_red)
+        } else if pairing_rejected {
+            ("设备已连接", "重新配对", "在 iPhone 上允许本次配对后重试。", "需允许", Color32::from_rgb(250, 234, 234), seal_red)
+        } else if has_pairing_failure {
+            ("需要处理", "重新配对", "请检查 iPhone 状态后再次发起配对。", "需重试", Color32::from_rgb(250, 234, 234), seal_red)
         } else if is_processing {
-            seal_blue
+            ("正在配对", "正在生成配对文件", "请保持 iPhone 解锁和数据线连接。", "处理中", Color32::from_rgb(234, 241, 245), seal_blue)
+        } else if !has_device {
+            ("等待连接", "连接 iPhone", "使用数据线连接并解锁 iPhone，在设备上点按“信任”。", "未连接", Color32::from_rgb(234, 241, 245), text_secondary)
+        } else if !has_ios_version {
+            ("设备已连接", "读取设备信息", "正在读取 iOS 版本，随后自动选择配对方式。", "检测中", Color32::from_rgb(234, 241, 245), text_secondary)
+        } else if !readiness_issues.is_empty() {
+            ("需要处理", "检查设备状态", "完成设备设置后即可继续。", "需处理", Color32::from_rgb(250, 234, 234), seal_red)
+        } else if environment_checking {
+            ("设备已连接", "检查设备状态", "正在检查配对所需的设备环境。", "检测中", Color32::from_rgb(234, 241, 245), text_secondary)
         } else {
-            text_secondary
+            ("设备已连接", "可以开始", "已识别设备信息，将按系统版本生成配对文件。", "可继续", Color32::from_rgb(225, 245, 237), seal_green)
+        };
+        let (button_text, button_enabled, button_is_refresh) = if seal_installed {
+            (None, false, false)
+        } else if is_processing {
+            (Some("正在处理"), false, false)
+        } else if !has_device {
+            (Some("连接 iPhone 后继续"), false, false)
+        } else if !has_ios_version {
+            (Some("正在读取 iOS 版本"), false, false)
+        } else if !readiness_issues.is_empty() {
+            (Some("重新检测"), true, true)
+        } else if pairing_rejected {
+            (Some("再次发起配对"), true, false)
+        } else if has_pairing_failure || seal_failed {
+            (Some("重新生成配对文件"), true, false)
+        } else if environment_checking {
+            (Some("正在检查设备"), false, false)
+        } else {
+            (Some("开始配对"), environment_ready, false)
         };
 
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(Color32::TRANSPARENT))
-            .show(ctx, |ui| {
-                let full_rect = ui.max_rect();
-                let window_radius = 26.0;
-                let title_h = 90.0;
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::TRANSPARENT)).show(ctx, |ui| {
+            let full_rect = ui.max_rect();
+            let title_h = 58.0;
+            ui.painter().rect_filled(full_rect, 10.0, Color32::from_rgb(247, 250, 252));
+            ui.painter().rect_stroke(full_rect.shrink(0.5), 10.0, egui::Stroke::new(1.0_f32, Color32::from_rgb(215, 225, 233)), egui::StrokeKind::Inside);
+            ui.painter().line_segment([egui::pos2(full_rect.left(), full_rect.top() + title_h), egui::pos2(full_rect.right(), full_rect.top() + title_h)], egui::Stroke::new(1.0_f32, divider));
 
-                ui.painter().rect_filled(
-                    full_rect,
-                    window_radius,
-                    Color32::from_rgba_unmultiplied(239, 245, 252, 238),
-                );
-                ui.painter().rect_stroke(
-                    full_rect.shrink(0.5),
-                    window_radius,
-                    egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(191, 207, 226, 170)),
-                    egui::StrokeKind::Inside,
-                );
+            let drag_rect = egui::Rect::from_min_max(full_rect.min, egui::pos2(full_rect.right() - 124.0, full_rect.top() + title_h));
+            if ui.interact(drag_rect, ui.id().with("seal-titlebar-drag"), egui::Sense::click_and_drag()).drag_started() { ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag); }
+            let title_icon_rect = egui::Rect::from_min_size(full_rect.left_top() + egui::vec2(20.0, 14.5), egui::vec2(29.0, 29.0));
+            if let Some(texture) = &seal_icon_texture {
+                ui.put(title_icon_rect, egui::Image::new((texture.id(), title_icon_rect.size())).corner_radius(7));
+            } else { ui.painter().rect_filled(title_icon_rect, 7.0, seal_blue); }
+            ui.painter().text(egui::pos2(title_icon_rect.right() + 10.0, title_icon_rect.center().y), egui::Align2::LEFT_CENTER, t!("app_title"), egui::FontId::new(18.0, egui::FontFamily::Proportional), text_primary);
 
-                ui.painter().circle_filled(
-                    full_rect.left_bottom() + egui::vec2(48.0, -84.0),
-                    315.0,
-                    Color32::from_rgba_unmultiplied(255, 255, 255, 76),
-                );
-                ui.painter().circle_filled(
-                    full_rect.right_top() + egui::vec2(-72.0, 38.0),
-                    365.0,
-                    Color32::from_rgba_unmultiplied(255, 255, 255, 86),
-                );
-                ui.painter().circle_filled(
-                    full_rect.center() + egui::vec2(300.0, 110.0),
-                    300.0,
-                    Color32::from_rgba_unmultiplied(207, 230, 255, 54),
-                );
+            let control_size = egui::vec2(32.0, 32.0);
+            let close_rect = egui::Rect::from_min_size(egui::pos2(full_rect.right() - 50.0, full_rect.top() + 13.0), control_size);
+            let min_rect = close_rect.translate(egui::vec2(-36.0, 0.0));
+            let refresh_rect = min_rect.translate(egui::vec2(-36.0, 0.0));
+            let control = |ui: &mut egui::Ui, rect, label, size, color, hover| ui.put(rect, egui::Button::new(RichText::new(label).size(size).color(color)).frame(false).fill(hover));
+            if control(ui, refresh_rect, "↻", 20.0, seal_blue, Color32::from_rgb(229, 242, 248)).clicked() && let Some(dev) = selected_device.clone() { self.refresh_device_state(dev); }
+            if control(ui, min_rect, "−", 21.0, text_primary, Color32::from_rgb(232, 240, 245)).clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); }
+            if control(ui, close_rect, "×", 23.0, text_primary, Color32::from_rgb(251, 232, 232)).clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
 
-                let drag_rect = egui::Rect::from_min_max(
-                    full_rect.min,
-                    egui::pos2(full_rect.right() - 172.0, full_rect.top() + title_h),
-                );
-                let drag_response = ui.interact(
-                    drag_rect,
-                    ui.id().with("seal-titlebar-drag"),
-                    egui::Sense::click_and_drag(),
-                );
-                if drag_response.drag_started() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                }
+            let content_width = (full_rect.width() - 42.0).min(620.0);
+            let content_left = full_rect.center().x - content_width / 2.0;
+            let content_right = content_left + content_width;
+            let content_center = (content_left + content_right) / 2.0;
+            let intro_top = full_rect.top() + title_h + 24.0;
+            ui.painter().text(egui::pos2(content_center, intro_top), egui::Align2::CENTER_TOP, intro_state, egui::FontId::new(13.0, egui::FontFamily::Proportional), badge_text_color);
+            ui.painter().text(egui::pos2(content_center, intro_top + 23.0), egui::Align2::CENTER_TOP, intro_title, egui::FontId::new(29.0, egui::FontFamily::Proportional), text_primary);
+            ui.painter().text(egui::pos2(content_center, intro_top + 61.0), egui::Align2::CENTER_TOP, intro_text, egui::FontId::new(14.0, egui::FontFamily::Proportional), text_secondary);
 
-                let title_icon_rect = egui::Rect::from_min_size(
-                    full_rect.left_top() + egui::vec2(36.0, 30.0),
-                    egui::vec2(38.0, 38.0),
-                );
-                if let Some(texture) = &seal_icon_texture {
-                    ui.put(title_icon_rect, egui::Image::new((texture.id(), title_icon_rect.size())));
-                } else {
-                    ui.painter().rect_filled(title_icon_rect, 10.0, Color32::from_rgb(18, 22, 34));
-                    ui.painter().text(
-                        title_icon_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "S",
-                        egui::FontId::new(18.0, egui::FontFamily::Proportional),
-                        seal_blue,
-                    );
-                }
-                ui.painter().text(
-                    egui::pos2(title_icon_rect.right() + 18.0, title_icon_rect.center().y + 1.0),
-                    egui::Align2::LEFT_CENTER,
-                    t!("app_title"),
-                    egui::FontId::new(25.0, egui::FontFamily::Proportional),
-                    text_primary,
-                );
+            let device_rect = egui::Rect::from_min_size(egui::pos2(content_left, intro_top + 101.0), egui::vec2(content_width, 94.0));
+            ui.painter().rect_filled(device_rect, 14.0, Color32::from_rgba_unmultiplied(255, 255, 255, 230));
+            ui.painter().text(egui::pos2(device_rect.left() + 28.0, device_rect.top() + 30.0), egui::Align2::LEFT_CENTER, &device_name, egui::FontId::new(23.0, egui::FontFamily::Proportional), text_primary);
+            let device_meta = if has_ios_version { format!("iOS {ios_version} · 远程配对") } else { "正在读取系统版本".to_string() };
+            ui.painter().text(egui::pos2(device_rect.left() + 28.0, device_rect.top() + 60.0), egui::Align2::LEFT_CENTER, device_meta, egui::FontId::new(14.0, egui::FontFamily::Proportional), text_secondary);
+            let badge_rect = egui::Rect::from_center_size(egui::pos2(device_rect.right() - 54.0, device_rect.center().y), egui::vec2(72.0, 34.0));
+            ui.painter().rect_filled(badge_rect, 17.0, badge_fill);
+            ui.painter().text(badge_rect.center(), egui::Align2::CENTER_CENTER, badge_text, egui::FontId::new(13.0, egui::FontFamily::Proportional), badge_text_color);
 
-                let control_y = full_rect.top() + 24.0;
-                let control_size = egui::vec2(44.0, 38.0);
-                let close_rect = egui::Rect::from_min_size(
-                    egui::pos2(full_rect.right() - 58.0, control_y),
-                    control_size,
-                );
-                let max_rect = close_rect.translate(egui::vec2(-52.0, 0.0));
-                let min_rect = close_rect.translate(egui::vec2(-104.0, 0.0));
-                if ui
-                    .put(
-                        min_rect,
-                        egui::Button::new(RichText::new("—").size(22.0).color(text_primary)).frame(false),
-                    )
-                    .clicked()
-                {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                }
-                if ui
-                    .put(
-                        max_rect,
-                        egui::Button::new(RichText::new("□").size(20.0).color(text_primary)).frame(false),
-                    )
-                    .clicked()
-                {
-                    let maximized = ctx.input(|input| input.viewport().maximized.unwrap_or(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-                }
-                if ui
-                    .put(
-                        close_rect,
-                        egui::Button::new(RichText::new("×").size(27.0).color(text_primary)).frame(false),
-                    )
-                    .clicked()
-                {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+            let completed_steps = if seal_installed { 4 } else if is_processing || environment_ready { 2 } else if has_device && has_ios_version { 1 } else { 0 };
+            let active_step = if is_processing || environment_ready { Some(2) } else if environment_checking && has_device { Some(1) } else { None };
+            let failed_step = if pairing_rejected { Some(2) } else if seal_failed || has_pairing_failure { Some(3) } else { None };
+            let step_top = device_rect.bottom() + 23.0;
+            for (index, label) in ["连接", "检查", "生成", "交接"].iter().enumerate() {
+                let width = (content_width - 30.0) / 4.0;
+                let left = content_left + index as f32 * (width + 10.0);
+                let step_rect = egui::Rect::from_min_size(egui::pos2(left, step_top), egui::vec2(width, 7.0));
+                let color = if failed_step == Some(index) { seal_red } else if index < completed_steps { seal_green } else if active_step == Some(index) { seal_blue } else { pending_gray };
+                ui.painter().rect_filled(step_rect, 4.0, color);
+                let label_color = if failed_step == Some(index) { seal_red } else if index < completed_steps { Color32::from_rgb(30, 102, 87) } else if active_step == Some(index) { seal_blue } else { text_secondary };
+                ui.painter().text(egui::pos2(step_rect.center().x, step_rect.bottom() + 14.0), egui::Align2::CENTER_TOP, *label, egui::FontId::new(13.0, egui::FontFamily::Proportional), label_color);
+            }
 
-                let card_width = (full_rect.width() * 0.82).clamp(810.0, 980.0);
-                let card_height = (full_rect.height() * 0.74).clamp(575.0, 690.0);
-                let card_rect = egui::Rect::from_center_size(
-                    egui::pos2(full_rect.center().x, full_rect.top() + title_h + 332.0),
-                    egui::vec2(card_width, card_height),
-                );
+            let checks_rect = egui::Rect::from_min_size(egui::pos2(content_left, step_top + 52.0), egui::vec2(content_width, 156.0));
+            ui.painter().rect_filled(checks_rect, 14.0, Color32::from_rgba_unmultiplied(255, 255, 255, 210));
+            ui.painter().rect_stroke(checks_rect, 14.0, egui::Stroke::new(1.0_f32, Color32::from_rgb(224, 232, 238)), egui::StrokeKind::Inside);
+            let check_values = [
+                ("开发者模式", match &self.dev_mode_enabled { Some(Ok(true)) => "已开启", Some(Ok(false)) => "未开启", Some(Err(_)) => "检测失败", None => "待检测" }),
+                ("无线调试", match &self.wireless_enabled { Some(Ok(_)) => "已就绪", Some(Err(_)) => "未启用", None => "待检测" }),
+                ("开发者支持文件", match &self.ddi_mounted { Some(Ok(_)) => "已就绪", Some(Err(_)) => "未就绪", None => "待检测" }),
+            ];
+            for (index, (label, value)) in check_values.iter().enumerate() {
+                let row_top = checks_rect.top() + index as f32 * 52.0;
+                if index > 0 { ui.painter().line_segment([egui::pos2(checks_rect.left() + 20.0, row_top), egui::pos2(checks_rect.right() - 20.0, row_top)], egui::Stroke::new(1.0_f32, divider)); }
+                let issue = matches!(*value, "未开启" | "未启用" | "未就绪" | "检测失败");
+                let pending = *value == "待检测";
+                let color = if issue { seal_red } else if pending { Color32::from_rgb(215, 160, 86) } else { seal_green };
+                ui.painter().circle_filled(egui::pos2(checks_rect.left() + 26.0, row_top + 26.0), 4.5, color);
+                ui.painter().text(egui::pos2(checks_rect.left() + 46.0, row_top + 26.0), egui::Align2::LEFT_CENTER, *label, egui::FontId::new(15.0, egui::FontFamily::Proportional), text_primary);
+                ui.painter().text(egui::pos2(checks_rect.right() - 22.0, row_top + 26.0), egui::Align2::RIGHT_CENTER, *value, egui::FontId::new(14.0, egui::FontFamily::Proportional), color);
+            }
 
-                ui.painter().rect_filled(
-                    card_rect.translate(egui::vec2(0.0, 18.0)).expand(2.0),
-                    34.0,
-                    Color32::from_rgba_unmultiplied(86, 132, 190, 20),
-                );
-                ui.painter().rect_filled(
-                    card_rect,
-                    32.0,
-                    Color32::from_rgba_unmultiplied(255, 255, 255, 224),
-                );
-                ui.painter().rect_stroke(
-                    card_rect,
-                    32.0,
-                    egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(207, 220, 235, 190)),
-                    egui::StrokeKind::Inside,
-                );
-                ui.painter().circle_filled(
-                    card_rect.center_top() + egui::vec2(0.0, 214.0),
-                    118.0,
-                    Color32::from_rgba_unmultiplied(238, 247, 255, 222),
-                );
-                ui.painter().circle_stroke(
-                    card_rect.center_top() + egui::vec2(0.0, 214.0),
-                    117.0,
-                    egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 220)),
-                );
+            let notice = if pairing_rejected {
+                Some(("配对请求未获允许", "请解锁 iPhone，在系统弹窗中选择“信任”或“允许”。", seal_red, Color32::from_rgb(255, 245, 245), Color32::from_rgb(239, 205, 205)))
+            } else if seal_failed {
+                Some(("Seal 未收到配对文件", "请保持连接并在 iPhone 上打开 Seal，然后重新生成配对文件。", seal_red, Color32::from_rgb(255, 245, 245), Color32::from_rgb(239, 205, 205)))
+            } else if has_pairing_failure {
+                Some(("配对未完成", "请保持 iPhone 解锁和连接，然后再次发起配对。", seal_red, Color32::from_rgb(255, 245, 245), Color32::from_rgb(239, 205, 205)))
+            } else if !readiness_issues.is_empty() {
+                Some(("需要完成设备设置", "处理后重新检测即可继续。", seal_red, Color32::from_rgb(255, 245, 245), Color32::from_rgb(239, 205, 205)))
+            } else if is_processing {
+                Some(("请勿断开连接", "正在生成配对文件并交接给 Seal。", seal_blue, Color32::from_rgb(242, 248, 252), Color32::from_rgb(215, 228, 236)))
+            } else { None };
+            let primary_rect = egui::Rect::from_min_size(egui::pos2(content_left, full_rect.bottom() - 60.0), egui::vec2(content_width, 46.0));
+            let udid_y = primary_rect.top() - 31.0;
+            let udid_line_y = udid_y - 17.0;
+            if let Some((title, detail, notice_color, notice_fill, notice_stroke)) = notice {
+                let notice_bottom = udid_line_y - 16.0;
+                let notice_rect = egui::Rect::from_min_size(egui::pos2(content_left, notice_bottom - 64.0), egui::vec2(content_width, 64.0));
+                ui.painter().rect_filled(notice_rect, 10.0, notice_fill);
+                ui.painter().rect_stroke(notice_rect, 10.0, egui::Stroke::new(1.0_f32, notice_stroke), egui::StrokeKind::Inside);
+                ui.painter().text(notice_rect.left_top() + egui::vec2(16.0, 17.0), egui::Align2::LEFT_CENTER, title, egui::FontId::new(14.0, egui::FontFamily::Proportional), notice_color);
+                ui.painter().text(notice_rect.left_top() + egui::vec2(16.0, 41.0), egui::Align2::LEFT_CENTER, detail, egui::FontId::new(13.0, egui::FontFamily::Proportional), if notice_color == seal_red { Color32::from_rgb(124, 80, 80) } else { text_secondary });
+            }
+            ui.painter().line_segment([egui::pos2(content_left, udid_line_y), egui::pos2(content_right, udid_line_y)], egui::Stroke::new(1.0_f32, divider));
+            ui.painter().text(egui::pos2(content_left + 4.0, udid_y), egui::Align2::LEFT_CENTER, "UDID", egui::FontId::new(13.0, egui::FontFamily::Proportional), text_secondary);
+            ui.painter().text(egui::pos2(content_left + 58.0, udid_y), egui::Align2::LEFT_CENTER, &udid, egui::FontId::new(13.0, egui::FontFamily::Monospace), text_primary);
+            let copy_rect = egui::Rect::from_min_size(egui::pos2(content_right - 44.0, udid_y - 16.0), egui::vec2(44.0, 32.0));
+            if udid != "—" && ui.put(copy_rect, egui::Button::new(RichText::new("复制").size(14.0).color(seal_blue)).frame(false)).clicked() { ui.ctx().copy_text(udid.clone()); }
 
-                let asset_center = card_rect.center_top() + egui::vec2(0.0, 204.0);
-                if let Some(texture) = &phone_texture {
-                    let phone_rect = egui::Rect::from_center_size(
-                        asset_center + egui::vec2(-8.0, -2.0),
-                        egui::vec2(118.0, 230.0),
-                    );
-                    ui.put(phone_rect, egui::Image::new((texture.id(), phone_rect.size())));
-                } else {
-                    let phone_rect = egui::Rect::from_center_size(
-                        asset_center + egui::vec2(-8.0, -2.0),
-                        egui::vec2(84.0, 158.0),
-                    );
-                    ui.painter().rect_filled(phone_rect, 18.0, Color32::from_rgb(22, 29, 43));
-                }
-
-                if let Some(texture) = &seal_icon_texture {
-                    let badge_rect = egui::Rect::from_center_size(
-                        asset_center + egui::vec2(70.0, 85.0),
-                        egui::vec2(60.0, 60.0),
-                    );
-                    ui.painter().circle_filled(
-                        badge_rect.center() + egui::vec2(0.0, 2.0),
-                        35.0,
-                        Color32::from_rgba_unmultiplied(255, 255, 255, 218),
-                    );
-                    ui.put(badge_rect, egui::Image::new((texture.id(), badge_rect.size())));
-                }
-
-                ui.painter().text(
-                    card_rect.center_top() + egui::vec2(0.0, 386.0),
-                    egui::Align2::CENTER_CENTER,
-                    &device_name,
-                    egui::FontId::new(50.0, egui::FontFamily::Proportional),
-                    text_primary,
-                );
-
-                let status_center = card_rect.center_top() + egui::vec2(0.0, 442.0);
-                if status_text.starts_with("iOS ") && status_text.ends_with("已就绪") {
-                    ui.painter().text(
-                        status_center + egui::vec2(-70.0, 0.0),
-                        egui::Align2::RIGHT_CENTER,
-                        format!("iOS {ios_version}"),
-                        egui::FontId::new(22.0, egui::FontFamily::Proportional),
-                        text_secondary,
-                    );
-                    ui.painter().circle_filled(status_center + egui::vec2(0.0, 0.0), 4.0, seal_green);
-                    ui.painter().text(
-                        status_center + egui::vec2(26.0, 0.0),
-                        egui::Align2::LEFT_CENTER,
-                        "已就绪",
-                        egui::FontId::new(22.0, egui::FontFamily::Proportional),
-                        seal_green,
-                    );
-                    if seal_lockdown_only {
-                        ui.painter().text(
-                            status_center + egui::vec2(0.0, 30.0),
-                            egui::Align2::CENTER_CENTER,
-                            "iOS 17.4 以下：本机配对（Lockdown）",
-                            egui::FontId::new(15.0, egui::FontFamily::Proportional),
-                            text_secondary,
-                        );
-                    }
-                } else {
-                    ui.painter().text(
-                        status_center,
-                        egui::Align2::CENTER_CENTER,
-                        &status_text,
-                        egui::FontId::new(21.0, egui::FontFamily::Proportional),
-                        status_color,
-                    );
-                }
-
-                if !readiness_issues.is_empty() {
-                    let issue_rect = egui::Rect::from_center_size(
-                        card_rect.center_top() + egui::vec2(0.0, 482.0),
-                        egui::vec2(420.0, 34.0 + 24.0 * readiness_issues.len() as f32),
-                    );
-                    ui.painter().rect_filled(
-                        issue_rect,
-                        16.0,
-                        Color32::from_rgba_unmultiplied(255, 247, 247, 190),
-                    );
-                    ui.painter().rect_stroke(
-                        issue_rect,
-                        16.0,
-                        egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 211, 211, 185)),
-                        egui::StrokeKind::Inside,
-                    );
-                    let mut issue_y = issue_rect.top() + 24.0;
-                    for issue in &readiness_issues {
-                        ui.painter().text(
-                            egui::pos2(issue_rect.center().x, issue_y),
-                            egui::Align2::CENTER_CENTER,
-                            issue,
-                            egui::FontId::new(15.0, egui::FontFamily::Proportional),
-                            seal_red,
-                        );
-                        issue_y += 24.0;
-                    }
-                }
-
-                let button_text = if is_processing {
-                    "正在处理…"
-                } else if !has_device {
-                    "连接 iPhone 后继续"
-                } else if !has_ios_version {
-                    "正在读取 iOS 版本…"
-                } else if !readiness_issues.is_empty() {
-                    "重新检测"
-                } else if seal_installed || seal_failed {
-                    "重新生成"
-                } else {
-                    "生成并写入 Seal"
-                };
-                let button_fill = if can_primary_action {
-                    seal_blue
-                } else {
-                    Color32::from_rgb(160, 178, 198)
-                };
-                let button_rect = egui::Rect::from_center_size(
-                    card_rect.center_top() + egui::vec2(0.0, 522.0),
-                    egui::vec2(520.0, 70.0),
-                );
-                if can_primary_action {
-                    ui.painter().rect_filled(
-                        button_rect.translate(egui::vec2(0.0, 9.0)),
-                        22.0,
-                        Color32::from_rgba_unmultiplied(0, 122, 255, 42),
-                    );
-                }
-                let display_button_text = if button_text == "生成并写入 Seal" {
-                    "✦  生成并写入 Seal"
-                } else {
-                    button_text
-                };
-                let primary_response = ui.put(
-                    button_rect,
-                    egui::Button::new(
-                        RichText::new(display_button_text)
-                            .size(25.0)
-                            .strong()
-                            .color(Color32::WHITE),
-                    )
-                    .fill(button_fill)
-                    .stroke(egui::Stroke::new(0.0, Color32::TRANSPARENT))
-                    .corner_radius(22),
-                );
-                if can_primary_action
-                    && primary_response.clicked()
-                    && let Some(dev) = selected_device.clone()
-                {
-                    if !readiness_issues.is_empty() {
-                        self.refresh_device_state(dev);
-                    } else {
+            if let Some(button_text) = button_text {
+                let fill = if button_enabled { seal_blue } else { Color32::from_rgb(165, 183, 196) };
+                let response = ui.put(primary_rect, egui::Button::new(RichText::new(button_text).size(16.0).strong().color(Color32::WHITE)).fill(fill).stroke(egui::Stroke::NONE).corner_radius(8));
+                if button_enabled && response.clicked() && let Some(dev) = selected_device.clone() {
+                    if button_is_refresh { self.refresh_device_state(dev); } else {
                         self.reset_pairing_state();
                         self.pending_seal_install = true;
                         self.pairing_file_message = Some("正在生成配对文件…".to_string());
-                        self.idevice_sender
-                            .send(IdeviceCommands::InstalledApps((
-                                dev.clone(),
-                                self.supported_app_names(),
-                            )))
-                            .unwrap();
-                        self.idevice_sender
-                            .send(IdeviceCommands::GeneratePairingFile((
-                                dev,
-                                seal_mode_for_ios(&ios_version, self.pairing_mode),
-                            )))
-                            .unwrap();
+                        self.idevice_sender.send(IdeviceCommands::InstalledApps((dev.clone(), self.supported_app_names()))).unwrap();
+                        self.idevice_sender.send(IdeviceCommands::GeneratePairingFile((dev, seal_mode_for_ios(&ios_version, self.pairing_mode)))).unwrap();
                     }
                 }
+            }
+        });
 
-                if let Some(message) = &self.pairing_file_message
-                    && !is_processing
-                    && !seal_installed
-                    && !seal_failed
-                {
-                    ui.painter().text(
-                        button_rect.center_bottom() + egui::vec2(0.0, 24.0),
-                        egui::Align2::CENTER_CENTER,
-                        message,
-                        egui::FontId::new(14.0, egui::FontFamily::Proportional),
-                        text_secondary,
-                    );
-                }
-
-                if seal_failed {
-                    ui.painter().text(
-                        button_rect.center_bottom() + egui::vec2(0.0, 24.0),
-                        egui::Align2::CENTER_CENTER,
-                        "写入失败，请重新连接 iPhone 后再试。",
-                        egui::FontId::new(14.0, egui::FontFamily::Proportional),
-                        seal_red,
-                    );
-                }
-
-                let line_width = card_width.min(610.0);
-                let line_y = card_rect.top() + 642.0;
-                let line_start = card_rect.center().x - line_width / 2.0;
-                ui.painter().line_segment(
-                    [egui::pos2(line_start, line_y), egui::pos2(line_start + line_width, line_y)],
-                    egui::Stroke::new(1.0, divider),
-                );
-
-                let udid_y = line_y + 44.0;
-                ui.painter().text(
-                    egui::pos2(line_start + 8.0, udid_y),
-                    egui::Align2::LEFT_CENTER,
-                    "UDID",
-                    egui::FontId::new(18.0, egui::FontFamily::Proportional),
-                    text_secondary,
-                );
-                ui.painter().text(
-                    egui::pos2(line_start + 120.0, udid_y),
-                    egui::Align2::LEFT_CENTER,
-                    &udid,
-                    egui::FontId::new(18.0, egui::FontFamily::Monospace),
-                    text_primary,
-                );
-                let copy_rect = egui::Rect::from_min_size(
-                    egui::pos2(line_start + line_width - 132.0, udid_y - 20.0),
-                    egui::vec2(116.0, 40.0),
-                );
-                if udid != "—"
-                    && ui
-                        .put(
-                            copy_rect,
-                            egui::Button::new(
-                                RichText::new("▢  复制")
-                                    .size(18.0)
-                                    .strong()
-                                    .color(seal_blue),
-                            )
-                            .frame(false),
-                        )
-                        .clicked()
-                {
-                    ui.ctx().copy_text(udid.clone());
-                }
-            });
-
-        if let Some((dev_name, dev)) = pending_selection.take() {
-            self.select_device(dev_name, dev);
-        }
+        if let Some((dev_name, dev)) = pending_selection.take() { self.select_device(dev_name, dev); }
     }
 
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 0.0]
-    }
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] { [0.0, 0.0, 0.0, 0.0] }
 }

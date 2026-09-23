@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-09-24 共享描述文件测试未按模型参数顺序构造
+
+- **现象**：应用 Release 包编译、校验和上传均已成功，但 Swift 回归在新增 `AppExtensionProfileStrategyTests` 编译阶段失败。
+- **根因**：`ProvisioningProfileBinding` 的成员初始化器参数顺序是 `teamIdentifier`、`creationDate`；测试把二者写反，Xcode 正确拒绝编译。
+- **修复**：按模型声明顺序构造测试 binding；测试仍验证共享 profile 记录扩展的实际签名 Bundle ID。
+- **涉及文件**：`SealTests/Signing/AppExtensionProfileStrategyTests.swift`。
+- **验证状态**：Release IPA 已构建通过；待修复后的完整 Swift/UI 回归。
+
+---
+
 ## 2026-09-24 共享描述文件改动遗漏 profile-only 记录调用
 
 - **现象**：共享主描述文件改动首次 CI 编译失败，`ProfileOnlyRenewalRecordUpdater` 无法解析 `SigningTargetRecord.init(binding:)`。

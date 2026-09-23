@@ -93,9 +93,9 @@ struct AppExtensionProfileStrategyTests {
                 bundleIdentifier: mappedMain,
                 profileUUID: "shared-profile",
                 profileName: "Shared",
+                teamIdentifier: "TEAM123",
                 creationDate: .now,
                 expirationDate: .now.addingTimeInterval(7 * 86_400),
-                teamIdentifier: "TEAM123",
                 certificateSerialNumbers: ["1234"],
                 deviceIdentifiers: ["device"],
                 entitlements: [:]

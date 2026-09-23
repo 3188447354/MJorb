@@ -56,6 +56,22 @@ def stage_ui_assets(root: pathlib.Path) -> None:
         raise RuntimeError("missing staged rounded Seal UI icon")
 
 
+def patch_build(path: pathlib.Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    icon_anchor = '        res.set_icon("icon.ico");\n'
+    icon_replacement = icon_anchor + """        res.set("FileDescription", "Seal 配对助手");
+        res.set("ProductName", "Seal 配对助手");
+        res.set("InternalName", "SealPairingAssistant");
+        res.set("OriginalFilename", "Seal配对助手.exe");
+        res.set("FileVersion", "1.0.0.0");
+        res.set("ProductVersion", "1.0.0.0");
+        res.set_version_info(winres::VersionInfo::FILEVERSION, 0x0001000000000000);
+        res.set_version_info(winres::VersionInfo::PRODUCTVERSION, 0x0001000000000000);
+"""
+    text = replace_once(text, icon_anchor, icon_replacement, "Seal Windows identity resource")
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
 def patch_main(path: pathlib.Path) -> None:
     text = path.read_text(encoding="utf-8")
     app_anchor = '            supported_apps.insert("Ksign".to_string(), "pairingFile.plist".to_string());\n'
@@ -81,11 +97,52 @@ def patch_main(path: pathlib.Path) -> None:
         "    let backdrop = DWMSBT_TRANSIENTWINDOW;\n", ""
     ).replace(
         "        let _ = DwmSetWindowAttribute(\n            hwnd,\n            DWMWA_SYSTEMBACKDROP_TYPE,\n            &backdrop as *const _ as *const c_void,\n            std::mem::size_of_val(&backdrop) as u32,\n        );\n", ""
+    ).replace(
+        "    let Ok(window_handle)",
+        """    #[repr(C)]
+    struct ClientRect { left: i32, top: i32, right: i32, bottom: i32 }
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetClientRect(hwnd: *mut c_void, rect: *mut ClientRect) -> i32;
+        fn CreateRoundRectRgn(left: i32, top: i32, right: i32, bottom: i32, width: i32, height: i32) -> *mut c_void;
+        fn SetWindowRgn(hwnd: *mut c_void, region: *mut c_void, redraw: i32) -> i32;
+    }
+
+    let Ok(window_handle)"""
+    ).replace(
+        "    }\n}\n\n#[cfg(not(windows))]",
+        """    }
+
+    // A DWM preference only decorates; this clips the borderless native window itself.
+    let mut client = ClientRect { left: 0, top: 0, right: 0, bottom: 0 };
+    unsafe {
+        if GetClientRect(hwnd, &mut client) != 0 {
+            let region = CreateRoundRectRgn(0, 0, client.right + 1, client.bottom + 1, 24, 24);
+            if !region.is_null() {
+                let _ = SetWindowRgn(hwnd, region, 1);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]"""
     )
     text = replace_once(text, font_function_end, seal_theme, "Seal theme injection")
 
     options_anchor = "    let mut options = eframe::NativeOptions::default();\n"
     options_replacement = """    let mut options = eframe::NativeOptions::default();\n    options.viewport = options\n        .viewport\n        .clone()\n        .with_inner_size([820.0, 720.0])\n        .with_min_inner_size([820.0, 680.0])\n        .with_transparent(true)\n        .with_decorations(false);\n"""
+    options_replacement = options_replacement.replace(
+        "        .with_transparent(true)\n",
+        """        .with_transparent(true)
+        .with_resizable(false)
+        .with_icon(egui::IconData {
+            rgba: SEAL_ICON_RGBA.to_vec(),
+            width: SEAL_ICON_SIZE[0] as u32,
+            height: SEAL_ICON_SIZE[1] as u32,
+        })
+""",
+    )
     text = replace_once(text, options_anchor, options_replacement, "native viewport setup")
     text = replace_once(
         text,
@@ -218,11 +275,16 @@ def patch_locale(path: pathlib.Path, expected: str, replacement: str) -> None:
 def verify(root: pathlib.Path) -> None:
     main = (root / "src" / "main.rs").read_text(encoding="utf-8")
     cargo = (root / "Cargo.toml").read_text(encoding="utf-8")
+    build = (root / "build.rs").read_text(encoding="utf-8")
     required = [
         'supported_apps.insert("Seal".to_string(), "SealPairing.mobiledevicepairing".to_string());',
         "fn setup_seal_theme",
         "fn setup_windows_backdrop",
         "with_transparent(true)",
+        "with_resizable(false)",
+        "with_icon(egui::IconData",
+        "CreateRoundRectRgn",
+        "SetWindowRgn",
         'rust_i18n::set_locale("zh-cn");',
         '"Seal 配对助手"',
         "pending_seal_install",
@@ -273,6 +335,16 @@ def verify(root: pathlib.Path) -> None:
         raise RuntimeError(f"Minimal UI still contains removed surface: {present}")
     if 'raw-window-handle = "0.6.2"' not in cargo:
         raise RuntimeError("Windows backdrop dependency missing")
+    for marker in [
+        'res.set("FileDescription", "Seal 配对助手")',
+        'res.set("ProductName", "Seal 配对助手")',
+        'res.set("InternalName", "SealPairingAssistant")',
+        'res.set("OriginalFilename", "Seal配对助手.exe")',
+        "winres::VersionInfo::FILEVERSION",
+        "winres::VersionInfo::PRODUCTVERSION",
+    ]:
+        if marker not in build:
+            raise RuntimeError(f"Seal Windows identity resource missing: {marker}")
 
 
 def main() -> int:
@@ -283,6 +355,7 @@ def main() -> int:
     root = pathlib.Path(sys.argv[1]).resolve()
     patch_cargo(root / "Cargo.toml")
     stage_ui_assets(root)
+    patch_build(root / "build.rs")
     patch_main(root / "src" / "main.rs")
     patch_locale(
         root / "locales" / "zh-cn.toml",

@@ -180,6 +180,10 @@ jobs:
             'SealPairing.mobiledevicepairing',
             'fn setup_windows_backdrop',
             'with_transparent(true)',
+            'with_resizable(false)',
+            'with_icon(egui::IconData',
+            'CreateRoundRectRgn',
+            'SetWindowRgn',
             'pending_seal_install',
             'seal_icon_texture',
             'phone_texture',
@@ -247,6 +251,20 @@ jobs:
           if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw "Missing MZ header" }
           $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
           if ([Text.Encoding]::ASCII.GetString($bytes, $peOffset, 4) -ne "PE`0`0") { throw "Invalid PE signature" }
+          $version = (Get-Item $exe).VersionInfo
+          $expected = @{
+            FileDescription = 'Seal 配对助手'
+            ProductName = 'Seal 配对助手'
+            InternalName = 'SealPairingAssistant'
+            OriginalFilename = 'Seal配对助手.exe'
+            FileVersion = '1.0.0.0'
+            ProductVersion = '1.0.0.0'
+          }
+          foreach ($field in $expected.Keys) {
+            if ($version.$field -ne $expected[$field]) {
+              throw "Unexpected Windows identity $field: '$($version.$field)'"
+            }
+          }
 
       - name: Package artifact
         shell: pwsh

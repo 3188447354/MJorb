@@ -4,6 +4,18 @@ import Testing
 
 struct NotificationScheduleStatusTests {
     @Test
+    func failureDiagnosticKeepsUnderlyingErrorContext() {
+        let error = NSError(
+            domain: "UNErrorDomain",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Notifications are not allowed for this application"]
+        )
+
+        #expect(NotificationSchedulingFailure.diagnostic(for: error) ==
+            "通知调度失败 [UNErrorDomain 1] Notifications are not allowed for this application")
+    }
+
+    @Test
     func summaryDistinguishesSealAndSystemStates() {
         #expect(NotificationScheduleStatus.disabled.summary == "Seal 内关闭")
         #expect(NotificationScheduleStatus(

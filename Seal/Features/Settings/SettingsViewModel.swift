@@ -2412,7 +2412,7 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             let failure = Self.failure(
                 title: "无法设置提醒",
-                reason: "通知调度失败，提醒未能更新。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                reason: "提醒未能更新。\n\(NotificationSchedulingFailure.diagnostic(for: error))",
                 recovery: "在系统设置中确认通知权限已开启后重试",
                 code: "SEAL-NOTIFY-002a"
             )
@@ -2439,12 +2439,14 @@ final class SettingsViewModel: ObservableObject {
             )
             notificationStatus = await notificationScheduler.status(sealEnabled: notificationsEnabled)
         } catch {
-            alertFailure = Self.failure(
+            let failure = Self.failure(
                 title: "无法设置提醒",
-                reason: "通知配置失败，提醒时间未能更新。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                reason: "提醒时间未能更新。\n\(NotificationSchedulingFailure.diagnostic(for: error))",
                 recovery: "在系统设置中确认通知权限已开启后重试",
                 code: "SEAL-NOTIFY-002b"
             )
+            alertFailure = failure
+            try? await logStore?.append(category: .system, level: .error, message: failure.reason, code: failure.code)
         }
     }
 

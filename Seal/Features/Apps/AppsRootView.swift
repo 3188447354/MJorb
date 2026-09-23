@@ -358,7 +358,9 @@ struct AppsRootView: View {
         case .unsigned:
             await viewModel.refreshUnsignedApps()
         case .installed:
-            await viewModel.refreshInstalledApps()
+            // 下拉刷新是尽力读取设备状态；设备暂不可达时保留当前列表并静默结束，
+            // 不能把每一次手势都升级成阻断式弹窗。
+            await viewModel.refreshInstalledApps(userInitiated: false)
         }
     }
     private func sectionTitle(for pageMode: ListMode) -> String {

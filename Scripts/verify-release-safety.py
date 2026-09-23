@@ -744,7 +744,7 @@ def violations(load=read):
     # 都会重复报同一条警告 —— 真机实测就是 1 条真警报 + 若干条重复。
     restore_body = squash(section(
         view_model_code,
-        "private func restorePendingBatchResultIfNeeded()",
+        "private func restorePendingBatchResultIfNeeded(replacingRestoredSession: Bool = false)",
         "private func clearPendingBatchResult()"
     ))
     check(restore_body != ""
@@ -1057,7 +1057,7 @@ def violations(load=read):
         "func recoverInterruptedQueueIfNeeded() async {",
         "private func settledQueueStates(from payload:"
     ))
-    restore_at = recovery_body.find("restorePendingBatchResultIfNeeded()")
+    restore_at = recovery_body.find("restorePendingBatchResultIfNeeded(replacingRestoredSession: true)")
     settle_at = recovery_body.find("settledQueueStates(from:")
     recover_at = recovery_body.find("recoverInterruptedQueue(settled:")
     check(restore_at != -1 and settle_at != -1 and recover_at != -1
@@ -1065,6 +1065,9 @@ def violations(load=read):
           "R17: the payload must be restored and read BEFORE the queue is settled — "
           "Seal kills itself mid-batch, so the running item's result only exists in the "
           "payload; settling first marks it 'unknown'")
+    check("static func restoredResult(from payload: [String: Any]) -> BatchRefreshResult" in payload_source
+          and "func settledSealPayloadRestoresAsFullyCompletedResult() throws" in load("SealTests/Renewal/PendingBatchResultPayloadTests.swift"),
+          "R17: a Seal result settled by the new process must restore as final, not retain the old awaiting count")
     queue_tests = load("SealTests/Renewal/RefreshQueueStoreTests.swift")
     check("func recoverInterruptedSettlesItemsThatAlreadyHaveAResult()" in queue_tests
           and "func settledItemsLeaveOutstanding()" in queue_tests,
@@ -2881,11 +2884,10 @@ def violations(load=read):
           and "metadata.expirationDate" in reconcile,
           "D: settlement must compare profile identity and expiry")
 
-    # G 的 BatchRefreshResult 把 remaining 改成了计算属性，构造点必须改用 needsAction。
-    # 漏改一个构造点就是编译错误（2026-09-14 真的漏了一处，CI build-package 挂掉）。
-    restored_call = section(apps_view, "restored.status = .completed(.init(", ")")
-    check("needsAction:" in restored_call and "remaining:" not in restored_call,
-          "G: every BatchRefreshResult construction site must fill needsAction")
+    # 恢复结果由纯函数集中从条目状态派生；不能让 ViewModel 再持有一份容易漂移的计数公式。
+    restored_call = section_or_empty(apps_view, "let result = PendingBatchResultPayload.restoredResult(from: payload)", "restored.currentIndex")
+    check("restored.status = .completed(result)" in restored_call,
+          "G: the restored BatchRefreshResult must come from the shared payload summary")
 
     # ── E 包（R08：签名产物 vs 已安装快照）──────────────────────────────────
     # UI 到期日取 `provisioningProfileExpirationDate ?? expiryDate`。签名阶段就推进顶层
@@ -3592,9 +3594,9 @@ def main():
          "if let uuid = existing.provisioningProfileUUID,",
          "D: settlement must compare profile identity and expiry"),
         ("Seal/Features/Apps/AppsViewModel.swift",
-         "needsAction: max(0, total - succeeded - failed - awaitingConfirmation)",
-         "remaining: max(0, total - succeeded - failed - awaitingConfirmation)",
-         "G: every BatchRefreshResult construction site"),
+         "let result = PendingBatchResultPayload.restoredResult(from: payload)",
+         "let result = BatchRefreshResult(total: 0, succeeded: 0, failed: 0, needsAction: 0, awaitingConfirmation: 0)",
+         "G: the restored BatchRefreshResult must come from the shared payload summary"),
         ("Seal/Core/Signing/SigningCoordinator.swift",
          "if advancesInstalledSnapshot {",
          "if true {",
@@ -4164,14 +4166,14 @@ def main():
         # **顺序反了**（本修复的核心）：先结算队列、再恢复载荷 ⇒ 那个 running 项在载荷被读
         # 之前就变成了 unknown，假警报与幽灵条目原样回来。
         ("Seal/Features/Apps/AppsViewModel.swift",
-         "        restorePendingBatchResultIfNeeded()\n"
+         "        restorePendingBatchResultIfNeeded(replacingRestoredSession: true)\n"
          "        let settled = settledQueueStates(from: loadPendingBatchResultPayload())",
          "        let settled = settledQueueStates(from: loadPendingBatchResultPayload())\n"
-         "        restorePendingBatchResultIfNeeded()",
+         "        restorePendingBatchResultIfNeeded(replacingRestoredSession: true)",
          "R17: the payload must be restored and read BEFORE the queue is settled"),
         # 忘了先恢复载荷：`settled` 永远是空的，等于这条修复不存在。
         ("Seal/Features/Apps/AppsViewModel.swift",
-         "        restorePendingBatchResultIfNeeded()\n"
+         "        restorePendingBatchResultIfNeeded(replacingRestoredSession: true)\n"
          "        let settled = settledQueueStates(from: loadPendingBatchResultPayload())",
          "        let settled: [UUID: RefreshQueueItem.State] = [:]",
          "R17: the payload must be restored and read BEFORE the queue is settled"),

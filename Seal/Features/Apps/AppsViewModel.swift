@@ -439,7 +439,12 @@ final class AppsViewModel: ObservableObject {
                     do {
                         try await notificationScheduler.reschedule(apps: fetched, enabled: notificationPreferences.isEnabled, leadHours: notificationPreferences.leadHours)
                     } catch {
-                        try? await self.logStore?.append(category: .system, level: .error, message: "通知调度失败", code: "SEAL-NOTIFY-002a")
+                        try? await self.logStore?.append(
+                            category: .system,
+                            level: .error,
+                            message: NotificationSchedulingFailure.diagnostic(for: error),
+                            code: "SEAL-NOTIFY-002a"
+                        )
                     }
                 }
             }
@@ -553,16 +558,19 @@ final class AppsViewModel: ObservableObject {
 
     func refreshInstalledApps(userInitiated: Bool = true) async {
         await load(force: true)
-        await reconcileInstalledAppsWithDevice(userInitiated: userInitiated)
+        let changed = await reconcileInstalledAppsWithDevice(userInitiated: userInitiated)
+        if changed {
+            await load(force: true)
+        }
     }
 
-    private func reconcileInstalledAppsWithDevice(userInitiated: Bool) async {
+    private func reconcileInstalledAppsWithDevice(userInitiated: Bool) async -> Bool {
         let installedRecords = installedApps
-        guard installedRecords.isEmpty == false else { return }
+        guard installedRecords.isEmpty == false else { return false }
 
         // 导入与已安装 IPA 相同（签名后的 Bundle ID 一致）会残留多条相同身份的记录，
         // iOS 无法并存同 Bundle ID 的应用，这里按身份合并去重，只保留真实存在的一条。
-        await removeDuplicateInstalledRecords(installedRecords)
+        var mutations = [await removeDuplicateInstalledRecords(installedRecords)]
 
         do {
             for app in installedRecords {
@@ -573,10 +581,16 @@ final class AppsViewModel: ObservableObject {
                 )
 
                 if existsOnDevice == false {
-                    _ = await delete(app)
+                    mutations.append(await delete(app, refreshAfterDeletion: false))
                 }
             }
         } catch {
+            try? await logStore?.append(
+                category: .system,
+                level: .warning,
+                message: "已安装页设备核验未完成，已保留当前列表。诊断：[\((error as NSError).domain) \((error as NSError).code)]",
+                code: "SEAL-INSTALL-707"
+            )
             if userInitiated {
                 alertFailure = ImportFailure(
                     title: "\u{65E0}\u{6CD5}\u{5237}\u{65B0}\u{5DF2}\u{5B89}\u{88C5}\u{5E94}\u{7528}",
@@ -586,6 +600,7 @@ final class AppsViewModel: ObservableObject {
                 )
             }
         }
+        return InstalledAppRefreshPolicy.requiresReload(after: mutations)
     }
 
     private func installedBundleIdentifier(for app: AppRecord) -> String? {
@@ -602,7 +617,7 @@ final class AppsViewModel: ObservableObject {
 
     /// 合并本机已安装列表中「签名后 Bundle ID 相同」的重复记录，只保留最可信的一条，
     /// 删除其余重复记录及其文件夹。仅处理非 Seal 的第三方应用；Seal 自身由 SelfAppRegistrar 管理。
-    private func removeDuplicateInstalledRecords(_ records: [AppRecord]) async {
+    private func removeDuplicateInstalledRecords(_ records: [AppRecord]) async -> Bool {
         var bestByBundle: [String: AppRecord] = [:]
         var duplicates: [AppRecord] = []
         for record in records where record.isSeal == false {
@@ -623,9 +638,11 @@ final class AppsViewModel: ObservableObject {
                 bestByBundle[bundle] = record
             }
         }
+        var mutations: [Bool] = []
         for duplicate in duplicates {
-            _ = await delete(duplicate)
+            mutations.append(await delete(duplicate, refreshAfterDeletion: false))
         }
+        return InstalledAppRefreshPolicy.requiresReload(after: mutations)
     }
 
     private func preferKeeping(_ lhs: AppRecord, over rhs: AppRecord) -> Bool {
@@ -1292,7 +1309,7 @@ final class AppsViewModel: ObservableObject {
     }
 
 
-    func delete(_ app: AppRecord) async -> Bool {
+    func delete(_ app: AppRecord, refreshAfterDeletion: Bool = true) async -> Bool {
         guard let appStore, let fileStore else { return false }
         guard let operationLease = await acquireOperation(.maintainingStorage, appID: app.id) else { return false }
         defer { releaseOperation(operationLease) }
@@ -1329,7 +1346,9 @@ final class AppsViewModel: ObservableObject {
                     )
                 }
             }
-            await load(force: true)
+            if refreshAfterDeletion {
+                await load(force: true)
+            }
             if let historyFailure {
                 alertFailure = historyFailure
             }
@@ -1453,7 +1472,7 @@ final class AppsViewModel: ObservableObject {
         // Seal 自己替换自己时，进程必然在队列项还是 `running` 的时候被杀。当前实现先由
         // `SelfAppRegistrar` 读取新运行包身份，再把 `awaitingSealConfirmation` 结算成终态；
         // 这里仅消费已经由新进程确认的终态，绝不让旧进程伪造成功。
-        restorePendingBatchResultIfNeeded()
+        restorePendingBatchResultIfNeeded(replacingRestoredSession: true)
         let settled = settledQueueStates(from: loadPendingBatchResultPayload())
         do {
             let outcome = try await renewalCoordinator.recoverInterruptedQueue(settled: settled)
@@ -1784,33 +1803,25 @@ final class AppsViewModel: ObservableObject {
     /// 2026-09-17 真机日志实测：原先这两条轮询日志占了全部日志的 **30%**（73/244 行），
     /// 把真实信号挤出了只保留 1000 条的环形缓冲。
     /// 唯一值得留痕的是「**确实有待恢复的数据、却被跳过**」—— 那才是「结果丢了」的征兆。
-    private func restorePendingBatchResultIfNeeded() {
+    private func restorePendingBatchResultIfNeeded(replacingRestoredSession: Bool = false) {
         let pendingPayload = loadPendingBatchResultPayload()
-        guard batchRefreshSession == nil, batchRefreshTask == nil else {
+        let canReplaceRestoredSession = replacingRestoredSession
+            && hasRestoredPendingBatchResult
+            && batchRefreshTask == nil
+        guard batchRefreshSession == nil || canReplaceRestoredSession, batchRefreshTask == nil else {
             if pendingPayload != nil, hasRestoredPendingBatchResult == false {
                 Task { try? await logStore?.append(category: .renewal, level: .warning, message: "待恢复的批量续签结果被跳过：当前有进行中的会话或结果抽屉仍开着", code: "SEAL-RENEW-021") }
             }
             return
         }
         guard let payload = pendingPayload else { return }
-        let succeeded = payload["succeeded"] as? Int ?? 0
-        let failed = payload["failed"] as? Int ?? 0
-        let total = payload["total"] as? Int ?? max(succeeded + failed, 0)
-        let awaitingConfirmation = (payload["items"] as? [[String: Any]] ?? []).filter {
-            BatchRefreshSession.Item.State(storageValue: $0["state"] as? String) == .awaitingSealConfirmation
-        }.count
+        let result = PendingBatchResultPayload.restoredResult(from: payload)
         var restored = BatchRefreshSession()
         // 旧持久化载荷没有 needsAction 字段，但计数不变量 `成功+失败+未执行 == 总数` 成立，
         // 因此第三个桶可以直接由差值还原（旧载荷的差值本来就是「未完成」）。
-        restored.status = .completed(.init(
-            total: total,
-            succeeded: succeeded,
-            failed: failed,
-            needsAction: max(0, total - succeeded - failed - awaitingConfirmation),
-            awaitingConfirmation: awaitingConfirmation
-        ))
-        restored.currentIndex = total
-        restored.total = total
+        restored.status = .completed(result)
+        restored.currentIndex = result.total
+        restored.total = result.total
         if let itemPayload = payload["items"] as? [[String: Any]] {
             restored.items = itemPayload.compactMap { item in
                 guard let idString = item["id"] as? String,
@@ -1823,7 +1834,7 @@ final class AppsViewModel: ObservableObject {
         }
         batchRefreshSession = restored
         hasRestoredPendingBatchResult = true
-        Task { try? await logStore?.append(category: .renewal, level: .info, message: "批量续签结果已从持久化载荷恢复（共 \(total)，成功 \(succeeded)，失败 \(failed)，明细 \(restored.items.count) 项）", code: "SEAL-RENEW-024") }
+        Task { try? await logStore?.append(category: .renewal, level: .info, message: "批量续签结果已从持久化载荷恢复（共 \(result.total)，成功 \(result.succeeded)，失败 \(result.failed)，等待 Seal 核验 \(result.awaitingConfirmation)，明细 \(restored.items.count) 项）", code: "SEAL-RENEW-024") }
     }
 
     private func clearPendingBatchResult() {

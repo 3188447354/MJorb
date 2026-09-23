@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-09-23 自替换已结算但结果抽屉仍显示等待核验
+
+- **现象**：构建 1.2.6 的真机日志中，Seal 在新进程完成身份核验并记录 `SEAL-RENEW-028` 成功后，关闭批量结果抽屉仍显示“成功 2、等待新进程核验 1”。同时通知自动重排只写 `SEAL-NOTIFY-002a`，没有底层错误信息；已安装页设备核验逐项删除记录时会连续触发全量加载，却继续使用删除前快照，且下拉刷新时设备暂不可达会反复弹窗。
+- **根因**：结果抽屉可能在新进程结算前从载荷恢复；恢复后被 `hasRestoredPendingBatchResult` 阻止再次读取已结算载荷，计数沿用旧进程的 `awaitingConfirmation`。通知后台重排吞掉了 `NSError` 的 domain、code 与描述，提醒时间设置失败也没有写日志。已安装页复用公共 `delete()`，而它每成功一项就立刻 `load()`，让循环快照与异步发布交错。
+- **修复**：`PendingBatchResultPayload.restoredResult` 统一按持久化条目派生最终分桶；启动队列恢复明确覆盖“仅由旧载荷恢复”的抽屉。新增统一、脱敏的 `NotificationSchedulingFailure`，供后台重排和设置页复用，并为提醒时间更新失败补日志。设备核验删除改为静默批处理，整轮结束后只重载一次已安装列表；下拉刷新明确使用静默设备核验，失败时保留列表并仅记录 `SEAL-INSTALL-707` 诊断；手动删除仍即时刷新。
+- **涉及文件**：`Seal/Core/Renewal/PendingBatchResultPayload.swift`、`Seal/Core/Apps/InstalledAppRefreshPolicy.swift`、`Seal/Features/Apps/AppsViewModel.swift`、`Seal/Core/Notifications/NotificationSchedulingFailure.swift`、`Seal/Features/Settings/SettingsViewModel.swift`、相应续签、通知和已安装页策略单测。
+- **验证状态**：已补纯函数测试和发布安全守卫；Windows 本机无 Xcode，待完整 GitHub Actions 编译/Swift 回归与真机复验。
+
+---
+
 ## 2026-09-23 批量续签 Seal 自替换被旧进程提前结算
 
 - **现象**：批量续签到 Seal 时，旧进程在覆盖安装阶段把 Seal 预先写成 `completed`；候选包尚未由新进程验证，结果抽屉、队列与真实运行包可能互相矛盾。

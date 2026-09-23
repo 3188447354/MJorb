@@ -39,6 +39,36 @@ enum PendingBatchResultPayload {
         return states
     }
 
+    /// 从持久化条目恢复批量结果。新进程结算 Seal 后必须以条目终态为准，不能继续沿用
+    /// 被旧进程写入时的 `awaitingConfirmation` 计数，否则会出现“身份已确认成功、抽屉仍在等待”的假象。
+    static func restoredResult(from payload: [String: Any]) -> BatchRefreshResult {
+        let items = payload[Key.items] as? [[String: Any]] ?? []
+        let total = max(payload["total"] as? Int ?? 0, items.count)
+        guard items.isEmpty == false else {
+            let succeeded = payload["succeeded"] as? Int ?? 0
+            let failed = payload["failed"] as? Int ?? 0
+            return BatchRefreshResult(
+                total: total,
+                succeeded: succeeded,
+                failed: failed,
+                needsAction: max(0, total - succeeded - failed),
+                awaitingConfirmation: 0
+            )
+        }
+
+        let states = items.map { BatchRefreshSession.Item.State(storageValue: $0[Key.state] as? String) }
+        let succeeded = states.filter { $0 == .completed }.count
+        let failed = states.filter { $0 == .failed }.count
+        let awaitingConfirmation = states.filter { $0 == .awaitingSealConfirmation }.count
+        return BatchRefreshResult(
+            total: total,
+            succeeded: succeeded,
+            failed: failed,
+            needsAction: max(0, total - succeeded - failed - awaitingConfirmation),
+            awaitingConfirmation: awaitingConfirmation
+        )
+    }
+
     /// 新进程完成 Seal 自替换身份核验后，才允许为那一项写入终态。
     ///
     /// 只结算明确处于 `awaitingSealConfirmation` 的 Seal 项，避免启动时把旧载荷里

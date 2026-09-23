@@ -134,4 +134,29 @@ struct PendingBatchResultPayloadTests {
         #expect(settled["failed"] as? Int == 1)
         #expect(PendingBatchResultPayload.settledQueueStates(from: settled)[seal] == .failed)
     }
+
+    /// 新进程已经结算 Seal 后，恢复抽屉的汇总必须重新按条目计算；不能沿用旧进程的
+    /// `awaitingConfirmation = 1`，否则界面会在已确认成功后仍显示“等待核验”。
+    @Test
+    func settledSealPayloadRestoresAsFullyCompletedResult() throws {
+        let seal = UUID()
+        let first = UUID()
+        let second = UUID()
+        let original = payload([
+            ["id": first.uuidString, "name": "A", "isSeal": false, "state": "completed"],
+            ["id": second.uuidString, "name": "B", "isSeal": false, "state": "completed"],
+            ["id": seal.uuidString, "name": "Seal", "isSeal": true, "state": "awaitingSealConfirmation"],
+        ])
+        let settled = try #require(
+            PendingBatchResultPayload.settlingSeal(in: original, to: .completed)
+        )
+
+        #expect(PendingBatchResultPayload.restoredResult(from: settled) == BatchRefreshResult(
+            total: 3,
+            succeeded: 3,
+            failed: 0,
+            needsAction: 0,
+            awaitingConfirmation: 0
+        ))
+    }
 }

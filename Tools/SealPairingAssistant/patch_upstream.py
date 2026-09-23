@@ -160,6 +160,7 @@ def verify(root: pathlib.Path) -> None:
         "fn ensure_seal_textures",
         "fn install_pairing_file_to_seal_if_ready",
         "开始配对",
+        "配对请求未获允许",
         '"完成".to_string()',
         "等待连接",
         "GeneratePairingFile",
@@ -204,6 +205,7 @@ def verify(root: pathlib.Path) -> None:
         "phone_texture",
         "IPHONE_MODEL",
         "iphone_model.rgba",
+        "button_rect.center_bottom() + egui::vec2(0.0, 24.0)",
     ]
     present = [item for item in forbidden if item in main]
     if present:

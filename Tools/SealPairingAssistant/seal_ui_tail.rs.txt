@@ -72,6 +72,15 @@
         let seal_installed = matches!(seal_install_result, Some(Some(Ok(_))));
         let seal_failed = matches!(seal_install_result, Some(Some(Err(_))));
         let is_processing = self.pending_seal_install || seal_installing;
+        let has_pairing_failure = self.pairing_file_message.as_deref().is_some_and(|message| {
+            !is_processing && !seal_installed && !seal_failed && !message.trim().is_empty()
+        });
+        let pairing_rejected = has_pairing_failure && self.pairing_file_message.as_deref().is_some_and(|message| {
+            let message = message.to_ascii_lowercase();
+            message.contains("rejected")
+                || message.contains("authenticate the user")
+                || message.contains("declined")
+        });
         // 17.0–17.3.1 必须生成 Lockdown 文件；版本未知时若沿用上游默认的
         // RemotePairing，会制造一个该系统根本无法使用的文件。因此先读到系统版本再允许生成。
         let can_primary_action = has_device && has_ios_version && !environment_checking && !is_processing;
@@ -111,7 +120,7 @@
 
         let status_color = if seal_installed {
             seal_green
-        } else if seal_failed || !readiness_issues.is_empty() || !has_device {
+        } else if seal_failed || has_pairing_failure || !readiness_issues.is_empty() || !has_device {
             seal_red
         } else if is_processing {
             seal_blue
@@ -120,7 +129,9 @@
         };
         let (intro_label, intro_title, intro_detail) = if seal_installed {
             ("已完成", "配对完成", "现在可关闭此窗口，回到 iPhone 的 Seal 继续操作。")
-        } else if seal_failed {
+        } else if pairing_rejected {
+            ("需要处理", "重新配对", "请在 iPhone 系统弹窗中选择“信任”或“允许”，然后再次发起配对。")
+        } else if seal_failed || has_pairing_failure {
             ("交接失败", "重新生成配对文件", "保持设备连接，并在 iPhone 上打开 Seal 后重试。")
         } else if seal_installing {
             ("正在交接", "正在发送到 iPhone", "配对文件已生成，正在发送到 Seal。")
@@ -184,7 +195,7 @@
 
                 if let Some(dev) = selected_device.clone() {
                     let refresh_rect = egui::Rect::from_min_size(
-                    egui::pos2(full_rect.right() - 112.0, full_rect.top() + 13.0),
+                    egui::pos2(full_rect.right() - 120.0, full_rect.top() + 13.0),
                         egui::vec2(32.0, 32.0),
                     );
                     if ui
@@ -332,7 +343,7 @@
                     egui::FontId::new(13.0, egui::FontFamily::Proportional),
                     if device_ready { seal_green } else { status_color },
                 );
-                let detail_top = card_rect.top() + 315.0;
+                let detail_top = card_rect.top() + 285.0;
                 let detail_rect = egui::Rect::from_min_size(
                     egui::pos2(detail_left, detail_top),
                     egui::vec2(detail_width, 126.0),
@@ -440,31 +451,44 @@
                         if index <= current_step { text_primary } else { text_secondary },
                     );
                 }
-                let guidance = if seal_installed {
-                    ""
+                let notice = if pairing_rejected {
+                    Some(("配对请求未获允许", "解锁 iPhone，在系统弹窗中选择“信任”或“允许”。", seal_red))
+                } else if seal_failed || has_pairing_failure {
+                    Some(("Seal 未收到配对文件", "保持连接并打开 Seal 后，再重新生成。", seal_red))
                 } else if let Some(issue) = readiness_issues.first() {
-                    *issue
-                } else if !has_device {
-                    "用数据线连接并解锁 iPhone，在设备上点按“信任”。"
-                } else if !has_ios_version {
-                    "正在读取系统版本，随后自动选择配对方式。"
-                } else if is_processing {
-                    "保持 iPhone 解锁和数据线连接，等待当前步骤完成。"
-                } else if seal_failed {
-                    "Seal 未收到凭据。保持连接后重试，并在手机上打开 Seal。"
+                    Some(("需要处理", *issue, seal_red))
                 } else {
-                    ""
+                    None
                 };
-                if !guidance.is_empty() {
+                if let Some((notice_title, notice_detail, notice_color)) = notice {
+                    let notice_rect = egui::Rect::from_min_size(
+                        egui::pos2(detail_left, detail_rect.bottom() + 12.0),
+                        egui::vec2(detail_width, 52.0),
+                    );
+                    ui.painter().rect_filled(
+                        notice_rect,
+                        10.0,
+                        Color32::from_rgb(255, 245, 245),
+                    );
+                    ui.painter().rect_stroke(
+                        notice_rect,
+                        10.0,
+                        egui::Stroke::new(1.0_f32, Color32::from_rgb(239, 205, 205)),
+                        egui::StrokeKind::Inside,
+                    );
                     ui.painter().text(
-                        egui::Rect::from_center_size(
-                            egui::pos2(card_rect.center().x, detail_rect.bottom() + 18.0),
-                            egui::vec2(detail_width, 22.0),
-                        ).center(),
-                        egui::Align2::CENTER_CENTER,
-                        guidance,
-                        egui::FontId::new(14.0, egui::FontFamily::Proportional),
-                        if seal_failed || !readiness_issues.is_empty() { seal_red } else { text_secondary },
+                        notice_rect.left_top() + egui::vec2(15.0, 15.0),
+                        egui::Align2::LEFT_CENTER,
+                        notice_title,
+                        egui::FontId::new(13.0, egui::FontFamily::Proportional),
+                        notice_color,
+                    );
+                    ui.painter().text(
+                        notice_rect.left_bottom() + egui::vec2(15.0, -13.0),
+                        egui::Align2::LEFT_CENTER,
+                        notice_detail,
+                        egui::FontId::new(12.0, egui::FontFamily::Proportional),
+                        Color32::from_rgb(124, 80, 80),
                     );
                 }
 
@@ -478,7 +502,9 @@
                     "正在检查设备…"
                 } else if !readiness_issues.is_empty() {
                     "检查并修复准备项"
-                } else if seal_installed || seal_failed {
+                } else if pairing_rejected {
+                    "再次发起配对"
+                } else if seal_failed || has_pairing_failure {
                     "重新生成配对文件"
                 } else {
                     "开始配对"
@@ -529,20 +555,6 @@
                                 .unwrap();
                         }
                     }
-                }
-
-                if let Some(message) = &self.pairing_file_message
-                    && !is_processing
-                    && !seal_installed
-                    && !seal_failed
-                {
-                    ui.painter().text(
-                        button_rect.center_bottom() + egui::vec2(0.0, 24.0),
-                        egui::Align2::CENTER_CENTER,
-                        message,
-                        egui::FontId::new(14.0, egui::FontFamily::Proportional),
-                        text_secondary,
-                    );
                 }
 
                 let line_width = card_width.min(610.0);

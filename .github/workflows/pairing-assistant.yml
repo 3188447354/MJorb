@@ -181,6 +181,7 @@ jobs:
             'include_bytes!("seal_assets/seal_icon_ui.rgba")',
             'install_pairing_file_to_seal_if_ready',
             '开始配对',
+            '配对请求未获允许',
             '"完成".to_string()',
             '等待连接',
             'with_decorations(false)',
@@ -222,7 +223,8 @@ jobs:
             '▢  复制',
             'phone_texture',
             'IPHONE_MODEL',
-            'iphone_model.rgba'
+            'iphone_model.rgba',
+            'button_rect.center_bottom() + egui::vec2(0.0, 24.0)'
           )
           foreach ($marker in $removed) {
             if ($source.Contains($marker)) { throw "Removed minimal UI surface is still visible: $marker" }

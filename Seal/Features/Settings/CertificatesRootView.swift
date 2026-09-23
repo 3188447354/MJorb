@@ -76,13 +76,11 @@ struct CertificatesRootView: View {
         }
         .task {
             await viewModel.load()
-            await viewModel.refreshAppIDInventories()
-            await viewModel.refreshCertificateInventories()
+            await viewModel.refreshApplePortalInventories()
         }
         .refreshable {
             await viewModel.load(force: true)
-            await viewModel.refreshAppIDInventories()
-            await viewModel.refreshCertificateInventories()
+            await viewModel.refreshApplePortalInventories()
         }
         .onChange(of: viewModel.requestedRoute) { route in
             guard route == .addAccount else { return }

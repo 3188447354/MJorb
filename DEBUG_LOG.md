@@ -5,6 +5,21 @@
 
 ---
 
+## 2026-09-23 自替换结算与结果恢复并发竞态
+
+- **现象**：构建 1.2.7 (15) 真机日志中，`SEAL-RENEW-028` 已记录 Seal 自替换由新进程身份核验结算成功，但随后关闭结果抽屉仍记录“成功 2、等待 Seal 核验 1”。
+- **根因**：`AppsViewModel` 与启动维护作业并发。前者先恢复安装前持久化的 `awaitingSealConfirmation` 载荷，后者才由真实运行包身份把同一载荷写成 `completed`；恢复标志只防重复恢复，未识别载荷后来已经改变，旧抽屉状态因此留存。
+- **修复**：为持久化载荷建立稳定指纹。已恢复会话在没有活动批量任务时，仅当读到的新载荷指纹变化才重新派生结果与条目状态；自替换结算仍只由 `SelfAppRegistrar` 的真实身份对账触发，未放宽成功判据。
+- **附带诊断修复**：同一真机日志还显示已安装页刷新在 LocalDevVPN 基础通道正常后，应用查询仍因 `SealInstalledAppDeviceVerifier 2` 超时。保留当前 fail-closed 行为（不删记录、不弹窗），但将日志从只有 domain/code 改为脱敏后的底层原因，便于区分超时和服务错误。
+- **附带等待优化**：已安装页是尽力读取，原先错误复用查询类的 15 秒默认上限；本次改用专属 2 秒预算，并在超时后冷却 20 秒，避免用户连续下拉叠加无法取消的 FFI 查询。签名/安装后的验证仍使用原预算，不能为界面速度降低安装结论可靠性。
+- **附带取消收尾**：已安装页设备查询任务若因离开页面被取消，原本可能把互斥门闩留在“查询中”；现取消与超时统一进入冷却，底层 FFI 自行返回前不再叠加新查询。
+- **Apple ID 总览刷新审计**：总览每账号原本串行请求 App ID 与证书两次，分别重复 anisette、团队查询与网络会话；服务已有 `.all` 范围可一次取全，页面却未使用。现总览每账号改为一次完整同步；单项 App ID 详情、签名证书页、未签名列表、存储统计及签名通道检测按其数据源各自保留，不把网络/设备长预算误压缩为页面预算。
+- **配对文件导出**：原先只能导入，无法由用户备份当前有效凭据。新增显式导出按钮与风险确认；`PairingStore` 仅导出已规范化且重新通过结构校验的 XML plist，不带验证元数据、Apple ID 凭据或任何额外备份副本。导出内容含配对私钥，因此不记录到 Seal 日志。
+- **涉及文件**：`Seal/Core/Renewal/PendingBatchResultPayload.swift`、`Seal/Core/Apps/InstalledAppRefreshFailure.swift`、`Seal/Core/Apps/InstalledAppRefreshProbePolicy.swift`、`Seal/Features/Apps/AppsViewModel.swift`、`Seal/Features/Apps/InstalledAppDeviceVerifier.swift`、`Seal/Features/Settings/SettingsViewModel.swift`、`Seal/Features/Settings/CertificatesRootView.swift`、相应续签、已安装页与 Apple ID 同步单测、`Scripts/verify-release-safety.py`。
+- **验证状态**：已补“结算后载荷指纹变化”单测与静态守卫；Windows 本机无 Xcode，待完整 CI 与真机批量自续签验证。
+
+---
+
 ## 2026-09-23 自替换已结算但结果抽屉仍显示等待核验
 
 - **现象**：构建 1.2.6 的真机日志中，Seal 在新进程完成身份核验并记录 `SEAL-RENEW-028` 成功后，关闭批量结果抽屉仍显示“成功 2、等待新进程核验 1”。同时通知自动重排只写 `SEAL-NOTIFY-002a`，没有底层错误信息；已安装页设备核验逐项删除记录时会连续触发全量加载，却继续使用删除前快照，且下拉刷新时设备暂不可达会反复弹窗。

@@ -1,9 +1,13 @@
+import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct PairingSettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
     @State private var isFileImporterPresented = false
+    @State private var isPairingExportWarningPresented = false
+    @State private var isPairingFileExporterPresented = false
+    @State private var pairingExportDocument: PairingExportDocument?
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -41,6 +45,26 @@ struct PairingSettingsView: View {
             case .failure:
                 break
             }
+        }
+        .fileExporter(
+            isPresented: $isPairingFileExporterPresented,
+            document: pairingExportDocument,
+            contentType: PairingExportDocument.contentType,
+            defaultFilename: "Seal-Pairing.mobiledevicepairing"
+        ) { _ in
+            pairingExportDocument = nil
+        }
+        .confirmationDialog(
+            "导出设备配对凭据？",
+            isPresented: $isPairingExportWarningPresented,
+            titleVisibility: .visible
+        ) {
+            Button("导出配对文件") {
+                preparePairingFileExport()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("文件包含设备配对私钥。仅保存到你信任的位置，勿发送给陌生人或上传到公共网盘。")
         }
         .alert(item: $viewModel.alertFailure) { failure in
             Alert(
@@ -115,12 +139,32 @@ struct PairingSettingsView: View {
             }
             .sealPrimaryAction(cornerRadius: 12)
 
+            if viewModel.pairingRecord != nil {
+                Button {
+                    isPairingExportWarningPresented = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "square.and.arrow.up")
+                        Text("导出配对文件")
+                    }
+                }
+                .sealOutlineAction(cornerRadius: 12)
+            }
+
             Button(viewModel.pairingRecord == nil ? "检查配对状态" : "重新检查") {
                 Task {
                     await viewModel.testPairingConnection()
                 }
             }
             .sealOutlineAction(cornerRadius: 12)
+        }
+    }
+
+    private func preparePairingFileExport() {
+        Task {
+            guard let data = await viewModel.pairingFileDataForExport() else { return }
+            pairingExportDocument = PairingExportDocument(data: data)
+            isPairingFileExporterPresented = true
         }
     }
 
@@ -186,5 +230,27 @@ struct PairingSettingsView: View {
         if let id = pairing.validatedDeviceIdentifier, id.isEmpty == false { return id }
         if let id = pairing.deviceIdentifier, id.isEmpty == false { return id }
         return "待验证"
+    }
+}
+
+private struct PairingExportDocument: FileDocument {
+    static let contentType = UTType(filenameExtension: "mobiledevicepairing") ?? .propertyList
+    static var readableContentTypes: [UTType] { [contentType, .propertyList] }
+
+    let data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        self.data = data
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
     }
 }

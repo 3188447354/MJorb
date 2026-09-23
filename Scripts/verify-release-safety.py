@@ -1066,7 +1066,9 @@ def violations(load=read):
           "Seal kills itself mid-batch, so the running item's result only exists in the "
           "payload; settling first marks it 'unknown'")
     check("static func restoredResult(from payload: [String: Any]) -> BatchRefreshResult" in payload_source
-          and "func settledSealPayloadRestoresAsFullyCompletedResult() throws" in load("SealTests/Renewal/PendingBatchResultPayloadTests.swift"),
+          and "static func restorationFingerprint(from payload: [String: Any]) -> String?" in payload_source
+          and "func settledSealPayloadRestoresAsFullyCompletedResult() throws" in load("SealTests/Renewal/PendingBatchResultPayloadTests.swift")
+          and "func settledPayloadHasADifferentRestorationFingerprint() throws" in load("SealTests/Renewal/PendingBatchResultPayloadTests.swift"),
           "R17: a Seal result settled by the new process must restore as final, not retain the old awaiting count")
     queue_tests = load("SealTests/Renewal/RefreshQueueStoreTests.swift")
     check("func recoverInterruptedSettlesItemsThatAlreadyHaveAResult()" in queue_tests
@@ -1311,9 +1313,12 @@ def violations(load=read):
     check("HardTimeout.run(seconds: seconds)" in blocking_source,
           "R25: 有界包装必须真的走硬超时")
     verifier_source = strip_comments(load("Seal/Features/Apps/InstalledAppDeviceVerifier.swift"))
-    check("BlockingCall.bounded(seconds: BlockingCall.queryTimeoutSeconds" in verifier_source
+    check("BlockingCall.bounded(seconds: InstalledAppRefreshProbePolicy.timeoutSeconds" in verifier_source
           and "Task.detached" not in verifier_source,
           "R25: 设备核验的同步 FFI 必须有界 —— 只 Task.detached 不够，阻塞本身仍然无界")
+    check("withTaskCancellationHandler" in verifier_source
+          and "await probeGate.finish(timedOut: true)" in verifier_source,
+          "R25: 设备核验被取消后必须释放门闩并冷却，不能永久卡在查询中")
     check("BlockingCall.bounded(seconds: BlockingCall.queryTimeoutSeconds" in cleaner_source,
           "R25: 维护期的设备探测必须有界 —— 一次无界阻塞会让整轮维护永远完不成")
     # 通道那份重复实现必须**委托**，不能再抄一遍（「同一条规则两份实现」已踩过五次）。
@@ -2888,6 +2893,30 @@ def violations(load=read):
     restored_call = section_or_empty(apps_view, "let result = PendingBatchResultPayload.restoredResult(from: payload)", "restored.currentIndex")
     check("restored.status = .completed(result)" in restored_call,
           "G: the restored BatchRefreshResult must come from the shared payload summary")
+    check("pendingFingerprint != restoredPendingBatchResultFingerprint" in apps_view,
+          "G: a restored result must refresh when the new process writes the Seal settlement")
+    installed_refresh_failure = load("Seal/Core/Apps/InstalledAppRefreshFailure.swift")
+    installed_refresh_tests = load("SealTests/InstalledApps/InstalledAppRefreshFailureTests.swift")
+    check("static func diagnostic(for error: Error) -> String" in installed_refresh_failure
+          and "LogPrivacyRedactor.redact(nsError.localizedDescription)" in installed_refresh_failure
+          and "func diagnosticKeepsTheTimeoutReason()" in installed_refresh_tests,
+          "G: installed-page probe failures must expose a redacted underlying reason, not only an opaque code")
+    installed_refresh_policy = load("Seal/Core/Apps/InstalledAppRefreshProbePolicy.swift")
+    installed_refresh_policy_tests = load("SealTests/InstalledApps/InstalledAppRefreshProbePolicyTests.swift")
+    check("static let timeoutSeconds: Double = 2" in installed_refresh_policy
+          and "static let timeoutCooldownSeconds: TimeInterval = 20" in installed_refresh_policy
+          and "func refreshProbeFailsFastWithoutBorrowingInstallationBudget()" in installed_refresh_policy_tests,
+          "G: installed-page refresh must fail fast and cool down without shrinking install verification budgets")
+    installed_refresh_gate_tests = load("SealTests/InstalledApps/InstalledAppRefreshProbeGateTests.swift")
+    check("func cancelledProbeEntersCooldownInsteadOfLeavingTheGateBusy()" in installed_refresh_gate_tests,
+          "G: cancelling an installed-page device probe must not leave its gate occupied")
+    certificate_root_source = strip_comments(load("Seal/Features/Settings/CertificatesRootView.swift"))
+    apple_inventory_refresh_tests = load("SealTests/Settings/ApplePortalInventoryRefreshTests.swift")
+    check("await viewModel.refreshApplePortalInventories()" in certificate_root_source
+          and "await viewModel.refreshAppIDInventories()" not in certificate_root_source
+          and "await viewModel.refreshCertificateInventories()" not in certificate_root_source
+          and "scope = ApplePortalInventoryService.FetchScope.all" in apple_inventory_refresh_tests,
+          "G: Apple ID overview must synchronize App IDs and certificates in one inventory request per account")
 
     # ── E 包（R08：签名产物 vs 已安装快照）──────────────────────────────────
     # UI 到期日取 `provisioningProfileExpirationDate ?? expiryDate`。签名阶段就推进顶层
@@ -3418,6 +3447,16 @@ def violations(load=read):
           and "Minimuxer.installIpa" in transport_body
           and "func installationTransportFollowsPairingFileType()" in load("SealTests/Installation/InstallChannelDiagnosticClassificationTests.swift"),
           "R62③: 安装必须按配对类型分流；Lockdown 不得调用 RSD 合并安装入口")
+    pairing_view_source = strip_comments(load("Seal/Features/Settings/PairingSettingsView.swift"))
+    pairing_view_model_source = strip_comments(load("Seal/Features/Settings/SettingsViewModel.swift"))
+    check("func exportData() throws -> Data" in pairing_store_source
+          and "_ = try Self.inspect(dictionary)" in pairing_store_source
+          and "func pairingFileDataForExport() async -> Data?" in pairing_view_model_source
+          and "isPairingExportWarningPresented" in pairing_view_source
+          and "fileExporter(" in pairing_view_source
+          and "func exportsOnlyTheCanonicalValidatedPairingFile() async throws" in pairing_tests
+          and "func refusesToExportWhenNoPairingFileIsStored() async throws" in pairing_tests,
+          "R62: pairing export must require a valid canonical record and explicit user confirmation")
 
     # R63: `Minimuxer.reset()` 里「清 RSD 缓存连接」的判据必须在 `Muxer.reset()` **之前**读
     #（2026-09-21 审计发现）✗。
@@ -4378,10 +4417,15 @@ def main():
         # ── R25：同步阻塞 FFI 的每一处等待都要有界（2026-09-17 审计）──
         # 把设备核验退回「只 Task.detached、无超时」：死会话上它会永久阻塞。
         ("Seal/Features/Apps/InstalledAppDeviceVerifier.swift",
-         "        let outcome = await BlockingCall.bounded(seconds: BlockingCall.queryTimeoutSeconds) {\n"
-         "            // 查询前重置连接，避免使用已断开的 RSD 缓存连接导致误判\n"
-         "            Install.resetProvider()\n"
-         "            return try Minimuxer.isAppInstalled(bundleId: identifier)\n"
+         "        let outcome = await withTaskCancellationHandler {\n"
+         "            await BlockingCall.bounded(seconds: InstalledAppRefreshProbePolicy.timeoutSeconds) {\n"
+         "                // 查询前重置连接，避免使用已断开的 RSD 缓存连接导致误判\n"
+         "                Install.resetProvider()\n"
+         "                return try Minimuxer.isAppInstalled(bundleId: identifier)\n"
+         "            }\n"
+         "        } onCancel: {\n"
+         "            // 超时与取消都不会停止 FFI；在它自行返回前，不允许再叠加另一条设备查询。\n"
+         "            Task { await probeGate.finish(timedOut: true) }\n"
          "        }",
          "        let outcome = await Task.detached(priority: .userInitiated) {\n"
          "            Install.resetProvider()\n"

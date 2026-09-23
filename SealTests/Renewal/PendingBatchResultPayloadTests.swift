@@ -159,4 +159,22 @@ struct PendingBatchResultPayloadTests {
             awaitingConfirmation: 0
         ))
     }
+
+    /// 启动时界面可能先恢复旧载荷，随后 `SelfAppRegistrar` 才把 Seal 写成终态。
+    /// 此时不能因为已经恢复过一次就永远保留旧抽屉，必须识别出持久化载荷发生了变化。
+    @Test
+    func settledPayloadHasADifferentRestorationFingerprint() throws {
+        let seal = UUID()
+        let original = payload([
+            ["id": seal.uuidString, "name": "Seal", "isSeal": true, "state": "awaitingSealConfirmation"],
+        ])
+        let settled = try #require(
+            PendingBatchResultPayload.settlingSeal(in: original, to: .completed)
+        )
+
+        #expect(
+            PendingBatchResultPayload.restorationFingerprint(from: original)
+                != PendingBatchResultPayload.restorationFingerprint(from: settled)
+        )
+    }
 }

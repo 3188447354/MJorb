@@ -224,6 +224,24 @@ actor PairingStore {
         throw Self.invalidFailure
     }
 
+    /// 导出的仅是已经被 Seal 归一化并再次通过结构校验的配对凭据；验证状态等本机元数据不导出。
+    func exportData() throws -> Data {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            throw Self.exportUnavailableFailure
+        }
+        let data = try Data(contentsOf: fileURL)
+        guard data.isEmpty == false, data.count <= Self.maximumFileSize else {
+            throw Self.invalidFailure
+        }
+        let dictionary = try Self.parseDictionary(from: data)
+        _ = try Self.inspect(dictionary)
+        return try PropertyListSerialization.data(
+            fromPropertyList: dictionary,
+            format: .xml,
+            options: 0
+        )
+    }
+
     func remove() throws {
         if FileManager.default.fileExists(atPath: fileURL.path) {
             try FileManager.default.removeItem(at: fileURL)
@@ -551,6 +569,13 @@ actor PairingStore {
         reason: "无法读取设备配对信息（配对文件缺失、格式错误或缺少设备字段）。",
         recovery: "重新配对设备",
         code: "SEAL-PAIR-201"
+    )
+
+    private static let exportUnavailableFailure = ImportFailure(
+        title: "无法导出配对文件",
+        reason: "当前没有可用的设备配对文件。",
+        recovery: "先导入并确认设备配对",
+        code: "SEAL-PAIR-209"
     )
 
     private static func mismatchFailure(

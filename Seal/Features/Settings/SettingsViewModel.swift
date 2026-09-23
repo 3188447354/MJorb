@@ -1212,10 +1212,78 @@ final class SettingsViewModel: ObservableObject {
         certificateInventoryLoadingIDs.contains(accountID)
     }
 
-    func refreshAppIDInventories() async {
+    /// Apple ID 总览同时展示 App ID 名额和证书状态；每个账号只建立一次 Apple 会话，
+    /// 避免将同一份总览拆成两次串行网络同步。
+    func refreshApplePortalInventories() async {
         for account in accounts where AccountAvailabilityPolicy.isSelectable(account) {
-            await refreshAppIDInventory(for: account, force: true)
+            await refreshApplePortalInventory(for: account)
         }
+    }
+
+    private func refreshApplePortalInventory(for account: AppleAccountRecord) async {
+        guard let keychain, let applePortalInventoryService else { return }
+        if certificateInventoryLoadingIDs.contains(account.id) { return }
+
+        certificateInventoryLoadingIDs.insert(account.id)
+        defer { certificateInventoryLoadingIDs.remove(account.id) }
+
+        do {
+            guard let secret = try await keychain.load(accountID: account.id) else {
+                throw Self.failure(
+                    title: "Apple ID 同步失败",
+                    reason: "本机没有此 Apple ID 的登录凭据。",
+                    recovery: "重新验证 Apple ID",
+                    code: "SEAL-INVENTORY-100b"
+                )
+            }
+            let inventory = try await applePortalInventoryService.fetchInventory(
+                account: account,
+                secret: secret,
+                scope: .all
+            )
+            certificateInventories[account.id] = inventory
+            certificateInventoryFailures[account.id] = nil
+            certificateHealthStatuses[account.id] = await makeCertificateHealthStatus(
+                account: account,
+                secret: secret,
+                inventory: inventory
+            )
+            saveCertificateInventoryCache(inventory)
+            let appIDSummary = account.isFreeTeam == true
+                ? "已注册 \(inventory.usedBundleIDCount) / 10 个 App ID"
+                : "已注册 \(inventory.usedBundleIDCount) 个 App ID"
+            try? await logStore?.append(
+                category: .account,
+                message: "Apple ID 已完整同步：\(appIDSummary)，证书状态已更新"
+            )
+        } catch is CancellationError {
+            return
+        } catch let failure as ImportFailure {
+            certificateInventoryFailures[account.id] = failure
+            certificateHealthStatuses[account.id] = await localCertificateHealthStatus(
+                account: account,
+                portalState: failure.code == "SEAL-AUTH-107" ? .invalid : .unknown
+            )
+            try? await logStore?.append(
+                category: .account,
+                level: .error,
+                message: failure.reason,
+                code: failure.code
+            )
+        } catch {
+            certificateInventoryFailures[account.id] = Self.failure(
+                title: "Apple ID 同步失败",
+                reason: "App ID 与证书状态同步失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                recovery: "重新同步",
+                code: "SEAL-INVENTORY-900b"
+            )
+            certificateHealthStatuses[account.id] = await localCertificateHealthStatus(
+                account: account,
+                portalState: .unknown
+            )
+        }
+        logs = (try? await logStore?.entries()) ?? logs
+        refreshLogExportText()
     }
 
     func refreshAppIDInventory(
@@ -1280,12 +1348,6 @@ final class SettingsViewModel: ObservableObject {
         }
         logs = (try? await logStore?.entries()) ?? logs
         refreshLogExportText()
-    }
-
-    func refreshCertificateInventories() async {
-        for account in accounts where AccountAvailabilityPolicy.isSelectable(account) {
-            await refreshCertificateInventory(for: account, force: true)
-        }
     }
 
     /// 汇总 Seal 自管理状态：真实签名身份 + 未结算事务 + 签名者是否持有本机私钥。
@@ -2040,6 +2102,25 @@ final class SettingsViewModel: ObservableObject {
             logs = (try? await logStore?.entries()) ?? logs
             refreshLogExportText()
             return false
+        }
+    }
+
+    /// 仅返回经过 PairingStore 复核的凭据数据；调用方交由系统文件保存器，不写入日志或额外目录。
+    func pairingFileDataForExport() async -> Data? {
+        guard let pairingStore else { return nil }
+        do {
+            return try await pairingStore.exportData()
+        } catch let failure as ImportFailure {
+            alertFailure = failure
+            return nil
+        } catch {
+            alertFailure = Self.failure(
+                title: "无法导出配对文件",
+                reason: "本机配对文件无法读取或校验未通过。",
+                recovery: "重新导入配对文件后再试",
+                code: "SEAL-PAIR-209a"
+            )
+            return nil
         }
     }
 

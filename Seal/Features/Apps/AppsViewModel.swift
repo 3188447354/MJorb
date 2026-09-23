@@ -588,7 +588,7 @@ final class AppsViewModel: ObservableObject {
             try? await logStore?.append(
                 category: .system,
                 level: .warning,
-                message: "已安装页设备核验未完成，已保留当前列表。诊断：[\((error as NSError).domain) \((error as NSError).code)]",
+                message: "已安装页设备核验未完成，已保留当前列表。诊断：\(InstalledAppRefreshFailure.diagnostic(for: error))",
                 code: "SEAL-INSTALL-707"
             )
             if userInitiated {
@@ -1794,6 +1794,9 @@ final class AppsViewModel: ObservableObject {
     /// 这中间每次 `load()` 轮询都会看到「载荷还在 + 会话开着」，于是**反复报同一条警告**
     /// （2026-09-17 真机实测）。用这个标志把「已恢复」与「真被跳过」分开。
     private var hasRestoredPendingBatchResult = false
+    /// 已装入抽屉的持久化载荷指纹。新进程自替换结算会改写同一份载荷；没有这层比较，
+    /// 界面若恰好先读到旧的 awaiting 状态，就会永久显示过期的等待计数。
+    private var restoredPendingBatchResultFingerprint: String?
 
     /// 启动时把上一轮持久化的批量续签结果装回会话。
     ///
@@ -1805,10 +1808,15 @@ final class AppsViewModel: ObservableObject {
     /// 唯一值得留痕的是「**确实有待恢复的数据、却被跳过**」—— 那才是「结果丢了」的征兆。
     private func restorePendingBatchResultIfNeeded(replacingRestoredSession: Bool = false) {
         let pendingPayload = loadPendingBatchResultPayload()
+        let pendingFingerprint = pendingPayload.flatMap(PendingBatchResultPayload.restorationFingerprint(from:))
         let canReplaceRestoredSession = replacingRestoredSession
             && hasRestoredPendingBatchResult
             && batchRefreshTask == nil
-        guard batchRefreshSession == nil || canReplaceRestoredSession, batchRefreshTask == nil else {
+        let hasUpdatedRestoredPayload = hasRestoredPendingBatchResult
+            && pendingFingerprint != restoredPendingBatchResultFingerprint
+            && batchRefreshTask == nil
+        guard batchRefreshSession == nil || canReplaceRestoredSession || hasUpdatedRestoredPayload,
+              batchRefreshTask == nil else {
             if pendingPayload != nil, hasRestoredPendingBatchResult == false {
                 Task { try? await logStore?.append(category: .renewal, level: .warning, message: "待恢复的批量续签结果被跳过：当前有进行中的会话或结果抽屉仍开着", code: "SEAL-RENEW-021") }
             }
@@ -1834,11 +1842,13 @@ final class AppsViewModel: ObservableObject {
         }
         batchRefreshSession = restored
         hasRestoredPendingBatchResult = true
+        restoredPendingBatchResultFingerprint = pendingFingerprint
         Task { try? await logStore?.append(category: .renewal, level: .info, message: "批量续签结果已从持久化载荷恢复（共 \(result.total)，成功 \(result.succeeded)，失败 \(result.failed)，等待 Seal 核验 \(result.awaitingConfirmation)，明细 \(restored.items.count) 项）", code: "SEAL-RENEW-024") }
     }
 
     private func clearPendingBatchResult() {
         hasRestoredPendingBatchResult = false
+        restoredPendingBatchResultFingerprint = nil
         UserDefaults.standard.removeObject(forKey: Self.pendingBatchResultKey)
         try? FileManager.default.removeItem(at: Self.pendingBatchResultFileURL)
     }

@@ -73,8 +73,19 @@
 
 | 码 | 它在说什么 | 出处 |
 |---|---|---|
+| `SEAL-INVENTORY-100` | App ID 清单同步时本机缺少该 Apple ID 的登录凭据 | `SettingsViewModel.swift` |
+| `SEAL-INVENTORY-900` | App ID 清单同步失败（带 domain/code） | `SettingsViewModel.swift` |
 | `SEAL-INVENTORY-100a` | 本机没有该 Apple ID 的登录凭据（同步前需要先验证） | `SettingsViewModel.swift` |
 | `SEAL-INVENTORY-900a` | 证书状态同步失败（带 domain/code） | `SettingsViewModel.swift` |
+| `SEAL-INVENTORY-100b` | Apple ID 总览完整同步时本机缺少该账号凭据 | `SettingsViewModel.swift` |
+| `SEAL-INVENTORY-900b` | Apple ID 总览的 App ID 与证书状态同步失败（带 domain/code） | `SettingsViewModel.swift` |
+
+## 设备配对
+
+| 码 | 它在说什么 | 出处 |
+|---|---|---|
+| `SEAL-PAIR-209` | 未存有可导出的配对文件 | `PairingStore.swift` |
+| `SEAL-PAIR-209a` | 本机配对文件读取或结构复核失败，无法导出 | `SettingsViewModel.swift` |
 
 ## 已从源码移除（旧日志里还会看到，**别当成现在还在报**）
 

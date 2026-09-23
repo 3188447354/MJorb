@@ -69,6 +69,17 @@ enum PendingBatchResultPayload {
         )
     }
 
+    /// 返回可稳定比较的载荷指纹，供界面识别「已恢复过一次」与「新进程刚写回结算」的区别。
+    ///
+    /// 不能只依赖时间戳：历史载荷不一定含时间戳，而条目终态才是决定抽屉分桶的真实来源。
+    static func restorationFingerprint(from payload: [String: Any]) -> String? {
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
+            return nil
+        }
+        return data.base64EncodedString()
+    }
+
     /// 新进程完成 Seal 自替换身份核验后，才允许为那一项写入终态。
     ///
     /// 只结算明确处于 `awaitingSealConfirmation` 的 Seal 项，避免启动时把旧载荷里

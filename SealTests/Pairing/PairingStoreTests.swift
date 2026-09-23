@@ -40,6 +40,43 @@ struct PairingStoreTests {
     }
 
     @Test
+    func exportsOnlyTheCanonicalValidatedPairingFile() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let source = root.appending(path: "Source.plist")
+        let destination = root.appending(path: "Stored/Pairing.plist")
+        let expected = standardPairingDictionary(udid: "device-123")
+        try PropertyListSerialization.data(
+            fromPropertyList: expected,
+            format: .binary,
+            options: 0
+        ).write(to: source)
+        let store = PairingStore(fileURL: destination)
+
+        _ = try await store.importFile(at: source)
+        let exported = try await store.exportData()
+        let exportedDictionary = try #require(
+            PropertyListSerialization.propertyList(from: exported, options: [], format: nil) as? [String: Any]
+        )
+
+        #expect(PairingStore.isCompleteLockdownPairing(exportedDictionary))
+        #expect(exportedDictionary["UDID"] as? String == "device-123")
+    }
+
+    @Test
+    func refusesToExportWhenNoPairingFileIsStored() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = PairingStore(fileURL: root.appending(path: "Pairing.plist"))
+
+        await #expect(throws: ImportFailure.self) {
+            try await store.exportData()
+        }
+    }
+
+    @Test
     func verifiedPairingSurvivesTransientRuntimeStatusChanges() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -312,6 +349,14 @@ struct PairingStoreTests {
         #expect(plist?["public_key"] as? Data == publicKey)
         #expect((plist?["private_key"] as? Data)?.count == 32)
         #expect(plist?["identifier"] as? String == "json-host-id")
+
+        let exported = try await store.exportData()
+        let exportedPlist = try #require(
+            PropertyListSerialization.propertyList(from: exported, options: [], format: nil) as? [String: Any]
+        )
+        #expect(Set(exportedPlist.keys) == ["public_key", "private_key", "identifier"])
+        #expect(exportedPlist["public_key"] as? Data == publicKey)
+        #expect(exportedPlist["private_key"] as? Data == privateKey)
     }
 
     private func standardPairingDictionary(udid: String) -> [String: Any] {

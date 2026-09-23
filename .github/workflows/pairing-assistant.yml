@@ -262,7 +262,7 @@ jobs:
           }
           foreach ($field in $expected.Keys) {
             if ($version.$field -ne $expected[$field]) {
-              throw "Unexpected Windows identity $field: '$($version.$field)'"
+              throw "Unexpected Windows identity ${field}: '$($version.$field)'"
             }
           }
 

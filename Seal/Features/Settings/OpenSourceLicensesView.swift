@@ -10,6 +10,12 @@ struct OpenSourceLicensesView: View {
 
     private let dependencies: [OpenSourceDependency] = [
         OpenSourceDependency(
+            name: "SideStore",
+            purpose: "本机服务、Anisette 设计参考与设备连接链路",
+            license: "AGPL-3.0",
+            url: Self.makeURL("https://github.com/SideStore/SideStore")
+        ),
+        OpenSourceDependency(
             name: "AltSign",
             purpose: "IPA 签名、证书与描述文件处理",
             license: "AGPL-3.0",

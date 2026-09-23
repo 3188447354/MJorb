@@ -45,14 +45,14 @@ final class CertificateExportHandler {
     }
 
     /// 主动导出证书给 LiveContainer（免 JIT 模式），不需要 LiveContainer 有 SideStore 导入按钮
-    func exportToLiveContainer() {
+    func exportToLiveContainer(accountID: UUID) {
         let callbackTemplate = "livecontainer://certificate?cert=$(BASE64_CERT)&password=$(PASSWORD)"
-        presentExportDialog(callbackTemplate: callbackTemplate)
+        presentExportDialog(callbackTemplate: callbackTemplate, accountID: accountID)
     }
 
     // MARK: - Private
 
-    private func presentExportDialog(callbackTemplate: String) {
+    private func presentExportDialog(callbackTemplate: String, accountID: UUID? = nil) {
         guard let topVC = UIApplication.shared.topViewController() else { return }
 
         let alert = UIAlertController(
@@ -63,7 +63,7 @@ final class CertificateExportHandler {
 
         let exportAction = UIAlertAction(title: NSLocalizedString("导出", comment: ""), style: .default) { [weak self] _ in
             Task { @MainActor in
-                await self?.performExport(callbackTemplate: callbackTemplate, from: topVC)
+                await self?.performExport(callbackTemplate: callbackTemplate, accountID: accountID, from: topVC)
             }
         }
 
@@ -73,9 +73,9 @@ final class CertificateExportHandler {
         topVC.present(alert, animated: true)
     }
 
-    private func performExport(callbackTemplate: String, from viewController: UIViewController) async {
+    private func performExport(callbackTemplate: String, accountID: UUID?, from viewController: UIViewController) async {
         // 1. 取当前活跃账号 ID
-        guard let activeAccountID = await signingPreferenceStore.activeAccountID() else {
+        guard let activeAccountID = accountID ?? await signingPreferenceStore.activeAccountID() else {
             showToast("未找到活跃账号，请先在 Seal 中添加并选择签名账号", in: viewController)
             return
         }

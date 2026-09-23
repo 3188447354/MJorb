@@ -24,7 +24,7 @@ struct SigningAndRenewalGuideView: View {
     }
 
     private func toggle(_ section: SigningGuideSection) {
-        withAnimation(.easeInOut(duration: 0.22)) {
+        withAnimation(.easeInOut(duration: 0.18)) {
             expandedSection = expandedSection == section ? nil : section
         }
     }
@@ -119,7 +119,7 @@ private struct SigningGuideAccordionCard: View {
                         SigningGuideStepRow(index: index, text: step)
                     }
                 }
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(.opacity)
             }
         }
         .background(cardBackground)

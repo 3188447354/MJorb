@@ -10,7 +10,7 @@ struct PrivacyNoticeView: View {
             }
             .padding(20)
         }
-        .navigationTitle("隐私说明")
+        .navigationTitle("本机签名与凭据说明")
         .navigationBarTitleDisplayMode(.inline)
         .sealScreenBackground()
     }

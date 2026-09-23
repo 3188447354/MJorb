@@ -267,10 +267,11 @@ struct SigningCertificateSettingsView: View {
                 )
                 Divider()
                 installedAppsSection(account: account)
-                Divider()
-                Button {
-                    certificateExportHandler.exportToLiveContainer()
-                } label: {
+                if LiveContainerCertificateExportPolicy.isEligible(accountID: account.id, apps: relatedApps) {
+                    Divider()
+                    Button {
+                        certificateExportHandler.exportToLiveContainer(accountID: account.id)
+                    } label: {
                     HStack(spacing: 10) {
                         Image(systemName: "square.and.arrow.up")
                             .font(.subheadline.weight(.semibold))
@@ -283,6 +284,7 @@ struct SigningCertificateSettingsView: View {
                     }
                     .foregroundStyle(Color.sealAccent)
                     .padding(.vertical, 12)
+                    }
                 }
             }
         }

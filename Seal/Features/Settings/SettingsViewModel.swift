@@ -583,6 +583,7 @@ final class SettingsViewModel: ObservableObject {
                 clearedAccount.selectedCertificateSerialNumber = nil
             }
             try await accountRepository.save(clearedAccount)
+            replaceDisplayedAccount(clearedAccount)
 
             // 立即从内存清单移除已撤销证书，UI 同步无需等网络回读。
             removeRevokedCertificateFromInventory(serialNumber: serialNumber, accountID: account.id)
@@ -1063,6 +1064,9 @@ final class SettingsViewModel: ObservableObject {
             updatedAccount.verificationFailureReason = nil
             updatedAccount.lastVerifiedAt = Date()
             try await accountRepository.save(updatedAccount)
+            // 创建成功的本机身份已通过 Keychain 回读校验；立即更新页面快照，
+            // 不让“本机接管”卡在下一轮异步 load 才从旧状态切换。
+            replaceDisplayedAccount(updatedAccount)
         } catch {
             let originalError = error
             var rollbackFailures: [String] = []
@@ -1648,6 +1652,11 @@ final class SettingsViewModel: ObservableObject {
 
     private func certificateInventoryCacheKey(_ accountID: UUID) -> String {
         "settings.applePortalInventory.\(accountID.uuidString)"
+    }
+
+    private func replaceDisplayedAccount(_ account: AppleAccountRecord) {
+        guard let index = accounts.firstIndex(where: { $0.id == account.id }) else { return }
+        accounts[index] = account
     }
 
     func clearSigningHistory(for accountID: UUID) async {

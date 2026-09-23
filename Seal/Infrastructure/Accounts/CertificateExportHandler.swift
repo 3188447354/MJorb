@@ -75,7 +75,13 @@ final class CertificateExportHandler {
 
     private func performExport(callbackTemplate: String, accountID: UUID?, from viewController: UIViewController) async {
         // 1. 取当前活跃账号 ID
-        guard let activeAccountID = accountID ?? await signingPreferenceStore.activeAccountID() else {
+        let resolvedAccountID: UUID?
+        if let accountID {
+            resolvedAccountID = accountID
+        } else {
+            resolvedAccountID = await signingPreferenceStore.activeAccountID()
+        }
+        guard let activeAccountID = resolvedAccountID else {
             showToast("未找到活跃账号，请先在 Seal 中添加并选择签名账号", in: viewController)
             return
         }

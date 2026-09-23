@@ -13,8 +13,13 @@ struct SigningTargetRecord: Codable, Equatable, Identifiable, Sendable {
     let deviceIdentifiers: [String]
     let entitlementKeys: [String]
 
-    init(binding: ProvisioningProfileBinding) {
-        bundleIdentifier = binding.bundleIdentifier
+    init(
+        binding: ProvisioningProfileBinding,
+        signedBundleIdentifier: String? = nil
+    ) {
+        // 共享主描述文件时，profile 内的 application-identifier 属于主 App；
+        // 记录的 target 则必须保留实际被重签的扩展 Bundle ID，供缓存和安装前校验逐项匹配。
+        bundleIdentifier = signedBundleIdentifier ?? binding.bundleIdentifier
         profileUUID = binding.profileUUID
         profileName = binding.profileName
         profileCreationDate = binding.creationDate

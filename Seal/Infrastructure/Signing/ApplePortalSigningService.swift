@@ -1040,7 +1040,9 @@ actor ApplePortalSigningService {
             let profileRequestStartedAt = Date()
             let profilePreparation = try await provisioningProfiles(
                 mappings: prepared.bundleIDMappings,
+                originalMainBundleID: app.originalBundleIdentifier,
                 mappedMainBundleID: prepared.mappedMainBundleID,
+                extensionProfileStrategy: app.effectiveExtensionProfileStrategy,
                 appName: app.displayName,
                 appURL: prepared.appURL,
                 workspace: prepared,
@@ -1064,11 +1066,20 @@ actor ApplePortalSigningService {
 
             await progress(.signing)
             stage = .signing
+            let sharedProfileBundleIDs: [String]
+            if profilePreparation.extensionProfileStrategy == .sharedMainProfile {
+                sharedProfileBundleIDs = try signingWorkspace
+                    .signedBundleTargets(in: prepared)
+                    .map(\.bundleIdentifier)
+            } else {
+                sharedProfileBundleIDs = []
+            }
             try await signApp(
                 at: prepared.appURL,
                 p12Data: identity.secret.certificateP12,
                 mainBundleID: prepared.mappedMainBundleID,
                 profiles: profilePreparation.profiles,
+                sharedProfileBundleIDs: sharedProfileBundleIDs,
                 team: team
             )
             try Task.checkCancellation()
@@ -1079,6 +1090,7 @@ actor ApplePortalSigningService {
                 certificateSerialNumber: identity.certificate.serialNumber,
                 deviceIdentifier: deviceIdentifier,
                 requestedEntitlements: profilePreparation.requestedEntitlements,
+                extensionProfileStrategy: profilePreparation.extensionProfileStrategy,
                 requestedAfter: profileRequestStartedAt.addingTimeInterval(-Self.profileRequestClockTolerance)
             )
             guard let mainBinding = profileBindings[prepared.mappedMainBundleID] else {
@@ -1089,12 +1101,12 @@ actor ApplePortalSigningService {
                     code: "SEAL-PROFILE-317a"
                 )
             }
-            for binding in profileBindings.values.sorted(by: { $0.bundleIdentifier < $1.bundleIdentifier }) {
+            for (signedBundleID, binding) in profileBindings.sorted(by: { $0.key < $1.key }) {
                 let serials = binding.certificateSerialNumbers.map {
                     "…" + SigningCertificateSelectionPolicy.normalizedSerialNumber($0).suffix(8)
                 }.joined(separator: "、")
                 await diagnostic(
-                    "描述文件核验：Bundle=\(binding.bundleIdentifier)，UUID=\(binding.profileUUID ?? "缺失")，创建=\(Self.diagnosticDate(binding.creationDate))，到期=\(Self.diagnosticDate(binding.expirationDate))，证书=\(serials)，本轮新申请=是"
+                    "描述文件核验：目标=\(signedBundleID)，描述文件 Bundle=\(binding.bundleIdentifier)，UUID=\(binding.profileUUID ?? "缺失")，创建=\(Self.diagnosticDate(binding.creationDate))，到期=\(Self.diagnosticDate(binding.expirationDate))，证书=\(serials)，本轮新申请=是"
                 )
             }
 
@@ -1121,6 +1133,7 @@ actor ApplePortalSigningService {
                 deviceIdentifier: deviceIdentifier,
                 teamID: team.identifier,
                 profileBindings: profileBindings,
+                extensionProfileStrategy: profilePreparation.extensionProfileStrategy,
                 droppedExtensionBundleIdentifiers:
                     profilePreparation.droppedExtensionBundleIdentifiers
             )
@@ -1895,7 +1908,9 @@ actor ApplePortalSigningService {
 
     private func provisioningProfiles(
         mappings: [String: String],
+        originalMainBundleID: String,
         mappedMainBundleID: String,
+        extensionProfileStrategy: AppExtensionProfileStrategy,
         appName: String,
         appURL: URL,
         workspace: PreparedSigningWorkspace,
@@ -1937,9 +1952,22 @@ actor ApplePortalSigningService {
         // **那条诊断永远不会写**。真机后果：抖音两次尝试的日志里都**没有**名额诊断，
         // 反而看不出「它根本没走到建号这一步」。
         // ⇒ 先用一条不依赖 `existing` 的日志把入口钉住（只需要 N，不需要发请求）。
-        let extensionAppIDCount = mappings.values.filter { $0 != mappedMainBundleID }.count
+        let portalMappings = extensionProfileStrategy.portalMappings(
+            from: mappings,
+            originalMainBundleID: originalMainBundleID
+        )
+        guard portalMappings[originalMainBundleID] == mappedMainBundleID else {
+            throw Self.failure(
+                title: "主应用标识无效",
+                reason: "签名工作区缺少主应用的 Bundle ID 映射，无法申请新的描述文件。",
+                recovery: "重新导入 IPA 后重试",
+                code: "SEAL-PROFILE-319"
+            )
+        }
+        let extensionAppIDCount = portalMappings.values.filter { $0 != mappedMainBundleID }.count
         await diagnostic(
-            "App ID 阶段开始：本次需 \(mappings.count) 个 App ID（主 App 1 + 扩展 \(extensionAppIDCount)），准备读取账号已有列表"
+            "App ID 阶段开始：\(extensionProfileStrategy == .sharedMainProfile ? "共享主描述文件" : "独立扩展描述文件")，"
+                + "本次需 \(portalMappings.count) 个 App ID（主 App 1 + 扩展 \(extensionAppIDCount)），准备读取账号已有列表"
         )
         // ⚠️ **读列表也必须过退避重试**：它是 Phase 1 的第一个请求，撞上短时限流（1100）时
         // 原先会**直接让整轮签名失败**（而不是像 addAppID / 描述文件那样先退避再试），
@@ -1953,7 +1981,7 @@ actor ApplePortalSigningService {
         // ⇒ 不可能是「建号突发被限流」。
         // ⚠️ **不能用「账号存活 App ID 数」去算剩余名额** —— 上限是「7 天内注册数的滑动窗口」，
         // 不是「存活数 ≤ 10」。判据是失败时的**日志码**：SEAL-APPID-304 = 名额满 / SEAL-AUTH-107 = 限流。
-        let reusableAppIDCount = mappings.values.filter { mapped in
+        let reusableAppIDCount = portalMappings.values.filter { mapped in
             existing.contains {
                 ApplePortalAppIDResolver.matches(
                     existingBundleIdentifier: $0.bundleIdentifier,
@@ -1962,9 +1990,9 @@ actor ApplePortalSigningService {
             }
         }.count
         await diagnostic(
-            "App ID 名额：本次需 \(mappings.count) 个（主 App 1 + 扩展 \(extensionAppIDCount)），"
+            "App ID 名额：本次需 \(portalMappings.count) 个（主 App 1 + 扩展 \(extensionAppIDCount)），"
                 + "账号上已有 \(existing.count) 个、其中可复用 \(reusableAppIDCount) 个，"
-                + "需新注册 \(mappings.count - reusableAppIDCount) 个"
+                + "需新注册 \(portalMappings.count - reusableAppIDCount) 个"
         )
         // ⚠️ **取证：`fetchAppIDs` 到底会不会回填 `features`**（2026-09-18）。
         //
@@ -1996,7 +2024,7 @@ actor ApplePortalSigningService {
             )
         }
         var desiredKeysByMapped: [String: Set<String>] = [:]
-        for (_, mapped) in mappings {
+        for (_, mapped) in portalMappings {
             desiredKeysByMapped[mapped] = desiredFeatureKeys(mapped: mapped)
         }
         // ⚠️ **值类型也必须报出来**（2026-09-18）—— 判据「键集相等 ⇒ 值也相等」
@@ -2014,13 +2042,13 @@ actor ApplePortalSigningService {
             guard pairs.isEmpty == false else { return nil }
             return pairs.sorted { $0.0 < $1.0 }.map { "\($0.0)=\($0.1)" }.joined(separator: " ")
         }
-        let typeSample = mappings.values
+        let typeSample = portalMappings.values
             .compactMap { desiredFeatureTypeSummary(mapped: $0) }
             .first
         var observedWithFeatures = 0
         var skipCandidates = 0
         var firstMismatch: String?
-        for (_, mapped) in mappings {
+        for (_, mapped) in portalMappings {
             guard let matched = existing.first(where: {
                 ApplePortalAppIDResolver.matches(
                     existingBundleIdentifier: $0.bundleIdentifier,
@@ -2057,11 +2085,31 @@ actor ApplePortalSigningService {
         var requestedEntitlements: [String: [String: ProvisioningEntitlementValue]] = [:]
         var droppedExtensionBundleIdentifiers: [String] = []
 
+        // 共享模式虽然不为扩展请求 App ID/profile，仍必须提前保留每个扩展的真实权限请求，
+        // 供签后同一份主 profile 做逐 bundle 校验；不能把缺权限伪装成“签名成功”。
+        for mappedBundleID in mappings.values {
+            guard let application = applications[mappedBundleID] else { continue }
+            let entitlementSource = filteredAppIDEntitlements(from: application, team: team)
+            var entitlementValues: [String: ProvisioningEntitlementValue] = [:]
+            for (entitlement, value) in entitlementSource {
+                guard let converted = ProvisioningEntitlementValue.make(from: value) else {
+                    throw Self.failure(
+                        title: "应用权限无法解析",
+                        reason: "\(mappedBundleID) 的权限 \(entitlement.rawValue) 包含无法校验的值类型。",
+                        recovery: "检查 IPA 权限后重试",
+                        code: "SEAL-ENTITLEMENT-403"
+                    )
+                }
+                entitlementValues[entitlement.rawValue] = converted
+            }
+            requestedEntitlements[mappedBundleID] = entitlementValues
+        }
+
         // Phase 1: only read/create/update App IDs. No provisioning profile is fetched here.
         // 顺序：**主 App 优先**（见 `ApplePortalAppIDResolver.preparationOrder`）——
         // 名额不足时让扩展去「丢弃降级」，而不是让主 App 拿不到名额、整个签名失败。
         for (originalBundleID, mappedBundleID) in ApplePortalAppIDResolver.preparationOrder(
-            mappings: mappings,
+            mappings: portalMappings,
             mappedMainBundleID: mappedMainBundleID
         ) {
             do {
@@ -2129,20 +2177,6 @@ actor ApplePortalSigningService {
                 // 历史 bug 用 original ID 查 ⇒ 恒 nil ⇒ 整段 entitlements 处理被跳过、
                 // 签出的包不带任何能力（App Group、关联域名等全部丢失）。
                 if let application = applications[mappedBundleID] {
-                    let entitlementSource = filteredAppIDEntitlements(from: application, team: team)
-                    var entitlementValues: [String: ProvisioningEntitlementValue] = [:]
-                    for (entitlement, value) in entitlementSource {
-                        guard let converted = ProvisioningEntitlementValue.make(from: value) else {
-                            throw Self.failure(
-                                title: "应用权限无法解析",
-                                reason: "\(mappedBundleID) 的权限 \(entitlement.rawValue) 包含无法校验的值类型。",
-                                recovery: "检查 IPA 权限或使用支持该能力的账号",
-                                code: "SEAL-ENTITLEMENT-403"
-                            )
-                        }
-                        entitlementValues[entitlement.rawValue] = converted
-                    }
-                    requestedEntitlements[mappedBundleID] = entitlementValues
                     // 扩展 features 更新失败时降级为空 features 重试，主 App 失败则直接报错
                     do {
                         // ⚠️ **`updateFeatures` 也必须过退避重试**（2026-09-17 补）。
@@ -2197,7 +2231,7 @@ actor ApplePortalSigningService {
                 await onWorkUnits(SigningWorkUnits(
                     stage: .preparingAppID,
                     done: preparedAppIDs.count,
-                    total: mappings.count
+                    total: portalMappings.count
                 ))
             } catch is CancellationError {
                 throw CancellationError()
@@ -2218,8 +2252,8 @@ actor ApplePortalSigningService {
                     }
                     throw Self.failure(
                         title: "签名失败",
-                        reason: "Apple 返回：扩展无法创建 App ID。这通常是因为免费账号的 App ID 名额已满（7 天内最多 10 个），而抖音这类多扩展 App 需要占用多个名额。\n\n你可以选择：① 移除部分扩展（会丢失对应功能）；② 等待 7 天窗口滚动后重试；③ 使用付费开发者账号。",
-                        recovery: "移除扩展并重试",
+                        reason: "Apple 返回：扩展无法创建 App ID。请等待 7 天窗口滚动后重试；不要移除扩展，以免改变原应用功能。",
+                        recovery: "等待窗口滚动后重试",
                         code: "SEAL-EXT-401"
                     )
                 }
@@ -2274,8 +2308,8 @@ actor ApplePortalSigningService {
                 guard allowDroppingExtensions else {
                     throw Self.failure(
                         title: "签名失败",
-                        reason: "Apple 返回：扩展无法生成描述文件。这通常是因为免费账号的 App ID 名额已满（7 天内最多 10 个），而抖音这类多扩展 App 需要占用多个名额。\n\n你可以选择：① 移除部分扩展（会丢失对应功能）；② 等待 7 天窗口滚动后重试；③ 使用付费开发者账号。",
-                        recovery: "移除扩展并重试",
+                        reason: "Apple 返回：扩展无法生成描述文件。请等待 7 天窗口滚动后重试；不要移除扩展，以免改变原应用功能。",
+                        recovery: "等待窗口滚动后重试",
                         code: "SEAL-EXT-401a"
                     )
                 }
@@ -2291,6 +2325,7 @@ actor ApplePortalSigningService {
         return ProfilePreparation(
             profiles: profiles,
             requestedEntitlements: requestedEntitlements,
+            extensionProfileStrategy: extensionProfileStrategy,
             droppedExtensionBundleIdentifiers: Array(Set(droppedExtensionBundleIdentifiers))
         )
     }
@@ -2622,6 +2657,7 @@ actor ApplePortalSigningService {
         certificateSerialNumber: String,
         deviceIdentifier: String,
         requestedEntitlements: [String: [String: ProvisioningEntitlementValue]],
+        extensionProfileStrategy: AppExtensionProfileStrategy,
         requestedAfter: Date
     ) throws -> [String: ProvisioningProfileBinding] {
         let reader = ProvisioningProfileReader()
@@ -2632,7 +2668,7 @@ actor ApplePortalSigningService {
             guard FileManager.default.fileExists(atPath: profileURL.path) else {
                 throw Self.failure(
                     title: "描述文件校验失败",
-                    reason: "\(target.bundleIdentifier) 没有 embedded.mobileprovision。主应用和每个扩展都必须独立包含正确的描述文件。",
+                    reason: "\(target.bundleIdentifier) 没有 embedded.mobileprovision。主应用和每个保留扩展都必须包含本轮可验证的描述文件。",
                     recovery: "重新获取描述文件",
                     code: "SEAL-PROFILE-318"
                 )
@@ -2641,7 +2677,10 @@ actor ApplePortalSigningService {
             let binding = try reader.binding(from: data)
                 .validated(
                     expectedTeamID: teamID,
-                    expectedBundleID: target.bundleIdentifier,
+                    expectedBundleID: extensionProfileStrategy.expectedProfileBundleID(
+                        for: target.bundleIdentifier,
+                        mappedMainBundleID: workspace.mappedMainBundleID
+                    ),
                     expectedCertificateSerialNumber: certificateSerialNumber,
                     expectedDeviceIdentifier: deviceIdentifier,
                     requestedAfter: requestedAfter,
@@ -2662,6 +2701,7 @@ actor ApplePortalSigningService {
         p12Data: Data?,
         mainBundleID: String,
         profiles: [ALTProvisioningProfile],
+        sharedProfileBundleIDs: [String],
         // ★ **上游签名器需要团队信息**（2026-09-19，换 `SideSign` 后新增 ✓）。
         // `SideSign` 的 `Team(identifier:name:type:)` 要这三样 ✓：
         //   - `identifier` ⇒ `team.identifier` ✓
@@ -2739,9 +2779,22 @@ actor ApplePortalSigningService {
         //（详见下面那条 `await diagnostic` 的注释 ✓）。
         // 保留 `SigningCacheStats` 类型本身只是为了**不动闭包的返回类型** ✓。
         _ = try await Task.detached(priority: .userInitiated) {
-            // 对齐 AltStore：签名前把每个描述文件的 appGroups 写入对应 bundle 的 Info.plist
+            // 对齐 AltStore：签名前把每个描述文件的 appGroups 写入对应 bundle 的 Info.plist。
+            // 共享主描述文件时，SideSign 会将这同一份 profile 嵌入每个保留扩展；元数据也必须
+            // 同步写入这些扩展，特别是文件提供者的 NSExtensionFileProviderDocumentGroup。
             let reader = ProvisioningProfileReader()
-            for material in materials {
+            let metadataMaterials: [SideSignAppSigner.ProfileMaterial]
+            if sharedProfileBundleIDs.isEmpty == false,
+               let mainMaterial = materials.first(where: {
+                   $0.bundleID.caseInsensitiveCompare(mainBundleID) == .orderedSame
+               }) ?? materials.first {
+                metadataMaterials = sharedProfileBundleIDs.map {
+                    SideSignAppSigner.ProfileMaterial(bundleID: $0, data: mainMaterial.data)
+                }
+            } else {
+                metadataMaterials = materials
+            }
+            for material in metadataMaterials {
                 let groups: [String]
                 if let details = try? reader.details(from: material.data),
                    case let .array(values) = details.entitlements["com.apple.security.application-groups"] {
@@ -2906,6 +2959,7 @@ private struct SigningIdentity {
 private struct ProfilePreparation {
     let profiles: [ALTProvisioningProfile]
     let requestedEntitlements: [String: [String: ProvisioningEntitlementValue]]
+    let extensionProfileStrategy: AppExtensionProfileStrategy
     let droppedExtensionBundleIdentifiers: [String]
 }
 

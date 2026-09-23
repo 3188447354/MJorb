@@ -1382,7 +1382,7 @@ def violations(load=read):
           "R26: 主 App 之外的条目仍要按原序稳定排序，否则同一份输入的顺序会抖、日志对不上")
     # 名额诊断必须**无条件**写：缺了它，「名额不够」与「请求过密被限流」在导出的日志里
     # 长得一模一样（都是 App ID 阶段报会话失效），于是「用户把日志发给我能看出失败原因吗」= 不能。
-    check(r'"App ID 名额：本次需 \(mappings.count) 个（主 App 1 + 扩展 \(extensionAppIDCount)），"'
+    check(r'"App ID 名额：本次需 \(portalMappings.count) 个（主 App 1 + 扩展 \(extensionAppIDCount)），"'
           in portal_source,
           "R26: 必须无条件写一条「App ID 名额」诊断 —— 否则两种成因在日志里无法区分")
     app_id_order_tests = load("SealTests/Signing/ApplePortalSigningFailureTests.swift")
@@ -1507,7 +1507,7 @@ def violations(load=read):
           and "该 Apple ID 的登录状态已过期。签名过程中无法重新认证" not in portal_source,
           "R31: `sign()` 不能把 SEAL-AUTH-107 无差别替换成「去重新验证」—— "
           "那会覆盖 `appIDFailure` 特意写过的「先等几分钟 / 换账号」，把用户推回死循环")
-    check("App ID 阶段开始：本次需" in portal_source,
+    check("App ID 阶段开始：" in portal_source,
           "R31: Phase 1 的入口必须先留痕 —— 完整的名额诊断排在 `fetchAppIDs` 之后，"
           "那个请求一失败，日志里就完全看不出「走到了哪一步」")
     check("证书列表拉取失败：耗时" in portal_source
@@ -4492,15 +4492,15 @@ def main():
         # 退回字母序调用（同时丢掉 preparationOrder 的调用点）。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "        for (originalBundleID, mappedBundleID) in ApplePortalAppIDResolver.preparationOrder(\n"
-         "            mappings: mappings,\n"
+         "            mappings: portalMappings,\n"
          "            mappedMainBundleID: mappedMainBundleID\n"
          "        ) {",
          "        for (originalBundleID, mappedBundleID) in mappings.sorted(by: { $0.key < $1.key }) {",
          "R26: 不能退回「按 Bundle ID 字母序创建 App ID」"),
         # 去掉名额诊断：两种成因在日志里又变得无法区分。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         r'            "App ID 名额：本次需 \(mappings.count) 个（主 App 1 + 扩展 \(extensionAppIDCount)），"',
-         r'            "本次需要注册 \(mappings.count) 个 App ID",',
+         r'            "App ID 名额：本次需 \(portalMappings.count) 个（主 App 1 + 扩展 \(extensionAppIDCount)），"',
+         r'            "本次需要注册 \(portalMappings.count) 个 App ID",',
          "R26: 必须无条件写一条「App ID 名额」诊断"),
         # 把单测改宽：只断言「非空」，主 App 是否在最前就不管了。
         ("SealTests/Signing/ApplePortalSigningFailureTests.swift",
@@ -4557,9 +4557,7 @@ def main():
          "R31: `sign()` 不能把 SEAL-AUTH-107 无差别替换成「去重新验证」"),
         # 去掉 Phase 1 的入口留痕：`fetchAppIDs` 一失败，日志里就看不出走到哪一步。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "        await diagnostic(\n"
-         "            \"App ID 阶段开始：本次需 \\(mappings.count) 个 App ID（主 App 1 + 扩展 \\(extensionAppIDCount)），准备读取账号已有列表\"\n"
-         "        )\n",
+         '            "App ID 阶段开始：\\(extensionProfileStrategy == .sharedMainProfile ? "共享主描述文件" : "独立扩展描述文件")，"',
          "",
          "R31: Phase 1 的入口必须先留痕"),
         # 去掉证书列表失败的原因与耗时：又只剩「暂不可用」，查不出是限流还是超时。

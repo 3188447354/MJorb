@@ -1211,10 +1211,16 @@ actor SigningCoordinator {
         }
         app.entitlementValidationStatus = "已按 embedded.mobileprovision 校验"
         app.capabilityValidationStatus = "已按 Apple App ID 与描述文件校验"
+        app.extensionProfileStrategy = result.extensionProfileStrategy
         app.lastSignedAt = Date()
         app.removedExtensionBundleIdentifiers = result.droppedExtensionBundleIdentifiers
-        app.signingTargets = result.profileBindings.values
-            .map(SigningTargetRecord.init(binding:))
+        app.signingTargets = result.profileBindings
+            .map { bundleIdentifier, binding in
+                SigningTargetRecord(
+                    binding: binding,
+                    signedBundleIdentifier: bundleIdentifier
+                )
+            }
             .sorted { $0.bundleIdentifier < $1.bundleIdentifier }
 
         app.extensions.removeAll {

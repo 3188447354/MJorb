@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-09-24 多扩展 IPA 续签重复消耗 Apple 门户配额
+
+- **现象**：普通 IPA 含多个扩展时，续签会按主应用及每个扩展分别请求 Apple App ID 和描述文件；免费账号不仅等待长，也更容易碰到 App ID 配额。
+- **根因**：Seal 的门户映射把每个待签 Bundle ID 都当作独立描述文件目标，未对齐 SideStore 的“保留扩展时共享主描述文件”路径。
+- **修复**：普通应用固定使用共享主描述文件策略：门户只注册/请求主应用一次；所有保留扩展仍各自本地重签，但嵌入主描述文件，并按实际扩展权限、设备、证书和有效期逐项校验。Seal 自身继续走独立内部策略，不受该优化影响。
+- **涉及文件**：`Seal/Core/Signing/AppExtensionProfileStrategy.swift`、`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、`Seal/Core/Signing/SigningTargetRecord.swift`、`SealTests/Signing/AppExtensionProfileStrategyTests.swift`、`docs/upstream-alignment.md`。
+- **验证状态**：已新增纯策略与签名目标记录测试；Windows 本机无 Xcode，待 GitHub Actions 完整编译、Swift 回归及多扩展 IPA 真机签名/安装/续签回归。
+
+---
+
 ## 2026-09-23 配对助手泄漏英文底层错误并压住 UDID
 
 - **现象**：配对被系统拒绝时，界面在主按钮下方直接显示 `Pairing rejected: Failed to authenticate...`，并与 UDID 行重叠；刷新按钮与最小化按钮的可点击区域也有 4px 重叠。

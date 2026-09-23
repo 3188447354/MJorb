@@ -45,7 +45,6 @@ def stage_ui_assets(root: pathlib.Path) -> None:
     target = root / "src" / "seal_assets"
     target.mkdir(parents=True, exist_ok=True)
     required = [
-        "seal_icon_ui.rgba",
         "iphone_model.rgba",
     ]
     for name in required:
@@ -53,6 +52,8 @@ def stage_ui_assets(root: pathlib.Path) -> None:
         if not asset.exists():
             raise RuntimeError(f"missing Seal pairing UI asset: {asset}")
         shutil.copyfile(asset, target / name)
+    if not (target / "seal_icon_ui.rgba").exists():
+        raise RuntimeError("missing staged rounded Seal UI icon")
 
 
 def patch_main(path: pathlib.Path) -> None:
@@ -128,6 +129,63 @@ def patch_main(path: pathlib.Path) -> None:
     apps_anchor = "                GuiCommands::InstalledApps(apps) => self.installed_apps = Some(apps),\n"
     apps_replacement = """                GuiCommands::InstalledApps(apps) => {\n                    self.installed_apps = Some(apps);\n                    if self.pending_seal_install && self.pairing_file.is_some() {\n                        self.install_pairing_file_to_seal_if_ready();\n                    }\n                }\n"""
     text = replace_once(text, apps_anchor, apps_replacement, "pending auto-install after installed apps")
+
+    devices_anchor = """                GuiCommands::Devices(vec) => {
+                    self.devices = Some(vec);
+                    if self.selected_device.is_empty()
+                        || (self
+                            .devices
+                            .as_ref()
+                            .is_none_or(|devs| !devs.contains_key(&self.selected_device)))
+                    {
+                        if let Some(devs) = self.devices.as_ref()
+                            && devs.len() == 1
+                        {
+                            let (dev_name, dev) = devs.iter().next().unwrap();
+                            self.select_device(dev_name.clone(), dev.clone());
+                        }
+                    }
+                }
+"""
+    devices_replacement = """                GuiCommands::Devices(devices) => {
+                    let selected_missing = self.selected_device.is_empty()
+                        || !devices.contains_key(&self.selected_device);
+                    self.devices = Some(devices);
+                    if selected_missing {
+                        if let Some((device_name, device)) = self
+                            .devices
+                            .as_ref()
+                            .and_then(|devices| devices.iter().next())
+                        {
+                            self.select_device(device_name.clone(), device.clone());
+                        } else {
+                            self.selected_device.clear();
+                            self.device_info = None;
+                            self.wireless_enabled = None;
+                            self.dev_mode_enabled = None;
+                            self.ddi_mounted = None;
+                            self.reset_pairing_state();
+                        }
+                    }
+                }
+"""
+    text = replace_once(text, devices_anchor, devices_replacement, "automatic device state reconciliation")
+
+    command_loop_anchor = """    rt.spawn(async move {
+        let gui_sender = gui_sender.clone();
+"""
+    command_loop_replacement = """    let idevice_sender_poll = idevice_sender.clone();
+    rt.spawn(async move {
+        loop {
+            let _ = idevice_sender_poll.send(IdeviceCommands::GetDevices);
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    });
+
+    rt.spawn(async move {
+        let gui_sender = gui_sender.clone();
+"""
+    text = replace_once(text, command_loop_anchor, command_loop_replacement, "USB polling fallback")
 
     ui_anchor = "        egui::CentralPanel::default().show(ctx, |ui| {\n"
     ui_template = pathlib.Path(__file__).with_name("seal_ui_tail.rs.txt").read_text(

@@ -59,7 +59,7 @@ jobs:
         shell: pwsh
         run: |
           & Tools/SealPairingAssistant/stage_icon.ps1 `
-            -Source "Tools/SealPairingAssistant/assets/seal_icon.png" `
+            -Source "Seal/Resources/Assets.xcassets/AppIcon.appiconset/SealIcon-1024.png" `
             -UpstreamRoot "upstream/idevice_pair"
           $buildScript = Get-Content upstream/idevice_pair/build.rs -Raw
           if (-not $buildScript.Contains('res.set_icon("icon.ico")')) {

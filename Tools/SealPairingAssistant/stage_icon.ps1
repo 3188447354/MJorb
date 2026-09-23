@@ -12,7 +12,10 @@ $sourcePath = (Resolve-Path $Source).Path
 $upstreamPath = (Resolve-Path $UpstreamRoot).Path
 $runtimeIcon = Join-Path $upstreamPath "icon.png"
 $resourceIcon = Join-Path $upstreamPath "icon.ico"
-$tempPng = Join-Path $env:RUNNER_TEMP "seal-pairing-icon-256.png"
+$uiAssetDirectory = Join-Path $upstreamPath "src/seal_assets"
+$uiIcon = Join-Path $uiAssetDirectory "seal_icon_ui.rgba"
+$temporaryDirectory = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
+$tempPng = Join-Path $temporaryDirectory "seal-pairing-icon-256.png"
 
 Add-Type -AssemblyName System.Drawing
 
@@ -22,13 +25,25 @@ try {
         throw "Seal app icon must be at least 256x256, got $($image.Width)x$($image.Height)"
     }
 
-    Copy-Item $sourcePath $runtimeIcon -Force
-
     $bitmap = New-Object System.Drawing.Bitmap 256, 256, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     try {
         $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
         try {
             $graphics.Clear([System.Drawing.Color]::Transparent)
+            $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+            try {
+                # Use one rounded source for the executable and the in-window texture.
+                $diameter = 52
+                $path.AddArc(0, 0, $diameter, $diameter, 180, 90)
+                $path.AddArc(256 - $diameter, 0, $diameter, $diameter, 270, 90)
+                $path.AddArc(256 - $diameter, 256 - $diameter, $diameter, $diameter, 0, 90)
+                $path.AddArc(0, 256 - $diameter, $diameter, $diameter, 90, 90)
+                $path.CloseFigure()
+                $graphics.SetClip($path)
+            }
+            finally {
+                $path.Dispose()
+            }
             $graphics.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceOver
             $graphics.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
             $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
@@ -49,6 +64,37 @@ try {
         }
 
         $bitmap.Save($tempPng, [System.Drawing.Imaging.ImageFormat]::Png)
+
+        New-Item -ItemType Directory -Force -Path $uiAssetDirectory | Out-Null
+        $uiBitmap = New-Object System.Drawing.Bitmap 160, 160, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        try {
+            $uiGraphics = [System.Drawing.Graphics]::FromImage($uiBitmap)
+            try {
+                $uiGraphics.Clear([System.Drawing.Color]::Transparent)
+                $uiGraphics.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+                $uiGraphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                $uiGraphics.DrawImage($bitmap, [System.Drawing.Rectangle]::new(0, 0, 160, 160))
+            }
+            finally {
+                $uiGraphics.Dispose()
+            }
+
+            $rgba = New-Object byte[] (160 * 160 * 4)
+            for ($y = 0; $y -lt 160; $y++) {
+                for ($x = 0; $x -lt 160; $x++) {
+                    $color = $uiBitmap.GetPixel($x, $y)
+                    $offset = ($y * 160 + $x) * 4
+                    $rgba[$offset] = $color.R
+                    $rgba[$offset + 1] = $color.G
+                    $rgba[$offset + 2] = $color.B
+                    $rgba[$offset + 3] = $color.A
+                }
+            }
+            [System.IO.File]::WriteAllBytes($uiIcon, $rgba)
+        }
+        finally {
+            $uiBitmap.Dispose()
+        }
     }
     finally {
         $bitmap.Dispose()
@@ -89,16 +135,14 @@ finally {
 
 Remove-Item $tempPng -Force -ErrorAction SilentlyContinue
 
-$sourceHash = (Get-FileHash $sourcePath -Algorithm SHA256).Hash
-$runtimeHash = (Get-FileHash $runtimeIcon -Algorithm SHA256).Hash
-if ($sourceHash -ne $runtimeHash) {
-    throw "Runtime icon did not preserve the Seal app icon bytes"
+if ((Get-Item $uiIcon).Length -ne (160 * 160 * 4)) {
+    throw "Generated Seal UI icon has an unexpected size"
 }
 if ((Get-Item $resourceIcon).Length -lt 1024) {
     throw "Generated Windows icon resource is unexpectedly small"
 }
 
-Write-Host "Seal app icon staged for runtime and Windows PE resource."
+Write-Host "Rounded Seal app icon staged for runtime, Windows PE resource, and UI texture."
 Write-Host "Source: $sourcePath"
 Write-Host "Runtime PNG: $runtimeIcon"
 Write-Host "Windows ICO: $resourceIcon"

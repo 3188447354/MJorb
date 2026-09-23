@@ -98,8 +98,8 @@
         egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::TRANSPARENT)).show(ctx, |ui| {
             let full_rect = ui.max_rect();
             let title_h = 58.0;
-            ui.painter().rect_filled(full_rect, 10.0, Color32::from_rgb(247, 250, 252));
-            ui.painter().rect_stroke(full_rect.shrink(0.5), 10.0, egui::Stroke::new(1.0_f32, Color32::from_rgb(215, 225, 233)), egui::StrokeKind::Inside);
+            ui.painter().rect_filled(full_rect, 14.0, Color32::from_rgb(247, 250, 252));
+            ui.painter().rect_stroke(full_rect.shrink(0.5), 14.0, egui::Stroke::new(1.0_f32, Color32::from_rgb(215, 225, 233)), egui::StrokeKind::Inside);
             ui.painter().line_segment([egui::pos2(full_rect.left(), full_rect.top() + title_h), egui::pos2(full_rect.right(), full_rect.top() + title_h)], egui::Stroke::new(1.0_f32, divider));
 
             let drag_rect = egui::Rect::from_min_max(full_rect.min, egui::pos2(full_rect.right() - 124.0, full_rect.top() + title_h));
@@ -114,10 +114,17 @@
             let close_rect = egui::Rect::from_min_size(egui::pos2(full_rect.right() - 50.0, full_rect.top() + 13.0), control_size);
             let min_rect = close_rect.translate(egui::vec2(-36.0, 0.0));
             let refresh_rect = min_rect.translate(egui::vec2(-36.0, 0.0));
-            let control = |ui: &mut egui::Ui, rect, label, size, color, hover| ui.put(rect, egui::Button::new(RichText::new(label).size(size).color(color)).frame(false).fill(hover));
-            if control(ui, refresh_rect, "↻", 20.0, seal_blue, Color32::from_rgb(229, 242, 248)).clicked() && let Some(dev) = selected_device.clone() { self.refresh_device_state(dev); }
-            if control(ui, min_rect, "−", 21.0, text_primary, Color32::from_rgb(232, 240, 245)).clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); }
-            if control(ui, close_rect, "×", 23.0, text_primary, Color32::from_rgb(251, 232, 232)).clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
+            let control = |ui: &mut egui::Ui, rect, id, label, size, color, hover| {
+                let response = ui.interact(rect, ui.id().with(id), egui::Sense::click());
+                if response.hovered() {
+                    ui.painter().rect_filled(rect, 7.0, hover);
+                }
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::new(size, egui::FontFamily::Proportional), color);
+                response
+            };
+            if control(ui, refresh_rect, "seal-refresh", "↻", 18.0, seal_blue, Color32::from_rgb(229, 242, 248)).on_hover_text("重新检测").clicked() && let Some(dev) = selected_device.clone() { self.refresh_device_state(dev); }
+            if control(ui, min_rect, "seal-minimize", "−", 21.0, text_primary, Color32::from_rgb(232, 240, 245)).on_hover_text("最小化").clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); }
+            if control(ui, close_rect, "seal-close", "×", 23.0, text_primary, Color32::from_rgb(251, 232, 232)).on_hover_text("退出").clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
 
             let content_width = (full_rect.width() - 42.0).min(620.0);
             let content_left = full_rect.center().x - content_width / 2.0;
@@ -181,7 +188,7 @@
             } else if is_processing {
                 Some(("请勿断开连接", "正在生成配对文件并交接给 Seal。", seal_blue, Color32::from_rgb(242, 248, 252), Color32::from_rgb(215, 228, 236)))
             } else { None };
-            let primary_rect = egui::Rect::from_min_size(egui::pos2(content_left, full_rect.bottom() - 60.0), egui::vec2(content_width, 46.0));
+            let primary_rect = egui::Rect::from_min_size(egui::pos2(content_left, full_rect.bottom() - 74.0), egui::vec2(content_width, 46.0));
             let udid_y = primary_rect.top() - 31.0;
             let udid_line_y = udid_y - 17.0;
             if let Some((title, detail, notice_color, notice_fill, notice_stroke)) = notice {

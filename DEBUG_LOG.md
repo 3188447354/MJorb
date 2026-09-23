@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-09-23 配对助手审核稿与实际 Windows 界面不一致
+
+- **现象**：审核稿已收敛为紧凑的 `820×700` 窗口、统一的顶部图标按钮和无重复文案，但实际 Windows 配对助手仍是旧的 `920×700` 布局：保留最大化按钮、刷新/最小化/退出规格不一，且“准备配对/已就绪/生成并交给 Seal”重复陈述同一状态。
+- **根因**：审核 HTML 与 `seal_ui_tail.rs.txt` 是两套独立渲染实现；此前只更新审核稿，没有将定稿规格回写进 egui 覆盖层与其 CI 标记。
+- **修复**：覆盖层窗口改为 `820×700`，移除最大化；顶部三个操作均为 `32×32`、默认无框且悬停显色；状态驱动标题与副文案，阶段统一为“连接/检查/生成/交接”，就绪态只保留“开始配对”；UDID/复制同基线且复制默认无框；移除主界面来源页脚。
+- **涉及文件**：`Tools/SealPairingAssistant/seal_ui_tail.rs.txt`、`Tools/SealPairingAssistant/patch_upstream.py`、`.github/workflows/pairing-assistant.yml`、`Tools/SealPairingAssistant/README.md`。
+- **验证状态**：已在官方固定提交 `e3abb34` 上运行覆盖脚本；本机 Windows `cargo build --release --locked` 通过。上游构建脚本下载 DDI 首次超时后，以仅供编译的临时非空占位文件重跑，未进入仓库或产物；待 GitHub Actions Windows Release 编译与人工审核截图。
+
+---
+
 ## 2026-09-23 配对文件导入在 LocalDevVPN 未连接时长期显示验证中
 
 - **现象**：Windows 配对助手已将可解析的配对文件写入 Seal，但 LocalDevVPN 未连接时，设置页立即切为“验证中”；用户无法区分“文件已导入”与“设备尚不可达”。

@@ -118,13 +118,30 @@
         } else {
             text_secondary
         };
+        let (intro_label, intro_title, intro_detail) = if seal_installed {
+            ("已完成", "配对完成", "现在可关闭此窗口，回到 iPhone 的 Seal 继续操作。")
+        } else if seal_failed {
+            ("交接失败", "重新生成配对文件", "保持设备连接，并在 iPhone 上打开 Seal 后重试。")
+        } else if seal_installing {
+            ("正在交接", "正在发送到 iPhone", "配对文件已生成，正在发送到 Seal。")
+        } else if self.pending_seal_install {
+            ("正在配对", "正在生成配对文件", "请保持 iPhone 解锁和数据线连接。")
+        } else if let Some(issue) = readiness_issues.first() {
+            ("需要处理", "检查设备状态", *issue)
+        } else if !has_device {
+            ("等待连接", "连接 iPhone", "使用数据线连接并解锁 iPhone，在设备上点按“信任”。")
+        } else if !has_ios_version || environment_checking {
+            ("设备已连接", "检查设备状态", "正在读取 iOS 版本并检查配对环境。")
+        } else {
+            ("设备已连接", "可以开始", "已识别设备信息，将按系统版本生成配对文件。")
+        };
 
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::TRANSPARENT))
             .show(ctx, |ui| {
                 let full_rect = ui.max_rect();
                 let window_radius = 10.0;
-                let title_h = 64.0;
+                let title_h = 58.0;
 
                 ui.painter().rect_filled(
                     full_rect,
@@ -154,7 +171,7 @@
 
                 let drag_rect = egui::Rect::from_min_max(
                     full_rect.min,
-                    egui::pos2(full_rect.right() - 244.0, full_rect.top() + title_h),
+                    egui::pos2(full_rect.right() - 112.0, full_rect.top() + title_h),
                 );
                 let drag_response = ui.interact(
                     drag_rect,
@@ -167,14 +184,16 @@
 
                 if let Some(dev) = selected_device.clone() {
                     let refresh_rect = egui::Rect::from_min_size(
-                    egui::pos2(full_rect.right() - 208.0, full_rect.top() + 14.0),
-                        egui::vec2(36.0, 36.0),
+                    egui::pos2(full_rect.right() - 112.0, full_rect.top() + 13.0),
+                        egui::vec2(32.0, 32.0),
                     );
                     if ui
                         .put(
                             refresh_rect,
-                            egui::Button::new(RichText::new("↻").size(24.0).color(text_primary))
-                                .frame(false),
+                            egui::Button::new(RichText::new("↻").size(20.0).color(seal_blue))
+                                .fill(if ui.rect_contains_pointer(refresh_rect) { Color32::from_rgb(229, 242, 248) } else { Color32::TRANSPARENT })
+                                .stroke(egui::Stroke::NONE)
+                                .corner_radius(7),
                         )
                         .on_hover_text("重新检测当前 iPhone")
                         .clicked()
@@ -184,8 +203,8 @@
                 }
 
                 let title_icon_rect = egui::Rect::from_min_size(
-                    full_rect.left_top() + egui::vec2(24.0, 16.0),
-                    egui::vec2(32.0, 32.0),
+                    full_rect.left_top() + egui::vec2(20.0, 14.0),
+                    egui::vec2(29.0, 29.0),
                 );
                 if let Some(texture) = &seal_icon_texture {
                     ui.put(title_icon_rect, egui::Image::new((texture.id(), title_icon_rect.size())));
@@ -207,18 +226,20 @@
                     text_primary,
                 );
 
-                let control_y = full_rect.top() + 14.0;
-                let control_size = egui::vec2(38.0, 36.0);
+                let control_y = full_rect.top() + 13.0;
+                let control_size = egui::vec2(32.0, 32.0);
                 let close_rect = egui::Rect::from_min_size(
-                    egui::pos2(full_rect.right() - 48.0, control_y),
+                    egui::pos2(full_rect.right() - 16.0 - control_size.x, control_y),
                     control_size,
                 );
-                let max_rect = close_rect.translate(egui::vec2(-42.0, 0.0));
-                let min_rect = close_rect.translate(egui::vec2(-84.0, 0.0));
+                let min_rect = close_rect.translate(egui::vec2(-36.0, 0.0));
                 if ui
                     .put(
                         min_rect,
-                        egui::Button::new(RichText::new("—").size(22.0).color(text_primary)).frame(false),
+                        egui::Button::new(RichText::new("−").size(21.0).color(text_primary))
+                            .fill(if ui.rect_contains_pointer(min_rect) { Color32::from_rgb(232, 240, 245) } else { Color32::TRANSPARENT })
+                            .stroke(egui::Stroke::NONE)
+                            .corner_radius(7),
                     )
                     .clicked()
                 {
@@ -226,18 +247,11 @@
                 }
                 if ui
                     .put(
-                        max_rect,
-                        egui::Button::new(RichText::new("□").size(20.0).color(text_primary)).frame(false),
-                    )
-                    .clicked()
-                {
-                    let maximized = ctx.input(|input| input.viewport().maximized.unwrap_or(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-                }
-                if ui
-                    .put(
                         close_rect,
-                        egui::Button::new(RichText::new("×").size(27.0).color(text_primary)).frame(false),
+                        egui::Button::new(RichText::new("×").size(23.0).color(text_primary))
+                            .fill(if ui.rect_contains_pointer(close_rect) { Color32::from_rgb(251, 232, 232) } else { Color32::TRANSPARENT })
+                            .stroke(egui::Stroke::NONE)
+                            .corner_radius(7),
                     )
                     .clicked()
                 {
@@ -254,21 +268,21 @@
                 ui.painter().text(
                     card_rect.center_top() + egui::vec2(0.0, 18.0),
                     egui::Align2::CENTER_CENTER,
-                    "设备已连接",
+                    intro_label,
                     egui::FontId::new(13.0, egui::FontFamily::Proportional),
                     seal_green,
                 );
                 ui.painter().text(
                     card_rect.center_top() + egui::vec2(0.0, 58.0),
                     egui::Align2::CENTER_CENTER,
-                    "准备配对",
+                    intro_title,
                     egui::FontId::new(28.0, egui::FontFamily::Proportional),
                     text_primary,
                 );
                 ui.painter().text(
                     card_rect.center_top() + egui::vec2(0.0, 88.0),
                     egui::Align2::CENTER_CENTER,
-                    "确认设备状态后，配对凭据将直接交给 Seal。",
+                    intro_detail,
                     egui::FontId::new(14.0, egui::FontFamily::Proportional),
                     text_secondary,
                 );
@@ -314,7 +328,7 @@
                 ui.painter().text(
                     ready_badge.center(),
                     egui::Align2::CENTER_CENTER,
-                    if device_ready { "已就绪" } else { &status_text },
+                    if device_ready { "可继续" } else { &status_text },
                     egui::FontId::new(13.0, egui::FontFamily::Proportional),
                     if device_ready { seal_green } else { status_color },
                 );
@@ -404,7 +418,7 @@
                     0
                 };
                 let current_step = completed_steps.min(3);
-                for (index, label) in ["连接", "准备", "配对", "交接"].iter().enumerate() {
+                for (index, label) in ["连接", "检查", "生成", "交接"].iter().enumerate() {
                     let x = detail_left + index as f32 * (segment_width + progress_gap);
                     let segment = egui::Rect::from_min_size(
                         egui::pos2(x, progress_top),
@@ -439,18 +453,20 @@
                 } else if seal_failed {
                     "Seal 未收到凭据。保持连接后重试，并在手机上打开 Seal。"
                 } else {
-                    "按 iOS 版本自动配对，完成后交给 Seal。"
+                    ""
                 };
-                ui.painter().text(
-                    egui::Rect::from_center_size(
-                        egui::pos2(card_rect.center().x, detail_rect.bottom() + 18.0),
-                        egui::vec2(detail_width, 22.0),
-                    ).center(),
-                    egui::Align2::CENTER_CENTER,
-                    guidance,
-                    egui::FontId::new(14.0, egui::FontFamily::Proportional),
-                    if seal_failed || !readiness_issues.is_empty() { seal_red } else { text_secondary },
-                );
+                if !guidance.is_empty() {
+                    ui.painter().text(
+                        egui::Rect::from_center_size(
+                            egui::pos2(card_rect.center().x, detail_rect.bottom() + 18.0),
+                            egui::vec2(detail_width, 22.0),
+                        ).center(),
+                        egui::Align2::CENTER_CENTER,
+                        guidance,
+                        egui::FontId::new(14.0, egui::FontFamily::Proportional),
+                        if seal_failed || !readiness_issues.is_empty() { seal_red } else { text_secondary },
+                    );
+                }
 
                 let button_text = if is_processing {
                     "正在处理…"
@@ -465,7 +481,7 @@
                 } else if seal_installed || seal_failed {
                     "重新生成配对文件"
                 } else {
-                    "生成配对并交给 Seal"
+                    "开始配对"
                 };
                 let button_fill = if can_primary_action {
                     seal_blue
@@ -558,8 +574,8 @@
                     text_primary,
                 );
                 let copy_rect = egui::Rect::from_min_size(
-                    egui::pos2(line_start + line_width - 96.0, udid_y - 18.0),
-                    egui::vec2(84.0, 36.0),
+                    egui::pos2(line_start + line_width - 60.0, udid_y - 16.0),
+                    egui::vec2(52.0, 32.0),
                 );
                 if udid != "—"
                     && ui
@@ -571,8 +587,9 @@
                                     .strong()
                                     .color(seal_blue),
                             )
-                            .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 156))
-                            .corner_radius(8),
+                            .fill(if ui.rect_contains_pointer(copy_rect) { Color32::from_rgb(229, 242, 248) } else { Color32::TRANSPARENT })
+                            .stroke(egui::Stroke::NONE)
+                            .corner_radius(7),
                         )
                         .clicked()
                 {
@@ -582,7 +599,7 @@
                 ui.painter().text(
                     egui::pos2(full_rect.center().x, full_rect.bottom() - 20.0),
                     egui::Align2::CENTER_CENTER,
-                    "基于 jkcoxson/idevice_pair 0.1.14 二次开发 · Seal 负责界面与安全交接",
+                    "",
                     egui::FontId::new(12.0, egui::FontFamily::Proportional),
                     text_secondary,
                 );

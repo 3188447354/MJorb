@@ -79,7 +79,7 @@ def patch_main(path: pathlib.Path) -> None:
     text = replace_once(text, font_function_end, seal_theme, "Seal theme injection")
 
     options_anchor = "    let mut options = eframe::NativeOptions::default();\n"
-    options_replacement = """    let mut options = eframe::NativeOptions::default();\n    options.viewport = options\n        .viewport\n        .clone()\n        .with_inner_size([920.0, 700.0])\n        .with_min_inner_size([760.0, 620.0])\n        .with_transparent(true)\n        .with_decorations(false);\n"""
+    options_replacement = """    let mut options = eframe::NativeOptions::default();\n    options.viewport = options\n        .viewport\n        .clone()\n        .with_inner_size([820.0, 700.0])\n        .with_min_inner_size([720.0, 620.0])\n        .with_transparent(true)\n        .with_decorations(false);\n"""
     text = replace_once(text, options_anchor, options_replacement, "native viewport setup")
     text = replace_once(
         text,
@@ -159,7 +159,7 @@ def verify(root: pathlib.Path) -> None:
         "include_bytes!(\"seal_assets/seal_icon_ui.rgba\")",
         "fn ensure_seal_textures",
         "fn install_pairing_file_to_seal_if_ready",
-        "生成配对并交给 Seal",
+        "开始配对",
         '"完成".to_string()',
         "等待连接",
         "GeneratePairingFile",
@@ -180,7 +180,7 @@ def verify(root: pathlib.Path) -> None:
         '"无线调试"',
         '"开发者支持文件"',
         "正在读取 iOS 版本…",
-        "基于 jkcoxson/idevice_pair 0.1.14 二次开发",
+        "现在可关闭此窗口",
     ]
     missing = [item for item in required if item not in main]
     if missing:
@@ -198,6 +198,7 @@ def verify(root: pathlib.Path) -> None:
         "seal_pairing_mode",
         "写入已安装应用",
         "已写入 Seal",
+        "生成配对并交给 Seal",
         "✦  生成并写入 Seal",
         "▢  复制",
         "phone_texture",

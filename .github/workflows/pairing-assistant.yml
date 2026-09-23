@@ -180,7 +180,7 @@ jobs:
             'seal_icon_texture',
             'include_bytes!("seal_assets/seal_icon_ui.rgba")',
             'install_pairing_file_to_seal_if_ready',
-            '生成配对并交给 Seal',
+            '开始配对',
             '"完成".to_string()',
             '等待连接',
             'with_decorations(false)',
@@ -199,7 +199,7 @@ jobs:
             '"无线调试"',
             '"开发者支持文件"',
             '正在读取 iOS 版本…',
-            '基于 jkcoxson/idevice_pair 0.1.14 二次开发'
+            '现在可关闭此窗口'
           )
           foreach ($marker in $required) {
             if (-not $source.Contains($marker)) { throw "Required feature missing: $marker" }
@@ -217,6 +217,7 @@ jobs:
             'seal_pairing_mode',
             '写入已安装应用',
             '已写入 Seal',
+            '生成配对并交给 Seal',
             '✦  生成并写入 Seal',
             '▢  复制',
             'phone_texture',
@@ -264,7 +265,7 @@ jobs:
           Rust: ${env:RUST_TOOLCHAIN}
           Target: Windows x64
           Icon: bundled Seal icon asset
-          UI: Seal v14 product pairing assistant
+          UI: Seal v15 product pairing assistant
 
           Windows prerequisite:
           Install Apple website iTunes / Apple Mobile Device support as required by upstream idevice_pair.

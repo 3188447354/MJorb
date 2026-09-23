@@ -1795,6 +1795,7 @@ final class AppsViewModel: ObservableObject {
     /// 已装入抽屉的持久化载荷指纹。新进程自替换结算会改写同一份载荷；没有这层比较，
     /// 界面若恰好先读到旧的 awaiting 状态，就会永久显示过期的等待计数。
     private var restoredPendingBatchResultFingerprint: String?
+    private var pendingBatchResultRecheckTask: Task<Void, Never>?
 
     /// 启动时把上一轮持久化的批量续签结果装回会话。
     ///
@@ -1841,10 +1842,27 @@ final class AppsViewModel: ObservableObject {
         batchRefreshSession = restored
         hasRestoredPendingBatchResult = true
         restoredPendingBatchResultFingerprint = pendingFingerprint
+        schedulePendingBatchResultRecheckIfNeeded(result)
         Task { try? await logStore?.append(category: .renewal, level: .info, message: "批量续签结果已从持久化载荷恢复（共 \(result.total)，成功 \(result.succeeded)，失败 \(result.failed)，等待 Seal 核验 \(result.awaitingConfirmation)，明细 \(restored.items.count) 项）", code: "SEAL-RENEW-024") }
     }
 
+    private func schedulePendingBatchResultRecheckIfNeeded(_ result: BatchRefreshResult) {
+        guard result.awaitingConfirmation > 0, pendingBatchResultRecheckTask == nil else { return }
+        pendingBatchResultRecheckTask = Task { [weak self] in
+            defer { self?.pendingBatchResultRecheckTask = nil }
+            for _ in 0..<8 {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard Task.isCancelled == false else { return }
+                self?.restorePendingBatchResultIfNeeded()
+                guard case .completed(let updated)? = self?.batchRefreshSession?.status,
+                      updated.awaitingConfirmation > 0 else { return }
+            }
+        }
+    }
+
     private func clearPendingBatchResult() {
+        pendingBatchResultRecheckTask?.cancel()
+        pendingBatchResultRecheckTask = nil
         hasRestoredPendingBatchResult = false
         restoredPendingBatchResultFingerprint = nil
         UserDefaults.standard.removeObject(forKey: Self.pendingBatchResultKey)

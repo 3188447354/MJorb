@@ -178,10 +178,13 @@ jobs:
             'PairingMode::Lockdown',
             'PairingMode::RemotePairing',
             'SealPairing.mobiledevicepairing',
-            'fn setup_windows_backdrop',
-            'with_transparent(true)',
+            'fn setup_windows_process_identity',
+            'fn setup_windows_window_icon',
+            'with_transparent(false)',
             'with_resizable(false)',
             'with_icon(egui::IconData',
+            'SetCurrentProcessExplicitAppUserModelID',
+            'WM_SETICON',
             'CreateRoundRectRgn',
             'SetWindowRgn',
             'pending_seal_install',
@@ -211,7 +214,7 @@ jobs:
             if (-not $source.Contains($marker)) { throw "Required feature missing: $marker" }
           }
           if ($source.Contains('DWMSBT_TRANSIENTWINDOW')) {
-            throw "Windows material backdrop would make the transparent corners rectangular"
+            throw "Windows material backdrop would replace the native Seal window shape"
           }
           if ($source.Contains('RichText::new(&pairing_file).monospace()')) {
             throw "Raw pairing material is still rendered in the UI"

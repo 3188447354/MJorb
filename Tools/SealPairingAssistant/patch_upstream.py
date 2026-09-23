@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 import shutil
 import sys
 
@@ -128,13 +129,104 @@ def patch_main(path: pathlib.Path) -> None:
 
 #[cfg(not(windows))]"""
     )
+    windows_identity = """#[cfg(windows)]
+fn setup_windows_process_identity() {
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn SetCurrentProcessExplicitAppUserModelID(app_id: *const u16) -> i32;
+    }
+
+    // This must run before eframe creates the window, otherwise Windows can reuse idevice_pair's taskbar group.
+    let app_id: Vec<u16> = "Seal.PairingAssistant\\0".encode_utf16().collect();
+    unsafe { let _ = SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr()); }
+}
+
+#[cfg(not(windows))]
+fn setup_windows_process_identity() {}
+
+#[cfg(windows)]
+fn setup_windows_window_icon(cc: &eframe::CreationContext<'_>) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetModuleHandleW(module_name: *const u16) -> *mut c_void;
+    }
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn LoadImageW(instance: *mut c_void, name: *const u16, image_type: u32, width: i32, height: i32, flags: u32) -> *mut c_void;
+        fn SendMessageW(hwnd: *mut c_void, message: u32, wparam: usize, lparam: isize) -> isize;
+        fn GetClientRect(hwnd: *mut c_void, rect: *mut ClientRect) -> i32;
+        fn CreateRoundRectRgn(left: i32, top: i32, right: i32, bottom: i32, width: i32, height: i32) -> *mut c_void;
+        fn SetWindowRgn(hwnd: *mut c_void, region: *mut c_void, redraw: i32) -> i32;
+    }
+
+    #[repr(C)]
+    struct ClientRect { left: i32, top: i32, right: i32, bottom: i32 }
+
+    const IMAGE_ICON: u32 = 1;
+    const LR_DEFAULTSIZE: u32 = 0x0040;
+    const WM_SETICON: u32 = 0x0080;
+    const ICON_SMALL: usize = 0;
+    const ICON_BIG: usize = 1;
+
+    cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(std::sync::Arc::new(egui::IconData {
+        rgba: SEAL_ICON_RGBA.to_vec(),
+        width: SEAL_ICON_SIZE[0] as u32,
+        height: SEAL_ICON_SIZE[1] as u32,
+    }))));
+
+    let Ok(window_handle) = cc.window_handle() else { return; };
+    let RawWindowHandle::Win32(handle) = window_handle.as_raw() else { return; };
+    let hwnd = handle.hwnd.get() as *mut c_void;
+    unsafe {
+        let icon = LoadImageW(
+            GetModuleHandleW(std::ptr::null()),
+            1usize as *const u16,
+            IMAGE_ICON,
+            0,
+            0,
+            LR_DEFAULTSIZE,
+        );
+        if !icon.is_null() {
+            let _ = SendMessageW(hwnd, WM_SETICON, ICON_SMALL, icon as isize);
+            let _ = SendMessageW(hwnd, WM_SETICON, ICON_BIG, icon as isize);
+        }
+        // This is a physical 8px window mask, not a painted imitation of a rounded corner.
+        let mut client = ClientRect { left: 0, top: 0, right: 0, bottom: 0 };
+        if GetClientRect(hwnd, &mut client) != 0 {
+            let region = CreateRoundRectRgn(0, 0, client.right + 1, client.bottom + 1, 16, 16);
+            if !region.is_null() {
+                let _ = SetWindowRgn(hwnd, region, 1);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn setup_windows_window_icon(_cc: &eframe::CreationContext<'_>) {}
+"""
+    seal_theme, setup_count = re.subn(
+        r"(?s)#\[cfg\(windows\)\]\nfn setup_windows_backdrop.*?\n#\[cfg\(not\(windows\)\)\]\nfn setup_windows_backdrop\(_cc: &eframe::CreationContext<'_>\) \{\}\n",
+        lambda _match: windows_identity,
+        seal_theme,
+        count=1,
+    )
+    if setup_count != 1:
+        raise RuntimeError("Seal Windows identity setup replacement drifted")
+    seal_theme = seal_theme.replace(
+        'fn main() {\n    rust_i18n::set_locale("zh-cn");',
+        'fn main() {\n    rust_i18n::set_locale("zh-cn");\n    setup_windows_process_identity();',
+    )
     text = replace_once(text, font_function_end, seal_theme, "Seal theme injection")
 
     options_anchor = "    let mut options = eframe::NativeOptions::default();\n"
     options_replacement = """    let mut options = eframe::NativeOptions::default();\n    options.viewport = options\n        .viewport\n        .clone()\n        .with_inner_size([820.0, 720.0])\n        .with_min_inner_size([820.0, 680.0])\n        .with_transparent(true)\n        .with_decorations(false);\n"""
     options_replacement = options_replacement.replace(
         "        .with_transparent(true)\n",
-        """        .with_transparent(true)
+        """        .with_transparent(false)
         .with_resizable(false)
         .with_icon(egui::IconData {
             rgba: SEAL_ICON_RGBA.to_vec(),
@@ -153,6 +245,9 @@ def patch_main(path: pathlib.Path) -> None:
 
     creation_anchor = """        Box::new(|cc| {\n            setup_custom_fonts(&cc.egui_ctx);\n            Ok(Box::new(app))\n        }),\n"""
     creation_replacement = """        Box::new(|cc| {\n            setup_custom_fonts(&cc.egui_ctx);\n            setup_seal_theme(&cc.egui_ctx);\n            setup_windows_backdrop(cc);\n            Ok(Box::new(app))\n        }),\n"""
+    creation_replacement = creation_replacement.replace(
+        "setup_windows_backdrop(cc)", "setup_windows_window_icon(cc)"
+    )
     text = replace_once(text, creation_anchor, creation_replacement, "Seal visual setup")
 
     init_anchor = "        show_logs: false,\n"
@@ -279,10 +374,13 @@ def verify(root: pathlib.Path) -> None:
     required = [
         'supported_apps.insert("Seal".to_string(), "SealPairing.mobiledevicepairing".to_string());',
         "fn setup_seal_theme",
-        "fn setup_windows_backdrop",
-        "with_transparent(true)",
+        "fn setup_windows_process_identity",
+        "fn setup_windows_window_icon",
+        "with_transparent(false)",
         "with_resizable(false)",
         "with_icon(egui::IconData",
+        "SetCurrentProcessExplicitAppUserModelID",
+        "WM_SETICON",
         "CreateRoundRectRgn",
         "SetWindowRgn",
         'rust_i18n::set_locale("zh-cn");',

@@ -196,7 +196,7 @@ jobs:
             'fn seal_mode_for_ios',
             'seal_mode_for_ios(&ios_version, self.pairing_mode)',
             'let has_ios_version = ios_version != "—";',
-            'let environment_ready = has_device',
+            'environment_ready',
             '正在读取 iOS 版本'
           )
           foreach ($marker in $required) {

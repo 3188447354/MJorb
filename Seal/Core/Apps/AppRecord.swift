@@ -41,6 +41,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
     let importedAt: Date
     var extensions: [AppExtensionRecord]
     var importWarnings: [String]
+    var extensionProfileStrategy: AppExtensionProfileStrategy?
 
     init(
         id: UUID = UUID(),
@@ -82,7 +83,8 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         isPinned: Bool = false,
         importedAt: Date,
         extensions: [AppExtensionRecord] = [],
-        importWarnings: [String] = []
+        importWarnings: [String] = [],
+        extensionProfileStrategy: AppExtensionProfileStrategy? = nil
     ) {
         self.id = id
         self.originalBundleIdentifier = originalBundleIdentifier
@@ -124,6 +126,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         self.importedAt = importedAt
         self.extensions = extensions
         self.importWarnings = importWarnings
+        self.extensionProfileStrategy = extensionProfileStrategy
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -167,6 +170,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         case importedAt
         case extensions
         case importWarnings
+        case extensionProfileStrategy
     }
 
     init(from decoder: Decoder) throws {
@@ -226,6 +230,10 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
             [String].self,
             forKey: .importWarnings
         ) ?? []
+        extensionProfileStrategy = try container.decodeIfPresent(
+            AppExtensionProfileStrategy.self,
+            forKey: .extensionProfileStrategy
+        )
     }
 
     var hasPersistedSigningIdentity: Bool {
@@ -236,6 +244,14 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
             && signedDeviceIdentifier?.isEmpty == false
             && provisioningProfileExpirationDate != nil
             && signedIPARelativePath?.isEmpty == false
+    }
+
+    /// 普通 IPA 一律共享主描述文件；Seal 自身暂不进入这一期策略。
+    ///
+    /// 字段仍会记录实际产物，供后续日志与迁移辨识，但不作为用户可选择的分支，
+    /// 避免续签时重新落回逐扩展 App ID/profile 的慢路径。
+    var effectiveExtensionProfileStrategy: AppExtensionProfileStrategy {
+        AppExtensionProfileStrategy.defaultFor(isSeal: isSeal)
     }
 
     var requiresLockedSigningIdentity: Bool {

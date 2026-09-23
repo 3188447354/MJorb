@@ -47,6 +47,7 @@ enum CoreDataModel {
             attribute("hasPendingSelfUpdateSource", type: .booleanAttributeType, defaultValue: false),
             attribute("isSeal", type: .booleanAttributeType, defaultValue: false),
             attribute("isPinned", type: .booleanAttributeType, defaultValue: false),
+            attribute("extensionProfileStrategyRaw", type: .stringAttributeType, optional: true),
             attribute("importedAt", type: .dateAttributeType)
         ]
 

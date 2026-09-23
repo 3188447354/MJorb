@@ -136,8 +136,10 @@ struct AppSigningSheet: View {
     private func startSigning(completionMode: SigningCompletionMode) {
         if let selectedAccountID = resolvedSelectedAccountID {
             Task {
+                var appForSigning = workingApp
+                appForSigning.extensionProfileStrategy = appForSigning.effectiveExtensionProfileStrategy
                 await viewModel.beginSigning(
-                    for: workingApp,
+                    for: appForSigning,
                     accountID: selectedAccountID,
                     requestedBundleIdentifier: requestedBundleIDForSigning,
                     completionMode: completionMode

@@ -97,6 +97,8 @@ struct AppDetailView: View {
             if app.extensions.isEmpty {
                 detailRow("扩展", "无")
             } else {
+                detailRow("扩展签名", extensionProfileStrategyText(app))
+                Divider()
                 Button {
                     showExtensions.toggle()
                 } label: {
@@ -115,8 +117,7 @@ struct AppDetailView: View {
                 }
                 .buttonStyle(.plain)
 
-                // 每个插件有独立的描述文件与有效期（独立 App ID，随续签一起刷新）。
-                // 逐插件展示到期时间，便于验证续签后插件 profile 是否已更新。
+                // 共享模式下每个扩展展示的是同一份主描述文件的有效期；独立模式才各有 profile。
                 if showExtensions {
                     ForEach(
                         app.extensions.sorted(by: { $0.originalBundleIdentifier < $1.originalBundleIdentifier }),
@@ -306,6 +307,15 @@ struct AppDetailView: View {
     private func extensionExpiryText(_ record: AppExtensionRecord) -> String {
         guard let date = record.provisioningProfileExpirationDate else { return "未签名" }
         return SealSettingsDateFormatter.string(from: date)
+    }
+
+    private func extensionProfileStrategyText(_ app: AppRecord) -> String {
+        switch app.effectiveExtensionProfileStrategy {
+        case .sharedMainProfile:
+            return "共享主描述文件"
+        case .independentProfiles:
+            return "独立描述文件"
+        }
     }
 
     private func extensionExpiryColor(_ record: AppExtensionRecord) -> Color {

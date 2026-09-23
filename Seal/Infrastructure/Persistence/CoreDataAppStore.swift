@@ -294,6 +294,7 @@ actor CoreDataAppStore: AppStore {
         object.setValue(record.hasPendingSelfUpdateSource, forKey: "hasPendingSelfUpdateSource")
         object.setValue(record.isSeal, forKey: "isSeal")
         object.setValue(record.isPinned, forKey: "isPinned")
+        object.setValue(record.extensionProfileStrategy?.rawValue, forKey: "extensionProfileStrategyRaw")
         object.setValue(record.importedAt, forKey: "importedAt")
     }
 
@@ -404,7 +405,10 @@ actor CoreDataAppStore: AppStore {
             isSeal: (object.value(forKey: "isSeal") as? NSNumber)?.boolValue ?? false,
             isPinned: (object.value(forKey: "isPinned") as? NSNumber)?.boolValue ?? false,
             importedAt: importedAt,
-            extensions: appExtensions
+            extensions: appExtensions,
+            extensionProfileStrategy: (object.value(
+                forKey: "extensionProfileStrategyRaw"
+            ) as? String).flatMap(AppExtensionProfileStrategy.init(rawValue:))
         )
     }
 

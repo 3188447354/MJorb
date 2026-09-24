@@ -18,8 +18,24 @@
   ② 撤销 `ProfileOnlyRenewalPolicy` 里那条一刀切判据（准入不再看策略）。
   ③ 给能力降级补**诊断**（原来完全没有日志）：写明「Apple 拒绝了哪个 App ID 的这组能力、已按空能力重发」，共享模式下追加「扩展嵌入的就是这一份」。
 - **涉及文件**：`Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift`、`Seal/Core/Renewal/ProfileOnlyRenewalRecordUpdater.swift`、`Seal/Core/Signing/SigningCoordinator.swift`、`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、`SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift`、`SealTests/Renewal/ProfileOnlyRenewalRecordUpdaterTests.swift`、`Scripts/verify-release-safety.py`、`RELEASE_NOTES.md`。
-- **验证状态**：守卫 R65 ⑨/⑬/⑭ 重写 + 新增 ⑰；新增单测 `sharedMainProfileIsRecordedForEveryTargetWithoutCollapsingThem`（钉「记录不塌」）与 `eligibilityDoesNotDependOnTheExtensionProfileStrategy`。⚠️ Windows 无 Xcode ⇒ 待 CI 编译/回归 + **真机复验**：抖音续签应显示「仅更新描述文件」，不再重传整包。
+- **验证状态**：守卫 R65 ⑨/⑬/⑭ 重写 + 新增 ⑰；新增单测 `sharedMainProfileIsRecordedForEveryTargetWithoutCollapsingThem`（钉「记录不塌」）与 `eligibilityDoesNotDependOnTheExtensionProfileStrategy`。本地守卫 **511 checks / 271 mutations PASS**；✅ **CI run `35957863923`（run #30）三 job 全绿**（`signer-tests` / `build-package`（含「Check release safety invariants」守卫步）/ `swift-regression`），提交 `d389007`。⏳ **待真机复验**：抖音续签应显示「仅更新描述文件；不会重新签名、打包或安装 IPA」，并给出「注入 1 份描述文件、覆盖 9 个目标」（不再重传 658 MB 整包）。
 - ⚠️ **LiveContainer 仍未解决**：降级传播这一轮只**加了日志**、没改行为 ⇒ 它的 401 仍在。可行修法见下一条。
+
+---
+
+## 2026-09-24 守卫变异检查：`expected` 与断言消息前缀不一致 ⇒ 伪装成「判据失效」
+
+- **现象**：守卫报 2 条 `FAIL: Guard failed mutation check: R65⑰: …`，而**源码断言 511 条全过**
+  （这个反差就是诊断线索 —— 断言本身没问题）。
+- **根因**：守卫判据是 `any(item.startswith(expected) for item in mutated_failures)` ——
+  「变异被抓住了」靠**消息文本前缀匹配**，不是编号 ✗。断言消息写
+  `「**一份描述文件 → 多个目标**」`，而两条变异（⑰/⑰b）的 `expected` 漏了 `**` ⇒
+  变异**其实被抓住了**，只是前缀对不上 ⇒ 报成「判据失效」✗（会把人骗去改断言逻辑）。
+- **修复**：两条 `expected` 改成与断言消息**逐字符一致**（含 `**`）。
+- **防复发**：`~/.workbuddy-ai/tmp/guard-anchor-precheck.py` 新增检查 ④ —— 抽 `check()` 第 2 参的
+  **字面量消息**（398 条），逐条变异断言「某条消息以 `expected` 开头」，查不到即硬失败
+  （5 秒，替代整轮 6 分钟）。判据见技能 §5f。
+- **涉及文件**：`Scripts/verify-release-safety.py`。
 
 ---
 

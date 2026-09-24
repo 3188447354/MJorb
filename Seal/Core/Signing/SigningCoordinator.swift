@@ -171,6 +171,10 @@ actor SigningCoordinator {
         // `app` 是会被后续步骤改写的 `var`，而 `@Sendable` 闭包不能捕获可变局部变量
         // ⇒ 先取一份不可变快照（主体只用到 id / 显示名 / 是否 Seal，三者全程不变）。
         let signingSubject = SigningStageSubject(app: app)
+        // 本轮的证书轮换可能撤销旧证书 ⇒ 受影响的已安装应用必须重签重装。
+        // 记下**真正恢复成功的** appID：失败路径要靠它算出「还有谁没恢复」，
+        // 否则日志只能说「有影响」、说不出「是谁」（见 `failureWithRotationConsequence`）。
+        var recoveredAffectedAppIDs: Set<UUID> = []
 
         do {
             try Task.checkCancellation()
@@ -453,12 +457,14 @@ actor SigningCoordinator {
 
             let rotationRevokedSerials = await certificateRotationState.snapshot()
             if app.isSeal, rotationRevokedSerials.isEmpty == false {
-                await resignAppsAffectedByCertificateRotation(
-                    revokedSerials: rotationRevokedSerials,
-                    accountID: accountID,
-                    excludingAppID: appID,
-                    includeSeal: false,
-                    progress: progress
+                recoveredAffectedAppIDs.formUnion(
+                    await resignAppsAffectedByCertificateRotation(
+                        revokedSerials: rotationRevokedSerials,
+                        accountID: accountID,
+                        excludingAppID: appID,
+                        includeSeal: false,
+                        progress: progress
+                    )
                 )
             }
 
@@ -501,12 +507,14 @@ actor SigningCoordinator {
                 broadcastsInstallStage: broadcastsInstallStage
             )
             if app.isSeal == false, rotationRevokedSerials.isEmpty == false {
-                await resignAppsAffectedByCertificateRotation(
-                    revokedSerials: rotationRevokedSerials,
-                    accountID: accountID,
-                    excludingAppID: appID,
-                    includeSeal: true,
-                    progress: progress
+                recoveredAffectedAppIDs.formUnion(
+                    await resignAppsAffectedByCertificateRotation(
+                        revokedSerials: rotationRevokedSerials,
+                        accountID: accountID,
+                        excludingAppID: appID,
+                        includeSeal: true,
+                        progress: progress
+                    )
                 )
             }
             // 自更新的接管确认由下次启动核对运行包完成；不在这里撤销旧证书。
@@ -518,6 +526,22 @@ actor SigningCoordinator {
                 app.state = originalState
             }
             try await persistAppState(app)
+            // 取消同样可能发生在撤销之后：`throw CancellationError()` 不会弹窗，
+            // 但后果仍在（证书已被撤销、App 已经打不开）⇒ 至少把「谁没能恢复」写进日志。
+            let cancelledRevokedSerials = await certificateRotationState.snapshot()
+            let cancelledPending = await pendingRotationRecovery(
+                revokedSerials: cancelledRevokedSerials,
+                appID: appID,
+                alreadyRecovered: recoveredAffectedAppIDs
+            )
+            if cancelledPending.isEmpty == false {
+                try? await logStore?.append(
+                    category: .renewal,
+                    level: .error,
+                    message: "证书轮换事务：本轮已撤销 \(cancelledRevokedSerials.count) 张旧证书后被取消 ⇒ \(cancelledPending.count) 个受影响应用未自动恢复：\(cancelledPending.prefix(4).map(\.name).joined(separator: "、"))",
+                    code: "SEAL-CERT-240"
+                )
+            }
             throw CancellationError()
         } catch let failure as ImportFailure {
             // 只有明确凭据/本地凭据问题才写入 needsVerification；网络、限流、107 会话过期不写。
@@ -526,27 +550,50 @@ actor SigningCoordinator {
                 account.verificationFailureReason = verificationReason
                 try? await accountRepository.save(account)
             }
-            if didPersistNewSignedArtifact || failure.code.hasPrefix("SEAL-INSTALL-") {
+            // 撤销已经发生、而恢复没能执行 ⇒ 把后果摊给用户。
+            // **保留原 code**（按钮动作按 code 判定），只往 reason 追加后果。
+            let reported = await failureWithRotationConsequence(
+                failure,
+                revokedSerials: await certificateRotationState.snapshot(),
+                appID: appID,
+                alreadyRecovered: recoveredAffectedAppIDs
+            )
+            if didPersistNewSignedArtifact || reported.code.hasPrefix("SEAL-INSTALL-") {
                 app.state = originalState == .installed ? .installed : .signed
                 app.signedArtifactStatus = .installFailed
-                app.lastInstallFailureCode = failure.code
-                app.lastInstallFailureReason = failure.reason
+                app.lastInstallFailureCode = reported.code
+                app.lastInstallFailureReason = reported.reason
             } else {
                 app.state = originalState == .installed ? .installed : originalState
             }
             try await persistAppState(app)
-            throw failure
+            throw reported
         } catch {
+            // 非 ImportFailure 的意外错误同样可能发生在撤销之后 ⇒ 也要如实告知。
+            let unexpected = Self.failure(
+                reason: "安装流程遇到未预期错误，技术信息已写入脱敏日志。",
+                recovery: "重试",
+                code: "SEAL-INSTALL-500"
+            )
+            let reported = await failureWithRotationConsequence(
+                unexpected,
+                revokedSerials: await certificateRotationState.snapshot(),
+                appID: appID,
+                alreadyRecovered: recoveredAffectedAppIDs
+            )
             if didPersistNewSignedArtifact {
                 app.state = originalState == .installed ? .installed : .signed
                 app.signedArtifactStatus = .installFailed
                 app.lastInstallFailureCode = "SEAL-INSTALL-500"
-                app.lastInstallFailureReason = "安装流程遇到未预期错误，技术信息已写入脱敏日志。"
+                app.lastInstallFailureReason = reported.reason
             } else {
                 app.state = originalState == .installed ? .installed : originalState
             }
             try await persistAppState(app)
-            throw error
+            // 只有**真的包装过**（存在未恢复的受影响应用）才替换抛出物；
+            // 没包装时保持原样，免得把一个「非 ImportFailure 的意外错误」
+            // 悄悄变成 ImportFailure、改变上层的分支走向。
+            throw reported == unexpected ? error : reported
         }
     }
 
@@ -1152,6 +1199,49 @@ actor SigningCoordinator {
         await logStore?.flush()
     }
 
+    /// 受旧证书影响的已安装应用（**纯函数**，便于单测）。
+    ///
+    /// 🔴 **刻意不按 `accountID` 过滤**（2026-09-24，用户拍板）。
+    ///
+    /// 这里原来有一条 `candidate.accountID == accountID`，它让三个条件**互斥**：
+    /// - 「本机无私钥」要求该 accountID 在 keychain 里**没有条目** ⇒ 只有**删过账号**
+    ///   （`SettingsViewModel.deleteAccount` 会 `keychain.delete`）或**重装 Seal** 才可能；
+    /// - 而 `deleteAccount` **刻意不碰应用**（原文：「关联应用保留原账号绑定，用于防止
+    ///   误用其他账号续签」）⇒ 已装 App 的 `accountID` 指向**已删除的 UUID**；
+    ///   重新添加时 `duplicateAccount == nil` ⇒ 建**新 UUID** ⇒ 恒不相等。
+    ///
+    /// ⇒ 后果是**恢复永远不触发**（2026-09-24 连续两轮真机「自动续签 0 个」实证）。
+    /// 那不是「保守」，是**失效**：撤销已经发生、App 已经打不开，恢复却一声不响地跳过。
+    ///
+    /// 判据其实**只需要证书序列号**：撤销的是某个 account 名下的证书，
+    /// 序列号全局唯一 ⇒ 「谁的签名材料里含这个序列号，谁就受这次撤销影响」。
+    /// **把 accountID 过滤加回来之前，先读上面这段。**
+    static func appsAffectedByCertificateRotation(
+        in apps: [AppRecord],
+        revokedSerials: [String],
+        excludingAppID: UUID,
+        includeSeal: Bool
+    ) -> [AppRecord] {
+        let revoked = Set(revokedSerials.map {
+            SigningCertificateSelectionPolicy.normalizedSerialNumber($0)
+        })
+        guard revoked.isEmpty == false else { return [] }
+        return apps.filter { candidate in
+            guard candidate.id != excludingAppID,
+                  (candidate.state == .installed || candidate.isSeal),
+                  includeSeal || candidate.isSeal == false else { return false }
+            let serials = [candidate.certificateSerialNumber]
+                .compactMap { $0 }
+                + candidate.signingTargets.flatMap(\.certificateSerialNumbers)
+            return serials.contains {
+                revoked.contains(SigningCertificateSelectionPolicy.normalizedSerialNumber($0))
+            }
+        }.sorted { lhs, rhs in
+            if lhs.isSeal != rhs.isSeal { return lhs.isSeal == false }
+            return lhs.name < rhs.name
+        }
+    }
+
     /// 证书轮换事务：把受旧证书影响的已安装应用逐个重新签名安装（Seal 始终最后）。
     ///
     /// ⚠️ **这条子流程推进的是「另一个 App」的阶段**，所以两件事都必须做对：
@@ -1168,37 +1258,30 @@ actor SigningCoordinator {
     ///
     /// 主体由 `SigningStageUpdate` 跟着信号走，调用方**不能**用父会话身份去判断
     /// 「这次的自替换是谁的」—— 那是同一个坑的另一半。
+    ///
+    /// 返回**成功恢复的 appID 集合** —— 失败路径要靠它算出「还有谁没恢复」，
+    /// 见 `failureWithRotationConsequence`。
+    @discardableResult
     private func resignAppsAffectedByCertificateRotation(
         revokedSerials: [String],
         accountID: UUID,
         excludingAppID: UUID,
         includeSeal: Bool,
         progress: @escaping @Sendable (SigningStageUpdate) async -> Void
-    ) async {
-        let revoked = Set(revokedSerials.map {
-            SigningCertificateSelectionPolicy.normalizedSerialNumber($0)
-        })
-        guard let apps = try? await appStore.fetchAll() else { return }
-        let affected = apps.filter { candidate in
-            guard candidate.id != excludingAppID,
-                  candidate.accountID == accountID,
-                  (candidate.state == .installed || candidate.isSeal),
-                  includeSeal || candidate.isSeal == false else { return false }
-            let serials = [candidate.certificateSerialNumber]
-                .compactMap { $0 }
-                + candidate.signingTargets.flatMap(\.certificateSerialNumbers)
-            return serials.contains {
-                revoked.contains(SigningCertificateSelectionPolicy.normalizedSerialNumber($0))
-            }
-        }.sorted { lhs, rhs in
-            if lhs.isSeal != rhs.isSeal { return lhs.isSeal == false }
-            return lhs.name < rhs.name
-        }
-        guard affected.isEmpty == false else { return }
+    ) async -> Set<UUID> {
+        guard let apps = try? await appStore.fetchAll() else { return [] }
+        let affected = Self.appsAffectedByCertificateRotation(
+            in: apps,
+            revokedSerials: revokedSerials,
+            excludingAppID: excludingAppID,
+            includeSeal: includeSeal
+        )
+        guard affected.isEmpty == false else { return [] }
         try? await logStore?.append(
             category: .renewal,
             message: "证书轮换事务：自动续签 \(affected.count) 个受旧证书影响的已安装应用，Seal 始终最后安装"
         )
+        var recovered: Set<UUID> = []
         for candidate in affected {
             do {
                 _ = try await signAndInstall(
@@ -1211,6 +1294,7 @@ actor SigningCoordinator {
                     progress: progress,
                     broadcastsInstallStage: true
                 )
+                recovered.insert(candidate.id)
                 try? await logStore?.append(
                     category: .renewal,
                     message: "证书轮换事务：受影响应用 \(candidate.name) 已重新签名安装"
@@ -1224,6 +1308,70 @@ actor SigningCoordinator {
                 )
             }
         }
+        return recovered
+    }
+
+    /// 本轮撤销后**仍未恢复**的受影响应用（空 = 没有撤销、或受影响的应用都恢复完了）。
+    ///
+    /// 单独抽出来是因为有**三条出口**要问同一个问题（`ImportFailure` 分支、
+    /// 非 `ImportFailure` 分支、取消分支）—— 三处各写一遍必然漂移成
+    /// 「修了一条、漏了另外两条」，本仓库反复踩过。
+    private func pendingRotationRecovery(
+        revokedSerials: [String],
+        appID: UUID,
+        alreadyRecovered: Set<UUID>
+    ) async -> [AppRecord] {
+        guard revokedSerials.isEmpty == false else { return [] }
+        return Self.appsAffectedByCertificateRotation(
+            in: (try? await appStore.fetchAll()) ?? [],
+            revokedSerials: revokedSerials,
+            excludingAppID: appID,
+            includeSeal: true
+        ).filter { alreadyRecovered.contains($0.id) == false }
+    }
+
+    /// 撤销已经发生、而恢复没能执行 —— 必须**如实告知**。
+    ///
+    /// 背景：`certificateRotationState` 是**本次调用的局部量**（撤销记录不跨调用），
+    /// 而两处恢复调用点都在**成功路径**上 ⇒ 一旦后面失败，受影响应用的恢复就
+    /// **永久丢失**：用户只看到「安装失败」，不知道别的 App 已经被撤销的证书废掉、
+    /// 已经打不开了（2026-09-24 构建 33 第一轮真机：`17:04:28` 撤销 → `17:04:32` 外层失败，
+    /// 日志里对「那几个受影响的 App 怎么办」一个字都没有）。
+    ///
+    /// 这里**不自动补跑恢复**：失败很可能意味着通道不可用，此刻去重签只会再失败一次，
+    /// 还会把真正的原因埋掉。只做两件事 —— 留痕（`SEAL-CERT-240`）＋ 把后果写进
+    /// 用户看得到的 `reason`。
+    ///
+    /// **保留原 `code`**：`InstallFailureActionPolicy` 按 code 决定按钮动作，
+    /// 换码会把「重试」换成别的动作，而「重试」正是这里该给的下一步。
+    /// 也**不用** `recovery: "知道了"` —— 那条约定是给「本轮什么都没改」的失败用的，
+    /// 而这里**确实改了**（撤销了证书）。
+    private func failureWithRotationConsequence(
+        _ failure: ImportFailure,
+        revokedSerials: [String],
+        appID: UUID,
+        alreadyRecovered: Set<UUID>
+    ) async -> ImportFailure {
+        let pending = await pendingRotationRecovery(
+            revokedSerials: revokedSerials,
+            appID: appID,
+            alreadyRecovered: alreadyRecovered
+        )
+        guard pending.isEmpty == false else { return failure }
+        let names = pending.prefix(4).map(\.name).joined(separator: "、")
+        let overflow = pending.count > 4 ? " 等 \(pending.count) 个" : ""
+        try? await logStore?.append(
+            category: .renewal,
+            level: .error,
+            message: "证书轮换事务：本轮已撤销 \(revokedSerials.count) 张旧证书，但后续失败（\(failure.code)）⇒ \(pending.count) 个受影响应用未自动恢复：\(names)\(overflow)",
+            code: "SEAL-CERT-240"
+        )
+        return ImportFailure(
+            title: failure.title,
+            reason: failure.reason + "\n\n另需注意：本轮已撤销 \(revokedSerials.count) 张旧证书，\(pending.count) 个受影响的已安装应用（\(names)\(overflow)）未能自动恢复，它们可能已无法打开。",
+            recovery: failure.recovery,
+            code: failure.code
+        )
     }
 
     /// 把签名产物的信息落进记录。

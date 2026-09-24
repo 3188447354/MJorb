@@ -1002,28 +1002,84 @@ actor MinimuxerInstallChannel: InstallChannel {
         return
         #else
         guard await isReady() else { throw Self.channelNotReadyFailure }
-        // 验证前重置连接，避免用死连接查询
-        Install.resetProvider()
+        // ⚠️ 这里**刻意不调** `Install.resetProvider()`（2026-09-24 删）。
+        //
+        // 原来那句注释写的是「验证前重置连接，避免用死连接查询」，但那个杠杆**是无效的**：
+        // 它只清 Swift 侧的 provider 对象，清不掉 Rust 的 RSD 会话缓存
+        //（真正的补救是 `Minimuxer.reset()` 里的 `RustIdevice.invalidateConnection()`，
+        // 见本文件 `resetProvider` 那段的注释）。而 `Minimuxer.reset()` 会拆掉
+        // **可能仍在服务**的连接（R05）—— 这里刚装完、通道刚被证明活跃，不值得冒这个险。
+        // ⇒ 保留它只会造成「死连接场景已经处理过」的错觉；「通道不可信」交给下面的阳性对照。
         for _ in 0..<8 {
-            // ⚠️ **必须有界**（2026-09-17 补）：`lookupApp` 是同步阻塞 FFI，
-            // 在一条已死的会话上**不报错、只阻塞到操作系统放弃** ——
-            // 与安装路径同一个失败模式，而这里还是**循环里的 8 次**。
-            // 超时/报错一律按「这次没查到」处理：循环本身会重试，
-            // 8 次都没查到就按「验证失败」抛错（与原先语义一致，只是变成有界）。
-            let probe = await offThread(seconds: BlockingCall.queryTimeoutSeconds) {
-                Minimuxer.lookupApp(bundleId: bundleID) != nil
-            }
-            if case .some(.success(true)) = probe { return }
+            if await probeInstalled(bundleID: bundleID) == .installed { return }
             try? await Task.sleep(for: .milliseconds(650))
         }
-        throw ImportFailure(
+        // 8 轮都没查到 ⇒ **先确认这条通道还查不查得动东西，再下结论**。
+        // 阳性对照拿 Seal 自己问：这段代码正在它里面运行，它必然装着。
+        // - 对照答 `.installed` ⇒ 通道可信 ⇒ 确实没装上（707a，去重装）；
+        // - 对照答别的（没装 / 查询失败 / 超时）⇒ 通道不可信 ⇒ 只能说「无法验证」（707b）。
+        // 折叠成一个结论会让用户去重装一个其实已经装好的 App（原来的形态）。
+        let positiveControl = await probeInstalled(
+            bundleID: Bundle.main.bundleIdentifier ?? ""
+        )
+        throw Self.verificationFailure(bundleID: bundleID, positiveControl: positiveControl)
+        #endif
+    }
+
+    /// 「安装后验证」失败的归类（**纯函数**，便于单测）。
+    ///
+    /// 两种结论的**下一步动作完全不同**，不能折叠成一个：
+    /// - `SEAL-INSTALL-707a`（阳性对照通过 ⇒ 通道可信）：确实没装上 ⇒ 重新安装。
+    /// - `SEAL-INSTALL-707b`（对照也没通过 ⇒ 通道不可信）：**结论不成立** ⇒ 先去查通道
+    ///   （LocalDevVPN / 配对），而不是白重装一遍。
+    ///
+    /// 原来只有 `707a` 一种，且判据是折叠 `nil` 的 `lookupApp`
+    /// ⇒ 隧道一抖，装好的 App 会被报成「安装后验证失败」。
+    static func verificationFailure(
+        bundleID: String,
+        positiveControl: ProfileReclaimPolicy.InstallProbe
+    ) -> ImportFailure {
+        guard positiveControl == .installed else {
+            return ImportFailure(
+                title: "无法确认安装结果",
+                reason: "iOS 安装服务查不到 \(bundleID)，但连 Seal 自己也查不到 —— 这是设备通道不可信，不能据此判定这个 App 没装上。",
+                recovery: "确认 LocalDevVPN 已连接、开发者模式已开启后重试",
+                code: "SEAL-INSTALL-707b"
+            )
+        }
+        return ImportFailure(
             title: "安装后验证失败",
             reason: "iOS 安装服务未返回已安装的 Bundle ID（\(bundleID)）。",
             recovery: "重试",
             code: "SEAL-INSTALL-707a"
         )
-        #endif
     }
+
+    #if !targetEnvironment(simulator)
+    /// 一次有界的「装了没」探测，**三态**。
+    ///
+    /// ⚠️ **必须用会抛错的 `Minimuxer.isAppInstalled`，不能用 `Minimuxer.lookupApp`**：
+    /// 后者的 `nil` 同时表示「没装」与「查询失败」（`try?` 吞错 +
+    /// `Device.getFirstDevice()` 失败也返回 nil）⇒ 拿它当判据会在隧道抖动时
+    /// 把「装好了」读成「没装」。
+    ///
+    /// ⚠️ `offThread(seconds:)` 是**有界等待**（到点返回），但里面的同步阻塞 FFI
+    /// 不会因此停下 —— 所以单次预算必须短到「遗弃它也不心疼」的量级，
+    /// 这正是构建 184 卡 12 分钟的机制。这里沿用 `BlockingCall.queryTimeoutSeconds`。
+    ///
+    /// 与 `DeviceProfileCleaner.probeInstalled` 形状相同但**刻意不共用**：那条路径
+    /// 明确不许调 `Install.resetProvider()`（R05），硬合并会把约束带错地方。
+    private func probeInstalled(bundleID: String) async -> ProfileReclaimPolicy.InstallProbe {
+        let outcome = await offThread(seconds: BlockingCall.queryTimeoutSeconds) {
+            try Minimuxer.isAppInstalled(bundleId: bundleID)
+        }
+        switch outcome {
+        case .some(.success(true)): return .installed
+        case .some(.success(false)): return .notInstalled
+        case .some(.failure), .none: return .unavailable
+        }
+    }
+    #endif
 
 
     #if !targetEnvironment(simulator)

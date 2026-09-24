@@ -96,6 +96,7 @@ enum InstallFailureActionPolicy {
         "SEAL-INSTALL-702l",   // iOS 拒绝：免费账号 3 应用上限 / 完整性校验
         "SEAL-INSTALL-702s",   // 设备存储空间不足
         "SEAL-INSTALL-702t",   // 安装超时：底下很可能仍在跑，重跑即并发安装
+        "SEAL-INSTALL-707b",   // 安装后无法验证（通道不可信）：重装解决不了，先修通道
         "SEAL-INSTALL-737",    // 自更新事务未就绪：重新启动 Seal 后再续签
         "SEAL-INSTALL-738",    // 上一笔自替换安装仍在进行：等它结束或重启 Seal
         "SEAL-APPID-DEVICELIMIT"

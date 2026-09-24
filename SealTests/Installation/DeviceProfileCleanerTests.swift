@@ -180,4 +180,43 @@ struct DeviceProfileCleanerTests {
         #expect(message.contains("删除 2"), "路径 1 的成绩必须留着 —— 中止的只是回收")
         #expect(message.contains("中断于") == false, "回收中止不是整轮中断，借用这个词会让人以为清理白跑了")
     }
+
+    // MARK: - dump 失败也要带出真实尝试次数（2026-09-24）
+
+    /// 只为承载「底层错误」而存在的占位错误。
+    ///
+    /// **刻意不用 `MinimuxerError.NoDevice`**：`SealTests` 的依赖只有 `Seal` 与
+    /// `ZIPFoundation`（`project.yml`），**没有 Minimuxer** ⇒ 在这里 `import Minimuxer`
+    /// 只会在 `swift-regression` 上炸（`build-package` 不编译测试 target，照绿）。
+    /// 本仓已有测试也一律不 import 它。
+    private struct StubDumpError: Error, CustomStringConvertible {
+        var description: String { "NoDevice" }
+    }
+
+    /// `DumpProfilesFailure` 必须把「试了几次」带出来。
+    ///
+    /// 失败分支原来提前 `return`（`summary.dumpAttempts = dump.attempts` 写在 `do` 之后），
+    /// 于是 `dumpAttempts` 停在默认值 1 ⇒ 日志里「重试 3 次仍失败」看起来和
+    /// 「一次都没试」一模一样，而两者的下一步动作完全不同（查重试有没有生效 vs 查隧道）。
+    @Test
+    func dumpFailureCarriesAttemptCount() {
+        let failure = DumpProfilesFailure(attempts: 3, underlying: StubDumpError())
+
+        #expect(failure.attempts == 3)
+    }
+
+    /// 端到端的那一步：调用方从错误里取出次数后，摘要要能把它写进日志。
+    ///
+    /// 源码断言只能证明「有人赋了值」；只有这里能证明它**真的出现在日志里**。
+    @Test
+    func failedDumpLogsTheAttemptCountFromTheError() {
+        let failure = DumpProfilesFailure(attempts: 3, underlying: StubDumpError())
+        var summary = ProfileCleanupSummary()
+        summary.stage = "dump"
+        summary.dumpAttempts = failure.attempts
+        summary.firstError = String(describing: failure.underlying)
+
+        #expect(summary.logMessage.contains("，dump 尝试 3 次"))
+        #expect(summary.logMessage.contains("，中断于 dump"))
+    }
 }

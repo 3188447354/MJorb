@@ -5,6 +5,60 @@
 
 ---
 
+## 2026-09-24 撤销之后必须有人负责：恢复判据失效 + 失败出口无提示（构建 33 两轮真机）
+
+- **现象**：为验收「证书轮换子流程」修复连跑两轮真机，日志里
+  `证书轮换事务：自动续签 N 个受旧证书影响的已安装应用` **连续两轮 0 命中**
+  （`DownloadsSeal-log(12)(1).txt` / `(13)(1).txt`，构建 1.3.5(33)）。同一批日志还暴露两个观测性缺口。
+- **根因**（两条，均代码 + 日志双证；改回旧写法**不编译失败、也不跑挂单测**）：
+  ① **恢复判据失效**：`affected` 过滤器里有一条 `candidate.accountID == accountID`。它让
+     「本机无私钥」（要**删过**账号 —— `deleteAccount` 会 `keychain.delete`）与
+     「accountID 相等」（要**没删过**）**互斥** ⇒ 恢复**永远不触发** ✗。
+     而 `deleteAccount` 刻意保留应用的旧绑定（原文「关联应用保留原账号绑定，用于防止误用
+     其他账号续签」），重新添加同一 Apple ID 时 `duplicateAccount == nil` ⇒ 建**新 UUID**
+     ⇒ 恒不相等 ⇒「删账号重加」这个最自然的复现配方**必然无效**（为此白跑一轮真机）。
+     判据其实只需要**证书序列号**（全局唯一）。
+  ② **撤销之后没人负责**：两处恢复调用点都在**成功路径**上（`app.isSeal` ⇒ 装之前
+     `includeSeal: false`；非 Seal ⇒ 装之后 `includeSeal: true`），而
+     `CertificateRotationTransactionState` 是 `signAndInstall` 内的**局部量** ⇒ 一旦后面失败，
+     撤销的后果**永久丢失**：用户只看到「安装失败」，不知道别的 App 已经被撤销的证书废掉、
+     已经打不开了（第一轮：`17:04:28` 撤销 → `17:04:32` 外层失败，日志里对此一字未提）。
+- **另两条（观测性缺口）**：③ 批量续签**逐项失败**只推 UI 事件、不落日志（逐项成功早有
+  `SEAL-RENEW-020`）⇒ 真机 `18:04:45 批量续签结果抽屉已关闭（total: 3, succeeded: 1, failed: 2）`
+  之后查不出失败的是谁、为什么。④ `dump` 失败不报尝试次数：`summary.dumpAttempts = dump.attempts`
+  写在**成功路径**上、失败分支提前 `return` ⇒ 恒为 1 ⇒ 日志分不出「一次都没重试」与
+  「重试 3 次仍失败」（`17:55:14 → 17:55:58` ≈ 3×15 秒，日志却只写「中断于 dump，首个错误：NoDevice」）。
+- **修复**：
+  ① 抽出纯函数 `SigningCoordinator.appsAffectedByCertificateRotation(...)`，**去掉 `accountID` 过滤**。
+  ② 恢复子流程回传**真正恢复成功的 appID**；新增 `pendingRotationRecovery`（三条出口共用，
+     避免「修一条漏两条」）与 `failureWithRotationConsequence`（把后果追加进 `reason`、
+     **保留原 code/recovery**、写 `SEAL-CERT-240`）；三条出口（`ImportFailure` / 非
+     `ImportFailure` / 取消）全覆盖。⚠️ 刻意**不自动补跑恢复**：失败多半意味着通道不可用，
+     此刻重签只会再失败一次、把真因埋掉。
+  ③ `RenewalCoordinator.emitFailure` 补日志 `SEAL-RENEW-030`（App 名 + code + title + reason）。
+  ④ 新增 `DumpProfilesFailure(attempts:underlying:)`，重试耗尽时抛出；失败分支取回真实次数写进摘要。
+  ⑤ `verifyInstalled` 三处修正：改用会**抛错**的 `Minimuxer.isAppInstalled`（折叠 `nil` 的
+     `lookupApp` 会把「查询失败」读成「没装」）；8 轮都没查到时做**阳性对照**（拿 Seal 自己问），
+     对照不通过 ⇒ 新码 `SEAL-INSTALL-707b`（无法验证，去修通道）而不是 `707a`（确实没装上，
+     去重装）；删掉无效杠杆 `Install.resetProvider()`（清不掉 Rust 的 RSD 会话缓存，真正的杠杆
+     是 `Minimuxer.reset()`，而那会拆掉可能仍在服务的连接）。`707b` 落进
+     `InstallFailureActionPolicy.acknowledgeCodes`（「重新安装」兜底对通道故障是白重装一次）。
+- **涉及文件**：`Seal/Core/Signing/SigningCoordinator.swift`、
+  `Seal/Core/Renewal/RenewalCoordinator.swift`、
+  `Seal/Infrastructure/Installation/DeviceProfileCleaner.swift`、
+  `Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`、
+  `Seal/Core/Installation/InstallChannelDiagnostic.swift`、
+  `SealTests/Signing/CertificateRotationAffectedAppsTests.swift`（新增）、
+  `SealTests/Installation/InstallChannelDiagnosticClassificationTests.swift`、
+  `SealTests/Installation/DeviceProfileCleanerTests.swift`、`Scripts/verify-release-safety.py`。
+- **验证状态**：守卫新增 **R67**（9 条断言 + 9 个变异锚点），并同步调整 R25 / R66 的锚点
+  （R25 的 `lookupApp` 断言随实现换成 `isAppInstalled`；R66 的 `rotation_body` 结束锚点改为
+  紧跟其后的 `pendingRotationRecovery`，避免把新函数吞进来让约束力**悄悄变弱而检查全绿**）。
+  ⏳ **待真机复验**：按修正后的配方（重装 Seal ⇒ 所有记录共用同一新 UUID ＋ **单独**对普通 App
+  完整签名触发轮换）应看到 `证书轮换事务：自动续签 N 个受旧证书影响的已安装应用`（N ≥ 1）。
+
+---
+
 ## 2026-09-24 抽屉卡在「正在验证安装」：子流程的阶段必须透传、主体必须跟着信号走（构建 31）
 
 - **现象**（`DownloadsSeal-log(11)(1).txt`，构建 1.3.5(31)）：签名安装成功后**桌面已经有图标**，

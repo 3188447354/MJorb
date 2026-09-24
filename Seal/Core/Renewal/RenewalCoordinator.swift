@@ -474,7 +474,16 @@ actor RenewalCoordinator {
         return "\(uuid)（创建 \(created)，到期 \(expires)）"
     }
 
-    /// 失败后重新读取一次最新应用记录并推送失败事件
+    /// 失败后重新读取一次最新应用记录、**落一条日志**、再推送失败事件。
+    ///
+    /// 🔴 **日志那一步是 2026-09-24 补的**：原来这里只推 UI 事件 ⇒ 真机日志里
+    /// 「批量续签完成：共 3，成功 1，失败 2」之后**什么都没有**，失败的是谁、为什么，
+    /// 全查不出来 —— 而逐项**成功**早就有 `SEAL-RENEW-020`。
+    /// 排障时手上只有日志，日志里却没有结论，等于没有失败信息（构建 33 第二轮实证）。
+    ///
+    /// 文案用「未成功」而不是「失败」：这条路径同时服务 `failed`（试过了没成）
+    /// 与 `needsAction`（没试，缺前置条件）两种项，后者说「失败」会误导 ——
+    /// 两者由 `failure.code` 区分（`needsAction` 走 `requiresActionCode`）。
     private func emitFailure(
         progress: @escaping @Sendable (BatchRefreshEvent) async -> Void,
         offset: Int,
@@ -483,7 +492,14 @@ actor RenewalCoordinator {
         failure: ImportFailure
     ) async {
         let currentApps = (try? await appStore.fetchAll()) ?? []
-        if let app = currentApps.first(where: { $0.id == item.appID }) {
+        let app = currentApps.first(where: { $0.id == item.appID })
+        try? await logStore?.append(
+            category: .renewal,
+            level: .error,
+            message: "批量续签：第 \(offset + 1)/\(total) 项未成功 —— \(app?.name ?? "记录已不存在")，[\(failure.code)] \(failure.title)：\(failure.reason)",
+            code: "SEAL-RENEW-030"
+        )
+        if let app {
             await progress(
                 .appFailed(
                     index: offset + 1,

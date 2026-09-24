@@ -1346,11 +1346,17 @@ def violations(load=read):
     check("await BlockingCall.bounded(seconds: seconds, work)" in install_source
           and "OffThreadOutcome" not in install_source,
           "R25: 安装通道的 offThread 必须委托给共用实现，不要保留第二份")
-    # 安装后验证里的 `lookupApp` 也是同步阻塞 FFI，而且**在循环里跑 8 次**。
-    check("let probe = await offThread(seconds: BlockingCall.queryTimeoutSeconds) {"
+    # 安装后验证里的设备查询也是同步阻塞 FFI，而且**在循环里跑 8 次**。
+    #
+    # ⚠️ 2026-09-24 起这条判据同时管两件事（都在同一行代码上，分开写必然漂移）：
+    #   ① **有界**（R25 本来的主题）—— 死会话上不报错、只阻塞到操作系统放弃；
+    #   ② 探测必须走**会抛错**的 `isAppInstalled`，不能用折叠 `nil` 的 `lookupApp`
+    #      （「查询失败」与「没装」被折成同一个值 ⇒ 隧道一抖，装好的 App 被判成验证失败）。
+    check("let outcome = await offThread(seconds: BlockingCall.queryTimeoutSeconds) {"
           in install_source
-          and "Minimuxer.lookupApp(bundleId: bundleID) != nil" in install_source,
-          "R25: 安装后验证里的 lookupApp 也必须是有界查询 —— 死会话上它会在 8 次循环里一直卡住")
+          and "try Minimuxer.isAppInstalled(bundleId: bundleID)" in install_source,
+          "R25: 安装后验证的设备查询必须有界，且必须用会抛错的 `isAppInstalled`"
+          "（折叠 nil 的 `lookupApp` 会把「查询失败」读成「没装」）")
 
     # R26: 创建 App ID 的顺序 —— 主 App 必须优先（2026-09-17）。
     #
@@ -2243,7 +2249,12 @@ def violations(load=read):
     rotation_body = section_or_empty(
         coordinator_source,
         "private func resignAppsAffectedByCertificateRotation(",
-        "private func applySigningResult("
+        # ⚠️ 结束锚点必须停在**紧跟其后的那个函数**上（2026-09-24 调整）：
+        # 本轮在恢复函数与 `applySigningResult` 之间插入了 `pendingRotationRecovery`
+        # 与 `failureWithRotationConsequence`。若仍以 `applySigningResult` 结尾，
+        # `rotation_body` 会把这两个新函数一起吞进来 ⇒ 后面几条 `in rotation_body`
+        # 的断言会在**错误的范围**里通过，约束力悄悄变弱（而检查全绿）。
+        "private func pendingRotationRecovery("
     )
     check("progress: progress," in rotation_body,
           "R66: 证书轮换子流程必须把父会话的 `progress` **原样透传** —— 空回调会让抽屉"
@@ -2253,8 +2264,17 @@ def violations(load=read):
     check("broadcastsInstallStage: true" in rotation_body,
           "R66: 子流程必须补发 `.installing` —— 它只透传阶段、接不到安装通道的 Double 哨兵；"
           "少了它，受影响列表里的 Seal 永远等不到「该回主屏了」")
-    check("includeSeal: false,\n                    progress: progress\n                )" in coordinator_source
-          and "includeSeal: true,\n                    progress: progress\n                )" in coordinator_source,
+    # ⚠️ **空白不敏感**（2026-09-24 调整）：两个调用点被
+    # `recoveredAffectedAppIDs.formUnion(...)` 包了一层 ⇒ 缩进整体 +4。
+    # 钉死列数会把「加了跟踪、逻辑没变」判成违规，逼着下一个人去改守卫而不是改代码。
+    check(re.search(
+              r"includeSeal: false,\s*\n\s*progress: progress\s*\n\s*\)",
+              coordinator_source
+          )
+          and re.search(
+              r"includeSeal: true,\s*\n\s*progress: progress\s*\n\s*\)",
+              coordinator_source
+          ),
           "R66: `resignAppsAffectedByCertificateRotation` 的**两个**调用点都要把 `progress` "
           "传进去（Seal 自己那条 `includeSeal: false`、用户 App 那条 `includeSeal: true`）"
           "—— 只接一处等于另一条链路照旧静默")
@@ -2278,6 +2298,95 @@ def violations(load=read):
           in apps_view_source,
           "R66: 阶段日志必须写出**信号主体**的名字 —— 构建 31 的根因就是"
           "「阶段属于谁」被搞错了，而当时的日志里看不出来")
+
+    # R67: **撤销之后必须有人负责**（2026-09-24，构建 33 连续两轮真机）。
+    #
+    # 现象：真机日志里「自动续签 N 个受旧证书影响的已安装应用」连续两轮 **0 命中**。
+    # 根因两条，都已代码 + 日志双证：
+    #
+    # ① `affected` 过滤器里有一条 `candidate.accountID == accountID`，它让
+    #    「本机无私钥」（要**删过**账号，`deleteAccount` 会 `keychain.delete`）与
+    #    「accountID 相等」（要**没删过**）**互斥** ⇒ 恢复**永远不触发** ✗。
+    #    而 `deleteAccount` 刻意保留应用的旧绑定、重新添加时又建**新 UUID** ⇒
+    #    「删账号重加」这个看起来最自然的复现配方**必然无效**（本轮为此白跑一轮真机）。
+    #    判据其实只需要证书序列号 —— 它全局唯一。
+    #
+    # ② 两处恢复调用点都在**成功路径**上，而 `certificateRotationState` 是**局部量**
+    #    ⇒ 一旦后面失败，撤销的后果**没人负责**：用户只看到「安装失败」，
+    #    不知道别的 App 已经被撤销的证书废掉、已经打不开了
+    #    （构建 33 第一轮：`17:04:28` 撤销 → `17:04:32` 外层失败，日志里对此一字未提）。
+    #
+    # 另有两条是同一轮日志暴露的**观测性缺口** —— 不写日志 ⇒ 排障时手上只有日志，
+    # 日志里却没有结论：
+    # ③ 批量续签**逐项失败**只推 UI 事件、不落日志（逐项成功早就有 `SEAL-RENEW-020`）；
+    # ④ `dump` 失败不报尝试次数（`dumpAttempts` 只在成功路径赋值）⇒
+    #    「一次都没重试」与「重试 3 次仍失败」在日志上长得一模一样。
+    #
+    # 这些改动**都不编译失败、也不跑挂别的单测**，只在真机上静默失效 ⇒ 只能静态钉住。
+    affected_body = section_or_empty(
+        coordinator_source,
+        "static func appsAffectedByCertificateRotation(",
+        "private func resignAppsAffectedByCertificateRotation("
+    )
+    check("candidate.accountID == accountID" not in affected_body
+          and "let revoked = Set(revokedSerials.map {" in affected_body,
+          "R67: 受影响应用的判据**不得**再按 `accountID` 过滤 —— 证书序列号本身就唯一，"
+          "而「删过账号」与「accountID 相等」互斥，会让恢复永远不触发（构建 33 两轮实证）")
+    # ⚠️ 必须用 `count == 2` 而不是 `in`：`formUnion(` 在两个调用点各出现一次，
+    # 写 `in` 会让「其中一个调用点不再接收结果」这个退化**照样通过**
+    #（本轮实测漏网一次 —— 变异只替换第一处，第二处还在）。
+    check(coordinator_source.count("recoveredAffectedAppIDs.formUnion(") == 2
+          and "private func pendingRotationRecovery(" in coordinator_source,
+          "R67: 恢复子流程必须回传**真正恢复成功的** appID，并由一个共用函数算出「谁还没恢复」"
+          "—— 三条出口各写一遍必然漂移成「修了一条、漏了另外两条」")
+    check(coordinator_source.count("SEAL-CERT-240") >= 2,
+          "R67: 撤销之后的失败/取消出口都要留痕（`SEAL-CERT-240`）—— "
+          "「撤销已发生但恢复没跑」必须在日志里查得到，不能只留在内存里")
+    # ⚠️ 必须限定在**这一个函数**里查：`code: failure.code` 在全文件有 3 处
+    #（另两处是诊断附加逻辑），用全文件的 `in` 会让「这里把 code 换掉」这个退化漏网
+    #（本轮实测漏网一次）。
+    consequence_body = section_or_empty(
+        coordinator_source,
+        "private func failureWithRotationConsequence(",
+        "private func applySigningResult("
+    )
+    check("recovery: failure.recovery," in consequence_body
+          and "code: failure.code" in consequence_body,
+          "R67: 追加后果时必须**保留原 code / recovery** —— `InstallFailureActionPolicy` "
+          "按 code 决定按钮动作，换码会把「重试」换成别的动作")
+    # ③ 批量续签逐项失败留痕（与逐项成功的 `SEAL-RENEW-020` 对称）。
+    check("SEAL-RENEW-030" in renewal_source
+          and 'code: "SEAL-RENEW-020"' in renewal_source,
+          "R67: 批量续签的**逐项失败**必须写日志（原来只推 UI 事件 ⇒ 真机上"
+          "「共 3，成功 1，失败 2」之后什么都没有，查不出失败的是谁、为什么）；"
+          "逐项成功的 `SEAL-RENEW-020` 必须同时留着 —— 失败侧是对称补的，不是拿它换的")
+    # ④ dump 失败必须报出真实尝试次数。
+    check("struct DumpProfilesFailure" in cleaner_source
+          and "throw DumpProfilesFailure(attempts: attempt, underlying: error)" in cleaner_source
+          and "summary.dumpAttempts = dumpFailure.attempts" in cleaner_source,
+          "R67: `dumpProfiles` 重试耗尽时必须把**真实尝试次数**带回调用方、并写进摘要 —— "
+          "原来只有成功路径赋 `dumpAttempts`，失败时恒为 1，"
+          "「重试 3 次仍失败」和「一次都没试」在日志上分不开")
+    # ⑤ 安装后验证的「无法验证」必须是独立结论。
+    verify_body = section_or_empty(
+        install_source,
+        "func verifyInstalled(bundleID: String) async throws {",
+        "private func probeInstalled("
+    )
+    check("Minimuxer.lookupApp" not in verify_body
+          and "Install.resetProvider()" not in verify_body,
+          "R67: 安装后验证里不得再出现折叠 `nil` 的 `lookupApp`（会把「查询失败」读成「没装」），"
+          "也不得再调 `Install.resetProvider()` —— 它清不掉 Rust 的 RSD 会话缓存，"
+          "真正的杠杆是 `Minimuxer.reset()`，而那会拆掉可能仍在服务的连接")
+    check("Bundle.main.bundleIdentifier" in verify_body
+          and "verificationFailure(bundleID: bundleID, positiveControl: positiveControl)" in verify_body,
+          "R67: 8 轮都没查到时必须做**阳性对照**（拿 Seal 自己问）—— 没有对照，"
+          "「通道不可信」会被写成「没装上」，用户去重装一个其实已经装好的 App")
+    check("SEAL-INSTALL-707b" in install_source
+          and "SEAL-INSTALL-707b"
+              in strip_comments(load("Seal/Core/Installation/InstallChannelDiagnostic.swift")),
+          "R67: 「无法验证」必须是独立错误码（`707b`）并落进 `acknowledgeCodes` —— "
+          "与「确实没装上」（`707a`）折叠成一个码，下一步动作就没法区分（修通道 vs 重装）")
 
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
@@ -4739,13 +4848,14 @@ def main():
          "        await BlockingCall.bounded(seconds: seconds, work)",
          "        return Result { try await work() }",
          "R25: 安装通道的 offThread 必须委托给共用实现"),
-        # 安装后验证退回无界查询：死会话上会在 8 次循环里一直卡住。
+        # 安装后验证退回无界查询 + 折叠 nil 的旧写法：
+        # 死会话上会在 8 次循环里一直卡住，而且「查询失败」会被读成「没装」。
         ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
-         "            let probe = await offThread(seconds: BlockingCall.queryTimeoutSeconds) {\n"
-         "                Minimuxer.lookupApp(bundleId: bundleID) != nil\n"
-         "            }",
-         "            let probe: Result<Bool, Error>? = .some(.success(Minimuxer.lookupApp(bundleId: bundleID) != nil))",
-         "R25: 安装后验证里的 lookupApp 也必须是有界查询"),
+         "        let outcome = await offThread(seconds: BlockingCall.queryTimeoutSeconds) {\n"
+         "            try Minimuxer.isAppInstalled(bundleId: bundleID)\n"
+         "        }",
+         "        let outcome: Result<Bool, Error>? = .some(.success(Minimuxer.lookupApp(bundleId: bundleID) != nil))",
+         "R25: 安装后验证的设备查询必须有界，且必须用会抛错的 `isAppInstalled`"),
         # ── R26：创建 App ID 的顺序 —— 主 App 必须优先（2026-09-17）──
         # 让「主 App 优先」失效：退回纯字母序 ⇒ 扩展先吃掉共享名额，主 App 反而签不上。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
@@ -5052,6 +5162,58 @@ def main():
          "                broadcastsInstallStage: true\n            )",
          "                broadcastsInstallStage: false\n            )",
          "R66: 「重新安装已签名包」这条入口也必须补发 `.installing`"),
+        # ── R67：撤销之后必须有人负责（2026-09-24 构建 33 两轮真机）──
+        # 把 `accountID` 过滤加回去：恢复在真机上**永远不触发**（本轮白跑一轮的根因）。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "            guard candidate.id != excludingAppID,\n"
+         "                  (candidate.state == .installed || candidate.isSeal),",
+         "            guard candidate.id != excludingAppID,\n"
+         "                  candidate.accountID == accountID,\n"
+         "                  (candidate.state == .installed || candidate.isSeal),",
+         "R67: 受影响应用的判据**不得**再按 `accountID` 过滤 —— 证书序列号本身就唯一，"),
+        # 其中一个调用点不再接收「真正恢复了谁」：失败路径说不出「是谁没恢复」。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "                recoveredAffectedAppIDs.formUnion(",
+         "                _ = (",
+         "R67: 恢复子流程必须回传**真正恢复成功的** appID，并由一个共用函数算出「谁还没恢复」"),
+        # 撤销后的失败出口不再留痕：撤销已发生、App 已打不开，日志里却查不到。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         '            code: "SEAL-CERT-240"',
+         '            code: "SEAL-CERT-241"',
+         "R67: 撤销之后的失败/取消出口都要留痕（`SEAL-CERT-240`）—— "),
+        # 追加后果时把 code 换掉：按钮动作跟着变（`InstallFailureActionPolicy` 按 code 判定）。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "            recovery: failure.recovery,\n            code: failure.code",
+         "            recovery: failure.recovery,\n            code: \"SEAL-CERT-241\"",
+         "R67: 追加后果时必须**保留原 code / recovery** —— `InstallFailureActionPolicy` "),
+        # 批量续签逐项失败又变回「只推 UI 事件」。
+        ("Seal/Core/Renewal/RenewalCoordinator.swift",
+         '            code: "SEAL-RENEW-030"',
+         '            code: "SEAL-RENEW-031"',
+         "R67: 批量续签的**逐项失败**必须写日志（原来只推 UI 事件 ⇒ 真机上"),
+        # dump 失败又不带尝试次数（退回「直接抛底层错误」）。
+        ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
+         "                    throw DumpProfilesFailure(attempts: attempt, underlying: error)",
+         "                    throw error",
+         "R67: `dumpProfiles` 重试耗尽时必须把**真实尝试次数**带回调用方、并写进摘要 —— "),
+        # 把无效杠杆加回安装后验证：`Install.resetProvider()` 清不掉 Rust 的 RSD 会话缓存，
+        # 却会造成「死连接场景已经处理过」的错觉，让人不再去查真因。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "        for _ in 0..<8 {",
+         "        Install.resetProvider()\n        for _ in 0..<8 {",
+         "R67: 安装后验证里不得再出现折叠 `nil` 的 `lookupApp`（会把「查询失败」读成「没装」），"),
+        # 去掉阳性对照：通道不可信会被写成「没装上」，用户去重装一个其实装好的 App。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "        let positiveControl = await probeInstalled(\n"
+         "            bundleID: Bundle.main.bundleIdentifier ?? \"\"\n"
+         "        )",
+         "        let positiveControl = ProfileReclaimPolicy.InstallProbe.installed",
+         "R67: 8 轮都没查到时必须做**阳性对照**（拿 Seal 自己问）—— 没有对照，"),
+        # `707b` 从 `acknowledgeCodes` 里拿掉：落回「重新安装」兜底，用户白重装一次。
+        ("Seal/Core/Installation/InstallChannelDiagnostic.swift",
+         '        "SEAL-INSTALL-707b",   // 安装后无法验证（通道不可信）：重装解决不了，先修通道\n',
+         "",
+         "R67: 「无法验证」必须是独立错误码（`707b`）并落进 `acknowledgeCodes` —— "),
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "            let freshSession = { (label: String) async -> ALTAppleAPISession? in\n",
          "",

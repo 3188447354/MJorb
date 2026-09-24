@@ -178,4 +178,65 @@ struct InstallChannelDiagnosticClassificationTests {
         #expect(pairingInstallTransport(isRemotePairing: true) == .remotePairing)
         #expect(pairingInstallTransport(isRemotePairing: false) == .lockdown)
     }
+
+    // MARK: - 安装后验证失败的归类（2026-09-24）
+
+    /// 阳性对照通过 ⇒ 通道可信 ⇒ 确实没装上 ⇒ `707a`（去重装）。
+    @Test
+    func verificationFailureIsDefinitiveWhenPositiveControlSucceeds() {
+        let failure = Channel.verificationFailure(
+            bundleID: "com.example.target",
+            positiveControl: .installed
+        )
+
+        #expect(failure.code == "SEAL-INSTALL-707a")
+        #expect(
+            failure.reason.contains("com.example.target"),
+            "必须带 Bundle ID，否则日志与弹窗都分不清是哪个 App"
+        )
+    }
+
+    /// 对照也失败 ⇒ 结论**不成立** ⇒ `707b`。
+    ///
+    /// 这是本轮修复的核心：原来的判据是折叠 `nil` 的 `lookupApp`
+    ///（`nil` 同时表示「没装」与「查询失败」）⇒ 隧道一抖，装好的 App 被报成
+    /// 「安装后验证失败」，用户去重装一个其实已经装好的 App。
+    @Test
+    func verificationFailureIsUnverifiableWhenPositiveControlAlsoFails() {
+        for control in [ProfileReclaimPolicy.InstallProbe.notInstalled, .unavailable] {
+            let failure = Channel.verificationFailure(
+                bundleID: "com.example.target",
+                positiveControl: control
+            )
+
+            #expect(
+                failure.code == "SEAL-INSTALL-707b",
+                "对照是「\(control.logName)」时不能下「没装上」的结论"
+            )
+        }
+    }
+
+    /// 两种结论的**下一步动作必须不同**：折叠成一个等于把「去查 VPN」写成「重装一遍」。
+    @Test
+    func verificationOutcomesDoNotShareCodeOrGuidance() {
+        let definitive = Channel.verificationFailure(bundleID: "x", positiveControl: .installed)
+        let unverifiable = Channel.verificationFailure(bundleID: "x", positiveControl: .unavailable)
+
+        #expect(definitive.code != unverifiable.code)
+        #expect(definitive.recovery != unverifiable.recovery)
+        #expect(definitive.title != unverifiable.title)
+    }
+
+    /// `707b` 不能落进「重新安装」兜底 —— 通道不可信时重装必然再失败一次。
+    /// 它必须走 acknowledge（立即终止、只提示去修通道）。
+    @Test
+    func unverifiableCodeAcknowledgesInsteadOfReinstalling() {
+        #expect(InstallFailureActionPolicy.action(for: "SEAL-INSTALL-707b") == .acknowledge)
+    }
+
+    /// `707a` 仍走兜底的「重新安装」—— 它确实没装上，重装是对的。
+    @Test
+    func definitiveFailureStillReinstalls() {
+        #expect(InstallFailureActionPolicy.action(for: "SEAL-INSTALL-707a") == .reinstall)
+    }
 }

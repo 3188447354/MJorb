@@ -16,6 +16,22 @@
 import Foundation
 @preconcurrency import Minimuxer
 
+/// `dumpProfiles` 重试耗尽后抛出的错误，**携带真实尝试次数**。
+///
+/// 为什么必须是独立类型、而不是直接抛底层错误：`summary.dumpAttempts` 原来只在
+/// **成功路径**赋值（`summary.dumpAttempts = dump.attempts` 位于 `do` 之后），
+/// 失败分支提前 `return` ⇒ 失败时恒为 1 ⇒ 日志里那句「dump 尝试 N 次」**永远不打印**，
+/// 分不出「一次都没重试」与「重试 3 次仍失败」。
+/// 而 2026-09-16 修的那条恰恰是「撞上瞬时不可达就白丢一次机会」——
+/// 这条日志本来就该证明重试生效了（构建 33 真机：`17:55:14` → `17:55:58` ≈ 3×15 秒，
+/// 但日志只写「中断于 dump，首个错误：NoDevice」，看不出重试过没有）。
+struct DumpProfilesFailure: Error {
+    /// 实际尝试次数（含首次）。等于 `dumpAttemptLimit` 说明重试全部用尽。
+    let attempts: Int
+    /// 最后一次的底层错误。
+    let underlying: any Error
+}
+
 /// 一次清理的执行摘要。清理是「最佳努力」、永不抛出，
 /// 摘要是唯一排障依据（历史上静默失败导致 109 条旧 profile 一条没删掉还毫无线索）。
 struct ProfileCleanupSummary: Sendable, Equatable {
@@ -80,6 +96,9 @@ struct ProfileCleanupSummary: Sendable, Equatable {
         var text = "描述文件清理：扫描 \(scanned)，匹配 \(matched)，删除 \(removed)"
         if removeFailed > 0 { text += "，删除失败 \(removeFailed)" }
         if stage != "done" { text += "，中断于 \(stage)" }
+        // 只在重试过时报（`attempts > 1`）。失败路径现在也会走到这里：
+        // 重试耗尽才抛错 ⇒ 失败时 `dumpAttempts` 必然等于 `dumpAttemptLimit`（> 1），
+        // 所以「一次都没重试」与「重试 3 次仍失败」在日志上分得开。
         if dumpAttempts > 1 { text += "，dump 尝试 \(dumpAttempts) 次" }
         if let firstError { text += "，首个错误：\(firstError)" }
         if reclaimCandidates > 0 {
@@ -250,7 +269,10 @@ struct DeviceProfileCleaner: Sendable {
             do {
                 return (try Provision.dumpProfiles(docsPath: docsPath), attempt)
             } catch {
-                if attempt == dumpAttemptLimit { throw error }
+                // 最后一次也要把「试了几次」带出去 —— 调用方靠它写日志（见 `DumpProfilesFailure`）。
+                if attempt == dumpAttemptLimit {
+                    throw DumpProfilesFailure(attempts: attempt, underlying: error)
+                }
             }
         }
         // 循环内必然 return 或 throw；这行只为让编译器满意。
@@ -362,7 +384,16 @@ struct DeviceProfileCleaner: Sendable {
             dump = try await dumpProfiles(docsPath: workingDir.path)
         } catch {
             summary.stage = "dump"
-            summary.firstError = String(describing: error)
+            // 失败路径也要记下**真实尝试次数**：原来这里提前 `return`，
+            // `dumpAttempts` 停在默认值 1 ⇒ 日志永远不打印「dump 尝试 N 次」，
+            // 分不出「一次都没重试」与「重试 3 次仍失败」（下一步动作完全不同：
+            // 前者说明重试没生效、后者说明通道确实不可达）。
+            if let dumpFailure = error as? DumpProfilesFailure {
+                summary.dumpAttempts = dumpFailure.attempts
+                summary.firstError = String(describing: dumpFailure.underlying)
+            } else {
+                summary.firstError = String(describing: error)
+            }
             return summary
         }
         summary.dumpAttempts = dump.attempts

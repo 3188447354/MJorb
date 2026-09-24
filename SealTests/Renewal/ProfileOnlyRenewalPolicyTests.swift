@@ -31,17 +31,24 @@ struct ProfileOnlyRenewalPolicyTests {
     }
 
     @Test
-    func installedThirdPartyAppWithCompleteMainAndExtensionTargetsIsEligible() {
-        let app = makeEligibleApp()
+    func installedThirdPartyAppWithoutExtensionsIsEligible() {
+        let app = makeEligibleApp(includeExtension: false)
 
         #expect(
             ProfileOnlyRenewalPolicy.evaluate(app: app)
                 == .eligible(
-                    targetBundleIdentifiers: [
-                        "com.example.demo.TEAM123456",
-                        "com.example.demo.TEAM123456.share"
-                    ]
+                    targetBundleIdentifiers: ["com.example.demo.TEAM123456"]
                 )
+        )
+    }
+
+    @Test
+    func installedThirdPartyAppWithExtensionsRequiresFullResignBecauseSharedProfileHasNoExtensionAppIDs() {
+        let app = makeEligibleApp()
+
+        #expect(
+            ProfileOnlyRenewalPolicy.evaluate(app: app)
+                == .requiresFullResign(.sharedMainProfileHasNoExtensionAppIDs)
         )
     }
 
@@ -80,10 +87,30 @@ struct ProfileOnlyRenewalPolicyTests {
         )
     }
 
-    private func makeEligibleApp(isSeal: Bool = false) -> AppRecord {
+    private func makeEligibleApp(isSeal: Bool = false, includeExtension: Bool = true) -> AppRecord {
         let expiry = Date(timeIntervalSince1970: 1_900_000_000)
         let mainBundleID = "com.example.demo.TEAM123456"
         let extensionBundleID = "\(mainBundleID).share"
+        var targets = [
+            target(bundleIdentifier: mainBundleID, profileUUID: "MAIN-PROFILE", expiry: expiry)
+        ]
+        var extensions: [AppExtensionRecord] = []
+        if includeExtension {
+            targets.append(
+                target(bundleIdentifier: extensionBundleID, profileUUID: "EXT-PROFILE", expiry: expiry)
+            )
+            extensions.append(
+                AppExtensionRecord(
+                    name: "Share",
+                    originalBundleIdentifier: "com.example.demo.share",
+                    mappedBundleIdentifier: extensionBundleID,
+                    kind: .share,
+                    provisioningProfileUUID: "EXT-PROFILE",
+                    provisioningProfileExpirationDate: expiry,
+                    certificateSerialNumber: "00AABB"
+                )
+            )
+        }
         return AppRecord(
             originalBundleIdentifier: "com.example.demo",
             mappedBundleIdentifier: mainBundleID,
@@ -99,27 +126,14 @@ struct ProfileOnlyRenewalPolicyTests {
             signedDeviceIdentifier: "DEVICE-UDID",
             provisioningProfileUUID: "MAIN-PROFILE",
             provisioningProfileExpirationDate: expiry,
-            signingTargets: [
-                target(bundleIdentifier: mainBundleID, profileUUID: "MAIN-PROFILE", expiry: expiry),
-                target(bundleIdentifier: extensionBundleID, profileUUID: "EXT-PROFILE", expiry: expiry)
-            ],
+            signingTargets: targets,
             ipaRelativePath: "Apps/Demo.ipa",
             signedIPARelativePath: "Apps/Demo-Signed.ipa",
             signedIPASHA256: "hash",
             signedArtifactStatus: .installed,
             isSeal: isSeal,
             importedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            extensions: [
-                AppExtensionRecord(
-                    name: "Share",
-                    originalBundleIdentifier: "com.example.demo.share",
-                    mappedBundleIdentifier: extensionBundleID,
-                    kind: .share,
-                    provisioningProfileUUID: "EXT-PROFILE",
-                    provisioningProfileExpirationDate: expiry,
-                    certificateSerialNumber: "00AABB"
-                )
-            ]
+            extensions: extensions
         )
     }
 

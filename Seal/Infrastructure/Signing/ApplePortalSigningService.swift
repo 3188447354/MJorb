@@ -1954,13 +1954,50 @@ actor ApplePortalSigningService {
                 + "其中带非空 entitlements 的 \(bundlesWithEntitlements) 个"
         )
 
+        // ⚠️ **共享主描述文件的前提是「主 App 的能力集 ⊇ 每个保留扩展的能力集」**（2026-09-24 真机）。
+        // 真机实证（构建 27）：`LiveProcess` 请求 `com.apple.developer.kernel.increased-memory-limit`，
+        // 而它只声明在扩展上、不在主 App 上 ⇒ 共享模式下门户**只为主 App** 提交能力
+        // ⇒ 主描述文件不授予它 ⇒ 签后逐 bundle 校验必报 `SEAL-ENTITLEMENT-401`
+        // （LiveContainer 连续 5 次签不上）。
+        // ⇒ 出现这种扩展就回退独立描述文件：独立模式下扩展有自己的 App ID，能力提交到它自己那份上。
+        // ⚠️ 这里的能力集与下面 `requestedEntitlements` 必须**同源**（都用 `filteredAppIDEntitlements`）——
+        // 判据错了会「回退判断说没事、事后校验说缺权限」，两边互相打架。
+        // ⚠️ 用**赋值式**累加而不是 `Dictionary(uniqueKeysWithValues:)`：后者遇到重复键会
+        // **直接 trap（崩溃）**，而 `mappings` 是 `[原始 ID: 映射后 ID]`，映射后 ID 在
+        // 「扩展 ID 需要哈希缩短」那条路径上理论上存在碰撞面 —— 签名链路上崩溃远糟于静默取后者。
+        // 下面 `requestedEntitlements` 也是同样的赋值式累加，两处**同源**才谈得上「判据一致」。
+        var entitlementsByBundleID: [String: Set<String>] = [:]
+        for mappedBundleID in mappings.values {
+            guard let application = applications[mappedBundleID] else { continue }
+            let keys = filteredAppIDEntitlements(from: application, team: team)
+                .keys
+                .map(\.rawValue)
+            entitlementsByBundleID[mappedBundleID] = Set(keys)
+        }
+        let resolvedExtensionProfileStrategy = AppExtensionProfileStrategy.resolvedForSigning(
+            requested: extensionProfileStrategy,
+            mainBundleID: mappedMainBundleID,
+            entitlementsByBundleID: entitlementsByBundleID
+        )
+        if resolvedExtensionProfileStrategy != extensionProfileStrategy,
+           let blocker = AppExtensionProfileStrategy.sharedProfileBlocker(
+               mainBundleID: mappedMainBundleID,
+               entitlementsByBundleID: entitlementsByBundleID
+           ) {
+            await diagnostic(
+                "签名：共享主描述文件不适用于本次 IPA —— 扩展 \(blocker.extensionBundleID) 请求了主 App "
+                    + "未声明的能力 \(blocker.entitlements.joined(separator: "、"))，"
+                    + "已回退独立扩展描述文件（会为每个扩展各申请一个 App ID）"
+            )
+        }
+
         // ⚠️ **Phase 1 的入口也要先留痕**（2026-09-18 真机）。
         // 下面那条完整的「名额」诊断要读 `existing`（账号已有列表），所以必须排在 `fetchAppIDs`
         // 之后 —— 而 `fetchAppIDs` 是 Phase 1 的**第一个**请求，它一旦被限流（1100），整轮直接抛出、
         // **那条诊断永远不会写**。真机后果：抖音两次尝试的日志里都**没有**名额诊断，
         // 反而看不出「它根本没走到建号这一步」。
         // ⇒ 先用一条不依赖 `existing` 的日志把入口钉住（只需要 N，不需要发请求）。
-        let portalMappings = extensionProfileStrategy.portalMappings(
+        let portalMappings = resolvedExtensionProfileStrategy.portalMappings(
             from: mappings,
             originalMainBundleID: originalMainBundleID
         )
@@ -1974,7 +2011,7 @@ actor ApplePortalSigningService {
         }
         let extensionAppIDCount = portalMappings.values.filter { $0 != mappedMainBundleID }.count
         await diagnostic(
-            "App ID 阶段开始：\(extensionProfileStrategy == .sharedMainProfile ? "共享主描述文件" : "独立扩展描述文件")，"
+            "App ID 阶段开始：\(resolvedExtensionProfileStrategy == .sharedMainProfile ? "共享主描述文件" : "独立扩展描述文件")，"
                 + "本次需 \(portalMappings.count) 个 App ID（主 App 1 + 扩展 \(extensionAppIDCount)），准备读取账号已有列表"
         )
         // ⚠️ **读列表也必须过退避重试**：它是 Phase 1 的第一个请求，撞上短时限流（1100）时
@@ -2333,7 +2370,7 @@ actor ApplePortalSigningService {
         return ProfilePreparation(
             profiles: profiles,
             requestedEntitlements: requestedEntitlements,
-            extensionProfileStrategy: extensionProfileStrategy,
+            extensionProfileStrategy: resolvedExtensionProfileStrategy,
             droppedExtensionBundleIdentifiers: Array(Set(droppedExtensionBundleIdentifiers))
         )
     }

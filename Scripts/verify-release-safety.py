@@ -3584,9 +3584,10 @@ def violations(load=read):
           "R65⑤: `effectiveExtensionProfileStrategy` 必须**委托**给 `defaultFor(isSeal:)` ✗ —— "
           "自己再 switch 一份就是同一条规则两份实现，改一处另一处静默失效")
     portal_source = strip_comments(load("Seal/Infrastructure/Signing/ApplePortalSigningService.swift"))
-    check("let portalMappings = extensionProfileStrategy.portalMappings(" in portal_source,
-          "R65⑥: 门户映射必须经 `extensionProfileStrategy.portalMappings(` ✗ —— "
-          "直接拿 `mappings` 用，共享模式就只剩一个纯声明，扩展照旧各申请一个 App ID")
+    check("let portalMappings = resolvedExtensionProfileStrategy.portalMappings(" in portal_source,
+          "R65⑥: 门户映射必须经**解析后**的策略 `resolvedExtensionProfileStrategy.portalMappings(` ✗ —— "
+          "用请求的策略等于把权限回退判据架空（共享模式照旧按扩展申请 App ID）；"
+          "直接拿 `mappings` 用则共享模式只剩一个纯声明")
     check("expectedBundleID: extensionProfileStrategy.expectedProfileBundleID(" in portal_source,
           "R65⑦: 嵌入描述文件校验必须经 `extensionProfileStrategy.expectedProfileBundleID(` ✗ —— "
           "写死成扩展自己的 Bundle ID 时，共享主描述文件必然校验失败")
@@ -3621,6 +3622,46 @@ def violations(load=read):
           and "AppExtensionProfileStrategy.defaultFor(isSeal: false) == .sharedMainProfile" in strategy_tests,
           "R65⑫: 策略单测必须仍在断言「Seal 独立、普通共享」两个方向 ✗ —— "
           "测试被删空或改宽之后，纯策略的行为就没有任何东西在守")
+
+    # ⑬–⑯：两个真机回归的判据（2026-09-24，构建 27）。它们的错法同样**不报错、不崩**：
+    #  ⑬ 续签准入不再排除共享策略 ⇒ 抖音们又在门户阶段报 SEAL-PROFILE-337（用户只看到「失败 1」）；
+    #  ⑭ 回退判据没有纯函数/单测 ⇒ 改坏了没人知道；
+    #  ⑮ 只在策略类型里加纯函数、调用点仍用请求的策略 ⇒ 回退是**空转**（最阴的一种：测试全绿）；
+    #  ⑯ 去掉回退诊断 ⇒ 真机上看不出「为什么这次又慢又费配额」。
+    renewal_policy_source = strip_comments(load("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift"))
+    evaluate_body = section_or_empty(
+        renewal_policy_source,
+        "static func evaluate(app: AppRecord) -> Decision {",
+        "private static func nonBlank(",
+    )
+    check(".requiresFullResign(.sharedMainProfileHasNoExtensionAppIDs)" in evaluate_body
+          and "app.effectiveExtensionProfileStrategy == .sharedMainProfile" in evaluate_body
+          and "app.extensions.isEmpty" in evaluate_body,
+          "R65⑬: profile-only 续签必须排除「共享主描述文件 + 含扩展」的应用 ✗ —— "
+          "共享模式只为应用注册主 App 的 App ID，扩展的 App ID 在门户里从未存在，"
+          "续签必然报 SEAL-PROFILE-337（真机实证：构建 27 抖音批量续签失败）⇒ 这类应用只能完整重签")
+    strategy_tests_source = load("SealTests/Signing/AppExtensionProfileStrategyTests.swift")
+    renewal_policy_tests_source = load("SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift")
+    check("static func sharedProfileBlocker(" in strategy_source
+          and "static func resolvedForSigning(" in strategy_source
+          and "func resolvedForSigningFallsBackToIndependentProfilesWhenAnExtensionNeedsExtraEntitlements()"
+          in strategy_tests_source
+          and "func resolvedForSigningNeverUpgradesIndependentProfilesToShared()" in strategy_tests_source
+          and "func installedThirdPartyAppWithExtensionsRequiresFullResignBecauseSharedProfileHasNoExtensionAppIDs()"
+          in renewal_policy_tests_source,
+          "R65⑭: 两个回退判据必须是**纯函数**且关键单测仍在 ✗ —— "
+          "共享描述文件装不下扩展独有的能力（真机实证：LiveContainer 的 LiveProcess 请求 "
+          "increased-memory-limit，连续 5 次报 SEAL-ENTITLEMENT-401）；"
+          "测试被删空或改宽之后，这两条不变量就没有任何东西在守")
+    check("let resolvedExtensionProfileStrategy = AppExtensionProfileStrategy.resolvedForSigning("
+          in portal_source
+          and "extensionProfileStrategy: resolvedExtensionProfileStrategy," in portal_source,
+          "R65⑮: 签名链路必须真的用**解析后**的策略 ✗ —— 只在策略类型里加个纯函数、调用点仍用请求的"
+          "策略，回退就是空转；返回的 `ProfilePreparation.extensionProfileStrategy` 也必须是解析后的值，"
+          "否则日志、`sharedProfileBundleIDs` 与落库记录三处各说各话")
+    check("签名：共享主描述文件不适用于本次 IPA" in portal_source,
+          "R65⑯: 回退必须**留痕** ✗ —— 没有这条诊断，真机上「这次为什么变成独立模式、为什么又慢又费"
+          "配额」完全看不出来（第②类日志必须带底层原因：是哪个扩展的哪个能力）")
 
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
@@ -4641,7 +4682,7 @@ def main():
          "R31: `sign()` 不能把 SEAL-AUTH-107 无差别替换成「去重新验证」"),
         # 去掉 Phase 1 的入口留痕：`fetchAppIDs` 一失败，日志里就看不出走到哪一步。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         '            "App ID 阶段开始：\\(extensionProfileStrategy == .sharedMainProfile ? "共享主描述文件" : "独立扩展描述文件")，"',
+         '            "App ID 阶段开始：\\(resolvedExtensionProfileStrategy == .sharedMainProfile ? "共享主描述文件" : "独立扩展描述文件")，"',
          "",
          "R31: Phase 1 的入口必须先留痕"),
         # 去掉证书列表失败的原因与耗时：又只剩「暂不可用」，查不出是限流还是超时。
@@ -5230,9 +5271,9 @@ def main():
          "R65⑤: `effectiveExtensionProfileStrategy` 必须**委托**给 `defaultFor(isSeal:)`"),
         # ⑥ 门户映射不再经策略 ⇒ 共享模式只剩一个纯声明（配额照旧全花）✓ 报红。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "let portalMappings = extensionProfileStrategy.portalMappings(",
+         "let portalMappings = resolvedExtensionProfileStrategy.portalMappings(",
          "let portalMappings = mappings",
-         "R65⑥: 门户映射必须经 `extensionProfileStrategy.portalMappings(`"),
+         "R65⑥: 门户映射必须经**解析后**的策略"),
         # ⑦ 校验点写死成扩展自己的 Bundle ID ⇒ 共享描述文件必然校验失败 ✓ 报红。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "expectedBundleID: extensionProfileStrategy.expectedProfileBundleID(",
@@ -5268,6 +5309,36 @@ def main():
          "AppExtensionProfileStrategy.defaultFor(isSeal: true) == .independentProfiles",
          "AppExtensionProfileStrategy.defaultFor(isSeal: true) == .sharedMainProfile",
          "R65⑫: 策略单测必须仍在断言「Seal 独立、普通共享」两个方向"),
+        # ⑬ 续签准入不再排除「共享策略 + 含扩展」⇒ 抖音们又在门户阶段报 SEAL-PROFILE-337 ✓ 报红。
+        ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
+         "let sharesMainProfile = app.effectiveExtensionProfileStrategy == .sharedMainProfile",
+         "let sharesMainProfile = false",
+         "R65⑬: profile-only 续签必须排除「共享主描述文件 + 含扩展」的应用"),
+        # ⑭ 回退判据的关键单测被改名/删掉 ⇒ 两条不变量没人守 ✓ 报红。
+        ("SealTests/Signing/AppExtensionProfileStrategyTests.swift",
+         "func resolvedForSigningFallsBackToIndependentProfilesWhenAnExtensionNeedsExtraEntitlements()",
+         "func resolvedForSigningLegacy()",
+         "R65⑭: 两个回退判据必须是**纯函数**且关键单测仍在"),
+        # ⑭b 续签准入的关键单测被改名/删掉 ✓ 报红（与 ⑭ 同一条断言，两条锚点分别证明两边都在守）。
+        ("SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift",
+         "func installedThirdPartyAppWithExtensionsRequiresFullResignBecauseSharedProfileHasNoExtensionAppIDs()",
+         "func installedThirdPartyAppWithExtensionsLegacy()",
+         "R65⑭: 两个回退判据必须是**纯函数**且关键单测仍在"),
+        # ⑮ 调用点不再解析策略 ⇒ 回退空转（策略类型里那个纯函数变成死代码，而测试仍全绿）✓ 报红。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "let resolvedExtensionProfileStrategy = AppExtensionProfileStrategy.resolvedForSigning(",
+         "let resolvedExtensionProfileStrategy = extensionProfileStrategy",
+         "R65⑮: 签名链路必须真的用**解析后**的策略"),
+        # ⑮b 返回的 ProfilePreparation 又用回请求的策略 ⇒ 日志/落库记录与真实策略不一致 ✓ 报红。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "extensionProfileStrategy: resolvedExtensionProfileStrategy,",
+         "extensionProfileStrategy: extensionProfileStrategy,",
+         "R65⑮: 签名链路必须真的用**解析后**的策略"),
+        # ⑯ 去掉回退诊断 ⇒ 真机上看不出「为什么这次是独立模式、为什么又慢又费配额」✓ 报红。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         r'"签名：共享主描述文件不适用于本次 IPA —— 扩展 \(blocker.extensionBundleID) 请求了主 App "',
+         r'"签名：已回退独立扩展描述文件 "',
+         "R65⑯: 回退必须**留痕**"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

@@ -5,6 +5,23 @@
 
 ---
 
+## 2026-09-24 共享主描述文件的两个真机回归（构建 27）
+
+- **现象**（`Seal-log(7)(1).txt`，构建 1.3.5(27)，06:38–09:34）：
+  ① 抖音（9 bundle = 主 1 + 扩展 8）批量续签失败：`[SEAL-PROFILE-337] App ID 身份已变化：Apple 门户中找不到 …DYShareExtension App ID`（同一批「成功 2、失败 1」）；
+  ② LiveContainer（3 扩展）**连续 5 次**签不上：`[SEAL-ENTITLEMENT-401] 描述文件未授权 …LiveProcess 请求的权限：com.apple.developer.kernel.increased-memory-limit`；
+  ③ 共享策略本身在**签名 + 安装**链路上是通的：`App ID 阶段开始：共享主描述文件，本次需 1 个 App ID`、9 条「描述文件核验」全部 `描述文件 Bundle=主 App 的 ID`、`签名并安装成功`。
+- **根因**：
+  ① 两条链路策略互不相容 —— `13d8b63` 的**签名**路径用共享主描述文件（门户只注册主 App 的 App ID）；`aba8b3a` 的**续签**路径 `prepareProfileOnlyRenewal` 硬编码 `.independentProfiles` + `requiresExistingAppIDs: true`（要求全部 9 个 App ID 都已存在）⇒ 共享模式从不注册扩展 App ID ⇒ 含扩展的 App **永远进不了 profile-only**。而 `ProfileOnlyRenewalPolicy.evaluate` **完全不看策略**，判成 `.eligible` 后必然失败且**不回退**。
+  ② 共享模式隐含假设「主 App 的能力 ⊇ 每个保留扩展的能力」，该假设对扩展**独有**的能力不成立：`requestedEntitlements` 对全部 bundle 都建（2096–2109），但 Phase 1 只对 `portalMappings`（共享模式下只有主 App）提交 `updateFeatures` ⇒ 主 App ID 的能力集不含 `increased-memory-limit` ⇒ 主 profile 不授予 ⇒ 逐 bundle 校验必红。独立模式下扩展有自己的 App ID、能力提交到它自己那份上；即使 Apple 拒（3001）也有 `downgradedToEmptyEntitlements` 兜底 —— 共享模式下这条兜底**永远走不到**。
+- **修复**：
+  ① `ProfileOnlyRenewalPolicy` 新增 `.sharedMainProfileHasNoExtensionAppIDs`，`evaluate` 末尾（放在记录类判据**之后**，让更具体的提示优先）对「共享策略 + 含扩展」直接判完整重签。
+  ② `AppExtensionProfileStrategy` 新增纯函数 `sharedProfileBlocker(mainBundleID:entitlementsByBundleID:)` 与 `resolvedForSigning(requested:mainBundleID:entitlementsByBundleID:)`：只把 `.sharedMainProfile` **降级**成 `.independentProfiles`（永不反向），并按 Bundle ID 字典序**稳定排序**（否则日志会抖）。`ApplePortalSigningService.provisioningProfiles` 在算完能力集后解析策略，`portalMappings` / 日志文案 / 返回的 `ProfilePreparation.extensionProfileStrategy` 三处**统一用解析后的值**（否则回退是空转），并加一条诊断写明是哪个扩展的哪个能力触发了回退。
+- **涉及文件**：`Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift`、`Seal/Core/Signing/AppExtensionProfileStrategy.swift`、`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、`SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift`、`SealTests/Signing/AppExtensionProfileStrategyTests.swift`、`RELEASE_NOTES.md`、`Scripts/verify-release-safety.py`。
+- **验证状态**：新增/改写的纯函数单测（含「永不反向」「稳定排序」两条不变量）；守卫 R65 扩到 ⑯。⚠️ Windows 本机无 Xcode ⇒ 待 GitHub Actions 编译/回归，以及**真机**复验：抖音续签应走完整重签、LiveContainer 应能签上（日志出现「共享主描述文件不适用于本次 IPA」）。
+
+---
+
 ## 2026-09-24 共享主描述文件策略零守卫覆盖
 
 - **现象**：1.3.5 引入 `AppExtensionProfileStrategy`（普通 IPA 共享主描述文件以省 Apple 门户配额）后，`Scripts/verify-release-safety.py` 里**没有任何规则**在守它 —— 全仓 grep `extensionProfileStrategy` 在守卫里**零命中**；1.3.5 那批提交只把既有 R26/R31 的文案跟着改名同步了，没有为新功能加规则。
@@ -168,6 +185,34 @@
 ---
 
 ## 常犯坑位
+
+- 🔴 **「本规则的锚点全对」≠「我改的那一行的锚点全对」**（2026-09-24，白跑一轮 11 分钟）。
+  为 R65 把 `"App ID 阶段开始：\(extensionProfileStrategy == …)"` 改成
+  `\(resolvedExtensionProfileStrategy == …)`（正当改动 ✓）—— R65 自己的 **19 条锚点全对**、
+  R65 专用预检**全绿**；而**同一行**还被 **R31**（「Phase 1 的入口必须先留痕」）的锚点钉着
+  ⇒ 守卫跑到 **11 分钟后**才报 `Mutation anchor missing: ApplePortalSigningService.swift` ✗✗。
+  ⇒ **判据：锚点是「按行」钉的，不是「按规则」钉的** —— 改一行前要问的是
+  「**这一行**被几条规则钉着」，而不是「我这条规则的锚点要不要改」✓。
+  ⇒ 落地：**别再手写「本规则的锚点清单」做预检** —— 它**结构上**看不见别的规则 ✗。
+  改成**全量锚点扫描**（`~/.workbuddy-ai/tmp/guard-anchor-precheck.py`，**5 秒**）：
+  用 `ast` 把守卫自己的 `mutations` 抽出来，逐条验证 `old in 目标文件`
+  —— 与守卫的判据 `if old not in original` **完全等价**，但不用跑 268 次变异模拟。
+  ⚠️ 抽 `mutations` 的三个坑（都踩了）：① 守卫里是 `mutations = […]` **再加**
+  `mutations += […]` **两段**（只抓 `ast.Assign` 只得 **53/268** 条 ✗）；
+  ② **不能用 `ast.literal_eval`**（锚点里有 `+` 拼的跨行字符串，如 R37 那段 Mach-O 头部
+  ⇒ 遇 `BinOp` 报 `ValueError`）⇒ 自写小求值器（含 `Call(chr, …)`，守卫用 `chr(34)` 塞双引号）；
+  ③ **不能用 `exec` 加载守卫**（头部 `Path(__file__).with_name(...)` ⇒ `NameError`）
+  ⇒ 用 `runpy.run_path`。
+
+- 🔴 **`Dictionary(uniqueKeysWithValues:)` 用在「键可能重复」的地方 = 崩溃开关**（2026-09-24）。
+  为「共享主描述文件装不装得下扩展能力」新增能力集时用了它，而**同一个函数里**早有一份
+  等价的、用**赋值式累加**写的循环（`requestedEntitlements`）⇒ 两处形状不一致：
+  键重复时前者 **trap（崩溃）**、后者静默取后者 ✗。
+  ⇒ **判据：「由某个映射/集合生成的序列」当键时，默认它**可能重复**（本仓扩展 ID 有
+  「哈希缩短」路径，理论上存在碰撞面）⇒ 用赋值式累加，别用 `uniqueKeysWithValues` ✓。
+  **同族自查：`grep -rn "uniqueKeysWithValues" Seal/`**（本仓另有 5 处）——
+  每处都要问一句「键来源会不会重复、重复了是崩溃还是可接受」；
+  ⚠️ 但**别顺手全改**（最小改动纪律）：形状与所在函数已有的写法对齐即可。
 
 - 🔴 **「守卫文件在 diff 里出现过」≠「新功能被守卫覆盖了」**（2026-09-24）。
   实例：1.3.5 引入 `AppExtensionProfileStrategy`（普通 IPA 共享主描述文件以省门户配额）时，

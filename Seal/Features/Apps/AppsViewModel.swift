@@ -269,35 +269,21 @@ final class AppsViewModel: ObservableObject {
             presentOperation(for: app)
             return
         }
-        // 选择优先级：用户手动覆盖 > 记录账号 > Seal 按 Team 匹配 > 当前活跃账号 > 第一个可选账号
-        let accountID: UUID
-        if let overrideAccountID,
-           accounts.contains(where: { $0.id == overrideAccountID && AccountAvailabilityPolicy.isSelectable($0) }) {
-            accountID = overrideAccountID
-        } else if let recordedAccountID = app.accountID {
-            accountID = recordedAccountID
-        } else if app.isSeal, let teamID = app.signingTeamID,
-                  let matchedID = accounts.first(where: {
-                      $0.teamID.caseInsensitiveCompare(teamID) == .orderedSame
-                          && AccountAvailabilityPolicy.isSelectable($0)
-                  })?.id {
-            accountID = matchedID
-        } else if let activeID = activeAccountID, accounts.contains(where: { $0.id == activeID && AccountAvailabilityPolicy.isSelectable($0) }) {
-            accountID = activeID
-        } else if let fallbackID = accounts.first(where: { AccountAvailabilityPolicy.isSelectable($0) })?.id {
-            accountID = fallbackID
-        } else {
-            alertFailure = ImportFailure(
-                title: "缺少签名账号",
-                reason: "尚未添加可用的 Apple ID，无法续签。",
-                recovery: "在「我的」中添加 Apple ID",
-                code: "SEAL-AUTH-104"
-            )
-            return
-        }
+        // 选择优先级：用户手动覆盖 > 记录账号（**必须真的存在**）> 同 Team > 活跃账号 > 第一个可选账号。
+        // ⚠️ 判据集中在 `RenewalAccountResolver`：记录里的 `accountID` 可能是**悬空引用**
+        //（删过 Apple ID 再重新添加之后），旧实现在这里直接采用它 ⇒ 续签必然被拒，
+        // 而界面还显示「未记录·自动选择」。
+        let resolution = RenewalAccountResolver.resolve(
+            recordedAccountID: app.accountID,
+            recordedTeamID: app.signingTeamID,
+            accounts: accounts,
+            overrideAccountID: overrideAccountID,
+            fallbackAccountID: activeAccountID
+        )
+        guard let account = await resolvedRenewalAccount(resolution, app: app) else { return }
         await beginSigning(
             for: app,
-            accountID: accountID,
+            accountID: account.id,
             requestedBundleIdentifier: nil,
             completionMode: .signAndInstall
         )
@@ -863,6 +849,102 @@ final class AppsViewModel: ObservableObject {
         continueSigningRequest(for: app, availableAccounts: availableAccounts)
     }
 
+    /// 把 `RenewalAccountResolver` 的结果变成「账号」或「一条说清原因的提示 + 日志」。
+    ///
+    /// ⚠️ 每条失败出口都必须留痕：旧实现只设 `alertFailure`、**一行日志都不写** ⇒
+    /// 真机上点「立即续签」被拒之后，日志里一条线索都没有
+    ///（2026-09-24 构建 34 实测：`SEAL-AUTH-104b` 在 233 行日志里**零命中**，
+    /// 而「点了续签却什么都没发生」正是最需要日志的场景）。
+    /// 判据按 `AGENTS.md` §4：拿着这条日志要能说出下一步做什么。
+    private func resolvedRenewalAccount(
+        _ resolution: RenewalAccountResolver.Resolution,
+        app: AppRecord
+    ) async -> AppleAccountRecord? {
+        switch resolution {
+        case .resolved(let id):
+            guard let account = verifiedAccounts.first(where: { $0.id == id }) else {
+                // 解析器刚判定可用、这里却查不到：只可能被并发改动，如实报出即可。
+                await logAccountResolutionFailure(
+                    app: app,
+                    code: "SEAL-AUTH-104b",
+                    detail: "解析出的账号已不可用"
+                )
+                alertFailure = ImportFailure(
+                    title: "Apple ID 不可用",
+                    reason: "请选择一个已验证的 Apple ID 进行续签。",
+                    recovery: "前往设置",
+                    code: "SEAL-AUTH-104b"
+                )
+                return nil
+            }
+            return account
+        case .recordedAccountNeedsVerification(let id):
+            let email = accounts.first(where: { $0.id == id })?.maskedEmail ?? "记录中的 Apple ID"
+            await logAccountResolutionFailure(
+                app: app,
+                code: "SEAL-AUTH-104f",
+                detail: "记录的签名账号需重新验证（\(email)）"
+            )
+            alertFailure = ImportFailure(
+                title: "Apple ID 需要重新验证",
+                reason: "\(app.name) 记录的签名账号（\(email)）当前不可用，需要先在「我的」里重新验证后才能续签。",
+                recovery: "前往设置",
+                code: "SEAL-AUTH-104f"
+            )
+            return nil
+        case .recordedAccountMissing(let teamID):
+            let team = (teamID?.isEmpty == false ? teamID! : "未知")
+            await logAccountResolutionFailure(
+                app: app,
+                code: "SEAL-AUTH-104g",
+                detail: "记录的账号已不存在，且没有同 Team（\(team)）的可用账号"
+            )
+            alertFailure = ImportFailure(
+                title: "找不到原来的签名账号",
+                reason: "\(app.name) 原来由 Team \(team) 的 Apple ID 签名，该账号已被删除，当前也没有同 Team 的可用账号。换用其他 Team 的 Apple ID 续签会让它的 Keychain 与 App Group 失配，因此没有自动继续。",
+                recovery: "前往设置",
+                code: "SEAL-AUTH-104g"
+            )
+            return nil
+        case .noSelectableAccount:
+            await logAccountResolutionFailure(
+                app: app,
+                code: "SEAL-AUTH-104a",
+                detail: "没有可用的 Apple ID（账号记录 \(accounts.count) 条）"
+            )
+            alertFailure = ImportFailure(
+                title: "缺少签名账号",
+                reason: accounts.isEmpty ? "尚未添加 Apple ID" : "Apple ID 需要重新验证",
+                recovery: "前往设置",
+                code: "SEAL-AUTH-104a"
+            )
+            return nil
+        }
+    }
+
+    /// 续签被拒时的统一留痕。
+    ///
+    /// 刻意把「应用、记录里的账号 UUID、记录里的 Team、账号记录条数」一起写进去 ——
+    /// 只说一句「不可用」的日志，用户和排查者都看不出下一步做什么。
+    private func logAccountResolutionFailure(
+        app: AppRecord,
+        code: String,
+        detail: String
+    ) async {
+        let bundleID = app.mappedBundleIdentifier
+            ?? app.preferredBundleIdentifier
+            ?? app.originalBundleIdentifier
+        try? await logStore?.append(
+            category: .signing,
+            level: .error,
+            message: "续签被拒 [\(code)] \(app.name)（\(bundleID)）：\(detail)"
+                + "；记录账号=\(app.accountID?.uuidString ?? "无")"
+                + "，记录 Team=\(app.signingTeamID ?? "无")"
+                + "，账号记录 \(accounts.count) 条（可用 \(verifiedAccounts.count) 条）",
+            code: code
+        )
+    }
+
     func beginSigning(
         for app: AppRecord,
         accountID: UUID,
@@ -871,16 +953,39 @@ final class AppsViewModel: ObservableObject {
     ) async {
         guard signingTask == nil, batchRefreshTask == nil else { return }
         let isRenewal = app.belongsInInstalledList
-        // 宽松策略：续签时优先用应用记录的账号，没有则用传入的账号
-        let resolvedAccountID = (isRenewal ? app.accountID : nil) ?? accountID
-        guard var account = verifiedAccounts.first(where: { $0.id == resolvedAccountID }) else {
-            alertFailure = ImportFailure(
-                title: "Apple ID 不可用",
-                reason: isRenewal ? "请选择一个已验证的 Apple ID 进行续签。" : "请选择一个已验证的 Apple ID",
-                recovery: "前往设置",
-                code: "SEAL-AUTH-104b"
+        // 🔴 续签的账号判据集中在 `RenewalAccountResolver`。
+        // 旧写法 `(isRenewal ? app.accountID : nil) ?? accountID` 有个隐蔽死角：
+        // 删过 Apple ID 之后记录里的 `accountID` 是**悬空 UUID**（不是 `nil`），
+        // 于是 `??` 兜底**永远不会执行** —— 即使用户在抽屉里手动选了账号也会被忽略，
+        // 一律弹「Apple ID 不可用」。（与证书轮换自动恢复里那句
+        // `candidate.accountID == accountID` 是同一个陷阱的两种表现。）
+        var account: AppleAccountRecord
+        if isRenewal {
+            let resolution = RenewalAccountResolver.resolve(
+                recordedAccountID: app.accountID,
+                recordedTeamID: app.signingTeamID,
+                accounts: accounts,
+                fallbackAccountID: accountID
             )
-            return
+            guard let resolved = await resolvedRenewalAccount(resolution, app: app) else { return }
+            account = resolved
+        } else {
+            // 全新签名：账号是用户在签名页明确选定的，不替换、不猜测。
+            guard let picked = verifiedAccounts.first(where: { $0.id == accountID }) else {
+                await logAccountResolutionFailure(
+                    app: app,
+                    code: "SEAL-AUTH-104b",
+                    detail: "所选账号不可用"
+                )
+                alertFailure = ImportFailure(
+                    title: "Apple ID 不可用",
+                    reason: "请选择一个已验证的 Apple ID",
+                    recovery: "前往设置",
+                    code: "SEAL-AUTH-104b"
+                )
+                return
+            }
+            account = picked
         }
 
         // Seal 覆盖安装自己（内部更新/自续签）的签名身份 = TeamID + Bundle ID；Bundle ID 由

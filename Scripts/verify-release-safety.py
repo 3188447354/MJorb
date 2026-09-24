@@ -3915,6 +3915,83 @@ def violations(load=read):
           "R65⑱c: 清空范围的单测必须仍在 ✗ —— 三条缺一不可：共享模式清全部、独立模式只清自己、"
           "结果恒含被降级的那个 bundle（后者防的是「调用方漏传」这种静默退化）")
 
+    # R68: **续签的账号判据只能有一份，且必须识别悬空引用**（2026-09-24 构建 34 真机）。
+    #
+    # 现象（用户报告）：「seal + guoguo + livecontainer 都用同一个 Apple ID，删掉账号再重新
+    # 添加之后，除了 Seal 自己能续签，其他都显示异常，一点续签就让去添加 ID」。
+    #
+    # 根因：应用记录里的 `accountID` 是**悬空引用**。`SettingsViewModel.deleteAccount`
+    # 刻意保留应用的账号绑定（原文：「关联应用保留原账号绑定，用于防止误用其他账号续签」），
+    # 同时把账号记录**真的删掉**（`accountRepository.delete(id:)`）⇒ 应用记录的 `accountID`
+    # 指向一个**已经不存在**的 UUID（**不是 `nil`**）。而重新添加同一 Apple ID 时
+    # `persistAuthenticatedAccount` 的 `duplicateAccount` 查不到旧记录（已被删）
+    # ⇒ **新建一条记录、新的 UUID**（构建 34 日志 `20:34:08 Apple ID 已添加` 实证）
+    # ⇒ 应用记录的 `accountID` **永远悬空**。
+    # ⚠️ 构建 34 日志 `20:35:22 Apple ID 已重新绑定到现有账号记录` 是用户**又添加了一次**、
+    #    绑到 `20:34:08` 刚建的那条记录上 —— 仍是**另一个** UUID，改变不了悬空。
+    # 三处续签入口都直接信任它：
+    #   ① `beginRenewalDirectly`：`else if let recordedAccountID = app.accountID { accountID = recordedAccountID }`；
+    #   ② `beginSigning`：`(isRenewal ? app.accountID : nil) ?? accountID` —— 悬空 UUID **不是 nil**
+    #      ⇒ 兜底**永远不会执行**（与 R67 那句 `candidate.accountID == accountID` 是同一个陷阱的两种表现）；
+    #   ③ `RefreshPlanner.makeQueue`：`app.accountID ?? fallbackAccountID`，且同 Team 匹配
+    #      **只给 `isSeal` 开了口子**。
+    # 而 Seal 自己没事，是因为 `SelfAppRegistrar` 每次启动都从运行包的描述文件回补 Team / 账号
+    # ⇒ 只有它的绑定被重新指回新账号。界面还显示「未记录·自动选择」，与行为**正好相反**。
+    #
+    # 这些改动都不编译失败、也不跑挂别的单测，只在真机上静默失效 ⇒ 只能静态钉住。
+    r68_resolver = strip_comments(load("Seal/Core/Accounts/RenewalAccountResolver.swift"))
+    r68_tests = load("SealTests/Accounts/RenewalAccountResolverTests.swift")
+    r68_apps = strip_comments(load("Seal/Features/Apps/AppsViewModel.swift"))
+    r68_planner = strip_comments(load("Seal/Core/Renewal/RefreshPlanner.swift"))
+    r68_sheet = strip_comments(load("Seal/Features/Apps/InstalledAppActionSheet.swift"))
+    # ① 三处入口必须**共用**同一份判据（两处在 AppsViewModel、一处在 RefreshPlanner）。
+    #    ⚠️ 用计数而不是 `in`：只写 `in` 的话，删掉其中一处仍会被另两处掩盖（R67 同款漏网）。
+    check(r68_apps.count("RenewalAccountResolver.resolve(") == 2
+          and r68_planner.count("RenewalAccountResolver.resolve(") == 1,
+          "R68①: 续签账号解析必须**共用** `RenewalAccountResolver` —— 三处入口各写一遍必然漂移"
+          "（构建 34 真机：删账号重加之后只有 Seal 能续签，其他一点就弹「去添加 ID」）")
+    # ② 记录里的 `accountID` 不得被**无校验**地直接采用 —— 悬空引用正是本轮根因。
+    check("app.accountID ?? " not in r68_apps
+          and "app.accountID ?? " not in r68_planner
+          and "let recordedAccountID = app.accountID" not in r68_apps,
+          "R68②: 记录里的 `accountID` 不得被无校验地直接采用 —— 它可能是**悬空引用**"
+          "（删过账号再重新添加），而 `app.accountID ?? …` 的兜底永远不会执行（悬空 UUID 不是 nil）")
+    # ③ 解析器必须**真的回账号库核对**这个 UUID，并把「需重新验证」与「已不存在」分开。
+    check("accounts.first(where: { $0.id == recordedAccountID })" in r68_resolver
+          and ".recordedAccountNeedsVerification(recorded.id)" in r68_resolver
+          and "return .recordedAccountMissing(recordedTeamID: team)" in r68_resolver,
+          "R68③: 解析器必须真的回账号库核对记录的 `accountID`，并把「需重新验证」与"
+          "「已不存在」分开 —— 折成一个 `nil` 就说不清下一步该做什么")
+    # ④ 同 Team 回退必须**对所有应用**生效，不得再给 `isSeal` 开小灶。
+    #    ⚠️ 必须查**去掉注释后**的源码：解析器的文档注释里就写着旧写法 `if app.isSeal` ✗。
+    check("isSeal" not in r68_resolver
+          and "caseInsensitiveCompare(team)" in r68_resolver,
+          "R68④: 同 Team 回退必须对所有应用生效 —— 旧实现只给 `isSeal` 开小灶，"
+          "而风险与判据对所有应用完全相同（换 Team 会让 Bundle ID 前缀 / Keychain 访问组失配）")
+    # ⑤ 一个可用账号都没有时必须显式报出，不能落到「随便挑一个」。
+    check("guard selectable.isEmpty == false else { return .noSelectableAccount }" in r68_resolver,
+          "R68⑤: 账号库为空 / 全部不可选时必须显式返回 `.noSelectableAccount`")
+    # ⑥ 每条失败出口都要留痕（旧实现只设 `alertFailure`、一行日志都不写 ⇒ 真机上点续签被拒后零线索）。
+    check(r68_apps.count("await logAccountResolutionFailure(") == 5,
+          "R68⑥: 续签被拒的**每条**出口都要留痕 —— 构建 34 的 233 行日志里 `SEAL-AUTH-104b` "
+          "零命中，而「点了续签却什么都没发生」正是最需要日志的场景")
+    # ⚠️ 计数断言：两个码各出现 2 次（`logAccountResolutionFailure` 与 `ImportFailure` 各一处）。
+    #    只写 `in` 的话，把其中一处改名仍会被另一处掩盖（R67/R65 都实测漏网过）。
+    check(r68_apps.count('"SEAL-AUTH-104f"') == 2
+          and r68_apps.count('"SEAL-AUTH-104g"') == 2,
+          "R68⑥: 「记录账号需重新验证」(`104f`) 与「找不到原签名账号」(`104g`) 必须是独立错误码 —— "
+          "下一步动作不同（重新验证 vs 添加同 Team 账号）")
+    # ⑦ 界面必须与判据**同源**：旧实现按「记录 UUID 反查得到账号吗」决定文案，而续签走解析器
+    #    ⇒ 显示「未记录·自动选择」、行为却是拒绝，**显示与行为正好相反**。
+    check("RenewalAccountResolver.resolve(" in r68_sheet
+          and "$0.id == app.accountID" not in r68_sheet,
+          "R68⑦: 界面显示必须与续签判据同源 —— 各写一份必然出现「显示正常、一点就被拒」")
+    # ⑧ 纯判据必须有单测（判据落在 actor / 网络里就测不到，见 AGENTS.md §5）。
+    check("func resolvesToSameTeamAccountWhenRecordedAccountWasDeleted()" in r68_tests
+          and "func explicitOverrideWinsOverDanglingRecordedAccount()" in r68_tests
+          and "func refusesWhenNoAccountSharesTheRecordedTeam()" in r68_tests,
+          "R68⑧: 解析器的关键单测必须仍在 —— 悬空引用、显式覆盖、拒绝换 Team 三条缺一不可")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -5723,6 +5800,102 @@ def main():
          "                            }",
          "                            requestedEntitlements[mappedBundleID] = [:]",
          "R65⑱b: 降级分支必须**按纯函数算出的范围**清空请求集"),
+        # ── R68：续签的账号判据只能有一份，且必须识别悬空引用（2026-09-24 构建 34 真机）──
+        # ①a 单项续签退回「直接采用记录里的 UUID」⇒ 悬空引用原样进签名链路 ✓ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "        let resolution = RenewalAccountResolver.resolve(\n"
+         "            recordedAccountID: app.accountID,\n"
+         "            recordedTeamID: app.signingTeamID,\n"
+         "            accounts: accounts,\n"
+         "            overrideAccountID: overrideAccountID,\n"
+         "            fallbackAccountID: activeAccountID\n"
+         "        )",
+         "        let resolution = RenewalAccountResolver.Resolution"
+         ".resolved(app.accountID ?? activeAccountID ?? UUID())",
+         "R68①: 续签账号解析必须"),
+        # ①b `beginSigning` 退回 `(isRenewal ? app.accountID : nil) ?? accountID` 的语义
+        #    ⇒ 悬空 UUID 短路掉 `??` 兜底，用户在抽屉里手选的账号也被忽略 ✓ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "            let resolution = RenewalAccountResolver.resolve(\n"
+         "                recordedAccountID: app.accountID,\n"
+         "                recordedTeamID: app.signingTeamID,\n"
+         "                accounts: accounts,\n"
+         "                fallbackAccountID: accountID\n"
+         "            )",
+         "            let resolution = RenewalAccountResolver.Resolution"
+         ".resolved(app.accountID ?? accountID)",
+         "R68①: 续签账号解析必须"),
+        # ①c 批量续签退回 `app.accountID ?? fallbackAccountID` ⇒ 批量里这个应用必然失败 ✓ 报红。
+        ("Seal/Core/Renewal/RefreshPlanner.swift",
+         "                let resolution = RenewalAccountResolver.resolve(\n"
+         "                    recordedAccountID: app.accountID,\n"
+         "                    recordedTeamID: app.signingTeamID,\n"
+         "                    accounts: accounts,\n"
+         "                    fallbackAccountID: fallbackAccountID\n"
+         "                )",
+         "                let resolution = RenewalAccountResolver.Resolution"
+         ".resolved(app.accountID ?? fallbackAccountID ?? UUID())",
+         "R68①: 续签账号解析必须"),
+        # ③ 解析器重新「信任记录的 UUID」、不回账号库核对 ⇒ 悬空引用又变成合法结果 ✓ 报红。
+        ("Seal/Core/Accounts/RenewalAccountResolver.swift",
+         "        if let recordedAccountID,\n"
+         "           let recorded = accounts.first(where: { $0.id == recordedAccountID }) {\n"
+         "            return AccountAvailabilityPolicy.isSelectable(recorded)\n"
+         "                ? .resolved(recorded.id)\n"
+         "                : .recordedAccountNeedsVerification(recorded.id)\n"
+         "        }",
+         "        if let recordedAccountID {\n"
+         "            return .resolved(recordedAccountID)\n"
+         "        }",
+         "R68③: 解析器必须真的回账号库核对"),
+        # ③b 有 Team 信息却匹配不上时静默换 Team（而不是拒绝）⇒ Keychain / App Group 失配 ✓ 报红。
+        ("Seal/Core/Accounts/RenewalAccountResolver.swift",
+         "        if hasTeam {\n            return .recordedAccountMissing(recordedTeamID: team)\n        }",
+         "        if hasTeam {\n            return .resolved(selectable[0].id)\n        }",
+         "R68③: 解析器必须真的回账号库核对"),
+        # ④ 同 Team 回退又只给 `isSeal` 开小灶 ⇒ 普通应用永远匹配不到 ✓ 报红。
+        ("Seal/Core/Accounts/RenewalAccountResolver.swift",
+         "               $0.teamID.caseInsensitiveCompare(team) == .orderedSame",
+         "               $0.isSeal && $0.teamID.caseInsensitiveCompare(team) == .orderedSame",
+         "R68④: 同 Team 回退必须对所有应用生效"),
+        # ⑤ 去掉「一个可用账号都没有」的显式出口 ⇒ 落到「随便挑一个」 ✓ 报红。
+        ("Seal/Core/Accounts/RenewalAccountResolver.swift",
+         "        guard selectable.isEmpty == false else { return .noSelectableAccount }",
+         "        if selectable.isEmpty { return .resolved(UUID()) }",
+         "R68⑤: 账号库为空"),
+        # ⑥a 其中一条失败出口不再留痕 ⇒ 真机上「点了续签什么都没发生」又查不到原因 ✓ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "                await logAccountResolutionFailure(\n"
+         "                    app: app,\n"
+         "                    code: \"SEAL-AUTH-104b\",\n"
+         "                    detail: \"解析出的账号已不可用\"\n"
+         "                )",
+         "                _ = \"SEAL-AUTH-104b\"",
+         "R68⑥: 续签被拒的"),
+        # ⑥b 两个新码之一改名 ⇒ 「需重新验证」与「找不到原账号」的下一步动作又分不开了 ✓ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "                code: \"SEAL-AUTH-104f\",",
+         "                code: \"SEAL-AUTH-104x\",",
+         "R68⑥: 「记录账号需重新验证」"),
+        # ⑦a 界面不再与判据同源（自己另算一份）✓ 报红。
+        ("Seal/Features/Apps/InstalledAppActionSheet.swift",
+         "        RenewalAccountResolver.resolve(\n"
+         "            recordedAccountID: app.accountID,\n"
+         "            recordedTeamID: app.signingTeamID,\n"
+         "            accounts: viewModel.accounts\n"
+         "        )",
+         "        RenewalAccountResolver.Resolution.noSelectableAccount",
+         "R68⑦: 界面显示必须与续签判据同源"),
+        # ⑦b 界面退回「按记录 UUID 反查」⇒ 显示「未记录·自动选择」而行为是拒绝 ✓ 报红。
+        ("Seal/Features/Apps/InstalledAppActionSheet.swift",
+         "            if let account = viewModel.accounts.first(where: { $0.id == id }) {",
+         "            if let account = viewModel.accounts.first(where: { $0.id == app.accountID }) {",
+         "R68⑦: 界面显示必须与续签判据同源"),
+        # ⑧ 关键单测被改名/删掉 ⇒ 悬空引用这条不变量没人守 ✓ 报红。
+        ("SealTests/Accounts/RenewalAccountResolverTests.swift",
+         "func resolvesToSameTeamAccountWhenRecordedAccountWasDeleted()",
+         "func resolvesToSameTeamAccountLegacy()",
+         "R68⑧: 解析器的关键单测必须仍在"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

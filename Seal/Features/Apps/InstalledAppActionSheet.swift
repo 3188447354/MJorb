@@ -170,21 +170,50 @@ struct InstalledAppActionSheet: View {
         .accessibilityHidden(true)
     }
 
+    /// 与**真正的续签判据同源**（`RenewalAccountResolver`）。
+    ///
+    /// 旧实现按「记录里的 UUID 反查得到账号吗」决定文案，而续签走的是解析器
+    ///（含同 Team 回退）⇒ 界面显示「未记录·自动选择」、行为却是拒绝，
+    /// **显示与行为正好相反**（2026-09-24 构建 34 真机：三个应用全部如此）。
+    private var resolution: RenewalAccountResolver.Resolution {
+        RenewalAccountResolver.resolve(
+            recordedAccountID: app.accountID,
+            recordedTeamID: app.signingTeamID,
+            accounts: viewModel.accounts
+        )
+    }
+
     private var accountSummary: String {
         if let selectedAccountID,
            let account = viewModel.accounts.first(where: { $0.id == selectedAccountID }) {
             return viewModel.fullEmail(for: account)
         }
-        if let account = viewModel.accounts.first(where: { $0.id == app.accountID }) {
-            return viewModel.fullEmail(for: account)
+        switch resolution {
+        case .resolved(let id):
+            if let account = viewModel.accounts.first(where: { $0.id == id }) {
+                return viewModel.fullEmail(for: account)
+            }
+            return "未记录·自动选择"
+        case .recordedAccountNeedsVerification:
+            return "记录账号需重新验证"
+        case .recordedAccountMissing:
+            return "记录账号已失效"
+        case .noSelectableAccount:
+            return "尚无可用 Apple ID"
         }
-        return "未记录·自动选择"
     }
 
     private var accountSummaryColor: Color {
         if selectedAccountID != nil { return .primary }
-        if app.accountID != nil { return Color.sealTextSecondary }
-        return .secondary
+        switch resolution {
+        case .resolved:
+            return Color.sealTextSecondary
+        case .recordedAccountNeedsVerification, .recordedAccountMissing:
+            // 这两种状态点「立即续签」一定会被拒 —— 用告警色，别再显示成正常状态。
+            return Color.sealWarning
+        case .noSelectableAccount:
+            return .secondary
+        }
     }
 
     /// 完整证书序列号（不再用「可用」占位）：与详情页 / 签名进度页同源同 helper。

@@ -5,6 +5,63 @@
 
 ---
 
+## 2026-09-24 删除 Apple ID 后其他应用无法续签：记录里的 `accountID` 是悬空引用（构建 34 真机）
+
+- **现象**（用户报告，构建 1.3.6(34) 真机）：Seal + guoguo + livecontainer 三个应用都用
+  `sunuannian` 这个 Apple ID 签过；在「我的」里删除该 Apple ID、再重新添加同一个 Apple ID 之后，
+  **只有 Seal 自己能续签**，其他应用都显示异常，且**一点续签就提示去添加 Apple ID**。
+- **根因**：应用记录里的 `accountID` 是**悬空引用** —— 指向一个**已经不存在**的账号 UUID。
+  链路三处（缺一不可）：
+  ① `SettingsViewModel.deleteAccount` **刻意保留**应用的账号绑定（日志原文「关联应用保留原账号绑定，
+     用于防止误用其他账号续签」）⇒ 删除后 `accountID` **不是 `nil`**，而是一个悬空 UUID；
+  ② 重新添加同一 Apple ID 时，`persistAuthenticatedAccount` 的 `duplicateAccount` 查不到旧记录
+     （`deleteAccount` 已经 `accountRepository.delete(id:)` 把它**真的删掉**了）⇒ **新建一条记录、
+     新的 UUID** —— 构建 34 日志 `20:34:08 Apple ID 已添加（Team: …）` 实证；而应用记录的
+     `accountID` 仍指着**被删掉的旧 UUID** ⇒ **永远悬空**
+     （⚠️ 同一份日志 `20:35:22 Apple ID 已重新绑定到现有账号记录` 是用户**又添加了一次**、
+     绑到 `20:34:08` 刚建的那条记录上 —— 仍是**另一个** UUID，改变不了悬空；我起初把它读成
+     「重新绑定回被删掉的原记录」，那是**误读**，靠 `duplicateAccount == nil` 那行分支文案才纠正过来）；
+  ③ 三处续签入口都直接信任这个 UUID，且**都不会失败得有声有色**：
+     - `AppsViewModel.beginRenewalDirectly`：`else if let recordedAccountID = app.accountID { accountID = recordedAccountID }`；
+     - `AppsViewModel.beginSigning`：`(isRenewal ? app.accountID : nil) ?? accountID` —— 悬空 UUID
+       **不是 `nil`** ⇒ `??` 兜底**永远不会执行**，用户在抽屉里手动选的账号也被忽略
+       （与 R67 那句 `candidate.accountID == accountID` 是**同一个陷阱的两种表现**）；
+     - `RefreshPlanner.makeQueue`：`app.accountID ?? fallbackAccountID`，且「按 Team 匹配」
+       **只给 `isSeal` 开了口子** ✗。
+  为什么只有 Seal 没事：`SelfAppRegistrar` 每次启动都「**版本一致也回补 Team/账号**」
+  （首次未记录时从运行包的描述文件补全）⇒ 只有它的绑定被重新指回可用账号。
+- **观测性缺口**：`SEAL-AUTH-104b` 这条失败出口**只设 `alertFailure`、一行日志都不写** ⇒
+  构建 34 的 233 行日志里该码**零命中**，而「点了续签却什么都没发生」正是最需要日志的场景。
+  界面侧同样反向：`InstalledAppActionSheet` 按「记录 UUID 反查得到账号吗」决定文案，
+  而续签走的是另一套判据 ⇒ 显示「未记录·自动选择」、行为却是拒绝，**显示与行为正好相反**。
+- **修复**：
+  ① 新增纯函数 `Seal/Core/Accounts/RenewalAccountResolver.swift`（`Resolution` 四态：
+     `resolved` / `recordedAccountNeedsVerification` / `recordedAccountMissing` /
+     `noSelectableAccount`），作为续签账号解析的**唯一判据**：记录账号**必须真的存在**；
+     不存在时按**同 Team**（`signingTeamID`，大小写与首尾空白不敏感）找可选账号 ——
+     同 Team 才能保证 Bundle ID 前缀 / Keychain 访问组 / App Group 不变；有 Team 信息却匹配不上时
+     **拒绝**，绝不静默换 Team；只有旧数据完全没有 Team 信息时才退回「传入账号 / 第一个可选账号」。
+     **顺带统一**：旧的「按 Team 匹配」只给 `isSeal` 开小灶，而风险与判据对所有应用完全相同 ⇒ 现在对所有应用生效。
+  ② 三处入口（`beginRenewalDirectly` / `beginSigning` / `RefreshPlanner.makeQueue`）全部改走该解析器；
+     `beginSigning` 对**全新签名**仍严格要求用户选定的账号（不替换、不猜测）。
+  ③ 每条失败出口都留痕（新私有方法 `logAccountResolutionFailure`），并按原因分码：
+     `SEAL-AUTH-104f`（记录账号需重新验证）/ `SEAL-AUTH-104g`（记录账号已删除且无同 Team 账号）
+     —— 两者**下一步动作不同**（重新验证 vs 添加同 Team 账号），折成一个码就说不清。
+  ④ 界面与判据**同源**：`InstalledAppActionSheet` 调同一个 `resolve`，失效状态改用告警色
+     `Color.sealWarning` 显示「记录账号已失效」/「记录账号需重新验证」。
+  ⑤ 新增 17 条单测 `SealTests/Accounts/RenewalAccountResolverTests.swift`；守卫新增 **R68**
+     （8 条断言 + 12 个变异锚点）。
+- **涉及文件**：`Seal/Core/Accounts/RenewalAccountResolver.swift`（新）、
+  `SealTests/Accounts/RenewalAccountResolverTests.swift`（新）、
+  `Seal/Features/Apps/AppsViewModel.swift`、`Seal/Core/Renewal/RefreshPlanner.swift`、
+  `Seal/Features/Apps/InstalledAppActionSheet.swift`、`Scripts/verify-release-safety.py`（R68）、
+  `RELEASE_NOTES.md`、`project.yml`。
+- **验证状态**：守卫本地两遍全绿（含 R68 的 12 个变异全部被抓）；单测待 `swift-regression` 编译执行。
+  ⚠️ **真机复验配方**：删账号 → 重新添加同一个 Apple ID → **单独对某个业务应用**续签
+  （**不要**批量、**不要**对 Seal 自己）；判据 = 续签成功且日志里**不再出现**「续签被拒」。
+
+---
+
 ## 2026-09-24 撤销之后必须有人负责：恢复判据失效 + 失败出口无提示（构建 33 两轮真机）
 
 - **现象**：为验收「证书轮换子流程」修复连跑两轮真机，日志里

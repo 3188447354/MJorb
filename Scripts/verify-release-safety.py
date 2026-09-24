@@ -3688,6 +3688,49 @@ def violations(load=read):
           "否则要么查不到（`SEAL-PROFILE-342` 把成功报成失败），"
           "要么多条记录塌成一条（R65⑩ 的逐项校验失配）")
 
+    # ⑱ 能力被 Apple 拒时，**清空范围必须跟着「描述文件」走，不是跟着「bundle」走**
+    #（2026-09-24，构建 30 真机，LiveContainer 连续两次 SEAL-ENTITLEMENT-401）。
+    #
+    # 真机实证：LiveContainer（4 bundle）走共享主描述文件 ⇒ 门户只为主 App 提交能力；
+    # 主 App 的能力被 Apple 判 3001（`provided parameters are invalid`）、Seal 按空能力重发
+    # ⇒ **那份描述文件什么都不授予**。而原实现只清主 App 自己的请求集，扩展的请求集还留着
+    # ⇒ 签后逐 bundle 校验拿「扩展的请求集」去对「空的主描述文件」⇒ 必报
+    # `SEAL-ENTITLEMENT-401`，把一个**本来能装的包**拦下（抖音没事，是因为它的扩展
+    # 不依赖被拒的那条能力）。
+    # ⚠️ 这**不是「静默降级」**：上游 `SideSign` 的 `CodeSignerAPI.prepare` 以
+    # **描述文件授予集**为起点生成 Mach-O 的 entitlements ⇒ 描述文件没有的能力
+    # **根本不会写进包** ⇒ 签出的包本来就自洽，清空只是让 Seal 的账本与实际产物一致。
+    # ⚠️ 「只清自己」这种退化**不报错、不崩**，只在真机上表现为「含扩展的 App 装不上」
+    # ⇒ 必须钉住「范围跟着描述文件走」＋「结果恒含被降级的那个 bundle」两件事。
+    check("static func affectedBundles(" in strategy_source
+          and "return Set(mappedBundleIdentifiers + [bundleIdentifier]).sorted()" in strategy_source
+          and "guard bundleIdentifier == mappedMainBundleID else { return [bundleIdentifier] }"
+          in strategy_source,
+          "R65⑱: 能力被 Apple 拒时的清空范围必须跟着「描述文件」走 ✗ —— "
+          "共享模式下门户只为主 App 提交能力、而每个扩展嵌入的都是这一份 ⇒ 主 App 被拒（3001）时"
+          "**所有** bundle 的请求集都要清空；只清主 App 自己会让扩展的请求集留着 ⇒ 签后校验必报 "
+          "SEAL-ENTITLEMENT-401，把本来能装的包拦下。纯函数还必须**恒含被降级的那个 bundle**"
+          "（防调用方传来的列表漏了它 ⇒ 静默退化回原始 bug）")
+    downgrade_body = section_or_empty(
+        portal_source,
+        "if updated.downgradedToEmptyEntitlements {",
+        "if team.type != .free {"
+    )
+    check("let affectedBundleIDs = AppExtensionProfileStrategy.affectedBundles(" in downgrade_body
+          and "for affectedBundleID in affectedBundleIDs {" in downgrade_body
+          and "requestedEntitlements[affectedBundleID] = [:]" in downgrade_body,
+          "R65⑱b: 降级分支必须**按纯函数算出的范围**清空请求集 ✗ —— "
+          "退回 `requestedEntitlements[mappedBundleID] = [:]` 就是那个原始 bug（见 ⑱）："
+          "扩展的请求集留着、签后逐 bundle 校验必红")
+    check("func downgradeUnderSharedProfileClearsEveryBundleEmbeddingThatProfile()"
+          in load("SealTests/Signing/AppExtensionProfileStrategyTests.swift")
+          and "func downgradeUnderIndependentProfilesTouchesOnlyTheBundleItself()"
+          in load("SealTests/Signing/AppExtensionProfileStrategyTests.swift")
+          and "func downgradeAlwaysIncludesTheBundleThatWasRejected()"
+          in load("SealTests/Signing/AppExtensionProfileStrategyTests.swift"),
+          "R65⑱c: 清空范围的单测必须仍在 ✗ —— 三条缺一不可：共享模式清全部、独立模式只清自己、"
+          "结果恒含被降级的那个 bundle（后者防的是「调用方漏传」这种静默退化）")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -5381,6 +5424,24 @@ def main():
          "SigningTargetRecord(binding: $0.value, signedBundleIdentifier: $0.key)",
          "SigningTargetRecord(binding: $0.value)",
          "R65⑰: 共享模式续签的「**一份描述文件 → 多个目标**」两处必须都接上"),
+        # ⑱ 纯函数不再把自己并进去（退回「只用调用方给的列表」）⇒ 调用方漏传时静默退化 ✓ 报红。
+        ("Seal/Core/Signing/AppExtensionProfileStrategy.swift",
+         "return Set(mappedBundleIdentifiers + [bundleIdentifier]).sorted()",
+         "return Set(mappedBundleIdentifiers).sorted()",
+         "R65⑱: 能力被 Apple 拒时的清空范围必须跟着「描述文件」走"),
+        # ⑱b 降级分支退回「只清自己」⇒ 共享模式下扩展的请求集留着、签后逐 bundle 校验必红 ✓ 报红。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "                            let affectedBundleIDs = AppExtensionProfileStrategy.affectedBundles(\n"
+         "                                whenDowngrading: mappedBundleID,\n"
+         "                                strategy: resolvedExtensionProfileStrategy,\n"
+         "                                mappedMainBundleID: mappedMainBundleID,\n"
+         "                                mappedBundleIdentifiers: Array(mappings.values)\n"
+         "                            )\n"
+         "                            for affectedBundleID in affectedBundleIDs {\n"
+         "                                requestedEntitlements[affectedBundleID] = [:]\n"
+         "                            }",
+         "                            requestedEntitlements[mappedBundleID] = [:]",
+         "R65⑱b: 降级分支必须**按纯函数算出的范围**清空请求集"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

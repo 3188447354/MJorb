@@ -200,4 +200,84 @@ struct AppExtensionProfileStrategyTests {
             ) == .independentProfiles
         )
     }
+
+    // MARK: - 能力被拒时的请求集清空范围（2026-09-24，构建 30 真机）
+
+    @Test
+    func downgradeUnderSharedProfileClearsEveryBundleEmbeddingThatProfile() {
+        // 共享模式下门户**只为主 App** 提交能力，而每个扩展嵌入的都是这一份描述文件
+        // ⇒ 主 App 被 Apple 拒（3001）时，**所有** bundle 的请求集都要清空。
+        // 只清主 App 自己会让扩展的请求集留着 ⇒ 签后逐 bundle 校验必报
+        // SEAL-ENTITLEMENT-401（真机：LiveContainer 连续两次装不上，而它的扩展
+        // 恰好请求了被拒的 com.apple.developer.kernel.increased-memory-limit）。
+        #expect(
+            AppExtensionProfileStrategy.affectedBundles(
+                whenDowngrading: mappedMain,
+                strategy: .sharedMainProfile,
+                mappedMainBundleID: mappedMain,
+                mappedBundleIdentifiers: [mappedMain, mappedShare, mappedWidget]
+            ) == [mappedMain, mappedShare, mappedWidget].sorted()
+        )
+    }
+
+    @Test
+    func downgradeUnderIndependentProfilesTouchesOnlyTheBundleItself() {
+        // 独立模式下每个 bundle 有自己的 App ID 与描述文件 ⇒ 降级只影响它自己。
+        // 顺手把别人的请求集也清掉，会让那些 bundle 白白丢掉本可授予的能力。
+        #expect(
+            AppExtensionProfileStrategy.affectedBundles(
+                whenDowngrading: mappedShare,
+                strategy: .independentProfiles,
+                mappedMainBundleID: mappedMain,
+                mappedBundleIdentifiers: [mappedMain, mappedShare, mappedWidget]
+            ) == [mappedShare]
+        )
+    }
+
+    @Test
+    func downgradeAlwaysIncludesTheBundleThatWasRejected() {
+        // 🔴 不变量：无论哪种策略，**被拒的那个 bundle 自己一定在结果里**。
+        // 这条防的是「调用方传来的列表漏了它」⇒ 静默退化回原来那个 bug
+        // （主 App 反而没被清空、扩展的请求集留着）。
+        for strategy in AppExtensionProfileStrategy.allCases {
+            let affected = AppExtensionProfileStrategy.affectedBundles(
+                whenDowngrading: mappedMain,
+                strategy: strategy,
+                mappedMainBundleID: mappedMain,
+                mappedBundleIdentifiers: [mappedShare, mappedWidget]  // ← 刻意漏掉主 App
+            )
+            #expect(
+                affected.contains(mappedMain),
+                "\(strategy) 下被拒的 bundle 必须出现在结果里"
+            )
+        }
+    }
+
+    @Test
+    func downgradeResultIsDeduplicatedAndStablySorted() {
+        // 映射后 ID 在「扩展 ID 需要哈希缩短」那条路径上理论上存在碰撞面
+        // ⇒ 结果必须去重；顺序也要稳定，否则同一份 IPA 的日志会抖、对不上。
+        #expect(
+            AppExtensionProfileStrategy.affectedBundles(
+                whenDowngrading: mappedMain,
+                strategy: .sharedMainProfile,
+                mappedMainBundleID: mappedMain,
+                mappedBundleIdentifiers: [mappedWidget, mappedMain, mappedWidget, mappedShare]
+            ) == [mappedMain, mappedShare, mappedWidget]
+        )
+    }
+
+    @Test
+    func downgradeUnderSharedProfileTouchesOnlyTheExtensionWhenItIsNotTheMainApp() {
+        // 共享模式下理论上只有主 App 会走门户写入；万一传进来的是扩展，
+        // 也必须只清它自己 —— 不能顺手把整份描述文件下所有 bundle 都清掉。
+        #expect(
+            AppExtensionProfileStrategy.affectedBundles(
+                whenDowngrading: mappedShare,
+                strategy: .sharedMainProfile,
+                mappedMainBundleID: mappedMain,
+                mappedBundleIdentifiers: [mappedMain, mappedShare, mappedWidget]
+            ) == [mappedShare]
+        )
+    }
 }

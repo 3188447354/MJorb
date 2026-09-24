@@ -5,6 +5,62 @@
 
 ---
 
+## 2026-09-24 LiveContainer 401 的修复：能力降级的清空范围必须跟着「描述文件」走（构建 30）
+
+- **现象**（`DownloadsSeal-log(9)(1).txt`，构建 1.3.5(30)，14:02–14:11）：
+  ① ✅ **上一轮的修复真机生效**：抖音（9 bundle = 主 1 + 扩展 8）批量续签走快路径 ——
+  `14:10:12 profile-only 续签已由设备端逐份读回确认（注入 1 份描述文件、覆盖 9 个目标）`，
+  **9 个目标全部指向同一 UUID `ea70ee1a`**；`[SEAL-RENEW-020] 批量续签：第 1/2 项成功`；
+  `需要完整重签` **零命中**（构建 29 是 1 次）⇒ 658 MB 整包重传没了。
+  ② 🔴 **LiveContainer 仍 401**（`14:09:01` / `14:09:17` 两次）：
+  `[SEAL-ENTITLEMENT-401] 描述文件未授权 …LiveProcess 请求的权限：com.apple.developer.kernel.increased-memory-limit`。
+- **根因**（五环，每一环都有代码或日志实证）：
+  ① `sharedProfileBlocker` 比的是**声明集**（主 App ⊇ 扩展），而 LiveContainer 主 App
+  **自己也声明了** `increased-memory-limit` ⇒ 判「装得下」⇒ 走共享模式（`App ID 阶段开始：共享主描述文件`）。
+  ② 共享模式 `portalMappings` 只留主 App ⇒ **只有主 App 走 `updateFeatures`**。
+  ③ `filteredAppIDEntitlements` 对免费账号**放行** `increased-memory-limit`
+  （`ALTFreeDeveloperCanUseEntitlement` 白名单含它）⇒ 提交给 Apple ⇒ **3001**
+  （`updateAppId.action` 判参数无效）⇒ 按空能力重发 ⇒ **那份描述文件什么都不授予**。
+  ④ 降级只清 `requestedEntitlements[主App]`，而**全部 4 个 bundle 共用这一份描述文件**
+  ⇒ 扩展的请求集还留着 ⇒ 签后逐 bundle 校验必红。
+  ⑤ 🔴 **`SEAL-ENTITLEMENT-401` 是 Seal 自己的误报**：上游 `SideSign` 的
+  `CodeSignerAPI.prepare` 以 `matchedProfile.entitlements` 为起点、只保留 App 也声明过的键
+  ⇒ 描述文件没有的能力**根本不会写进 Mach-O** ⇒ **签出的包本来就自洽、能装能跑**，
+  是 Seal 拿「本次请求集」对账把它拦下了。
+  - **抖音为什么没事**：它的扩展不依赖被拒的能力 ⇒ 降级后仍自洽 ⇒ 能签。
+    ⇒ 「同一个 3001 对不同 App 后果完全不同」正是「必须报出被拒的是哪几条能力」的理由。
+- **修复**：
+  ① `AppExtensionProfileStrategy` 新增纯函数
+  `affectedBundles(whenDowngrading:strategy:mappedMainBundleID:mappedBundleIdentifiers:)` ——
+  共享模式返回**全部** bundle（它们嵌入同一份描述文件），独立模式只返回自己；
+  **不变量：结果恒含被降级的那个 bundle**（防调用方漏传 ⇒ 静默退化回原始 bug）；去重 + 稳定排序。
+  ② `ApplePortalSigningService` 的降级分支改为**按该函数算出的范围**逐个清空 `requestedEntitlements`
+  （原来是只清 `mappedBundleID` 那一行）。
+  ③ `updateFeatures` 的降级补**能力名诊断**（原来只说「这组能力」、无法归因）：
+  现在报出「本次提交的能力：…」，**只报能力名、不报值**。
+- **涉及文件**：`Seal/Core/Signing/AppExtensionProfileStrategy.swift`、
+  `Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、
+  `SealTests/Signing/AppExtensionProfileStrategyTests.swift`、`Scripts/verify-release-safety.py`、
+  `RELEASE_NOTES.md`、`DEBUG_LOG.md`。
+- **验证状态**：新增 5 条单测（共享清全部 / 独立只清自己 / **恒含被降级者** / 去重稳定 /
+  共享模式下非主 App 只清自己）；守卫 R65 扩到 **⑱（⑱/⑱b/⑱c 三条断言 + 2 个变异锚点）**。
+  ⏳ **待真机复验**：LiveContainer 应能签上 —— 日志应出现
+  「能力被 Apple 拒（3001）⇒ 本轮该描述文件不授予任何能力；已一并清空 4 个共享它的目标的请求集」，
+  且**不再出现** `SEAL-ENTITLEMENT-401`。
+- ⚠️ **已知取舍（不是 bug，别当缺陷修）**：`com.apple.developer.kernel.increased-memory-limit`
+  免费账号**拿不到**（Apple 3001）⇒ LiveContainer 内部运行大 App 的内存上限较低。
+  这与「共享 vs 独立」**无关** —— 独立模式下 `LiveProcess` 自己的 App ID 同样会被 3001 拒
+  （旁证：2026-09-22 `Seal-log(36).txt` 里 LiveContainer 走的正是**独立模式 4 份描述文件**、
+  签并装成功，但它照样拿不到那条能力）。
+- 🔎 **未验证的探索方向**（**别当结论**）：`ALTAppID.capabilities` 字段与
+  `ALTCapabilityIncreasedMemoryLimit = "INCREASED_MEMORY_LIMIT"` 常量在本仓
+  **只声明、从未被读写**（`ALTAppID.copy()` 也不复制 `capabilities`），而
+  `ALTAppleAPI+Operations.update` 只发 `appID.features` ⇒ `increased-memory-limit`
+  **只能**走 `parameters["entitlements"]`。若 Apple 其实要求它走 capability 参数，
+  补上就有机会让 Apple 接受 —— **需要真机验证，本轮不做**。
+
+---
+
 ## 2026-09-24 续签被逼成完整重签 + 共享描述文件降级未传播（构建 29）
 
 - **现象**（`Seal-log(8)(1).txt`，构建 1.3.5(29)，11:26–11:44）：
@@ -52,11 +108,19 @@
   （主 App ⊇ 扩展），而实际决定描述文件内容的是**Apple 批了什么**。主 App 自己也声明了
   `increased-memory-limit` ⇒ 判据认为「装得下」⇒ 不回退；Apple 拒了之后才缺，判据看不到。
   ⇒ **「请求集」不等于「授予集」**，判据必须落在**授予集**上。
-- **候选修法**（未做，需真机）：在共享模式下 Phase 1 之后核对「主 App 实际获批的集合」能否
-  覆盖每个 bundle 的请求集；不能覆盖就**回退独立描述文件重跑一次 Phase 1**（扩展各自拿 App ID，
-  能力提交到它自己那份上）。⚠️ 不要图省事「把扩展的请求集也清空」—— 那是**静默降级**，
-  与 `RELEASE_NOTES` 明写的「不产出表面成功但无法运行的 IPA」冲突。
+- **候选修法**（当时未做）：在共享模式下 Phase 1 之后核对「主 App 实际获批的集合」能否
+  覆盖每个 bundle 的请求集；不能覆盖就**回退独立描述文件重跑一次 Phase 1**。
 - **本轮已做**：给降级补诊断（原来一条日志都没有）。
+
+> 🔴 **本条的两个判断都已被上一条（构建 30 的 401 修复）修订**：
+> ① **「把扩展的请求集也清空」不是静默降级** —— 上游 `SideSign` 的 `CodeSignerAPI.prepare`
+>    以**描述文件授予集**为起点生成 Mach-O 的 entitlements，描述文件没有的能力
+>    **根本不会写进包** ⇒ 清空只是让 Seal 的**账本**与**实际产物**一致；
+>    不清才是错的（拿一个比产物更宽的集合去对账 ⇒ 必然假红，把本来能装的包拦下）。
+> ② **「回退独立重跑 Phase 1」救不了它** —— 独立模式下 `LiveProcess` 自己的 App ID
+>    也会被同一个 3001 拒、那份描述文件同样不授予 ⇒ 401 只是换个位置出现。
+>    （9-22 的 `Seal-log(36).txt` 旁证：LiveContainer 走独立模式 4 份描述文件能签能装，
+>    但同样拿不到那条能力 ⇒ 「独立模式能过」成立、「能拿到能力」不成立。）
 
 ---
 

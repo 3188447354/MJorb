@@ -84,4 +84,47 @@ enum AppExtensionProfileStrategy: String, Codable, CaseIterable, Equatable, Send
             entitlementsByBundleID: entitlementsByBundleID
         ) == nil ? .sharedMainProfile : .independentProfiles
     }
+
+    /// 某个 bundle 的能力被 Apple 拒绝、描述文件降级为空时，**还有哪些 bundle 的请求集必须一并清空**。
+    ///
+    /// 为什么需要它（2026-09-24 真机，构建 30，LiveContainer 连续两次 `SEAL-ENTITLEMENT-401`）：
+    /// 共享模式下门户**只为主 App** 提交能力（`portalMappings` 只留主 App），而签出的**每个扩展
+    /// 嵌入的都是这一份主描述文件** ⇒ 主 App 的能力一旦被 Apple 拒（3001 ⇒
+    /// `downgradedToEmptyEntitlements`），**所有嵌入它的 bundle 的请求集都必须一起清空** ✗。
+    /// 只清主 App 那一份的话，签后逐 bundle 校验会拿「扩展的请求集」去对「什么都不授予的主描述文件」
+    /// ⇒ 必报 `SEAL-ENTITLEMENT-401`，把一个**本来能装、能跑的包**拦下
+    /// （真机症状就是 LiveContainer 装不上，而抖音因为扩展不依赖被拒的能力照样能签）。
+    ///
+    /// ⚠️ **这不是「静默降级」** —— 必须与 `RELEASE_NOTES` 那条「不产出表面成功但无法运行的 IPA」对齐着读：
+    /// 上游 `SideSign` 的 `CodeSignerAPI.prepare` 以**描述文件授予集**为起点、
+    /// 只保留 App 也声明过的键 ⇒ 描述文件没有的能力**根本不会写进 Mach-O**
+    /// ⇒ 签出的包**本来就是自洽的**（扩展确实不带那个能力，与描述文件一致）。
+    /// 清空请求集只是让 Seal 的**账本**与**实际产物**一致 —— 不清才是错的：
+    /// 那是拿一个**比产物更宽**的集合去对账，必然假红。
+    ///
+    /// ⚠️ 因此也**不要**把这里理解成「把扩展的能力丢掉」：那些能力 Apple 本来就没批，
+    /// 独立模式下同样拿不到（它自己的 App ID 也会被 3001 拒）。
+    /// 想真正拿到它们，只能让 Apple 接受这次提交 —— 那是另一件事。
+    static func affectedBundles(
+        whenDowngrading bundleIdentifier: String,
+        strategy: Self,
+        mappedMainBundleID: String,
+        mappedBundleIdentifiers: [String]
+    ) -> [String] {
+        switch strategy {
+        case .sharedMainProfile:
+            // 只有主 App 会走门户写入（`portalMappings` 只留主 App）；
+            // 它被降级 ⇒ 那份共享描述文件对**所有**嵌入它的 bundle 都不再授予任何能力。
+            guard bundleIdentifier == mappedMainBundleID else { return [bundleIdentifier] }
+            // ⚠️ **必须把 `bundleIdentifier` 自己并进去**（不变量：结果恒含被降级的那个 bundle）——
+            // 否则一旦调用方传来的 `mappedBundleIdentifiers` 漏了主 App，
+            // 这里就会**悄悄退化回**「只清主 App 之外的、却不清主 App」那个原始 bug ✗。
+            // ⚠️ 去重 + 稳定排序：`mappings` 是 `[原始 ID: 映射后 ID]`，映射后 ID 在
+            // 「扩展 ID 需要哈希缩短」那条路径上理论上存在碰撞面 ⇒ 不能假定 values 互不相同。
+            return Set(mappedBundleIdentifiers + [bundleIdentifier]).sorted()
+        case .independentProfiles:
+            // 每个 bundle 有自己的 App ID 与描述文件 ⇒ 降级只影响它自己。
+            return [bundleIdentifier]
+        }
+    }
 }

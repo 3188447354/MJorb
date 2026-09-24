@@ -2266,7 +2266,24 @@ actor ApplePortalSigningService {
                             // Apple 拒了这组能力并按空能力重发（见 updateFeatures 返回值说明）：
                             // 描述文件里不会有它们，请求集必须同步清空，否则事后
                             // validateEntitlements 必报 SEAL-ENTITLEMENT-401「权限缺失」。
-                            requestedEntitlements[mappedBundleID] = [:]
+                            // ⚠️ **清空的范围要跟着「描述文件」走，不是跟着「bundle」走**
+                            // （2026-09-24 真机，构建 30，LiveContainer 连续两次 401 的根因）。
+                            // 共享主描述文件模式下门户**只为主 App** 提交能力，而签出的
+                            // **每个扩展嵌入的都是这一份** ⇒ 主 App 被降级 = 那份描述文件对
+                            // **所有** bundle 都不再授予任何能力。原实现只清 `mappedBundleID`
+                            // 自己 ⇒ 扩展的请求集还留着 ⇒ 签后逐 bundle 校验拿「扩展的请求集」
+                            // 去对「什么都不授予的主描述文件」⇒ 必报 SEAL-ENTITLEMENT-401，
+                            // 把一个**本来能装的包**拦下 ✗（抖音没事，是因为它的扩展不依赖被拒的能力）。
+                            // 判据抽成纯函数（带单测）：`AppExtensionProfileStrategy.affectedBundles`。
+                            let affectedBundleIDs = AppExtensionProfileStrategy.affectedBundles(
+                                whenDowngrading: mappedBundleID,
+                                strategy: resolvedExtensionProfileStrategy,
+                                mappedMainBundleID: mappedMainBundleID,
+                                mappedBundleIdentifiers: Array(mappings.values)
+                            )
+                            for affectedBundleID in affectedBundleIDs {
+                                requestedEntitlements[affectedBundleID] = [:]
+                            }
                             // ⚠️ **降级必须留痕**（2026-09-24 真机，构建 29）：这里原本**没有任何日志** ✗
                             // ⇒ 真机上只看到「权限缺失 SEAL-ENTITLEMENT-401」，看不出根因是
                             // 「Apple 先拒了能力、Seal 自己降级成空」。而且共享主描述文件模式下
@@ -2274,12 +2291,13 @@ actor ApplePortalSigningService {
                             // 扩展的请求集还留着 ⇒ 签后逐 bundle 校验必红（LiveContainer 的
                             // LiveProcess 就是这么连续失败的）。
                             await diagnostic(
-                                "签名：Apple 拒绝了 \(mappedBundleID) 的这组能力（3001），已按空能力重发；"
-                                    + "本轮该 App ID 的描述文件不会授予任何能力"
-                                    + (resolvedExtensionProfileStrategy == .sharedMainProfile
-                                        && mappedBundleID == mappedMainBundleID
-                                        ? "。⚠️ 共享主描述文件模式下**扩展嵌入的就是这一份**，"
-                                            + "扩展请求的独有能力将无法满足"
+                                "签名：\(mappedBundleID) 的能力被 Apple 拒（3001）⇒ 本轮该描述文件不授予任何能力；"
+                                    + "已一并清空 \(affectedBundleIDs.count) 个共享它的目标的请求集"
+                                    + "（\(affectedBundleIDs.joined(separator: "、"))）"
+                                    + (affectedBundleIDs.count > 1
+                                        ? "。⚠️ 共享主描述文件模式下**这些 bundle 嵌入的是同一份**："
+                                            + "谁请求了被拒的那几条能力，本轮就拿不到（Apple 未授予）；"
+                                            + "签出的包仍是自洽的（描述文件没有的能力不会写进 Mach-O）"
                                         : "")
                             )
                         }
@@ -2589,6 +2607,24 @@ actor ApplePortalSigningService {
                   let fallback = appID.copy() as? ALTAppID else {
                 throw error
             }
+            // ⚠️ **必须报出「被拒的是哪些能力」**（2026-09-24，构建 30 真机）。
+            // 原先的降级诊断只说「这组能力」，拿到日志**无法归因** —— 而 3001
+            // （`provided parameters are invalid`）至少有两种成因、后续动作完全不同：
+            //   ① 免费账号根本不支持这条能力（那 Seal 就该在提交前就不发它）；
+            //   ② 这组能力里有一条取值/组合非法（那要单独剔除那一条、保住其余）。
+            // 构建 30 的实测：抖音与 LiveContainer 的**主 App**都被 3001 拒，
+            // 抖音照样能签（扩展不依赖被拒的能力）、LiveContainer 却装不上 ⇒
+            // 说明「被拒的具体是哪一条」才是关键，而当时日志里**一个字都没有** ✗。
+            // ⚠️ 只报**能力名**（`rawValue`），不报值 —— 值里可能含 App Group 之类的标识。
+            // ⚠️ 这条只说「拒了什么」；「影响了哪些 bundle」由调用点的诊断说，两条不重复。
+            let rejectedEntitlementNames = filteredEntitlements.keys.map { $0.rawValue }.sorted()
+            await diagnostic(
+                "签名：Apple 判定 \(appID.bundleIdentifier) 的能力参数无效（3001），将按空能力重发。"
+                    + "本次提交的能力："
+                    + (rejectedEntitlementNames.isEmpty
+                        ? "（空）"
+                        : rejectedEntitlementNames.joined(separator: "、"))
+            )
             fallback.features = [:]
             fallback.entitlements = [:]
             return (try await submitUpdatedAppID(fallback, team: team, session: session), true)

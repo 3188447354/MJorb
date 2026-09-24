@@ -3962,6 +3962,22 @@ def violations(load=read):
           and "return .recordedAccountMissing(recordedTeamID: team)" in r68_resolver,
           "R68③: 解析器必须真的回账号库核对记录的 `accountID`，并把「需重新验证」与"
           "「已不存在」分开 —— 折成一个 `nil` 就说不清下一步该做什么")
+    # ③b **顺序**：判定「记录账号是否存在」必须排在「一个可用账号都没有」**之前**。
+    #    构建 35 第一次 run 实测：反过来的话，「记录账号还在、只是需要重新验证」会被短路成
+    #    `.noSelectableAccount`，丢掉「是哪个 Apple ID 要重新验证」这条更有用的信息
+    #    （`swift-regression` 里 `reportsNeedsVerificationInsteadOfSilentlySwitching` 单点失败）。
+    #    ⚠️ **静态断言查不出「两段代码谁在前」**，只有单测能查 ⇒ 两条都要有（这里钉顺序，
+    #    单测钉行为）。用 `find()` 的下标比较，别用 `in`。
+    _recorded_lookup = r68_resolver.find(
+        "let recorded = accounts.first(where: { $0.id == recordedAccountID })"
+    )
+    _empty_guard = r68_resolver.find(
+        "guard selectable.isEmpty == false else { return .noSelectableAccount }"
+    )
+    check(_recorded_lookup != -1 and _empty_guard != -1 and _recorded_lookup < _empty_guard,
+          "R68③b: 「记录账号是否存在」的判定必须排在「一个可用账号都没有」的 guard **之前** —— "
+          "否则「记录账号还在、只是需要重新验证」会被短路成 `.noSelectableAccount`，"
+          "丢掉「是哪个 Apple ID 要重新验证」（构建 35 第一次 run 实测）")
     # ④ 同 Team 回退必须**对所有应用**生效，不得再给 `isSeal` 开小灶。
     #    ⚠️ 必须查**去掉注释后**的源码：解析器的文档注释里就写着旧写法 `if app.isSeal` ✗。
     check("isSeal" not in r68_resolver
@@ -5896,6 +5912,15 @@ def main():
          "func resolvesToSameTeamAccountWhenRecordedAccountWasDeleted()",
          "func resolvesToSameTeamAccountLegacy()",
          "R68⑧: 解析器的关键单测必须仍在"),
+        # ③b 把「空表」guard 挪回**最前面**（= 构建 35 第一次 run 的真实退化）
+        #    ⇒ 记录账号判定被它抢先 ⇒ 「需重新验证」被短路成「没有可用账号」✓ 报红。
+        #    ⚠️ 变异只做一次 replace，所以用「在 `let selectable` 后面**插入**一行 guard」的形态：
+        #    此时文件里有两处 guard，`find()` 取到**前面那处** ⇒ 顺序断言必红 ✓。
+        ("Seal/Core/Accounts/RenewalAccountResolver.swift",
+         "        let selectable = accounts.filter { AccountAvailabilityPolicy.isSelectable($0) }\n",
+         "        let selectable = accounts.filter { AccountAvailabilityPolicy.isSelectable($0) }\n"
+         "        guard selectable.isEmpty == false else { return .noSelectableAccount }\n",
+         "R68③b: 「记录账号是否存在」的判定必须排在"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

@@ -27,9 +27,14 @@ import Foundation
 ///    - 存在且可选 ⇒ 用它；
 ///    - 存在但不可选（需重新验证）⇒ 如实报 `recordedAccountNeedsVerification`，
 ///      **不静默换账号**；
-/// 3. 与记录里 `signingTeamID` **同 Team** 的可选账号 —— 见下；
-/// 4. 有 Team 信息但找不到同 Team 的账号 ⇒ `recordedAccountMissing`，**拒绝**；
-/// 5. 记录里没有 Team 信息（旧数据）⇒ 才允许退回传入账号 / 第一个可选账号。
+///    ⚠️ **这一步排在「一个可用账号都没有」的判定之前** —— 否则「记录账号还在、
+///    只是需要重新验证」会被短路成 `noSelectableAccount`，丢掉「是哪个 Apple ID
+///    要重新验证」这条更有用的信息。
+/// 3. 到这里记录账号已确定不存在（或压根没记录）⇒ 此时若一个可用账号都没有，
+///    才报 `noSelectableAccount`；
+/// 4. 与记录里 `signingTeamID` **同 Team** 的可选账号 —— 见下；
+/// 5. 有 Team 信息但找不到同 Team 的账号 ⇒ `recordedAccountMissing`，**拒绝**；
+/// 6. 记录里没有 Team 信息（旧数据）⇒ 才允许退回传入账号 / 第一个可选账号。
 ///
 /// ## 为什么以 Team 为准
 ///
@@ -37,7 +42,7 @@ import Foundation
 /// `com.kdt.livecontainer.seal.CT8QZ7352B`）。**同 Team 才是安全回退**：签名身份一致、
 /// Keychain 访问组与 App Group 不变。换 Team 会让这些前缀失配
 ///（Seal 自己在 `beginSigning` 里就有「更新将重置本地数据」的拦截，理由相同）。
-/// 所以第 3 步只认同 Team，第 4 步宁可拒绝也不静默换 Team。
+/// 所以第 4 步只认同 Team，第 5 步宁可拒绝也不静默换 Team。
 ///
 /// 顺带修掉一个不一致：旧实现里「按 Team 匹配」**只给 `isSeal` 开了口子**
 ///（`beginRenewalDirectly` 与 `RefreshPlanner` 都是 `if app.isSeal, let teamID = ...`），
@@ -65,7 +70,6 @@ enum RenewalAccountResolver {
         fallbackAccountID: UUID? = nil
     ) -> Resolution {
         let selectable = accounts.filter { AccountAvailabilityPolicy.isSelectable($0) }
-        guard selectable.isEmpty == false else { return .noSelectableAccount }
 
         // 1. 用户显式指定优先（抽屉里手动选过账号）
         if let overrideAccountID,
@@ -73,7 +77,12 @@ enum RenewalAccountResolver {
             return .resolved(overrideAccountID)
         }
 
-        // 2. 记录里的账号：必须真的存在，不能是悬空引用
+        // 2. 记录里的账号：必须真的存在，不能是悬空引用。
+        //    ⚠️ 这一步必须排在「一个可用账号都没有」的判定**之前** —— 否则「记录账号还在、
+        //    只是需要重新验证」会被短路成 `.noSelectableAccount`，丢掉「是哪个 Apple ID
+        //    要重新验证」这条更有用的信息（2026-09-24 构建 35 的 swift-regression 抓到：
+        //    `reportsNeedsVerificationInsteadOfSilentlySwitching` 期望
+        //    `.recordedAccountNeedsVerification`，实际得到 `.noSelectableAccount`）。
         if let recordedAccountID,
            let recorded = accounts.first(where: { $0.id == recordedAccountID }) {
             return AccountAvailabilityPolicy.isSelectable(recorded)
@@ -81,10 +90,14 @@ enum RenewalAccountResolver {
                 : .recordedAccountNeedsVerification(recorded.id)
         }
 
+        // 3. 到这里说明「记录账号不存在（或压根没记录）」⇒ 必须至少有一个可用账号，
+        //    否则连「同 Team 回退」都无从谈起。
+        guard selectable.isEmpty == false else { return .noSelectableAccount }
+
         let team = recordedTeamID?.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasTeam = team?.isEmpty == false
 
-        // 3. 同 Team 回退（同 Team ⇒ Bundle ID / Keychain 访问组不变）
+        // 4. 同 Team 回退（同 Team ⇒ Bundle ID / Keychain 访问组不变）
         if let team, hasTeam,
            let sameTeam = selectable.first(where: {
                $0.teamID.caseInsensitiveCompare(team) == .orderedSame
@@ -92,12 +105,12 @@ enum RenewalAccountResolver {
             return .resolved(sameTeam.id)
         }
 
-        // 4. 有 Team 信息却匹配不上 ⇒ 拒绝，绝不静默换 Team
+        // 5. 有 Team 信息却匹配不上 ⇒ 拒绝，绝不静默换 Team
         if hasTeam {
             return .recordedAccountMissing(recordedTeamID: team)
         }
 
-        // 5. 旧数据没有 Team 信息 ⇒ 只能按传入账号 / 第一个可选账号（与旧行为一致）
+        // 6. 旧数据没有 Team 信息 ⇒ 只能按传入账号 / 第一个可选账号（与旧行为一致）
         if let fallbackAccountID,
            selectable.contains(where: { $0.id == fallbackAccountID }) {
             return .resolved(fallbackAccountID)

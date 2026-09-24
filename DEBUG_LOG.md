@@ -49,14 +49,25 @@
      —— 两者**下一步动作不同**（重新验证 vs 添加同 Team 账号），折成一个码就说不清。
   ④ 界面与判据**同源**：`InstalledAppActionSheet` 调同一个 `resolve`，失效状态改用告警色
      `Color.sealWarning` 显示「记录账号已失效」/「记录账号需重新验证」。
-  ⑤ 新增 17 条单测 `SealTests/Accounts/RenewalAccountResolverTests.swift`；守卫新增 **R68**
-     （8 条断言 + 12 个变异锚点）。
+  ⑤ 新增 15 条单测 `SealTests/Accounts/RenewalAccountResolverTests.swift`；守卫新增 **R68**
+     （10 条断言 + 13 个变异锚点）。
 - **涉及文件**：`Seal/Core/Accounts/RenewalAccountResolver.swift`（新）、
   `SealTests/Accounts/RenewalAccountResolverTests.swift`（新）、
   `Seal/Features/Apps/AppsViewModel.swift`、`Seal/Core/Renewal/RefreshPlanner.swift`、
   `Seal/Features/Apps/InstalledAppActionSheet.swift`、`Scripts/verify-release-safety.py`（R68）、
   `RELEASE_NOTES.md`、`project.yml`。
-- **验证状态**：守卫本地两遍全绿（含 R68 的 12 个变异全部被抓）；单测待 `swift-regression` 编译执行。
+- **验证状态**：守卫本地两遍全绿（含 R68 的变异全部被抓）。
+  🔴 **CI 抓到一条本地抓不到的顺序 bug（构建 35 第一次 run，`swift-regression` 单点失败）**：
+  解析器里「一个可用账号都没有」的 guard 原本排在「记录账号是否存在」**之前** ⇒
+  「记录账号还在、只是需要重新验证」被短路成 `.noSelectableAccount`，
+  丢掉「是哪个 Apple ID 要重新验证」这条更有用的信息。
+  单测 `reportsNeedsVerificationInsteadOfSilentlySwitching` 期望
+  `.recordedAccountNeedsVerification`、实际得到 `.noSelectableAccount` ⇒ **只有它一条红**
+  （639 tests / 96 suites，1 issue）。
+  ⇒ 修法是把判定顺序调过来（**改判据、不是改测试期望** —— 测试期望才是设计意图）；
+  ⇒ 并把**顺序**本身钉进守卫（新增 R68③b：`find(记录账号判定) < find(空表 guard)`）
+  —— **静态断言查不出「两段代码谁在前」，只有单测能查**，所以两者都要有。
+  ⚠️ 顺带纠正：单测是 **15 条**不是 17 条（我第一版记错，已改）。
   ⚠️ **真机复验配方**：删账号 → 重新添加同一个 Apple ID → **单独对某个业务应用**续签
   （**不要**批量、**不要**对 Seal 自己）；判据 = 续签成功且日志里**不再出现**「续签被拒」。
 

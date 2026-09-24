@@ -94,7 +94,7 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Verify Seal minimum deployment target remains iOS 17
+      - name: Verify Seal minimum deployment target remains iOS 17.4
         run: |
           TARGET="$(xcodebuild \
             -project Seal.xcodeproj \
@@ -103,7 +103,7 @@ jobs:
             -sdk iphonesimulator \
             -showBuildSettings | awk -F ' = ' '/^[[:space:]]*IPHONEOS_DEPLOYMENT_TARGET = / { print $2; exit }')"
           echo "Seal IPHONEOS_DEPLOYMENT_TARGET=$TARGET"
-          test "$TARGET" = "17.0"
+          test "$TARGET" = "17.4"
 
       - name: Refresh local SPM binary artifacts (避免缓存旧版 RustBridge 静态库)
         run: |

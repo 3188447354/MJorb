@@ -5,6 +5,37 @@
 
 ---
 
+## 2026-09-24 最低支持抬到 iOS 17.4：禁止 iOS 16.0–17.3.1（用户指令）
+
+- **指令**（用户原文）：「16.0-17.3.1禁止使用」。落地范围经确认 = **抬门槛到 17.4，Lockdown 通道代码保留**。
+- **为什么分界线是 17.4**：17.4 是 Apple 引入 `CoreDeviceProxy` 的那一版 ⇒ 这是**唯一**一条
+  不依赖本机配对（Lockdown）、不需要 LocalDevVPN 的安装链路。低于 17.4 要么根本装不上（16.x 及以下），
+  要么只能走必须开 VPN 的 Lockdown —— 链路依据见 `docs/qa/2026-09-20-pairing-os-support-matrix.md`。
+- **改动**（部署目标共 **9 处**，漏一处 CI 就红 —— 这是本轮最容易踩的坑）：
+  ① `project.yml` **5 处**：`options.deploymentTarget.iOS` + 4 个 target（Seal / DeviceSupport / SealTests / SealUITests）；
+  ② `Config/Base.xcconfig` **1 处** `IPHONEOS_DEPLOYMENT_TARGET`（项目级默认，会被 target 级覆盖，
+  但两处必须一致 —— 这处最容易漏，因为它不在 `project.yml` 里）；
+  ③ 三份 workflow 各 **1 处**硬编码断言：`ios.yml` / `ios-fast.yml` / `ios-release.yml`
+  （`test "$TARGET" = "17.4"`；`ios.yml` 用的是 `$SEAL_TARGET`）；顺带把 step 名从
+  「Verify Seal minimum deployment target remains iOS 17」改成「… iOS 17.4」。
+- **界面口径同步**（旧文案属于「显示与行为相反」）：`AboutView` 的「最低支持」17.0 → 17.4；
+  `PairingSettingsView` 原文案承诺「iOS 17.0–17.3.1 会改用『本机配对』」⇒ 新门槛下这些机器
+  **连装都装不上**，改为「Seal 最低支持 iOS 17.4，iOS 17.3.1 及以下无法安装」。
+- **刻意保留**：Lockdown 通道代码**不删**（用户明确要求）—— 配对助手仍按 `< 17.4 ⇒ Lockdown`
+  分流，老版本 Seal（≤ 1.3.7）的用户还能用。守卫 **R69⑤** 钉住它，防以后「顺手清理死代码」。
+- **版本号**：`MARKETING_VERSION` 1.3.7 → **1.3.8**。理由：1.3.7 的 IPA 已经交付到用户手上
+  （桌面 `Codex-Seal-IPA/`），同一版本号出现两份门槛不同的产物会让真机复验与发版 tag 都说不清。
+- **守卫**：新增 **R69**（5 条断言 / 8 个变异），钉住 9 处一致 + 界面口径 + Lockdown 保留。
+- **不影响的两件事**（先证伪，别白查）：① `#available(iOS 16.4, *)`（`GlassSurface.swift`）
+  在部署目标还是 17.0 时就已经恒真，本轮**不引入新警告**，且全仓无 warnings-as-errors；
+  `#available(iOS 26.0 / 26.4, *)` 仍有效。② 预编译 `RustBridge.xcframework` 的 minOS 是 16.0 ≤ 17.4
+  ⇒ **抬门槛不构成冲突**（只有**降**门槛才需要查它）。
+- **验证状态**：守卫 PASS（本地两遍）；CI 待跑。**真机**：17.4 及以上可装，17.3.1 及以下应装不上。
+- 🔴 **对真机复验的影响**：1.3.7 的续签修复若要在 **iOS 17.0–17.3.1** 设备上验，必须用
+  **已交付的 1.3.7 IPA**（门槛仍是 17.0）—— 1.3.8 在那台机器上装不上。
+
+---
+
 ## 2026-09-24 删除 Apple ID 后其他应用无法续签：记录里的 `accountID` 是悬空引用（构建 34 真机）
 
 - **现象**（用户报告，构建 1.3.6(34) 真机）：Seal + guoguo + livecontainer 三个应用都用

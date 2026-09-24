@@ -4008,6 +4008,69 @@ def violations(load=read):
           and "func refusesWhenNoAccountSharesTheRecordedTeam()" in r68_tests,
           "R68⑧: 解析器的关键单测必须仍在 —— 悬空引用、显式覆盖、拒绝换 Team 三条缺一不可")
 
+    # R69: **最低支持 = iOS 17.4**（2026-09-24 用户指令：「16.0-17.3.1 禁止使用」）。
+    #
+    # 为什么分界线是 17.4：17.4 是 Apple 引入 `CoreDeviceProxy` 的那一版 ⇒ 这是**唯一**一条
+    # 不依赖本机配对（Lockdown）、不需要 LocalDevVPN 的安装链路。低于 17.4 的机器要么根本
+    # 装不上（16.x 及以下），要么只能走 Lockdown（必须开 VPN、实测最不稳的那条）⇒ 整段禁用。
+    #
+    # ⚠️ **Lockdown 通道代码刻意保留**（用户明确要求「代码保留」）：配对助手仍按
+    #    `< 17.4 ⇒ Lockdown` 分流，老版本 Seal（≤ 1.3.7）的用户还能继续用。
+    #    谁想删它，必须先改这条断言 —— 这是刻意的摩擦。
+    #
+    # 部署目标共 **9 处**，分散在三处 ⇒ 历史上漏改一处就是 CI 红：
+    #   `project.yml` 5 处（`options.deploymentTarget.iOS` + 4 个 target）
+    #   `Config/Base.xcconfig` 1 处（项目级默认，会被 target 级覆盖，但两处必须一致）
+    #   三份 workflow 各 1 处硬编码断言（`ios.yml` / `ios-fast.yml` / `ios-release.yml`）
+    # 这些改动都不编译失败、也不跑挂单测 ⇒ 只能静态钉住。
+    r69_project = load("project.yml")
+    r69_base = load("Config/Base.xcconfig")
+    r69_ios = load(".github/workflows/ios.yml")
+    r69_fast = load(".github/workflows/ios-fast.yml")
+    r69_release = load(".github/workflows/ios-release.yml")
+    r69_about = load("Seal/Features/Settings/AboutView.swift")
+    r69_pairing_view = load("Seal/Features/Settings/PairingSettingsView.swift")
+    r69_assistant = load("Tools/SealPairingAssistant/patch_upstream.py")
+    r69_assistant_ui = load("Tools/SealPairingAssistant/seal_ui_tail.rs.txt")
+    # ① `project.yml` 的 5 处必须全是 17.4。
+    #    ⚠️ 用**计数**而不是 `in`：只写 `in` 的话，把其中一个 target 落回 17.0 会被
+    #    其余三处掩盖（R67 / R68 都实测漏网过）。
+    check(r69_project.count('deploymentTarget: "17.4"') == 4
+          and 'iOS: "17.4"' in r69_project
+          and 'deploymentTarget: "17.0"' not in r69_project
+          and 'iOS: "17.0"' not in r69_project,
+          "R69①: `project.yml` 的 5 处部署目标必须全是 17.4 —— 4 个 target 的 "
+          "`deploymentTarget` 加 `options.deploymentTarget.iOS`；漏一处系统就仍允许装 17.0–17.3.1")
+    # ② 项目级 xcconfig 也写着部署目标，必须同步。
+    check(r69_base.count("IPHONEOS_DEPLOYMENT_TARGET = 17.4") == 1
+          and "IPHONEOS_DEPLOYMENT_TARGET = 17.0" not in r69_base,
+          "R69②: `Config/Base.xcconfig` 的 `IPHONEOS_DEPLOYMENT_TARGET` 必须同步为 17.4 —— "
+          "它与 `project.yml` 是**两处**声明，不一致时谁生效取决于 Xcode 的覆盖顺序")
+    # ③ 三份 workflow 各有一条硬编码断言 —— 这是**唯一**能挡住「只改了 project.yml、
+    #    生成的工程其实没生效」的闸门。漏改任何一份都会让对应 workflow 直接红。
+    check('test "$SEAL_TARGET" = "17.4"' in r69_ios
+          and 'test "$TARGET" = "17.4"' in r69_fast
+          and 'test "$TARGET" = "17.4"' in r69_release
+          and "17.0" not in r69_ios
+          and "17.0" not in r69_fast
+          and "17.0" not in r69_release,
+          "R69③: 三份 workflow 的部署目标断言必须都是 17.4（`ios.yml` / `ios-fast.yml` / "
+          "`ios-release.yml`）—— 只改 `project.yml` 而漏改断言会让 CI 直接红")
+    # ④ 界面口径必须与门槛一致。旧文案承诺「iOS 17.0–17.3.1 会改用本机配对」，
+    #    而新门槛下这些机器**根本装不上** ⇒ 属于「显示与行为相反」（与 R68⑦ 同一类毛病）。
+    check('infoRow("最低支持", "iOS 17.4")' in r69_about
+          and "Seal 最低支持 iOS 17.4" in r69_pairing_view
+          and "iOS 17.0–17.3.1 会改用" not in r69_pairing_view,
+          "R69④: 界面必须说清「最低支持 iOS 17.4」—— 旧文案承诺「17.0–17.3.1 改用本机配对」，"
+          "但新门槛下那些机器连装都装不上，用户会照着一句做不到的承诺去折腾")
+    # ⑤ Lockdown 通道**刻意保留**（用户明确要求「代码保留」）。配对助手仍按版本分流，
+    #    老版本 Seal（≤ 1.3.7）的用户还能用 ⇒ 断言它没被「顺手清理死代码」清掉。
+    check("Some(false) => PairingMode::Lockdown" in r69_assistant
+          and "fn seal_ios_supports_remote_pairing(" in r69_assistant
+          and "seal_lockdown_only" in r69_assistant_ui,
+          "R69⑤: 配对助手的「< 17.4 ⇒ Lockdown」分流必须保留 —— 本轮只抬 Seal 的门槛，"
+          "不删 Lockdown 通道（用户明确要求代码保留）")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -5921,6 +5984,46 @@ def main():
          "        let selectable = accounts.filter { AccountAvailabilityPolicy.isSelectable($0) }\n"
          "        guard selectable.isEmpty == false else { return .noSelectableAccount }\n",
          "R68③b: 「记录账号是否存在」的判定必须排在"),
+        # ── R69：最低支持 = iOS 17.4（禁止 16.0–17.3.1，2026-09-24 用户指令）──
+        # ① 某个 target 落回 17.0 ⇒ 计数从 4 变 3 ✓ 报红（覆盖「漏改一处」这个真实退化）。
+        #    ⚠️ `replace(..., 1)` 只改**第一处**，所以断言必须用计数才抓得到。
+        ("project.yml",
+         '    deploymentTarget: "17.4"',
+         '    deploymentTarget: "17.0"',
+         "R69①: `project.yml` 的 5 处部署目标必须全是 17.4"),
+        # ② 项目级 xcconfig 落回 17.0 ⇒ 与 project.yml 不一致 ✓ 报红。
+        ("Config/Base.xcconfig",
+         "IPHONEOS_DEPLOYMENT_TARGET = 17.4",
+         "IPHONEOS_DEPLOYMENT_TARGET = 17.0",
+         "R69②: `Config/Base.xcconfig` 的"),
+        # ③a/③b/③c 三份 workflow 的断言各落回 17.0 ⇒ 任一漏改即红。
+        (".github/workflows/ios.yml",
+         'test "$SEAL_TARGET" = "17.4"',
+         'test "$SEAL_TARGET" = "17.0"',
+         "R69③: 三份 workflow 的部署目标断言"),
+        (".github/workflows/ios-fast.yml",
+         'test "$TARGET" = "17.4"',
+         'test "$TARGET" = "17.0"',
+         "R69③: 三份 workflow 的部署目标断言"),
+        (".github/workflows/ios-release.yml",
+         'test "$TARGET" = "17.4"',
+         'test "$TARGET" = "17.0"',
+         "R69③: 三份 workflow 的部署目标断言"),
+        # ④a 「最低支持」退回 17.0 ⇒ 界面与门槛又不一致 ✓ 报红。
+        ("Seal/Features/Settings/AboutView.swift",
+         'infoRow("最低支持", "iOS 17.4")',
+         'infoRow("最低支持", "iOS 17.0")',
+         "R69④: 界面必须说清"),
+        # ④b 文案退回「17.0–17.3.1 改用本机配对」的旧承诺 ✓ 报红。
+        ("Seal/Features/Settings/PairingSettingsView.swift",
+         "Seal 最低支持 iOS 17.4",
+         "iOS 17.0–17.3.1 会改用「本机配对」",
+         "R69④: 界面必须说清"),
+        # ⑤ 把 Lockdown 分流改成「一律远程配对」= 变相删掉 Lockdown 通道 ✓ 报红。
+        ("Tools/SealPairingAssistant/patch_upstream.py",
+         "Some(false) => PairingMode::Lockdown",
+         "Some(false) => PairingMode::RemotePairing",
+         "R69⑤: 配对助手的"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

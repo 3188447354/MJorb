@@ -54,7 +54,7 @@ Additional capabilities:
 
 | | |
 | --- | --- |
-| **iOS** | 17.0 or later |
+| **iOS** | 17.4 or later |
 | **Apple ID** | Free or paid developer account |
 | **Tunnel** | [LocalDevVPN](#pairing) installed and connected on the device |
 | **Pairing** | A pairing file generated once by the Windows pairing assistant |
@@ -68,10 +68,14 @@ the app can be re-signed without also re-signing a bundled network extension.
 Seal needs a pairing file to talk to the device's own lockdown and installation services.
 The pairing mode is chosen automatically from the device's iOS version — you do not pick it:
 
-| iOS version | Pairing mode |
-| --- | --- |
-| **17.4 and later** | Remote pairing (RPPairing / CoreDeviceProxy) |
-| **17.0 – 17.3.1** | On-device pairing (Lockdown) |
+| iOS version | Pairing mode | Supported by Seal |
+| --- | --- | --- |
+| **17.4 and later** | Remote pairing (RPPairing / CoreDeviceProxy) | 1.3.8 and later |
+| **17.0 – 17.3.1** | On-device pairing (Lockdown) | up to 1.3.7 |
+
+**Seal 1.3.8 and later requires iOS 17.4**, so the Lockdown row applies only to Seal 1.3.7
+and earlier. The pairing assistant still generates the correct file for both ranges, so those
+older builds keep working — they are simply no longer updated.
 
 Both modes require **LocalDevVPN** to be installed and connected. On the Lockdown path
 Seal reaches the device through the VPN's loopback interface; without the tunnel the

@@ -715,6 +715,12 @@ actor ApplePortalSigningService {
         )
         await progress(.preparingAppID)
         let requestedAt = Date()
+        // ⚠️ profile-only 续签**有意**保持独立描述文件，不要「顺手改成一致」（2026-09-24）：
+        // 续签只复用**已存在**的 App ID（`requiresExistingAppIDs: true`，门户里查不到就抛
+        // `SEAL-PROFILE-337`），而共享主描述文件策略下扩展的 App ID **从未注册过**
+        // ⇒ 改成共享必然拿不到扩展描述文件；且续签不允许丢扩展
+        // （`allowDroppingExtensions: false`，见下方 `SEAL-PROFILE-332`）。
+        // 守卫 **R65⑨** 钉住这一点。
         let preparation = try await provisioningProfiles(
             mappings: prepared.bundleIDMappings,
             originalMainBundleID: app.originalBundleIdentifier,

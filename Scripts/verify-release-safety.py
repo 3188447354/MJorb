@@ -3538,6 +3538,90 @@ def violations(load=read):
           "R64: `advanceStage` 必须记 `stageStartedAt` ✗ —— 没有每阶段起点，"
           "轨道格内的爬动恒等于 0 秒，整条轨道会钉在地板上")
 
+    # R65: 1.3.5 的「共享主描述文件」策略必须**真的省下配额**，且四条消费链路都接上
+    # 同一份判据（2026-09-24）。
+    #
+    # 立意（DEBUG_LOG「多扩展 IPA 续签重复消耗 Apple 门户配额」）：普通 IPA 含多个扩展时，
+    # 门户**只注册/请求主 App 一次**，扩展仍在本地各自重签、但嵌入**主描述文件**；
+    # Seal 自身继续走独立策略。三种错法都**不报错、不崩**，只在真机上表现为
+    # 「又慢又费配额」或「签名整体不可用」：
+    #  ① 默认方向写反 ⇒ 优化被关掉（普通 App 照旧按每个扩展各申请一个 App ID）；
+    #  ② 消费点没接上 ⇒ 策略退化成一个纯声明，门户映射照旧全量；
+    #  ③ 校验点写死成扩展自己的 Bundle ID ⇒ 共享描述文件必然校验失败。
+    # ⇒ 全部钉住；另有 ⑨ 钉住 profile-only 续签**有意**的独立策略不对称。
+    strategy_source = strip_comments(load("Seal/Core/Signing/AppExtensionProfileStrategy.swift"))
+    check("isSeal ? .independentProfiles : .sharedMainProfile" in strategy_source,
+          "R65①: 默认策略必须是「普通 IPA 共享主描述文件、Seal 自己独立描述文件」✗ —— "
+          "反了就是把省配额的优化关掉（普通 App 又按每个扩展各申请一个 App ID），"
+          "而 Seal 自身共享主描述文件会让自签身份错乱")
+    shared_mapping_body = section_or_empty(
+        strategy_source,
+        "case .sharedMainProfile:",
+        "case .independentProfiles:",
+    )
+    check("return [originalMainBundleID: mappedMainBundleID]" in shared_mapping_body,
+          "R65②: 共享模式下门户映射必须**只留主 App 一条** ✗ —— 写成 `return mappings` "
+          "等于每个扩展照旧各注册一个 App ID，配额一点没省（这个功能就形同虚设）")
+    expected_profile_body = section_or_empty(
+        strategy_source,
+        "func expectedProfileBundleID(",
+        "case .independentProfiles:",
+    )
+    check("return mappedMainBundleID" in expected_profile_body,
+          "R65③: 共享模式下扩展的期望描述文件 Bundle ID 必须是**主 App** 的 ✗ —— "
+          "共享描述文件里的 application-identifier 属于主 App，写成扩展自己的 ID 会让"
+          "嵌入描述文件校验必然失败，签名整体不可用")
+    check("return mappings" in strategy_source and "return signedBundleID" in strategy_source,
+          "R65④: 独立模式必须**原样透传**（映射与期望 Bundle ID 都不缩减）✗ —— "
+          "Seal 自身签名与 profile-only 续签都依赖它，缩减会让这两条链路拿不到扩展描述文件")
+    app_record_source = strip_comments(load("Seal/Core/Apps/AppRecord.swift"))
+    effective_body = section_or_empty(
+        app_record_source,
+        "var effectiveExtensionProfileStrategy: AppExtensionProfileStrategy {",
+        "\n    var requiresLockedSigningIdentity",
+    )
+    check("AppExtensionProfileStrategy.defaultFor(isSeal: isSeal)" in effective_body,
+          "R65⑤: `effectiveExtensionProfileStrategy` 必须**委托**给 `defaultFor(isSeal:)` ✗ —— "
+          "自己再 switch 一份就是同一条规则两份实现，改一处另一处静默失效")
+    portal_source = strip_comments(load("Seal/Infrastructure/Signing/ApplePortalSigningService.swift"))
+    check("let portalMappings = extensionProfileStrategy.portalMappings(" in portal_source,
+          "R65⑥: 门户映射必须经 `extensionProfileStrategy.portalMappings(` ✗ —— "
+          "直接拿 `mappings` 用，共享模式就只剩一个纯声明，扩展照旧各申请一个 App ID")
+    check("expectedBundleID: extensionProfileStrategy.expectedProfileBundleID(" in portal_source,
+          "R65⑦: 嵌入描述文件校验必须经 `extensionProfileStrategy.expectedProfileBundleID(` ✗ —— "
+          "写死成扩展自己的 Bundle ID 时，共享主描述文件必然校验失败")
+    check("if profilePreparation.extensionProfileStrategy == .sharedMainProfile {" in portal_source,
+          "R65⑧: 重签阶段必须按策略决定 `sharedProfileBundleIDs` ✗ —— "
+          "这一支决定哪些 Bundle 用主描述文件重签；条件被改掉或写死，扩展会拿不到可用的描述文件")
+    profile_only_body = section_or_empty(
+        portal_source,
+        "func prepareProfileOnlyRenewal(",
+        "private func existingProfileOnlyCertificate(",
+    )
+    check("extensionProfileStrategy: .independentProfiles," in profile_only_body,
+          "R65⑨: profile-only 续签必须**保持独立描述文件** ✗ —— 这不是漏改，是有意的不对称："
+          "续签只复用**已存在**的 App ID（`requiresExistingAppIDs: true`，门户里查不到就抛 "
+          "`SEAL-PROFILE-337`），而共享模式下扩展 App ID 从未注册过 ⇒ 改成共享必然拿不到"
+          "扩展描述文件；且续签不允许丢扩展（`allowDroppingExtensions: false`）")
+    target_record_source = strip_comments(load("Seal/Core/Signing/SigningTargetRecord.swift"))
+    check("bundleIdentifier = signedBundleIdentifier" in target_record_source,
+          "R65⑩: `SigningTargetRecord` 的记录键必须是**实际被重签的 Bundle ID** ✗ —— "
+          "共享描述文件下 profile 的 ID 属于主 App；用 `binding.bundleIdentifier` 当键会把扩展的"
+          "记录并到主 App 上，缓存与安装前逐项校验随即失配")
+    coordinator_source = strip_comments(load("Seal/Core/Signing/SigningCoordinator.swift"))
+    sheet_source = strip_comments(load("Seal/Features/Apps/AppSigningSheet.swift"))
+    check("app.extensionProfileStrategy = result.extensionProfileStrategy" in coordinator_source
+          and "appForSigning.extensionProfileStrategy = appForSigning.effectiveExtensionProfileStrategy"
+          in sheet_source,
+          "R65⑪: 签名结果里的策略必须落回记录、待签 App 也必须带上策略 ✗ —— "
+          "否则记录里那个字段永远是 nil，后续日志与迁移辨识就查不出「这个 App 当初用的哪种策略」")
+    strategy_tests = load("SealTests/Signing/AppExtensionProfileStrategyTests.swift")
+    check("func sealAlwaysUsesIndependentProfiles()" in strategy_tests
+          and "AppExtensionProfileStrategy.defaultFor(isSeal: true) == .independentProfiles" in strategy_tests
+          and "AppExtensionProfileStrategy.defaultFor(isSeal: false) == .sharedMainProfile" in strategy_tests,
+          "R65⑫: 策略单测必须仍在断言「Seal 独立、普通共享」两个方向 ✗ —— "
+          "测试被删空或改宽之后，纯策略的行为就没有任何东西在守")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -5118,6 +5202,72 @@ def main():
          "            stageStartedAt = now",
          "            stageStartedAt = nil",
          "R64: `advanceStage` 必须记 `stageStartedAt`"),
+        # ── R65：1.3.5 的共享主描述文件策略（2026-09-24）──
+        # ① 默认方向写反 ⇒ 普通 App 又按每个扩展各申请一个 App ID（优化被关掉，不报错）✓ 报红。
+        ("Seal/Core/Signing/AppExtensionProfileStrategy.swift",
+         "isSeal ? .independentProfiles : .sharedMainProfile",
+         "isSeal ? .sharedMainProfile : .independentProfiles",
+         "R65①: 默认策略必须是「普通 IPA 共享主描述文件、Seal 自己独立描述文件」"),
+        # ② 共享模式的门户映射退回全量 ⇒ 配额一点没省，而策略看起来仍然「在」✓ 报红。
+        ("Seal/Core/Signing/AppExtensionProfileStrategy.swift",
+         "return [originalMainBundleID: mappedMainBundleID]",
+         "return mappings",
+         "R65②: 共享模式下门户映射必须**只留主 App 一条**"),
+        # ③ 期望 Bundle ID 退回扩展自己 ⇒ 共享描述文件的嵌入校验必然失败 ✓ 报红。
+        ("Seal/Core/Signing/AppExtensionProfileStrategy.swift",
+         "return mappedMainBundleID",
+         "return signedBundleID",
+         "R65③: 共享模式下扩展的期望描述文件 Bundle ID 必须是**主 App** 的"),
+        # ④ 独立模式不再透传 ⇒ Seal 自身与 profile-only 续签都拿不到扩展描述文件 ✓ 报红。
+        ("Seal/Core/Signing/AppExtensionProfileStrategy.swift",
+         "return mappings",
+         "return [:]",
+         "R65④: 独立模式必须**原样透传**"),
+        # ⑤ `AppRecord` 自己再写一份判据（不再委托）⇒ 同一条规则两份实现 ✓ 报红。
+        ("Seal/Core/Apps/AppRecord.swift",
+         "AppExtensionProfileStrategy.defaultFor(isSeal: isSeal)",
+         "AppExtensionProfileStrategy.defaultFor(isSeal: false)",
+         "R65⑤: `effectiveExtensionProfileStrategy` 必须**委托**给 `defaultFor(isSeal:)`"),
+        # ⑥ 门户映射不再经策略 ⇒ 共享模式只剩一个纯声明（配额照旧全花）✓ 报红。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "let portalMappings = extensionProfileStrategy.portalMappings(",
+         "let portalMappings = mappings",
+         "R65⑥: 门户映射必须经 `extensionProfileStrategy.portalMappings(`"),
+        # ⑦ 校验点写死成扩展自己的 Bundle ID ⇒ 共享描述文件必然校验失败 ✓ 报红。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "expectedBundleID: extensionProfileStrategy.expectedProfileBundleID(",
+         "expectedBundleID: target.bundleIdentifier,",
+         "R65⑦: 嵌入描述文件校验必须经 `extensionProfileStrategy.expectedProfileBundleID(`"),
+        # ⑧ 重签阶段不再按策略分流 ⇒ 扩展拿不到可用的描述文件 ✓ 报红。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "if profilePreparation.extensionProfileStrategy == .sharedMainProfile {",
+         "if false {",
+         "R65⑧: 重签阶段必须按策略决定 `sharedProfileBundleIDs`"),
+        # ⑨ 「顺手改成一致」：把 profile-only 续签也改成跟随策略 ⇒ 续签拿不到扩展描述文件 ✓ 报红。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "extensionProfileStrategy: .independentProfiles,",
+         "extensionProfileStrategy: app.effectiveExtensionProfileStrategy,",
+         "R65⑨: profile-only 续签必须**保持独立描述文件**"),
+        # ⑩ 记录键改用 profile 的 Bundle ID ⇒ 扩展的记录并到主 App 上，逐项校验失配 ✓ 报红。
+        ("Seal/Core/Signing/SigningTargetRecord.swift",
+         "bundleIdentifier = signedBundleIdentifier",
+         "bundleIdentifier = binding.bundleIdentifier",
+         "R65⑩: `SigningTargetRecord` 的记录键必须是**实际被重签的 Bundle ID**"),
+        # ⑪ 策略不再落回记录 ⇒ 审计字段永远是 nil ✓ 报红。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "app.extensionProfileStrategy = result.extensionProfileStrategy",
+         "app.extensionProfileStrategy = nil",
+         "R65⑪: 签名结果里的策略必须落回记录、待签 App 也必须带上策略"),
+        # ⑪b 待签 App 不再带上策略 ✓ 报红（与 ⑪ 同一条断言，两条锚点分别证明两处都在守）。
+        ("Seal/Features/Apps/AppSigningSheet.swift",
+         "appForSigning.extensionProfileStrategy = appForSigning.effectiveExtensionProfileStrategy",
+         "appForSigning.extensionProfileStrategy = nil",
+         "R65⑪: 签名结果里的策略必须落回记录、待签 App 也必须带上策略"),
+        # ⑫ 把单测改宽（两个方向断言成同一个值）⇒ 纯策略的行为没人守 ✓ 报红。
+        ("SealTests/Signing/AppExtensionProfileStrategyTests.swift",
+         "AppExtensionProfileStrategy.defaultFor(isSeal: true) == .independentProfiles",
+         "AppExtensionProfileStrategy.defaultFor(isSeal: true) == .sharedMainProfile",
+         "R65⑫: 策略单测必须仍在断言「Seal 独立、普通共享」两个方向"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

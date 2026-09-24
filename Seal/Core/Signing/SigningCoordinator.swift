@@ -602,7 +602,13 @@ actor SigningCoordinator {
             workspaceRoot: workspaceRoot,
             targetBundleIdentifier: targetBundleIdentifier,
             certificateSerialNumber: certificateSerialNumber,
-            progress: progress,
+            // 门户服务仍按 `(SigningStage)` 回调 —— 它只关心「走到哪一步」、
+            // 不知道也不需要知道「这是谁的应用」⇒ 在**边界**补上主体即可
+            // （这里推的恒是 `app` 自己的阶段）。不要为此把 `SigningStageUpdate`
+            // 透传到整个门户服务层，那会把改动扩散到 4 个签名入口。
+            progress: { stage in
+                await progress(SigningStageUpdate(stage: stage, app: app))
+            },
             onWorkUnits: onWorkUnits
         )
         await onCertificateResolved(result.certificateSerialNumber)

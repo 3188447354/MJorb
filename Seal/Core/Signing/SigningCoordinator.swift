@@ -93,7 +93,10 @@ actor SigningCoordinator {
                 code: "SEAL-SIGN-404"
             )
         }
-        guard var account = try await accountRepository.fetchAll().first(where: {
+        // 一次读全，两个用途：① 找本次要签的账号；② 给「绑定账号是否悬空」这条判据提供
+        // **现存账号集合**（`SigningCertificateSelectionPolicy`，理由见 SEAL-AUTH-111 的注释）。
+        let knownAccounts = try await accountRepository.fetchAll()
+        guard var account = knownAccounts.first(where: {
             $0.id == accountID
         }) else {
             throw Self.failure(
@@ -102,6 +105,7 @@ actor SigningCoordinator {
                 code: "SEAL-AUTH-105"
             )
         }
+        let knownAccountIDs = Set(knownAccounts.map(\.id))
         guard var secret = try await keychain.load(accountID: accountID) else {
             account.status = .needsVerification
             account.verificationFailureReason = .localCredentialsMissing
@@ -123,15 +127,29 @@ actor SigningCoordinator {
         )
         account = normalizedSigningMaterial.account
         secret = normalizedSigningMaterial.secret
-        try SigningCertificateSelectionPolicy.validateAccountAndTeam(
+        let accountBinding = try SigningCertificateSelectionPolicy.validateAccountAndTeam(
             for: app,
-            account: account
+            account: account,
+            knownAccountIDs: knownAccountIDs
         )
+        // 绑定账号已**悬空**（删过 Apple ID 再重新添加 ⇒ 账号拿到新 UUID）⇒ 本轮是按
+        // **同 Team** 放行的，必须留痕：否则日志里只看到「续签成功」，既说不出用的是哪个
+        // 账号、也看不出「记录已经过期」。⚠️ 只记 email 的掩码形式（日志会脱敏 UUID）。
+        if case .recoveredFromDanglingBinding = accountBinding {
+            try? await logStore?.append(
+                category: .signing,
+                level: .info,
+                message: "续签账号回退：\(app.name) 记录的签名账号已不在账号库中，"
+                    + "按同 Team（\(account.teamID)）改用 \(account.maskedEmail) 续签。",
+                code: "SEAL-AUTH-111a"
+            )
+        }
         let effectiveCertificateSerialNumber = try SigningCertificateSelectionPolicy
             .resolvedSerialNumber(
                 for: app,
                 account: account,
-                requestedSerialNumber: selectedCertificateSerialNumber
+                requestedSerialNumber: selectedCertificateSerialNumber,
+                knownAccountIDs: knownAccountIDs
             )
         // 尽早回传实际使用的证书序列号（覆盖复用缓存证书、直接走已签包的路径）。
         if let resolvedCertificateSerialNumber = effectiveCertificateSerialNumber {

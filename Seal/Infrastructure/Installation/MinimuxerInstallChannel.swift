@@ -819,9 +819,13 @@ actor MinimuxerInstallChannel: InstallChannel {
         for attempt in 1...3 {
             try Task.checkCancellation()
             do {
-                // 每次安装前重置Install提供者，避免使用已断开的RSD缓存连接
-                // 推送大文件后RSD连接可能超时断开，isReady()只检查TCP不检查RSD服务
-                Install.resetProvider()
+                // ⚠️ 原来这里有一句「每次安装前重置 Install 提供者，避免使用已断开的 RSD
+                // 缓存连接」，2026-09-25 删除。理由：`Install.resetProvider()` **只清 Swift
+                // 侧的 provider 对象、清不掉 Rust 的 RSD 会话缓存** ⇒ 对「死连接」这个场景
+                // **不是杠杆**（完整理由见本文件 `probeCachedSessionIfStale` 的注释；真正的补救
+                // 是 `Minimuxer.reset()` 里的 `RustIdevice.invalidateConnection()`）。
+                // 而且本函数的文档注释指出「若会话在两段之间被重建，installd 报
+                // MissingPackagePath」—— 重置**可能正是那个重建的来源**，留着反而有害。
                 if isSelfReplacement {
                     try await runSelfReplacementInstall(
                         bundleID: bundleID,
@@ -845,8 +849,8 @@ actor MinimuxerInstallChannel: InstallChannel {
                 if Self.isSelfReplacementBusyError(error) {
                     throw error
                 }
-                // 重试前重置连接，避免用死连接重试
-                Install.resetProvider()
+                // 重试前**不再重置 provider**（2026-09-25 删，理由同上）：它不是「死连接」
+                // 的杠杆，重试的价值在于给通道留出恢复时间。
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 continue
             }

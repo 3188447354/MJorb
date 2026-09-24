@@ -451,7 +451,8 @@ struct AppSigningSheet: View {
         guard let selectedAccount else { return "未准备" }
         let serial = try? SigningCertificateSelectionPolicy.resolvedSerialNumber(
             for: workingApp,
-            account: selectedAccount
+            account: selectedAccount,
+            knownAccountIDs: Set(viewModel.accounts.map(\.id))
         )
         guard let serial, serial.isEmpty == false else { return "签名时创建" }
         return AppSigningPresentationHelpers.certificateSerialText(serial: serial)

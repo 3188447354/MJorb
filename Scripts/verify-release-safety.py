@@ -4071,6 +4071,73 @@ def violations(load=read):
           "R69⑤: 配对助手的「< 17.4 ⇒ Lockdown」分流必须保留 —— 本轮只抬 Seal 的门槛，"
           "不删 Lockdown 通道（用户明确要求代码保留）")
 
+    # R70: 「悬空绑定」不得用裸 UUID 比较拦下续签（2026-09-25 真机，构建 37）。
+    #
+    # 与 R68（`RenewalAccountResolver`）是**同一个「悬空引用」陷阱家族的第三处**：
+    # 解析器负责「选哪个账号」（已按同 Team 回退选对），
+    # `SigningCertificateSelectionPolicy` 负责「校验选得对不对」——
+    # 两处判据必须一致，否则**上游放行、下游又拦，等于没修**。
+    #
+    # 真机现象：删 Apple ID → 重新添加之后，「只有 Seal 自己能续签，其他应用一律报
+    # `SEAL-AUTH-111` Apple ID 不匹配」（Seal 走 `isSeal` 分支，那条只比 Team、不比 UUID）。
+    r70_policy = load("Seal/Core/Signing/SigningCertificateSelectionPolicy.swift")
+    r70_coordinator = load("Seal/Core/Signing/SigningCoordinator.swift")
+    r70_viewmodel = load("Seal/Features/Apps/AppsViewModel.swift")
+    r70_sheet = load("Seal/Features/Apps/AppSigningSheet.swift")
+    check("boundAccountID != account.id" in r70_policy
+          and "knownAccountIDs?.contains(boundAccountID)" in r70_policy
+          and "guard boundAccountID == account.id" not in r70_policy,
+          "R70①: `validateAccountAndTeam` 必须按「绑定账号是否仍在账号库」分流 —— "
+          "裸的 UUID 相等比较会让「删过 Apple ID 再重新添加」的应用**永远无法续签**"
+          "（`SEAL-AUTH-111` 误拦，2026-09-25 构建 37 真机实证）。")
+    check("knownAccountIDs?.contains(boundAccountID) ?? true" in r70_policy,
+          "R70②: `knownAccountIDs` 缺省（`nil`）时必须按「绑定账号仍然存在」处理"
+          "（`?? true`）⇒ 保持旧行为、宁可拒绝。写成 `?? false` 会让未提供账号库的"
+          "调用点**静默放行**。")
+    check("enum AccountBinding" in r70_policy
+          and "case recoveredFromDanglingBinding(previousAccountID: UUID)" in r70_policy
+          and "SEAL-AUTH-111a" in r70_coordinator,
+          "R70③: 悬空回退必须能被调用方看见 —— `AccountBinding` 要报出"
+          " `.recoveredFromDanglingBinding`，`SigningCoordinator` 要写 `SEAL-AUTH-111a`。"
+          "否则日志里只有「续签成功」，说不出用的是哪个账号、也看不出记录已过期。")
+    check(r70_coordinator.count("knownAccountIDs: knownAccountIDs") == 2
+          and "knownAccountIDs: Set(accounts.map(\\.id))" in r70_viewmodel
+          and "knownAccountIDs: Set(viewModel.accounts.map(\\.id))" in r70_sheet,
+          "R70④: 四处调用点（`SigningCoordinator` 的 `validateAccountAndTeam` 与 "
+          "`resolvedSerialNumber`、`AppsViewModel`、`AppSigningSheet`）必须都把"
+          "**现存账号集合**传进去 —— 少传一处，那条路径就仍然按旧行为误拦。")
+    check(r70_policy.count(
+              "guard teamID.caseInsensitiveCompare(account.teamID) == .orderedSame else {") == 2,
+          "R70⑤: 悬空回退之后**必须**仍然过 Team 判据（换 Team 要拒绝，`SEAL-AUTH-112`）——"
+          "否则「悬空」会变成绕过团队校验的后门。两处（Seal 分支 ＋ 第三方分支）都要在。")
+
+    # R71: 已安装列表设备核验 ＋ 安装重试路径的三条保护（2026-09-25 审查项 P1/P2/P4）。
+    r71_verifier = load("Seal/Features/Apps/InstalledAppDeviceVerifier.swift")
+    r71_channel = load("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift")
+    r71_vm = load("Seal/Features/Apps/AppsViewModel.swift")
+    # ① 无效的「重置 Install provider」不得再出现在这两条路径上（注释里的说明不算）。
+    check("                Install.resetProvider()" not in r71_verifier
+          and "                Install.resetProvider()" not in r71_channel,
+          "R71①: `InstalledAppDeviceVerifier` 与 `MinimuxerInstallChannel` 都不得再调"
+          "「重置 Install provider」—— 它只清 Swift 侧对象、**清不掉 Rust 的 RSD 会话缓存**，"
+          "对「死连接」不是杠杆（同结论见 `MinimuxerInstallChannel.probeCachedSessionIfStale`）；"
+          "在逐条循环里调用还可能拆掉正在服务安装的连接（R05）。")
+    # ② 默认值必须在「不打扰用户」那一侧。
+    check("func refreshInstalledApps(userInitiated: Bool = false) async {" in r71_vm
+          and "userInitiated: Bool = true" not in r71_vm,
+          "R71②: `refreshInstalledApps` 的 `userInitiated` 默认值必须是 `false` —— "
+          "设备查询失败在「刚启动、通道还没就绪」时是**预期**现象（构建 37 真机：三次 "
+          "`SEAL-INSTALL-707` 全部落在冷启动 / 自替换重启后的十几秒内），默认 `true` 会让"
+          "将来任何不带参数的调用**突然弹阻断式提示**。")
+    # ③ 先问完再动手（防止「删一半」）。
+    check("var missingOnDevice: [AppRecord] = []" in r71_vm
+          and "missingOnDevice.append(app)" in r71_vm
+          and "for app in missingOnDevice {" in r71_vm
+          and "本轮未删除任何记录" in r71_vm,
+          "R71③: `reconcileInstalledAppsWithDevice` 必须**先问完再动手** —— 先把"
+          "「设备上确认不存在」的记录收集到 `missingOnDevice`，全部查询成功后才删；"
+          "「边问边删」在通道中途变坏时会**删一半**。中止文案要写明「本轮未删除任何记录」。")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -4970,21 +5037,16 @@ def main():
          "R24: 分配 App Group（付费账号才走"),
         # ── R25：同步阻塞 FFI 的每一处等待都要有界（2026-09-17 审计）──
         # 把设备核验退回「只 Task.detached、无超时」：死会话上它会永久阻塞。
+        #
+        # ⚠️ 锚点**刻意只取那一行有界调用**（2026-09-25 收窄）。原来锚的是整段
+        # `withTaskCancellationHandler { … } onCancel: { … }`，而本轮 P1 把闭包里的
+        # 注释与那句无效的 provider 重置删掉之后整段文本就变了 ⇒ 变异锚点失效，
+        # 守卫报的是「Mutation anchor missing」而**不是**预期的断言失败
+        #（2026-09-25 实际踩到：两遍守卫各白跑一轮）。锚点越短越不容易被无关编辑带坏，
+        # 只要「有界调用消失 ＋ 出现 Task.detached」这条断言仍会报红就够。
         ("Seal/Features/Apps/InstalledAppDeviceVerifier.swift",
-         "        let outcome = await withTaskCancellationHandler {\n"
-         "            await BlockingCall.bounded(seconds: InstalledAppRefreshProbePolicy.timeoutSeconds) {\n"
-         "                // 查询前重置连接，避免使用已断开的 RSD 缓存连接导致误判\n"
-         "                Install.resetProvider()\n"
-         "                return try Minimuxer.isAppInstalled(bundleId: identifier)\n"
-         "            }\n"
-         "        } onCancel: {\n"
-         "            // 超时与取消都不会停止 FFI；在它自行返回前，不允许再叠加另一条设备查询。\n"
-         "            Task { await probeGate.finish(timedOut: true) }\n"
-         "        }",
-         "        let outcome = await Task.detached(priority: .userInitiated) {\n"
-         "            Install.resetProvider()\n"
-         "            return Result { try Minimuxer.isAppInstalled(bundleId: identifier) }\n"
-         "        }.value",
+         "            await BlockingCall.bounded(seconds: InstalledAppRefreshProbePolicy.timeoutSeconds) {",
+         "            await Task.detached(priority: .userInitiated) {",
          "R25: 设备核验的同步 FFI 必须有界"),
         # 把维护期探测退回「只 Task.detached、无超时」：一次无界阻塞会让整轮维护永远完不成。
         ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
@@ -6024,6 +6086,59 @@ def main():
          "Some(false) => PairingMode::Lockdown",
          "Some(false) => PairingMode::RemotePairing",
          "R69⑤: 配对助手的"),
+        # ── R70：悬空绑定不得用裸 UUID 比较拦下续签（2026-09-25 构建 37 真机）──
+        # ① 悬空分流退回「裸比较」⇒ R70① 报红（这正是真机上线时的形态）。
+        ("Seal/Core/Signing/SigningCertificateSelectionPolicy.swift",
+         "        if boundAccountID != account.id {",
+         "        if boundAccountID == account.id {",
+         "R70①: `validateAccountAndTeam` 必须按"),
+        # ② 缺省值改成 `?? false` ⇒ 未提供账号库的调用点会静默放行 ⇒ R70② 报红。
+        ("Seal/Core/Signing/SigningCertificateSelectionPolicy.swift",
+         "knownAccountIDs?.contains(boundAccountID) ?? true",
+         "knownAccountIDs?.contains(boundAccountID) ?? false",
+         "R70②: `knownAccountIDs` 缺省"),
+        # ③ 去掉回退留痕码 ⇒ R70③ 报红。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         'code: "SEAL-AUTH-111a"',
+         'code: "SEAL-AUTH-111"',
+         "R70③: 悬空回退必须能被调用方看见"),
+        # ④ `AppsViewModel` 漏传账号库 ⇒ R70④ 报红（覆盖「漏改一处」这个真实退化）。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "                    knownAccountIDs: Set(accounts.map(\\.id))\n",
+         "",
+         "R70④: 四处调用点"),
+        # ⑤ 反转第一处（Seal 分支）Team 判据 ⇒ 计数从 2 变 1 ⇒ R70⑤ 报红。
+        ("Seal/Core/Signing/SigningCertificateSelectionPolicy.swift",
+         "            guard teamID.caseInsensitiveCompare(account.teamID) == .orderedSame else {",
+         "            guard teamID.caseInsensitiveCompare(account.teamID) != .orderedSame else {",
+         "R70⑤: 悬空回退之后"),
+        # ── R71：已安装列表设备核验 ＋ 安装重试路径（2026-09-25 审查项 P1/P2/P4）──
+        # ①a 把无效的「重置 Install provider」加回设备核验路径 ⇒ R71① 报红。
+        ("Seal/Features/Apps/InstalledAppDeviceVerifier.swift",
+         "                return try Minimuxer.isAppInstalled(bundleId: identifier)",
+         "                Install.resetProvider()\n"
+         "                return try Minimuxer.isAppInstalled(bundleId: identifier)",
+         "R71①: `InstalledAppDeviceVerifier` 与"),
+        # ①b 加回安装重试路径 ⇒ R71① 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "                // 而且本函数的文档注释指出「若会话在两段之间被重建，installd 报",
+         "                Install.resetProvider()\n"
+         "                // 而且本函数的文档注释指出「若会话在两段之间被重建，installd 报",
+         "R71①: `InstalledAppDeviceVerifier` 与"),
+        # ② 默认值改回 `true` ⇒ R71② 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "func refreshInstalledApps(userInitiated: Bool = false) async {",
+         "func refreshInstalledApps(userInitiated: Bool = true) async {",
+         "R71②: `refreshInstalledApps` 的"),
+        # ③ 退回「边问边删」⇒ R71③ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "                if existsOnDevice == false {\n"
+         "                    missingOnDevice.append(app)\n"
+         "                }",
+         "                if existsOnDevice == false {\n"
+         "                    mutations.append(await delete(app, refreshAfterDeletion: false))\n"
+         "                }",
+         "R71③: `reconcileInstalledAppsWithDevice` 必须"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

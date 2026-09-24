@@ -3,10 +3,52 @@ import Foundation
 enum SigningCertificateSelectionPolicy {
     static let teamMismatchTitle = "开发者团队不匹配"
 
+    /// 「应用记录的绑定账号」与「本次所选账号」的关系 —— 让调用方能对**悬空回退**留痕。
+    ///
+    /// ⚠️ 刻意做成枚举而不是 `Bool`：「绑定的账号被删过（已按同 Team 放行）」与
+    /// 「绑定账号还在（精确一致）」是两件**下一步动作完全不同**的事 —— 前者要留痕说明
+    /// 「改用了同 Team 的哪个账号」，后者什么都不用说。
+    enum AccountBinding: Equatable {
+        /// 绑定账号与所选账号一致（或该应用不受这条校验约束）
+        case consistent
+        /// 绑定账号已**悬空**（账号被删过、又重新添加 ⇒ UUID 变了），已按同 Team 放行
+        case recoveredFromDanglingBinding(previousAccountID: UUID)
+    }
+
+    /// 校验「所选账号」有没有资格给这个应用续签。
+    ///
+    /// - Parameter knownAccountIDs: 账号库里**现存**账号的 ID 集合，用来判断
+    ///   `app.accountID` 是不是**悬空引用**。
+    ///   🔴 **必须传**（`SigningCoordinator` 传的就是它刚读到的账号库）。
+    ///   传 `nil` 时按「绑定账号仍然存在」处理 ⇒ **保持旧行为（宁可拒绝）**，
+    ///   这样漏改的调用点不会因此变危险。
+    ///
+    /// ## 为什么不能只比 UUID（2026-09-25 真机，构建 37 实证）
+    ///
+    /// 删 Apple ID → 重新添加会**生成新的账号 UUID**；而应用记录里存的还是旧 UUID
+    /// （`SettingsViewModel.deleteAccount` 刻意保留绑定，防误用其他账号续签）。
+    /// 裸的「UUID 直接相等」比较必然不等 ⇒ 抛 `SEAL-AUTH-111`「Apple ID 不匹配」，
+    /// **连下面那句同 Team 比较都走不到**。
+    ///
+    /// 真机现象：删账号→重新添加之后，「**只有 Seal 自己能续签，其他应用一律报
+    /// Apple ID 不匹配**」—— Seal 走上面 `isSeal` 那条分支（只比 Team、不比 UUID），
+    /// 第三方应用才走到这里。
+    ///
+    /// ⇒ 这与 `RenewalAccountResolver`（守卫 R68）是**同一个「悬空引用」陷阱家族的第三处**：
+    /// 解析器负责「**选哪个账号**」（它已用同 Team 回退选对了），这里负责
+    /// 「**校验选得对不对**」，两处判据必须一致 —— 否则上游放行、下游又拦，等于没修。
+    ///
+    /// ## 判据
+    ///
+    /// - 绑定账号**仍在**账号库 ⇒ 这是真的「用了别的账号」⇒ **拒绝**（保护不丢）；
+    /// - 绑定账号**已悬空** ⇒ 交给同 `signingTeamID` 判据：同 Team 放行（签名身份、
+    ///   Keychain 访问组、App Group 都不变），换 Team 拒绝（`SEAL-AUTH-112`）。
+    @discardableResult
     static func validateAccountAndTeam(
         for app: AppRecord,
-        account: AppleAccountRecord
-    ) throws {
+        account: AppleAccountRecord,
+        knownAccountIDs: Set<UUID>? = nil
+    ) throws -> AccountBinding {
         if app.isSeal {
             // Seal 续签的硬性前提：新 Seal 的签名身份（Team + Bundle ID）必须与当前运行包一致，
             // 否则装上的是「另一个身份的应用」——iOS 判为新 App，容器/钥匙串访问组全部失效，
@@ -30,9 +72,9 @@ enum SigningCertificateSelectionPolicy {
                     code: "SEAL-SELF-103"
                 )
             }
-            return
+            return .consistent
         }
-        guard app.state == .installed || app.isSeal else { return }
+        guard app.state == .installed || app.isSeal else { return .consistent }
         guard let boundAccountID = app.accountID else {
             throw ImportFailure(
                 title: "缺少签名账号记录",
@@ -41,13 +83,24 @@ enum SigningCertificateSelectionPolicy {
                 code: "SEAL-AUTH-110"
             )
         }
-        guard boundAccountID == account.id else {
-            throw ImportFailure(
-                title: "Apple ID 不匹配",
-                reason: "这个应用是用其他 Apple ID 签名的，续签必须使用原账号。",
-                recovery: "在「我的」中切换到原 Apple ID，或用当前账号重新签名安装",
-                code: "SEAL-AUTH-111"
-            )
+        // 🔴 刻意**不做**「UUID 直接相等」的 guard（理由见本函数文档注释）：
+        //    绑定账号可能已**悬空**（删过 Apple ID 再重新添加 ⇒ 账号拿到新 UUID），
+        //    那时「UUID 不等」并不代表「用了别的账号」，只代表「记录过期了」。
+        var binding: AccountBinding = .consistent
+        if boundAccountID != account.id {
+            // 绑定账号**仍在**账号库 ⇒ 这才是真的「用了别的账号」⇒ 拒绝（保护不丢）。
+            // 传 `nil`（未提供账号库）时视为「仍存在」⇒ 保持旧行为，宁可拒绝。
+            let boundAccountStillExists = knownAccountIDs?.contains(boundAccountID) ?? true
+            if boundAccountStillExists {
+                throw ImportFailure(
+                    title: "Apple ID 不匹配",
+                    reason: "这个应用是用其他 Apple ID 签名的，续签必须使用原账号。",
+                    recovery: "在「我的」中切换到原 Apple ID，或用当前账号重新签名安装",
+                    code: "SEAL-AUTH-111"
+                )
+            }
+            // 已悬空 ⇒ 不在这里拦，落到下面的同 Team 判据（同 Team 才放行）。
+            binding = .recoveredFromDanglingBinding(previousAccountID: boundAccountID)
         }
         guard let teamID = normalized(app.signingTeamID) else {
             throw ImportFailure(
@@ -65,14 +118,16 @@ enum SigningCertificateSelectionPolicy {
                 code: "SEAL-AUTH-112"
             )
         }
+        return binding
     }
 
     static func resolvedSerialNumber(
         for app: AppRecord,
         account: AppleAccountRecord,
-        requestedSerialNumber: String? = nil
+        requestedSerialNumber: String? = nil,
+        knownAccountIDs: Set<UUID>? = nil
     ) throws -> String? {
-        try validateAccountAndTeam(for: app, account: account)
+        try validateAccountAndTeam(for: app, account: account, knownAccountIDs: knownAccountIDs)
         let local = normalized(account.certificateSerialNumber)
         if let requested = normalized(requestedSerialNumber),
            let local,
@@ -89,10 +144,11 @@ enum SigningCertificateSelectionPolicy {
 
     static func localAvailabilityMessage(
         for app: AppRecord,
-        account: AppleAccountRecord
+        account: AppleAccountRecord,
+        knownAccountIDs: Set<UUID>? = nil
     ) -> String? {
         do {
-            try validateAccountAndTeam(for: app, account: account)
+            try validateAccountAndTeam(for: app, account: account, knownAccountIDs: knownAccountIDs)
         } catch let failure as ImportFailure {
             return failure.reason
         } catch {

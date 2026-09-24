@@ -538,7 +538,14 @@ final class AppsViewModel: ObservableObject {
         await load(force: true)
     }
 
-    func refreshInstalledApps(userInitiated: Bool = true) async {
+    /// - Parameter userInitiated: 是否由用户主动触发。
+    ///
+    ///   ⚠️ **默认 `false`**（2026-09-25 改）：三个调用点（启动 / 回前台 / 下拉刷新）本来
+    ///   全都显式传 `false`，而设备查询失败在「刚启动、通道还没就绪」时是**预期**现象
+    ///   （真机构建 37：三次 `SEAL-INSTALL-707` 全部落在冷启动或自替换重启后的十几秒内，
+    ///   同一次会话稍后就自愈）。⇒ 默认值必须在「**不打扰用户**」的那一侧；想弹阻断式提示
+    ///   必须**显式**传 `true` —— 否则将来谁调用不带参数的版本，都会突然给用户弹窗。
+    func refreshInstalledApps(userInitiated: Bool = false) async {
         await load(force: true)
         let changed = await reconcileInstalledAppsWithDevice(userInitiated: userInitiated)
         if changed {
@@ -555,6 +562,11 @@ final class AppsViewModel: ObservableObject {
         var mutations = [await removeDuplicateInstalledRecords(installedRecords)]
 
         do {
+            // 🔴 **先问完、再动手**（2026-09-25 改）。旧实现是「边问边删」：只要循环中途
+            // 通道变坏（第 1 条已判「设备上没有」并被删掉、第 2 条才抛错），就会**删一半**。
+            // 现在先把「设备上确认不存在」的记录**全部收集完**，任何一条查询失败都**整轮中止、
+            // 一条都不删**（fail closed —— 与描述文件回收路径的约定一致）。
+            var missingOnDevice: [AppRecord] = []
             for app in installedRecords {
                 guard let bundleIdentifier = installedBundleIdentifier(for: app) else { continue }
 
@@ -563,15 +575,18 @@ final class AppsViewModel: ObservableObject {
                 )
 
                 if existsOnDevice == false {
-                    mutations.append(await delete(app, refreshAfterDeletion: false))
+                    missingOnDevice.append(app)
                 }
+            }
+            for app in missingOnDevice {
+                mutations.append(await delete(app, refreshAfterDeletion: false))
             }
         } catch {
             if InstalledAppRefreshFailure.shouldLogDiagnostic(for: error) {
                 try? await logStore?.append(
                     category: .system,
                     level: .warning,
-                    message: "已安装页设备核验未完成，已保留当前列表。诊断：\(InstalledAppRefreshFailure.diagnostic(for: error))",
+                    message: "已安装页设备核验未完成，已保留当前列表，本轮未删除任何记录。诊断：\(InstalledAppRefreshFailure.diagnostic(for: error))",
                     code: "SEAL-INSTALL-707"
                 )
             }
@@ -2003,7 +2018,11 @@ final class AppsViewModel: ObservableObject {
             selectedCertificateSerialNumber = nil
         } else {
             selectedCertificateSerialNumber = try? SigningCertificateSelectionPolicy
-                .resolvedSerialNumber(for: app, account: account)
+                .resolvedSerialNumber(
+                    for: app,
+                    account: account,
+                    knownAccountIDs: Set(accounts.map(\.id))
+                )
         }
         let resolvedAllowDroppingExtensions = allowDroppingExtensions
             || app.removedExtensionBundleIdentifiers.isEmpty == false

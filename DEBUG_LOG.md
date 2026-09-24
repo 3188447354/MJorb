@@ -5,6 +5,64 @@
 
 ---
 
+## 2026-09-25 删除 Apple ID 后第三方应用仍无法续签：悬空引用的**第三处**（构建 37 真机）
+
+- **现象**（用户复验报告 ＋ 截图）：删 `sunuannian1@gmail.com` → 重新添加后，3 个应用抽屉都显示了 id，
+  但**只有 Seal 自己能续签**；Guoguo / LiveContainer 点「立即续签」报「Apple ID 不匹配」，
+  按钮是「重新验证 Apple ID」（而账号明明已验证过）。
+- **日志**（`Seal-log(18)(1).txt`，`构建 1.3.8 (37)`）：
+  `00:24:40 Apple ID 已移除…关联应用数：3` → `00:25:15 Apple ID 已添加` →
+  `00:25:24 开始续签：LiveContainer` → `00:25:24 错误 [SEAL-AUTH-111] Apple ID 不匹配`；
+  `00:25:52 证书轮换事务：受影响应用 LiveContainer / Guoguo 自动恢复失败 [Apple ID 不匹配]`；
+  `00:25:35 开始续签：Seal` → 成功。
+- **根因**：`SigningCertificateSelectionPolicy.validateAccountAndTeam` 用
+  `boundAccountID == account.id` **精确比较 UUID**。删账号→重加会**新建**账号记录（新 UUID）
+  ⇒ 记录里的旧 UUID 悬空 ⇒ 必然不等 ⇒ 抛 `SEAL-AUTH-111`，**连下面那句同 Team 比较都走不到**。
+  而 `if app.isSeal` 分支**只比 Team、不比 UUID** ⇒ 只有 Seal 能过 —— 现象与代码结构一一对应。
+- **这是同一个陷阱家族的第三处**（前两处见下方「常犯坑位」）：`RenewalAccountResolver`（R68）
+  负责「**选哪个账号**」（它已用同 Team 回退选对了），这里负责「**校验选得对不对**」。
+  ⇒ **上游放行、下游又拦，等于没修**。**教训：修一处判据后，必须顺着链路把下游所有
+  复核同一件事的地方都找出来** —— 判据集中在一个纯函数还不够，**消费它的每一道闸门都要跟着改**。
+- **修复**：`validateAccountAndTeam` 新增 `knownAccountIDs: Set<UUID>?`，按
+  「绑定账号是否仍在账号库」分流：仍在 ⇒ 仍拒绝（保护不丢）；已悬空 ⇒ 交给同 Team 判据
+  （换 Team 仍拒绝 `SEAL-AUTH-112`）。**缺省 `nil` ⇒ 保持旧行为（宁可拒绝）**，
+  这样漏改的调用点不会因此变危险。新增 `AccountBinding` 返回值 ＋ `SEAL-AUTH-111a` 留痕。
+- **四处调用点全部传入现存账号集合**：`SigningCoordinator`（`validateAccountAndTeam` ＋
+  `resolvedSerialNumber`）、`AppsViewModel`、`AppSigningSheet`。
+- **刻意不改**：`SigningCoordinator.installCachedSignedIPAIfPossible` 里的
+  `app.accountID == account.id` —— 那里不等就该**回落到重新签名**（缓存的包是旧账号签的），
+  正是正确行为。**改之前先判断「不等」在这里意味着什么**，别一刀切。
+- **版本号**：`MARKETING_VERSION` 1.3.8 → **1.3.9**。理由：1.3.8 的 IPA 已交付到用户手上
+  （用户正在用它复验），同一版本号出现两份行为不同的产物会让复验与 tag 都说不清。
+- **守卫**：新增 **R70**（5 条断言 / 5 个变异），钉住「不得用裸 UUID 比较」＋ 缺省值必须保守
+  ＋ 回退必须留痕 ＋ 四处调用点都要传 ＋ 悬空不得绕过 Team 判据。
+- **单测**：`SigningCertificateSelectionPolicyTests` ＋5（悬空同 Team 放行 / 悬空换 Team 拒绝 /
+  绑定账号仍在时仍拒绝 / 缺省保持旧行为 / 一致时报 `.consistent`）。
+- **验证状态**：守卫本地两遍全绿（**555 ＋ 315** → 加 R71 后 **558 ＋ 319**）；CI 与真机复验待跑。
+
+### 同轮顺带修掉的三处审查项（P1 / P2 / P4）
+
+- **P1 删除无效的连接重置**：`InstalledAppDeviceVerifier.isInstalled` 里那句
+  「查询前重置连接，避免使用已断开的 RSD 缓存连接导致误判」是**被证伪的理由** ——
+  `Install.resetProvider()` 只清 Swift 侧对象、**清不掉 Rust 的 RSD 会话缓存**
+  （同结论见 `MinimuxerInstallChannel.probeCachedSessionIfStale` 的注释）。而
+  `MinimuxerInstallChannel.verifyInstalled` 已于 2026-09-24 按同一理由删掉。
+  ⇒ 顺藤摸瓜发现 `MinimuxerInstallChannel.installPushedIpa` 里**还有两处**同样的调用
+  （安装前 ＋ 重试前，理由文字也一样）⇒ **一并删除**。该函数自己的注释指出
+  「会话在两段之间被重建会让 installd 报 MissingPackagePath」—— 重置**可能正是那个
+  重建的来源**。全仓实际调用已清零（只剩注释里的说明）。守卫 **R71①**。
+- **P2 先问完再动手**：`reconcileInstalledAppsWithDevice` 原本**边问边删** ——
+  循环中途通道变坏（第 1 条已判「设备上没有」并删掉、第 2 条才抛错）就会**删一半**。
+  改成先收集 `missingOnDevice`、全部问完再删；中止文案补「本轮未删除任何记录」。守卫 **R71③**。
+- **P4 默认值必须在「不打扰用户」那侧**：`refreshInstalledApps(userInitiated: Bool = true)`
+  的默认值是陷阱（三个调用点全都显式传 `false`）⇒ 改成 `false`，想弹阻断式提示必须显式传。守卫 **R71②**。
+- **刻意未做**（已评估、不阻塞交付）：`SEAL-INSTALL-707` 的耗时诊断（`code 2` 已说明是超时，
+  耗时无额外信息）；`SEAL-RENEW-023` 日志去重（信噪比问题，价值不成比例）；
+  `SettingsViewModel` 证书健康统计的悬空少算（纯显示）；
+  以及 `reconcile` 的**阳性对照**改造（改动大、必须真机验证 ⇒ 留作下一轮）。
+
+---
+
 ## 2026-09-24 最低支持抬到 iOS 17.4：禁止 iOS 16.0–17.3.1（用户指令）
 
 - **指令**（用户原文）：「16.0-17.3.1禁止使用」。落地范围经确认 = **抬门槛到 17.4，Lockdown 通道代码保留**。

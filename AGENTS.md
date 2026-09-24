@@ -104,6 +104,23 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
   `ready()` 为假时 `fetchUDIDDetailed()` 根本不会被调用）。
   **这个数字我改过三轮**（3.5 分钟 → 9–18 分钟 → ~9 分钟 → 名义 **3.4 分钟** / 实测 12 分钟以上），
   三轮错法都记在 `DEBUG_LOG.md` 同名条目里 —— **算墙钟前先读那段**。
+- 🔴 **`Install.resetProvider()` 不是「死连接」的补救，全仓已清零**（2026-09-25）：
+  它**只清 Swift 侧的 provider 对象、清不掉 Rust 的 RSD 会话缓存**（真正的补救是
+  `Minimuxer.reset()` 里的 `RustIdevice.invalidateConnection()`）。它曾散落在
+  `InstalledAppDeviceVerifier.isInstalled` 与 `MinimuxerInstallChannel.installPushedIpa`
+  （安装前 ＋ 重试前）共**三处**，注释理由都是「避免用死连接」—— **同一个被证伪的理由**。
+  而且它会拆掉可能仍在服务的安装连接（R05）；在 `installPushedIpa` 里还可能正是
+  「两段之间会话被重建 ⇒ installd 报 MissingPackagePath」的来源。守卫 **R71①** 钉住
+  （带缩进的实际调用形态；注释里的说明不算）。
+- 🔴 **「问设备 → 按答案删本地数据」必须「先问完再动手」**（2026-09-25）：
+  `reconcileInstalledAppsWithDevice` 曾**边问边删** ⇒ 通道**在循环中途**变坏
+  （第 1 条已判「设备上没有」并删掉、第 2 条才抛错）就会**删一半**。
+  改成先收集 `missingOnDevice`、全部问完再统一删；中止即**一条都不删**，
+  文案必须写明「本轮未删除任何记录」。守卫 **R71③**。
+- ⚠️ **`refreshInstalledApps(userInitiated:)` 的默认值必须是 `false`**（2026-09-25 改）：
+  设备查询失败在「刚启动、通道还没就绪」时是**预期**现象（构建 37 真机：三次
+  `SEAL-INSTALL-707` 全落在冷启动 / 自替换重启后的十几秒内，同会话稍后自愈）
+  ⇒ 默认值要在「不打扰用户」那侧，想弹阻断式提示必须**显式**传 `true`。守卫 **R71②**。
 
 ### 续签
 - 免费账号 3-app 上限是**设备级、跨不同 Apple ID/team 累计**；判据在
@@ -119,6 +136,20 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
 - 批量结果持久化里 Seal 那一项必须是 `awaitingSealConfirmation`，由新进程的
   `SelfAppRegistrar` 读取真实运行包身份后才结算为 `completed`/`failed`；结算与
   `RefreshQueueStore` 恢复必须一起更新，绝不让旧进程预先宣布成功。
+- 🔴 **「悬空引用」陷阱家族：凡「记录里的 `accountID` 是否等于当前账号」的判据，都必须先确认
+  那个账号**还在不在账号库**里** —— `deleteAccount` 刻意保留应用绑定，而删过 Apple ID 再
+  重新添加会**新建账号记录（新 UUID）**。家族已有**三处**：① 证书轮换的
+  `candidate.accountID == accountID`；② `app.accountID ?? accountID`（悬空 UUID **不是 `nil`**，
+  `??` 兜底永不执行）；③ `SigningCertificateSelectionPolicy.validateAccountAndTeam` 的
+  `boundAccountID == account.id`（2026-09-25 构建 37 真机：只有 Seal 能续签，第三方一律
+  `SEAL-AUTH-111` —— 因为 Seal 走 `isSeal` 分支，那条只比 Team、不比 UUID）。
+  ⇒ **改一处不够**：判据集中到纯函数还不够，**消费它的每一道闸门都要跟着改** ——
+  ①②的判据在 `RenewalAccountResolver`（守卫 R68）；③必须把**现存账号集合**
+  （`knownAccountIDs`）传进去，按「仍在 ⇒ 拒绝（保护不丢）／已悬空 ⇒ 走同 Team 判据
+  （换 Team 仍拒绝 `SEAL-AUTH-112`）」分流（守卫 R70）。
+  动这类代码前先全仓 `grep -rn "accountID == account.id" Seal/` 找同类闸门，并**逐个判断
+  「不等」在这里意味着什么** —— `installCachedSignedIPAIfPossible` 里那处不等就该**回落到
+  重新签名**，是正确行为，**不要改**。
 
 ## 4. 描述文件 / 证书 / 日志
 

@@ -29,8 +29,19 @@ struct InstalledAppDeviceVerifier {
 
         let outcome = await withTaskCancellationHandler {
             await BlockingCall.bounded(seconds: InstalledAppRefreshProbePolicy.timeoutSeconds) {
-                // 查询前重置连接，避免使用已断开的 RSD 缓存连接导致误判
-                Install.resetProvider()
+                // ⚠️ 这里**刻意不做**「重置 Install provider」这个动作（2026-09-25 删）。
+                //
+                // 它只清 Swift 侧的 provider 对象，**清不掉 Rust 的 RSD 会话缓存** ⇒
+                // 对「死连接」这个场景**不是杠杆**。同一结论已在另两条路径落地：
+                // `MinimuxerInstallChannel.verifyInstalled` 明确删掉了这个调用，
+                // `DeviceProfileCleaner.probeInstalled` 也刻意不调（它的注释还点名
+                // 「虽然 `InstalledAppDeviceVerifier` 会调」）。⇒ 保留它只会造成
+                // 「死连接场景已经处理过」的**错觉**，把注意力从真正的补救
+                //（`Minimuxer.reset()` 里的 `RustIdevice.invalidateConnection()`）上引开。
+                //
+                // 而且本函数会被 `reconcileInstalledAppsWithDevice` 的循环**逐条**调用，
+                // 重置还可能拆掉正在服务安装的连接（R05：同一 Bundle ID 上不能有两个
+                // 并发 installd 命令）。
                 return try Minimuxer.isAppInstalled(bundleId: identifier)
             }
         } onCancel: {

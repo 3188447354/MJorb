@@ -102,6 +102,54 @@ struct SelfReplacementPolicyTests {
                 == .extensionRemovalRequiresComputerInstall
         )
     }
+
+    @Test
+    func replacementGraceKeepsTheTransactionPendingInsteadOfClosingIt() {
+        // 「仍在安装前身份」有两种成因，必须分开处理：
+        //   ① 安装**真的失败了** ⇒ 按未安装关闭事务（终态）；
+        //   ② 传输刚返回、installd 还在替换**进行中** ⇒ 此刻读到旧包完全正常。
+        // 把 ② 当 ① 处理是不可恢复的：`closeAsNotInstalled` 会写 `settledAt`，
+        // 之后每次启动都不再对账，而记录已在签名阶段被乐观推进成新 profile
+        // ⇒ 记录与设备现实永久错位（维护作业随后会删掉设备上正在用的那份 profile）。
+        // 真机构建 38 的变砖链路正是这样：01:46:19 上传完成、01:46:30 判失败。
+        //
+        // 造一个「候选还没落盘」的事务：安装前身份与候选版本号不同
+        // ⇒ `candidate.matches(running)` 为 false，而 `running == installedBefore` 成立。
+        let oldIdentity = InstalledIdentity(
+            bundleURL: URL(fileURLWithPath: "/Applications/Seal.app"),
+            version: "0.9.0",
+            buildNumber: "1",
+            targets: [.mainFixture, .extensionFixture],
+            readErrors: []
+        )
+        let transaction = SelfReplacementTransaction.make(
+            id: UUID(),
+            accountID: UUID(),
+            preparedProcessID: UUID(),
+            installedBefore: oldIdentity,
+            candidate: .fixture,
+            signedIPARelativePath: "Apps/Seal/Signed.ipa"
+        )
+
+        // 替换窗口已过 ⇒ 认定候选确实没落盘，按未安装关闭。
+        let afterGrace = SelfReplacementPolicy.reconcile(
+            transaction: transaction,
+            running: oldIdentity,
+            currentProcessID: UUID(),
+            preparedProcessID: transaction.preparedProcessID
+        )
+        #expect(afterGrace == .closeAsNotInstalled)
+
+        // 仍在替换窗口内 ⇒ 保留事务、下次启动再判，绝不写终态。
+        let withinGrace = SelfReplacementPolicy.reconcile(
+            transaction: transaction,
+            running: oldIdentity,
+            currentProcessID: UUID(),
+            preparedProcessID: transaction.preparedProcessID,
+            withinReplacementGrace: true
+        )
+        #expect(withinGrace == .awaitNextLaunch)
+    }
 }
 
 private extension SelfReplacementTransaction {

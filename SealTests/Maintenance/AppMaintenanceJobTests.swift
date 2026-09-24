@@ -363,6 +363,47 @@ struct AppMaintenanceJobTests {
     }
 
     @Test
+    func sealKeepEntryNeverFallsBackToTheRecordedProfile() {
+        // Seal 自己的记录值**尤其不可信**：自更新路径在签名阶段就把顶层
+        // `provisioningProfileUUID` 乐观推进（`app.isSeal` ⇒ `advancesInstalledSnapshot`
+        // 恒为 true），而安装可能没落盘（`SEAL-SELF-111`）⇒ 记录指向一份设备上并不存在的
+        // profile。拿它当保留集合，设备上**正在用的那一份**会被判成旧账删掉
+        // ⇒ Seal 当场打不开、「VPN 与设备管理」里的描述文件消失（真机构建 38）。
+        let seal = makeRecord(
+            appID: UUID(),
+            mappedBundleIdentifier: "com.mjorb.seal.T3432ZHJUF9",
+            provisioningProfileUUID: "OPTIMISTIC-NEW-UUID",
+            signedArtifactStatus: .installed,
+            isSeal: true
+        )
+
+        // ① 读到运行时身份 ⇒ 以它为准，覆盖记录里的乐观值。
+        let withRunning = AppMaintenanceJob.profileKeepMap(
+            records: [seal],
+            sealProfileUUID: "RUNNING-OLD-UUID"
+        )
+        #expect(withRunning["com.mjorb.seal.T3432ZHJUF9"] == "RUNNING-OLD-UUID",
+                "Seal 的保留项必须用运行时读到的真实 profile")
+
+        // ② 读不到运行时身份 ⇒ 整条摘出保留集合（宁缺勿滥），
+        //    绝不回退到被乐观推进的记录值。
+        let withoutRunning = AppMaintenanceJob.profileKeepMap(
+            records: [seal],
+            sealProfileUUID: nil
+        )
+        #expect(withoutRunning["com.mjorb.seal.T3432ZHJUF9"] == nil,
+                "读不到运行时身份时不得回退到记录值")
+
+        // ③ 空白值同样不得回退。
+        let blankRunning = AppMaintenanceJob.profileKeepMap(
+            records: [seal],
+            sealProfileUUID: "   "
+        )
+        #expect(blankRunning["com.mjorb.seal.T3432ZHJUF9"] == nil,
+                "空白运行时值不得回退到记录值")
+    }
+
+    @Test
     func abortsBeforeProfileSweepWhenLeaseIsInvalidated() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }

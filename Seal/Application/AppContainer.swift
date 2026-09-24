@@ -88,7 +88,8 @@ struct AppContainer {
                 installChannel: installChannel,
                 fileStore: fileStore,
                 keychain: keychain,
-                processID: SelfReplacementProcess.currentID
+                processID: SelfReplacementProcess.currentID,
+                logStore: logStore
             )
             let signingCoordinator = SigningCoordinator(
                 appStore: appStore,

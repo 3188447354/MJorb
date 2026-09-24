@@ -1407,9 +1407,21 @@ actor ApplePortalSigningService {
         }
 
         // 运行包证书只用于安排轮换顺序：当前 Seal 的证书最后撤销，尽量缩短失效窗口。
+        // 它同时决定撤销日志里「运行中Seal=是/否」说不说真话。
         // 只认真实 CMS 签名者：描述文件授权列表可能包含并未实际签名的证书（Task 10）。
+        //
+        // ⚠️ **必须无条件读，不能写成 `isSeal ? … : nil`**（2026-09-25，构建 38 真机）。
+        // 撤销决策影响的是 **Seal 自己**，与「本轮在签谁」无关：签名第三方 App 时同样会把
+        // 「Seal 正在用的那张」选进轮换候选 —— 本机无私钥 + 免费团队只有一个活动槽位 ⇒
+        // 只能先撤销旧证书才能建新的，没有第二条路。
+        // 旧写法只在 `isSeal == true` 时读 ⇒ 签第三方 App 时 `sealActualSignerSerials` 恒为空
+        // ⇒ 每个候选的 `isRunningSealCertificate` 恒为 `false`、`rotationRank` 全是 2
+        // ⇒ 日志打出「运行中Seal=否」，而「当前 Seal 在用证书排在最后」变成**假话**
+        // ⇒ **Seal 的命根子证书被当成普通「无本机私钥」证书盲撤**。
+        // 真机后果（构建 38，01:45:00）：签名 Guoguo 时撤销了 Seal 正在用的 …3DC8D5F3，
+        // 随后那次自替换安装又没落盘 ⇒ Seal 停在「已被撤销证书签名的旧包」上，点开即闪退。
         let runningIdentity = await MainActor.run {
-            isSeal ? SelfAppMetadata.current()?.installedIdentity : nil
+            SelfAppMetadata.current()?.installedIdentity
         }
         let sealActualSignerSerials: Set<String>
         let sealSignerConfirmed: Bool
@@ -1419,10 +1431,9 @@ actor ApplePortalSigningService {
             sealSignerConfirmed = true
         } else {
             sealActualSignerSerials = []
-            if isSeal {
-                let summary = runningIdentity?.readFailureSummary ?? "installedIdentity 读取失败"
-                await diagnostic("证书轮换前身份诊断：\(summary)", level: .warning)
-            }
+            // 读不到运行身份时，无论本轮在签谁都值得记一条 —— 这正是「盲撤」风险最高的时刻。
+            let summary = runningIdentity?.readFailureSummary ?? "installedIdentity 读取失败"
+            await diagnostic("证书轮换前身份诊断：\(summary)", level: .warning)
             // 只有签名/续签 Seal 本身才要求先确认运行中签名者；普通 App 不涉及 Seal 身份，
             // 不能因为读不到 Seal 的真实证书就禁止普通 App 的证书轮换。
             sealSignerConfirmed = isSeal == false
@@ -1494,6 +1505,21 @@ actor ApplePortalSigningService {
             throw Self.certificateRotationBlockedForUnknownSealSigner()
         }
         await diagnostic("证书轮换：最多检查 \(candidates.count) 张不可用于完整 7 天签名的证书；逐张释放并立即尝试创建，当前 Seal 在用证书排在最后")
+        // 免费团队只有一个活动槽位 ⇒ 撤销「Seal 正在用的那张」有时是**不可避免**的：
+        // 不撤就建不出新证书，用户一个 App 都签不了。但后果必须说清 —— 撤销之后 Seal
+        // 只能靠本事务末尾的自替换安装恢复；那一步一旦失败，Seal 立刻打不开
+        // （真机构建 38 就是这样变砖的：撤销 …3DC8D5F3 后自替换没落盘）。
+        let runningSealCandidates = candidates.filter { $0.isRunningSealCertificate }
+        if runningSealCandidates.isEmpty == false {
+            let serials = runningSealCandidates
+                .map { SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber) }
+                .map { String($0.suffix(8)) }
+                .joined(separator: "、")
+            await diagnostic(
+                "证书轮换：本轮将撤销 \(runningSealCandidates.count) 张 Seal 正在使用的证书（…\(serials)）；Seal 将在本事务末尾以新证书重新安装，安装完成前 Seal 自身不可用",
+                level: .warning
+            )
+        }
         var updatedSecret = secret
         var revokedSerials: [String] = []
         for (index, candidate) in candidates.enumerated() {

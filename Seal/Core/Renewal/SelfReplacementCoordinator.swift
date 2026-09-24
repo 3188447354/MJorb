@@ -50,6 +50,18 @@ actor SelfReplacementCoordinator: SelfReplacing {
     private let fileStore: AppFileStore
     private let keychain: KeychainVault
     private let processID: UUID
+    private let logStore: SealLogStore?
+
+    /// 传输返回到「能读到新包」之间的宽限期。
+    ///
+    /// `InstallChannel.install()` 返回只代表**传输完成 + installd 接受命令**，真正的替换是
+    /// 异步的、对外不可观测。这段窗口内重启读到旧包属正常，绝不能按「未安装」关闭事务
+    /// —— 那是终态，关闭后记录会永久停在签名阶段的乐观值（真机构建 38 的变砖链路）。
+    ///
+    /// 取 90 秒：真机上 22.9 MB 的 Seal 包在 8 秒内成功结算过，11 秒那次却失败了
+    /// （同一台设备），说明单看耗时没有判别力；宽限期只需覆盖「installd 仍在忙」的常见情形，
+    /// 拖得太长会让「真的失败了」迟迟不落定。
+    static let replacementGraceSeconds: TimeInterval = 90
 
     init(
         store: SelfReplacementTransactionStore,
@@ -58,7 +70,8 @@ actor SelfReplacementCoordinator: SelfReplacing {
         installChannel: any InstallChannel,
         fileStore: AppFileStore,
         keychain: KeychainVault,
-        processID: UUID
+        processID: UUID,
+        logStore: SealLogStore? = nil
     ) {
         self.store = store
         self.readRunningIdentity = readRunningIdentity
@@ -67,6 +80,7 @@ actor SelfReplacementCoordinator: SelfReplacing {
         self.fileStore = fileStore
         self.keychain = keychain
         self.processID = processID
+        self.logStore = logStore
     }
 
     init(
@@ -76,7 +90,8 @@ actor SelfReplacementCoordinator: SelfReplacing {
         installChannel: any InstallChannel,
         fileStore: AppFileStore,
         keychain: KeychainVault,
-        processID: UUID
+        processID: UUID,
+        logStore: SealLogStore? = nil
     ) {
         self.init(
             store: store,
@@ -85,7 +100,8 @@ actor SelfReplacementCoordinator: SelfReplacing {
             installChannel: installChannel,
             fileStore: fileStore,
             keychain: keychain,
-            processID: processID
+            processID: processID,
+            logStore: logStore
         )
     }
 
@@ -158,12 +174,42 @@ actor SelfReplacementCoordinator: SelfReplacing {
     func reconcileAtLaunch() async throws -> SelfReplacementReconcileAction {
         guard let transaction = try await store.loadPending() else { return .none }
         let running = try readRunningIdentity()
-        return SelfReplacementPolicy.reconcile(
+        let withinGrace = Self.isWithinReplacementGrace(transaction, now: Date())
+        let action = SelfReplacementPolicy.reconcile(
             transaction: transaction,
             running: running,
             currentProcessID: processID,
-            preparedProcessID: transaction.preparedProcessID
+            preparedProcessID: transaction.preparedProcessID,
+            withinReplacementGrace: withinGrace
         )
+        // 宽限期内「保留事务、不结算」原本是**静默**的（`SelfAppRegistrar` 对
+        // `.awaitNextLaunch` 不写日志），但这条判据在真机排查时最关键
+        //（「为什么这次启动没结算」），所以单独留痕。
+        // 只有「不是同一进程 + 判成 awaitNextLaunch」才可能是宽限期路径
+        // —— 同一进程的 awaitNextLaunch 另有含义（还没重启），不能混为一谈。
+        if action == .awaitNextLaunch,
+           withinGrace,
+           processID != transaction.preparedProcessID {
+            try? await logStore?.append(
+                category: .installation,
+                level: .warning,
+                message: "自替换结算：传输已返回但仍在替换窗口内（\(Int(Self.replacementGraceSeconds)) 秒），本轮不结算、保留事务，下次启动再判。",
+                code: "SEAL-SELF-114"
+            )
+        }
+        return action
+    }
+
+    /// 是否仍处于「传输已返回、installd 还在替换」的宽限期内。
+    ///
+    /// 没有 `returnedAt`（例如传输根本没返回就重启）⇒ **不在**宽限期内：
+    /// 那种情况本来就该走失败路径，不该被宽限期掩盖。
+    static func isWithinReplacementGrace(
+        _ transaction: SelfReplacementTransaction,
+        now: Date
+    ) -> Bool {
+        guard let returnedAt = transaction.submission?.returnedAt else { return false }
+        return now.timeIntervalSince(returnedAt) < replacementGraceSeconds
     }
 
     /// 结算：重读当前运行身份，只有它仍与候选身份完全一致才把事务推进到

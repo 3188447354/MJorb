@@ -4138,6 +4138,81 @@ def violations(load=read):
           "「设备上确认不存在」的记录收集到 `missingOnDevice`，全部查询成功后才删；"
           "「边问边删」在通道中途变坏时会**删一半**。中止文案要写明「本轮未删除任何记录」。")
 
+    # ── R72：证书轮换必须**无条件**确认「运行中 Seal 的真实签名证书」──────────
+    # 2026-09-25 构建 38 真机：签名 Guoguo 时撤销了 Seal **正在使用**的证书
+    #（日志写「运行中Seal=否」，可 01:44:18 刚结算确认 Seal 用的就是那张），
+    # 随后那次自替换安装又没落盘 ⇒ Seal 停在「已被撤销证书签名的旧包」上，点开即闪退。
+    # 根因：`runningIdentity` 写成了 `isSeal ? … : nil`。撤销决策影响的是 **Seal 自己**，
+    # 与「本轮在签谁」无关 —— 免费团队只有一个活动槽位时，签第三方 App 同样只能先撤销
+    # 旧证书才能建新的。只在签 Seal 时读 ⇒ 候选的 `isRunningSealCertificate` 恒为 false、
+    # `rotationRank` 全是 2 ⇒ 日志「当前 Seal 在用证书排在最后」变成**假话**，
+    # 命根子证书被当成普通「无本机私钥」证书盲撤。
+    r72_portal = load("Seal/Infrastructure/Signing/ApplePortalSigningService.swift")
+    check("isSeal ? SelfAppMetadata.current()?.installedIdentity : nil" not in r72_portal,
+          "R72①: 运行中 Seal 的签名者必须**无条件**读取。写成 `isSeal ? … : nil` 会让签名"
+          "第三方 App 时 `sealActualSignerSerials` 恒为空、`isRunningSealCertificate` 恒为"
+          "false，Seal 正在用的证书被当普通证书盲撤（构建 38 就是这么变砖的）。")
+    check("SelfAppMetadata.current()?.installedIdentity" in r72_portal,
+          "R72②: 轮换前必须读出运行中 Seal 的真实 CMS 签名者（描述文件授权列表不是签名者）。")
+    check("本轮将撤销" in r72_portal and "Seal 正在使用的证书" in r72_portal,
+          "R72③: 本轮要撤销 Seal 正在用的证书时必须留下**后果说明** —— 撤销后 Seal 只能靠"
+          "本事务末尾的自替换安装恢复，那一步失败 Seal 立刻打不开。")
+
+    # ── R73：「候选未落盘」时必须把记录拉回设备现实 ────────────────────────
+    # 自更新在**签名阶段**就把顶层 `provisioningProfile*` 乐观推进（`app.isSeal` ⇒
+    # `advancesInstalledSnapshot` 恒为 true，那是「安装前唯一的写入机会」）。
+    # 而 `.closeAsNotInstalled` 刚确认「候选没落盘」⇒ 设备上 Seal 用的还是**旧 profile**，
+    # 记录却指向一份设备上并不存在的新 profile。不拉回来，维护作业第 4 步的
+    # `profileKeepMap` 就会拿这份错位记录当保留集合，把设备上**正在用的那一份**删掉
+    # ⇒ Seal 当场打不开、「VPN 与设备管理」里的描述文件消失（真机 01:46:30 → 01:46:50）。
+    r73_registrar = load("Seal/Core/Renewal/SelfAppRegistrar.swift")
+    r73_close = section(
+        r73_registrar,
+        "case .closeAsNotInstalled:",
+        "case .requireRecovery(let reason):"
+    )
+    # ⚠️ 断言必须落在**调用形式**上（`try await … (`），不能只查函数名 ——
+    # 这个分支里的说明注释也含该函数名，只查名字的话「调用被删掉」照样是绿的
+    #（2026-09-25 实际踩到：变异删掉调用后 R73① 仍绿 ⇒ 白跑一整轮）。
+    check("try await reconcileSealRecordFromRunningBundleIfNeeded(" in r73_close,
+          "R73①: 「候选未落盘」分支必须按**运行中的 Bundle** 回补记录（描述文件 / 证书序列号 / "
+          "安装状态）—— 否则记录停在签名阶段的乐观值，维护作业会据此删掉设备上正在用的 profile。")
+    check("SEAL-SELF-115" in r73_close,
+          "R73②: 回补失败必须留痕（`SEAL-SELF-115`）—— 记录错位期间任何「按记录清理」的判断都不可信。")
+
+    # ── R74：keep-map 里 Seal **只信运行时值** ─────────────────────────────
+    # 记录值对 Seal 尤其不可信（同 R73 的成因）。拿它当保留集合，设备上正在用的那一份
+    # 会被判成旧账删掉；读不到运行时身份就**摘出**严格集合（宁缺勿滥），
+    # Seal 的 Bundle ID 仍在 `protectedBundleIDs` 里 ⇒ 也不会成为回收候选。
+    r74_job = load("Seal/Core/Maintenance/AppMaintenanceJob.swift")
+    r74_seal = section(
+        r74_job,
+        "// Seal 自己：**只信运行时读到的真实 profile**",
+        "return map"
+    )
+    check("map.removeValue(forKey: sealBundleID)" in r74_seal,
+          "R74①: 读不到运行时身份时必须把 Seal 那条**摘出**严格保留集合 —— 回退到记录值"
+          "会让维护作业删掉设备上正在用的那份 profile。")
+    check("let sealProfileUUID, Self.isBlank(sealProfileUUID) == false" in r74_seal,
+          "R74②: 运行时值仍要先过空白判据（空白 UUID 进集合等于把这条判成「不需要保留」）。")
+
+    # ── R77：自替换必须给 installd 一个「替换窗口」宽限期 ──────────────────
+    # `InstallChannel.install()` 返回只代表「传输完成 + installd 接受命令」，真正的替换
+    # 是异步的、对外不可观测。窗口内重启读到旧包**属正常**，按 `.closeAsNotInstalled`
+    #（终态：写 `settledAt`、之后每次启动都不再对账）关闭就**再也回不来** —— 记录永久停在
+    # 签名阶段的乐观值。真机 01:46:19 上传完成、01:46:30 判失败（11 秒），
+    # 而同一台设备另一次 8 秒就结算成功了 ⇒ 耗时没有判别力，只能用明确的宽限期表达。
+    r77_policy = load("Seal/Core/Renewal/SelfReplacementPolicy.swift")
+    check("withinReplacementGrace: Bool = false" in r77_policy
+          and "return withinReplacementGrace ? .awaitNextLaunch : .closeAsNotInstalled" in r77_policy,
+          "R77①: 「仍在安装前身份」必须区分「真失败」与「还在替换中」—— 前者关闭事务，"
+          "后者保留事务等下次启动再判。")
+    r77_coordinator = load("Seal/Core/Renewal/SelfReplacementCoordinator.swift")
+    check("SEAL-SELF-114" in r77_coordinator
+          and "isWithinReplacementGrace" in r77_coordinator,
+          "R77②: 宽限期判据必须可观测（`SEAL-SELF-114`）—— 「为什么这次启动没结算」是"
+          "真机排障时最先要回答的问题，静默保留事务会让它无从查起。")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -6139,6 +6214,31 @@ def main():
          "                    mutations.append(await delete(app, refreshAfterDeletion: false))\n"
          "                }",
          "R71③: `reconcileInstalledAppsWithDevice` 必须"),
+        # ── R72：把「无条件读运行中 Seal 签名者」改回 `isSeal ? … : nil` ⇒ R72① 报红 ──
+        # ⚠️ `expected` 必须是**被破坏那条 check 的消息前缀**（匹配用 `startswith`），
+        # 不是描述性文字 —— 写错会得到「Guard failed mutation check」，白跑一整轮。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "        let runningIdentity = await MainActor.run {\n            SelfAppMetadata.current()?.installedIdentity\n        }",
+         "        let runningIdentity = await MainActor.run {\n            isSeal ? SelfAppMetadata.current()?.installedIdentity : nil\n        }",
+         "R72①:"),
+        # ── R73：删掉「候选未落盘」分支的回补调用 ⇒ R73① 报红 ──
+        # 缩进 20 空格是**故意的**：`ensureRegistered` 里那两处同类调用是 12 空格，
+        # 用 20 空格才能确保 `replace(…, 1)` 命中的是 `.closeAsNotInstalled` 这一处。
+        # 锚点只取「调用形式」那一行：`R73①` 断言查的就是它。
+        ("Seal/Core/Renewal/SelfAppRegistrar.swift",
+         "                    try await reconcileSealRecordFromRunningBundleIfNeeded(",
+         "                    // 回补调用被移除（变异）",
+         "R73①:"),
+        # ── R74：读不到运行时身份时回退记录值 ⇒ R74① 报红 ──
+        ("Seal/Core/Maintenance/AppMaintenanceJob.swift",
+         "            } else {\n                map.removeValue(forKey: sealBundleID)\n            }",
+         "            } else {\n                map[sealBundleID] = seal.provisioningProfileUUID ?? \"\"\n            }",
+         "R74①:"),
+        # ── R77：宽限期失效（退回终态关闭）⇒ R77① 报红 ──
+        ("Seal/Core/Renewal/SelfReplacementPolicy.swift",
+         "            return withinReplacementGrace ? .awaitNextLaunch : .closeAsNotInstalled",
+         "            return .closeAsNotInstalled",
+         "R77①:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

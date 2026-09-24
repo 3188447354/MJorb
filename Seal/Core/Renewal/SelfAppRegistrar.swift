@@ -247,10 +247,45 @@ actor SelfAppRegistrar {
         case .closeAsNotInstalled:
             try await selfReplacement.closeAsNotInstalled()
             await settlePendingBatchSealResult(to: .failed)
+            // ⚠️ **必须把记录拉回设备现实**（2026-09-25，构建 38 真机）。
+            //
+            // 自更新路径在**签名阶段**就把顶层 `provisioningProfile*` 乐观推进
+            //（`app.isSeal` 让 `advancesInstalledSnapshot` 恒为 true —— 那是「安装前
+            // 唯一的写入机会」，见 `SigningCoordinator.applySigningResult` 的说明）。
+            // 而这里刚刚确认「候选没落盘」⇒ 设备上 Seal 用的还是**旧 profile**，
+            // 记录却指向一份设备上并不存在的新 profile。
+            //
+            // 不拉回来，维护作业第 4 步的 `AppMaintenanceJob.profileKeepMap` 就会拿这份
+            // 错位记录当「必须保留的那一份」，把设备上**正在用的旧 profile** 判成旧账删掉
+            // ⇒ Seal 当场打不开、「VPN 与设备管理」里的描述文件消失。
+            // 真机正是这个现象（01:46:30 判失败，01:46:50 维护作业删除 1 份）。
+            //
+            // 回补的判据是**运行中的 Bundle**（`reconcileSealRecordFromRunningBundleIfNeeded`
+            // 就是以它为准），要么读到新包（替换其实成功了）、要么读到旧包（确实没落盘），
+            // 两种情况下记录都会与设备现实一致。
+            if let existing {
+                do {
+                    try await reconcileSealRecordFromRunningBundleIfNeeded(
+                        existing: existing,
+                        metadata: metadata,
+                        accounts: accounts
+                    )
+                } catch {
+                    // 回补失败不阻断启动：`AppMaintenanceJob.profileKeepMap` 对 Seal 那条
+                    // 只信运行时值（读不到就不进保留集合），是这条链路的最后一道防线。
+                    // 但必须留痕 —— 记录错位期间任何「按记录清理」的判断都不可信。
+                    try? await logStore?.append(
+                        category: .installation,
+                        level: .error,
+                        message: "自替换结算：无法按运行中的 Bundle 回补记录（\(error)），记录可能与设备现实不一致。",
+                        code: "SEAL-SELF-115"
+                    )
+                }
+            }
             try? await logStore?.append(
                 category: .installation,
                 level: .warning,
-                message: "自替换结算：仍在安装前身份，候选未落盘；事务已关闭，本轮不记为成功。",
+                message: "自替换结算：仍在安装前身份，候选未落盘；事务已关闭，本轮不记为成功。已按运行中的 Bundle 回补记录（描述文件 / 证书序列号 / 安装状态），避免用签名阶段的乐观值参与后续清理。",
                 code: "SEAL-SELF-111"
             )
             return false

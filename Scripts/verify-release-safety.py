@@ -2211,6 +2211,74 @@ def violations(load=read):
           "批量续签时 `signingSession` 可能为空，排在后面会导致整段 return、"
           "日志不落（真机实测只有 2 条）")
 
+    # R66: **子流程的阶段必须透传，主体必须跟着信号走**（2026-09-24 构建 31 真机）。
+    #
+    # 现象：签名安装成功后桌面已经有图标，抽屉却一直停在「正在验证安装」。
+    # 根因三段（每一段都有代码 + 日志实证）：
+    # ① `SigningCoordinator` 在用户那个 App 装完之后，**仍在同一条会话里**跑证书轮换事务
+    #    （本轮轮换了证书时），而该事务会重新签名安装**含 Seal 自己**在内的受影响应用
+    #    ⇒ 同一条父会话里先后推进**两个不同 App** 的阶段；
+    # ② 该事务调 `signAndInstall(..., progress: { _ in })` —— **空回调** ⇒
+    #    子流程每一次阶段变化都被丢掉 ⇒ 抽屉停在**父会话的最后一个阶段**（`.verifying`，
+    #    真机实测 56 秒，用户报告的那一刻正好落在区间里）；
+    # ③ 回主屏的判据用的是**会话主体**（`signingSession?.app.isSeal`），而父会话主体是
+    #    用户那个 App ⇒ 判据**恒假** ⇒ Seal 的自替换拿不到「该回主屏了」，installd
+    #    一直等旧进程让位，直到 `waitForSelfReplacement` 的 **894 秒**上限才抛错。
+    #
+    # 这三段有个共同特征：改回旧写法**不编译失败、也不跑挂单测**，只在真机上卡住 ⇒
+    # 只能由静态守卫钉住。阳性对照（同一次日志里的批量续签）是**正常的**：
+    # `开始自替换安装` → `上传完成，1.2 秒后判断前台状态并回主屏` → `触发回主屏转场`。
+    stage_update_source = strip_comments(load("Seal/Core/Signing/SigningStageUpdate.swift"))
+    check("struct SigningStageUpdate: Sendable, Equatable" in stage_update_source
+          and "let subject: SigningStageSubject" in stage_update_source,
+          "R66: 阶段信号必须携带主体 —— 子流程推进的是**另一个** App 的阶段，"
+          "调用方不能拿会话主体去猜（构建 31：Seal 自替换的回主屏永不触发）")
+    check("self.isSeal = app.isSeal" in stage_update_source,
+          "R66: 主体里的 `isSeal` 必须**取自被推进的那个 App** —— 写死成 false 等于把"
+          "「谁需要回主屏」这个判据彻底废掉，而编译与单测都不会有任何反应")
+    check("let appName: String" in stage_update_source,
+          "R66: 主体必须带显示名 —— 阶段日志要说得出「这是谁的阶段」，"
+          "否则真机上只能靠上下文猜（构建 31 的根因就是猜错了）")
+    coordinator_source = strip_comments(load("Seal/Core/Signing/SigningCoordinator.swift"))
+    rotation_body = section_or_empty(
+        coordinator_source,
+        "private func resignAppsAffectedByCertificateRotation(",
+        "private func applySigningResult("
+    )
+    check("progress: progress," in rotation_body,
+          "R66: 证书轮换子流程必须把父会话的 `progress` **原样透传** —— 空回调会让抽屉"
+          "停在父会话最后一个阶段（构建 31 实测：停在「正在验证安装」56 秒）")
+    check("progress: { _ in }" not in rotation_body,
+          "R66: 子流程里不允许出现空回调 —— 它不是「不需要」，是把状态层与 UI 层一起切断")
+    check("broadcastsInstallStage: true" in rotation_body,
+          "R66: 子流程必须补发 `.installing` —— 它只透传阶段、接不到安装通道的 Double 哨兵；"
+          "少了它，受影响列表里的 Seal 永远等不到「该回主屏了」")
+    check("includeSeal: false,\n                    progress: progress\n                )" in coordinator_source
+          and "includeSeal: true,\n                    progress: progress\n                )" in coordinator_source,
+          "R66: `resignAppsAffectedByCertificateRotation` 的**两个**调用点都要把 `progress` "
+          "传进去（Seal 自己那条 `includeSeal: false`、用户 App 那条 `includeSeal: true`）"
+          "—— 只接一处等于另一条链路照旧静默")
+    install_artifact_body = section_or_empty(
+        coordinator_source,
+        "func installSignedArtifact(",
+        "private func persistNewSigningMaterial("
+    )
+    check("broadcastsInstallStage: true" in install_artifact_body,
+          "R66: 「重新安装已签名包」这条入口也必须补发 `.installing` —— Seal 从"
+          "「已签名」档重装时同样需要回主屏，否则自替换会在 installd 阶段死等")
+    check("(subject?.isSeal ?? signingSession?.app.isSeal) == true" in apps_view_source,
+          "R66: 回主屏的判据必须用**信号自带的主体** —— 用会话主体判断时，"
+          "证书轮换子流程里的 Seal 自替换会被当成用户那个 App（判据恒假）")
+    check("signingSession?.app.isSeal == true {" not in apps_view_source,
+          "R66: 不得留回「只用会话主体判断」的旧写法 —— 它在子流程里恒假")
+    check(apps_view_source.count("updateSigningStage(update.stage, subject: update.subject)") == 2,
+          "R66: 两处进度回调（签名 / 重新安装已签名包）都必须把信号主体一起交给状态层；"
+          "新增调用点时请同步这里")
+    check("let enteredBy = subject?.appName ?? signingSession?.app.displayName ?? \"未知应用\""
+          in apps_view_source,
+          "R66: 阶段日志必须写出**信号主体**的名字 —— 构建 31 的根因就是"
+          "「阶段属于谁」被搞错了，而当时的日志里看不出来")
+
     # R08: 日志导出的表头必须自带**构建标识**（2026-09-17 的取证教训）。
     #
     # `CURRENT_PROJECT_VERSION` 由 `Scripts/build-unsigned-ipa.sh` 取 `GITHUB_RUN_NUMBER`，
@@ -2355,7 +2423,7 @@ def violations(load=read):
         "private func removeStaleProfiles("
     )
     check("InstallStageBridge.shouldEmitInstalling(" in bridge_helper
-          and "await progress(.installing)" in bridge_helper,
+          and "await progress(SigningStageUpdate(stage: .installing, subject: subject))" in bridge_helper,
           "R10: the bridge must actually emit .installing, not just forward the percentage")
     renewal_process = section(
         load("Seal/Core/Renewal/RenewalCoordinator.swift"),
@@ -2492,8 +2560,15 @@ def violations(load=read):
     # 挂在它 `.onChange` 上的触发点收不到后续阶段推进，「回主页」永远不会发生，
     # Seal 的替换**静默失败**（旧版本继续跑，用户以为更新没生效）。
     # 批量续签那条链路本来就在状态层触发（见 consumeBatchEvent），单签与它对齐。
+    #
+    # 🔴 判据必须看**信号携带的主体**（根因见上面 R66）：证书轮换子流程会在**同一条父会话**里
+    # 推进**另一个** App（Seal 自己）的阶段，此时 `signingSession?.app` 仍是触发本次签名的
+    # 那个用户 App（构建 31 实测是 LiveContainer）⇒ 老写法 `signingSession?.app.isSeal == true`
+    # 恒假 ⇒ 单签链路的「回主屏」永不触发 ⇒ Seal 自替换的 installd 等不到旧进程让位，
+    # 抽屉停在 `.verifying`（「正在验证安装」）直到 894 秒上限。
     apps_view = squash(strip_comments(load("Seal/Features/Apps/AppsViewModel.swift")))
-    check("if stage == .installing, tick == .restart, signingSession?.app.isSeal == true {"
+    check("if stage == .installing, tick == .restart, "
+          "(subject?.isSeal ?? signingSession?.app.isSeal) == true {"
           in apps_view,
           "R10: single signing must trigger the return-home from the state layer, once")
     # 两条链路（单签 + 批量）都必须把**真实的**日志出口交下去：
@@ -4922,17 +4997,61 @@ def main():
         ("Seal/Features/Apps/AppsViewModel.swift",
          "        if stage != currentStage {\n"
          "            let entered = stage\n"
+         "            // 主体跟着信号走：子流程推进的是**另一个** App 的阶段，只有信号自带的\n"
+         "            // 那个主体才是对的（见 `SigningStageUpdate`）；缺省时才是会话主体。\n"
+         "            // 留在日志里的价值：真机上「谁在走这个阶段」原来只能靠上下文猜，\n"
+         "            // 而构建 31 那次卡住的根因恰恰是「阶段属于谁」被搞错了。\n"
+         "            let enteredBy = subject?.appName ?? signingSession?.app.displayName ?? \"未知应用\"\n"
          "            Task { [logStore] in\n"
          "                try? await logStore?.append(\n"
          "                    category: .signing,\n"
          "                    level: .info,\n"
-         "                    message: \"阶段进入：\\(entered)\",\n"
+         "                    message: \"阶段进入：\\(entered)（\\(enteredBy)）\",\n"
          "                    code: \"SEAL-STAGE-001\"\n"
          "                )\n"
          "            }\n"
          "        }\n",
          "",
          "R39: 阶段进入必须落日志"),
+        # ── R66：子流程的阶段必须透传，主体必须跟着信号走（2026-09-24 构建 31 真机）──
+        # ⚠️ `expected` 必须与 `check()` 的消息**前缀逐字符相同**（守卫用 `startswith`）。
+        # 本轮踩到：消息里写了 Markdown 加粗 `**…**`、或在中间插了括号说明 ⇒ 前缀对不上，
+        # 变异全绿但守卫会报 `Guard failed mutation check`。别「顺手美化」这些 expected。
+        # 把主体里的 `isSeal` 写死：判据还在、编译还过，但「谁需要回主屏」永远为假。
+        ("Seal/Core/Signing/SigningStageUpdate.swift",
+         "        self.isSeal = app.isSeal",
+         "        self.isSeal = false",
+         "R66: 主体里的 `isSeal` 必须**取自被推进的那个 App**"),
+        # 子流程改回空回调：抽屉重新停在父会话的最后一个阶段。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "                    bypassFreeAccountDeviceLimit: true,\n                    progress: progress,\n                    broadcastsInstallStage: true",
+         "                    bypassFreeAccountDeviceLimit: true,\n                    progress: { _ in },\n                    broadcastsInstallStage: true",
+         "R66: 证书轮换子流程必须把父会话的 `progress` **原样透传**"),
+        # 子流程不再补发 `.installing`：受影响列表里的 Seal 重新变成「等旧进程让位」。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "                    progress: progress,\n                    broadcastsInstallStage: true",
+         "                    progress: progress,\n                    broadcastsInstallStage: false",
+         "R66: 子流程必须补发 `.installing`"),
+        # 回主屏判据退回「会话主体」：在子流程里恒假。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "           (subject?.isSeal ?? signingSession?.app.isSeal) == true {",
+         "           signingSession?.app.isSeal == true {",
+         "R66: 回主屏的判据必须用**信号自带的主体**"),
+        # 其中一处进度回调丢掉主体：那条入口重新变静默。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "                    await self?.updateSigningStage(update.stage, subject: update.subject)",
+         "                    await self?.updateSigningStage(update.stage)",
+         "R66: 两处进度回调（签名 / 重新安装已签名包）都必须把信号主体一起交给状态层"),
+        # 阶段日志丢掉主体名：真机上又看不出「这是谁的阶段」。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "            let enteredBy = subject?.appName ?? signingSession?.app.displayName ?? \"未知应用\"",
+         "            let enteredBy = signingSession?.app.displayName ?? \"未知应用\"",
+         "R66: 阶段日志必须写出**信号主体**的名字"),
+        # 「重新安装已签名包」那条入口不再补发 `.installing`。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "                broadcastsInstallStage: true\n            )",
+         "                broadcastsInstallStage: false\n            )",
+         "R66: 「重新安装已签名包」这条入口也必须补发 `.installing`"),
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "            let freshSession = { (label: String) async -> ALTAppleAPISession? in\n",
          "",
@@ -5104,11 +5223,11 @@ def main():
          "uploadProgress >= uploadCompletionSentinel",
          "R10: 1.0 means 'upload finished', not 'installing'"),
         ("Seal/Core/Signing/SigningCoordinator.swift",
-         "                onProgress: bridgedInstallProgress(\n                    broadcastsInstallStage: broadcastsInstallStage,\n                    progress: progress,\n                    onInstallProgress: onInstallProgress\n                )",
+         "                onProgress: bridgedInstallProgress(\n                    app: app,\n                    broadcastsInstallStage: broadcastsInstallStage,\n                    progress: progress,\n                    onInstallProgress: onInstallProgress\n                )",
          "                onProgress: onInstallProgress",
          "R10: the ordinary-app install path is the one that used to stall"),
         ("Seal/Core/Signing/SigningCoordinator.swift",
-         "                await progress(.installing)\n            }\n            await onInstallProgress(installProgress)",
+         "                await progress(SigningStageUpdate(stage: .installing, subject: subject))\n            }\n            await onInstallProgress(installProgress)",
          "                _ = progress\n            }\n            await onInstallProgress(installProgress)",
          "R10: the bridge must actually emit .installing"),
         ("Seal/Core/Renewal/RenewalCoordinator.swift",
@@ -5200,8 +5319,8 @@ def main():
          "R10: repeated .installing pushes must not reset the install clock"),
         # 让单签的「回主页」永不触发：Seal 的替换静默失败（旧版本继续跑）。
         ("Seal/Features/Apps/AppsViewModel.swift",
-         "        if stage == .installing,\n           tick == .restart,\n           signingSession?.app.isSeal == true {",
-         "        if stage == .installing,\n           tick == .restart,\n           signingSession?.app.isSeal == false {",
+         "        if stage == .installing,\n           tick == .restart,\n           (subject?.isSeal ?? signingSession?.app.isSeal) == true {",
+         "        if stage == .installing,\n           tick == .restart,\n           (subject?.isSeal ?? signingSession?.app.isSeal) == false {",
          "R10: single signing must trigger the return-home from the state layer"),
         # 界面又自己触发一次 = 双重「回主页」（两个转场 + 两个 exit(0) 兜底）。
         ("Seal/Features/Apps/SigningProgressView.swift",

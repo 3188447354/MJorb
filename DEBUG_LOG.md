@@ -5,6 +5,54 @@
 
 ---
 
+## 2026-09-24 抽屉卡在「正在验证安装」：子流程的阶段必须透传、主体必须跟着信号走（构建 31）
+
+- **现象**（`DownloadsSeal-log(11)(1).txt`，构建 1.3.5(31)）：签名安装成功后**桌面已经有图标**，
+  但抽屉 UI 一直停在「正在验证安装」。用户报告的时刻 `14:57:2x` 正好落在日志里 `.verifying`
+  阶段的 **56 秒**区间（`14:56:27 → 14:57:23`）内。
+- **根因**（三段，每段都有代码 + 日志实证；共同特征是**改回旧写法既不编译失败、也不跑挂单测**）：
+  ① `SigningCoordinator` 在用户那个 App 装完之后，**仍在同一条父会话里**跑证书轮换事务
+     （本轮轮换了证书），该事务会重新签名安装**含 Seal 自己**在内的受影响应用
+     ⇒ 同一条父会话里先后推进**两个不同 App** 的阶段。
+  ② 该事务调 `signAndInstall(..., progress: { _ in })` —— **空回调** ⇒ 子流程每一次阶段变化
+     都被丢掉 ⇒ 抽屉停在**父会话的最后一个阶段**（`.verifying` = 「正在验证安装」）。
+  ③ 回主屏判据用的是**会话主体**（`signingSession?.app.isSeal`），而父会话主体是用户那个 App
+     （实测 LiveContainer）⇒ 判据**恒假** ⇒ Seal 的自替换拿不到「该回主屏了」，
+     installd 一直等旧进程让位（日志：`自替换安装仍在等待：已等待 32 秒`），
+     直到 `waitForSelfReplacement` 的 **894 秒**上限才抛错。
+- **阳性对照**（同一次日志）：批量续签那条链路**是正常的** ——
+  `开始自替换安装` → `上传完成，1.2 秒后判断前台状态并回主屏` → `触发回主屏转场`，
+  因为它本来就在状态层按 `.restart` 闸门触发。
+- **修复**：
+  ① 新增 `SigningStageUpdate` / `SigningStageSubject`（`Seal/Core/Signing/SigningStageUpdate.swift`）：
+     阶段信号**携带主体**（`appID` / `appName` / `isSeal`），`isSeal` 取自**被推进的那个 App**。
+  ② `SigningCoordinator` 的 `progress` 参数类型由 `(SigningStage)` 改为 `(SigningStageUpdate)`；
+     证书轮换子流程把父会话的 `progress` **原样透传**（不再用空回调），并补发
+     `broadcastsInstallStage: true`（子流程只透传阶段、接不到安装通道的 Double 哨兵）。
+  ③ `AppsViewModel.updateSigningStage(_:subject:)` 按**信号主体**判回主屏
+     （`(subject?.isSeal ?? signingSession?.app.isSeal) == true`）；阶段日志带主体名
+     （`阶段进入：…（<App 名>）`）。
+  ④ 两处进度回调（签名 / 重新安装已签名包）都把主体交给状态层。
+- **涉及文件**：`Seal/Core/Signing/SigningStageUpdate.swift`（新增）、
+  `Seal/Core/Signing/SigningCoordinator.swift`、`Seal/Features/Apps/AppsViewModel.swift`、
+  `Seal/Core/Renewal/RenewalCoordinator.swift`、`Scripts/verify-release-safety.py`。
+- **验证状态**：守卫新增 **R66**（12 条断言 + 7 个变异锚点）；`r66-precheck` 基线 526 检查 /
+  0 失败、7 条变异全部被抓住。⏳ **待真机复验**：轮换证书场景下，日志应出现
+  「阶段进入：正在验证安装（Seal）」，随后紧跟 `上传完成，1.2 秒后判断前台状态并回主屏` →
+  `触发回主屏转场`；抽屉不应再停在「正在验证安装」。
+- ⚠️ **不要顺手改 `RenewalCoordinator` 的事件主体**：批量链路刻意仍用本项 `latestApp` 当主体 ——
+  若改用信号主体，会在队列中段交前台、把未跑项丢掉（该文件里有注释）。
+- ⚠️ **新增守卫变异时 `expected` 必须与 `check()` 消息前缀逐字符相同**（含 `**` 加粗标记、
+  全角括号）。本轮实际踩到：6 条 R66 的 `expected` 漏了消息里的 `**`／在中间插了括号说明
+  ⇒ 变异**其实被抓住了**、却会报 `Guard failed mutation check`（同 2026-09-24 那条同主题条目）。
+  已把 `~/.workbuddy-ai/tmp/guard-anchor-precheck.py` 的检查④ 从「启发式提醒」改成
+  **对静态判不了的条目直接跑真实变异模拟**（280 条里 30 条，约 35 秒）—— 因为公共前缀
+  这类启发式**两个方向都会错**：`ios.yml: publish job`（动态）与
+  `ios.yml: publish must wait for …`（另一条规则的字面量）公共前缀 17 字符会误报，
+  而 `R66: 「重新安装已签名包」…`（真笔误）只有 5 字符会漏报。
+
+---
+
 ## 2026-09-24 LiveContainer 401 的修复：能力降级的清空范围必须跟着「描述文件」走（构建 30）
 
 - **现象**（`DownloadsSeal-log(9)(1).txt`，构建 1.3.5(30)，14:02–14:11）：

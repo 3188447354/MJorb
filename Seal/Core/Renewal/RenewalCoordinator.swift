@@ -269,7 +269,12 @@ actor RenewalCoordinator {
                         // （设备级跨 team）装 6 个应用的用户，批量续签时必须跳过本机预检，
                         // 交回 installd 裁决，否则全部被 SEAL-APPID-DEVICELIMIT 误拦。
                         bypassFreeAccountDeviceLimit: true,
-                        progress: { stage in
+                        // ⚠️ 证书轮换子流程也会走这个回调，而它推进的是**另一个** App 的阶段。
+                        // 批量链路**刻意仍用本项的 `latestApp` 当事件主体**：批量的
+                        // 「Seal 自替换 ⇒ 回主屏」由队列自己的 Seal 项驱动（Seal 恒排最后），
+                        // 若在这里改用信号主体，就会在队列中段交前台、把还没跑的项全丢掉。
+                        // ⇒ 只取 `update.stage`，主体保持 `latestApp`（单签链路才用信号主体）。
+                        progress: { update in
                             // 自更新上传开始不代表安装成功。进程被终止时保留 running，
                             // 下次启动恢复为 unknown；不能把仍运行旧包的续签记为完成。
                             await progress(
@@ -277,7 +282,7 @@ actor RenewalCoordinator {
                                     index: offset + 1,
                                     total: queue.count,
                                     app: latestApp,
-                                    stage: stage
+                                    stage: update.stage
                                 )
                             )
                         },

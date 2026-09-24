@@ -1282,7 +1282,12 @@ final class AppsViewModel: ObservableObject {
         do {
             let installed = try await signingCoordinator.installSignedArtifact(
                 appID: app.id,
-                progress: { _ in }
+                // 这条入口原来传的是空回调：Seal 从「已签名」档重新安装时，自替换
+                // 永远拿不到「该回主屏了」⇒ installd 一直等旧进程让位（894 秒上限）。
+                // 与证书轮换子流程是同一个坑，一起补上。
+                progress: { [weak self] update in
+                    await self?.updateSigningStage(update.stage, subject: update.subject)
+                }
             )
             try? await logStore?.append(
                 category: .signing,
@@ -2009,8 +2014,8 @@ final class AppsViewModel: ObservableObject {
                 allowDroppingExtensions: allowDroppingExtensions,
                 forceResign: forceResign || isRenewal,
                 bypassFreeAccountDeviceLimit: bypassFreeAccountDeviceLimit,
-                progress: { [weak self] stage in
-                    await self?.updateSigningStage(stage)
+                progress: { [weak self] update in
+                    await self?.updateSigningStage(update.stage, subject: update.subject)
                 },
                 onCertificateResolved: { [weak self] serialNumber in
                     await self?.updateResolvedCertificateSerialNumber(serialNumber)
@@ -2099,7 +2104,13 @@ final class AppsViewModel: ObservableObject {
         return stored
     }
 
-    private func updateSigningStage(_ stage: SigningStage) {
+    /// 推进抽屉阶段。
+    ///
+    /// - Parameter subject: **这个阶段属于谁**（见 `SigningStageUpdate`）。省略时按
+    ///   「会话主体」处理 —— 那正是本 App 自己的阶段。证书轮换子流程推进的是**另一个**
+    ///   App（含 Seal 自己）的阶段，必须由信号自带主体；拿会话主体去判断会得出错误结论
+    ///   （构建 31 真机：Seal 自替换的「回主屏」永不触发，抽屉停在「正在验证安装」）。
+    private func updateSigningStage(_ stage: SigningStage, subject: SigningStageSubject? = nil) {
         let currentStage: SigningStage?
         if case .running(let running) = signingSession?.status {
             currentStage = running
@@ -2132,11 +2143,16 @@ final class AppsViewModel: ObservableObject {
         // 改成 async 去波及所有调用点）；日志晚几毫秒不影响「算时间戳差」。
         if stage != currentStage {
             let entered = stage
+            // 主体跟着信号走：子流程推进的是**另一个** App 的阶段，只有信号自带的
+            // 那个主体才是对的（见 `SigningStageUpdate`）；缺省时才是会话主体。
+            // 留在日志里的价值：真机上「谁在走这个阶段」原来只能靠上下文猜，
+            // 而构建 31 那次卡住的根因恰恰是「阶段属于谁」被搞错了。
+            let enteredBy = subject?.appName ?? signingSession?.app.displayName ?? "未知应用"
             Task { [logStore] in
                 try? await logStore?.append(
                     category: .signing,
                     level: .info,
-                    message: "阶段进入：\(entered)",
+                    message: "阶段进入：\(entered)（\(enteredBy)）",
                     code: "SEAL-STAGE-001"
                 )
             }
@@ -2169,9 +2185,13 @@ final class AppsViewModel: ObservableObject {
         //
         // `.restart` 保证只在**首次**进入安装阶段触发一次：同一阶段会被重复推送
         //（安装通道的 >1.0 哨兵 + 签名侧补发），不设闸门会排出多个「回主页」任务。
+        // 主体判据必须用**信号自带的主体**，不能用会话主体：证书轮换子流程里重新
+        // 签名安装的是 Seal 自己，而会话主体是用户那个 App ⇒ 判据恒假 ⇒
+        // 自替换拿不到「该回主屏了」，installd 一直等旧进程让位（构建 31 真机）。
+        // 省略 subject 时等价于会话主体，与旧行为一致。
         if stage == .installing,
            tick == .restart,
-           signingSession?.app.isSeal == true {
+           (subject?.isSeal ?? signingSession?.app.isSeal) == true {
             SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore: logStore)
         }
     }

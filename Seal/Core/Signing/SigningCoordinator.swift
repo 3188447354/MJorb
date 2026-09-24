@@ -62,7 +62,9 @@ actor SigningCoordinator {
         installAfterSigning: Bool = true,
         forceResign: Bool = false,
         bypassFreeAccountDeviceLimit: Bool = false,
-        progress: @escaping @Sendable (SigningStage) async -> Void,
+        // 阶段信号**自带主体**（见 `SigningStageUpdate`）：证书轮换子流程推进的是
+        // **另一个** App 的阶段，调用方不能假定它等于会话主体。
+        progress: @escaping @Sendable (SigningStageUpdate) async -> Void,
         // 证书序列号一旦确定（复用缓存或新申请）即回传，供 UI 显示真实证书，
         // 避免只持有“签名开始时快照”而在失败回看时误显示“证书未准备”。
         onCertificateResolved: @Sendable @escaping (String) async -> Void = { _ in },
@@ -163,6 +165,12 @@ actor SigningCoordinator {
                 }
             }
         }
+        // 阶段信号必须**自带主体**：证书轮换子流程会在同一条父会话里推进**另一个** App
+        // （含 Seal 自己）的阶段，调用方若用「会话主体」去判断就会得出错误结论
+        //（构建 31 真机：Seal 自替换不回主屏 ⇒ 抽屉停在「正在验证安装」）。
+        // `app` 是会被后续步骤改写的 `var`，而 `@Sendable` 闭包不能捕获可变局部变量
+        // ⇒ 先取一份不可变快照（主体只用到 id / 显示名 / 是否 Seal，三者全程不变）。
+        let signingSubject = SigningStageSubject(app: app)
 
         do {
             try Task.checkCancellation()
@@ -181,7 +189,7 @@ actor SigningCoordinator {
             defer { channelStart?.cancel() }
             if installAfterSigning {
                 try await updateState(appID: appID, stage: .waitingForChannel)
-                await progress(.waitingForChannel)
+                await progress(SigningStageUpdate(stage: .waitingForChannel, subject: signingSubject))
                 channelStart = Task { try await installChannel.start() }
             }
             if let storedDeviceIdentifier = await installChannel.storedDeviceIdentifier(),
@@ -329,7 +337,7 @@ actor SigningCoordinator {
                         await certificateRotationState.record(revokedSerials)
                     },
                     progress: { stage in
-                        await progress(stage)
+                        await progress(SigningStageUpdate(stage: stage, subject: signingSubject))
                     },
                     onWorkUnits: onWorkUnits
                 )
@@ -391,7 +399,7 @@ actor SigningCoordinator {
                         await certificateRotationState.record(revokedSerials)
                     },
                     progress: { stage in
-                        await progress(stage)
+                        await progress(SigningStageUpdate(stage: stage, subject: signingSubject))
                     },
                     onWorkUnits: onWorkUnits
                 )
@@ -449,7 +457,8 @@ actor SigningCoordinator {
                     revokedSerials: rotationRevokedSerials,
                     accountID: accountID,
                     excludingAppID: appID,
-                    includeSeal: false
+                    includeSeal: false,
+                    progress: progress
                 )
             }
 
@@ -496,7 +505,8 @@ actor SigningCoordinator {
                     revokedSerials: rotationRevokedSerials,
                     accountID: accountID,
                     excludingAppID: appID,
-                    includeSeal: true
+                    includeSeal: true,
+                    progress: progress
                 )
             }
             // 自更新的接管确认由下次启动核对运行包完成；不在这里撤销旧证书。
@@ -572,7 +582,7 @@ actor SigningCoordinator {
         originalIPAURL: URL,
         workspaceRoot: URL,
         targetBundleIdentifier: String,
-        progress: @escaping @Sendable (SigningStage) async -> Void,
+        progress: @escaping @Sendable (SigningStageUpdate) async -> Void,
         onWorkUnits: @escaping @Sendable (SigningWorkUnits) async -> Void,
         onCertificateResolved: @escaping @Sendable (String) async -> Void
     ) async throws -> AppRecord {
@@ -948,7 +958,7 @@ actor SigningCoordinator {
 
     func installSignedArtifact(
         appID: UUID,
-        progress: @escaping @Sendable (SigningStage) async -> Void
+        progress: @escaping @Sendable (SigningStageUpdate) async -> Void
     ) async throws -> AppRecord {
         guard var app = try await appStore.fetchAll().first(where: { $0.id == appID }),
               let signedPath = app.signedIPARelativePath,
@@ -998,7 +1008,7 @@ actor SigningCoordinator {
             )
         }
 
-        await progress(.waitingForChannel)
+        await progress(SigningStageUpdate(stage: .waitingForChannel, app: app))
         let currentDeviceIdentifier = try await installChannel.start()
         // 三入口共用校验：**逐个 target** 核对（主程序 + 每个扩展）。
         // 此前这里只查主 target，于是「主 profile 有效、扩展 profile 已过期」的包
@@ -1021,7 +1031,12 @@ actor SigningCoordinator {
                 signedPath: signedPath,
                 bundleIdentifier: bundleIdentifier,
                 expirationDate: expirationDate,
-                progress: progress
+                progress: progress,
+                // 这条入口的进度回调只承载阶段、接不到安装通道的 Double 哨兵
+                // ⇒ 上传完成时必须由签名侧补发 `.installing`。少了它，Seal 的
+                // 「重新安装」永远等不到「该回主屏了」，自替换会在 installd 阶段
+                // 一直等旧进程让位（与批量续签同一条规则，见 `InstallStageBridge`）。
+                broadcastsInstallStage: true
             )
         } catch let failure as ImportFailure {
             app.state = app.state == .installed ? .installed : .signed
@@ -1131,11 +1146,28 @@ actor SigningCoordinator {
         await logStore?.flush()
     }
 
+    /// 证书轮换事务：把受旧证书影响的已安装应用逐个重新签名安装（Seal 始终最后）。
+    ///
+    /// ⚠️ **这条子流程推进的是「另一个 App」的阶段**，所以两件事都必须做对：
+    ///
+    /// 1. **`progress` 必须原样透传**。这里原来是 `progress: { _ in }` ——
+    ///    子流程每一次阶段变化都被丢掉，抽屉就停在**父会话的最后一个阶段**
+    ///    （构建 31 真机：父会话是 LiveContainer，`.verifying` 之后卡了 56 秒，
+    ///    用户看到的是「正在验证安装」）。
+    /// 2. **`broadcastsInstallStage` 必须是 true**。子流程只透传阶段、接不到安装通道的
+    ///    `Double` 哨兵；而 Seal 自己就在受影响列表里，它的自替换必须拿到
+    ///    `.installing` 才会触发「回主屏让 iOS 完成替换」—— 否则 installd 一直等旧进程
+    ///    让位，直到 `waitForSelfReplacement` 的 894 秒上限才抛错。
+    ///    （与批量续签同一条规则，见 `InstallStageBridge`。）
+    ///
+    /// 主体由 `SigningStageUpdate` 跟着信号走，调用方**不能**用父会话身份去判断
+    /// 「这次的自替换是谁的」—— 那是同一个坑的另一半。
     private func resignAppsAffectedByCertificateRotation(
         revokedSerials: [String],
         accountID: UUID,
         excludingAppID: UUID,
-        includeSeal: Bool
+        includeSeal: Bool,
+        progress: @escaping @Sendable (SigningStageUpdate) async -> Void
     ) async {
         let revoked = Set(revokedSerials.map {
             SigningCertificateSelectionPolicy.normalizedSerialNumber($0)
@@ -1170,7 +1202,8 @@ actor SigningCoordinator {
                     selectedCertificateSerialNumber: nil,
                     forceResign: true,
                     bypassFreeAccountDeviceLimit: true,
-                    progress: { _ in }
+                    progress: progress,
+                    broadcastsInstallStage: true
                 )
                 try? await logStore?.append(
                     category: .renewal,
@@ -1257,7 +1290,7 @@ actor SigningCoordinator {
         targetBundleIdentifier: String,
         certificateSerialNumber: String?,
         deviceIdentifier: String,
-        progress: @escaping @Sendable (SigningStage) async -> Void,
+        progress: @escaping @Sendable (SigningStageUpdate) async -> Void,
         onInstallProgress: @escaping @Sendable (Double) async -> Void = { _ in },
         broadcastsInstallStage: Bool = false
     ) async throws -> AppRecord? {
@@ -1318,7 +1351,7 @@ actor SigningCoordinator {
         signedPath: String,
         bundleIdentifier: String,
         expirationDate: Date,
-        progress: @escaping @Sendable (SigningStage) async -> Void,
+        progress: @escaping @Sendable (SigningStageUpdate) async -> Void,
         onInstallProgress: @escaping @Sendable (Double) async -> Void = { _ in },
         broadcastsInstallStage: Bool = false
     ) async throws -> AppRecord {
@@ -1406,10 +1439,11 @@ actor SigningCoordinator {
                     signedIPARelativePath: signedPath
                 )
                 try await updateState(appID: app.id, stage: .pushing)
-                await progress(.pushing)
+                await progress(SigningStageUpdate(stage: .pushing, app: app))
                 try await selfReplacement.submitPrepared(
                     transactionID: transaction.id,
                     progress: bridgedInstallProgress(
+                        app: app,
                         broadcastsInstallStage: broadcastsInstallStage,
                         progress: progress,
                         onInstallProgress: onInstallProgress
@@ -1435,12 +1469,13 @@ actor SigningCoordinator {
 
         do {
             try await updateState(appID: app.id, stage: .pushing)
-            await progress(.pushing)
+            await progress(SigningStageUpdate(stage: .pushing, app: app))
             try await installChannel.install(
                 ipaData: signedData,
                 bundleID: effectiveBundleID,
                 isSelfReplacement: false,
                 onProgress: bridgedInstallProgress(
+                    app: app,
                     broadcastsInstallStage: broadcastsInstallStage,
                     progress: progress,
                     onInstallProgress: onInstallProgress
@@ -1448,7 +1483,7 @@ actor SigningCoordinator {
             )
 
             try await updateState(appID: app.id, stage: .verifying)
-            await progress(.verifying)
+            await progress(SigningStageUpdate(stage: .verifying, app: app))
             try await installChannel.verifyInstalled(bundleID: effectiveBundleID)
 
             updated.state = .installed
@@ -1497,17 +1532,23 @@ actor SigningCoordinator {
     ///
     /// 单签路径 `broadcastsInstallStage == false`：UI 自己订阅 1.01 哨兵切阶段，
     /// 这里不重复发，保持「谁负责切阶段」只有一个来源。
+    ///
+    /// `app` 只用来取**主体快照**（`SigningStageSubject`）：补发的 `.installing` 必须说清
+    /// 「这是谁在安装」，否则证书轮换子流程里的 Seal 自替换会被当成父会话那个 App
+    ///（构建 31 真机：回主屏永不触发）。先取快照再建闭包，避免闭包捕获 `AppRecord`。
     private func bridgedInstallProgress(
+        app: AppRecord,
         broadcastsInstallStage: Bool,
-        progress: @escaping @Sendable (SigningStage) async -> Void,
+        progress: @escaping @Sendable (SigningStageUpdate) async -> Void,
         onInstallProgress: @escaping @Sendable (Double) async -> Void
     ) -> @Sendable (Double) async -> Void {
-        { installProgress in
+        let subject = SigningStageSubject(app: app)
+        return { installProgress in
             if InstallStageBridge.shouldEmitInstalling(
                 uploadProgress: installProgress,
                 enabled: broadcastsInstallStage
             ) {
-                await progress(.installing)
+                await progress(SigningStageUpdate(stage: .installing, subject: subject))
             }
             await onInstallProgress(installProgress)
         }

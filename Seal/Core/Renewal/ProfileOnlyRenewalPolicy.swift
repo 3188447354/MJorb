@@ -14,8 +14,6 @@ enum ProfileOnlyRenewalPolicy {
         case missingInstalledArtifact
         case incompleteSigningIdentity
         case missingTargetRecord
-        /// 共享主描述文件的 App 含扩展时**结构上**无法走 profile-only：见 `evaluate` 末尾的说明。
-        case sharedMainProfileHasNoExtensionAppIDs
     }
 
     enum PortalAppIDDecision: Equatable, Sendable {
@@ -83,18 +81,12 @@ enum ProfileOnlyRenewalPolicy {
             }
         }
 
-        // 共享主描述文件只为**主 App** 注册门户 App ID（这正是它省配额的方式）⇒ 扩展的 App ID
-        // 在 Apple 门户里**从未存在**；而 profile-only 只复用已存在的 App ID、绝不新建
-        // （见 `portalAppIDDecision`）⇒ 含扩展的共享模式 App 走 profile-only **必然**在门户阶段
-        // 报 `SEAL-PROFILE-337`。真机实证（构建 27）：抖音 9 个 bundle、8 个扩展 App ID 全部查不到，
-        // 批量续签「成功 2、失败 1」里失败的那 1 就是它。
-        // ⇒ 这类 App 只能走完整重签；完整重签用的仍是共享策略，只需主 App 名额，能成功。
-        // 放在**最后**：上面的记录类判据更具体、提示更可操作，应优先报给用户。
-        let sharesMainProfile = app.effectiveExtensionProfileStrategy == .sharedMainProfile
-        guard app.extensions.isEmpty || sharesMainProfile == false else {
-            return .requiresFullResign(.sharedMainProfileHasNoExtensionAppIDs)
-        }
-
+        // ⚠️ **这里曾经按「共享主描述文件 + 含扩展 ⇒ 完整重签」一刀切，已撤销**（2026-09-24）。
+        // 那条判据能签上，但把快路径整个丢掉了：抖音续签变成 658 MB 完整重签 + 安装（约 4 分钟），
+        // 而用户要的是「续签就该是仅更新描述文件」。真正的问题是**续签侧不支持共享策略**，
+        // 已在 `prepareProfileOnlyRenewal` 修好（共享模式只取主 App 一份描述文件注入设备，
+        // 与设备端本来就只登记这一份相符）⇒ 准入判据不再需要区分策略，交回续签侧按
+        // **应用当初实际签名用的策略**分流。
         return .eligible(targetBundleIdentifiers: targetBundleIdentifiers)
     }
 

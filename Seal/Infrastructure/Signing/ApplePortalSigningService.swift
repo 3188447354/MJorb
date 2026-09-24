@@ -715,17 +715,19 @@ actor ApplePortalSigningService {
         )
         await progress(.preparingAppID)
         let requestedAt = Date()
-        // ⚠️ profile-only 续签**有意**保持独立描述文件，不要「顺手改成一致」（2026-09-24）：
-        // 续签只复用**已存在**的 App ID（`requiresExistingAppIDs: true`，门户里查不到就抛
-        // `SEAL-PROFILE-337`），而共享主描述文件策略下扩展的 App ID **从未注册过**
-        // ⇒ 改成共享必然拿不到扩展描述文件；且续签不允许丢扩展
-        // （`allowDroppingExtensions: false`，见下方 `SEAL-PROFILE-332`）。
-        // 守卫 **R65⑨** 钉住这一点。
+        // ⚠️ 续签**必须沿用应用当初实际签名时用的策略**（`app.extensionProfileStrategy`），
+        // 不能用 `app.effectiveExtensionProfileStrategy` —— 后者是 `defaultFor(isSeal:)`、
+        // **不看记录**（见 `AppRecord` 注释「字段仍会记录实际产物」）⇒ 会把历史上按独立描述文件
+        // 签过的应用也当成共享，于是只取主 App 一份描述文件注入设备 ⇒
+        // **扩展自己的描述文件根本没续上，而记录却写着已续签** ✗。
+        // 1.3.5 之前的记录没有这个字段（那时只有独立模式）⇒ 回退 `.independentProfiles`。
+        // 守卫 **R65⑨** 钉住「必须取自记录、不得用 effective、不得写死」。
+        let renewalStrategy = app.extensionProfileStrategy ?? .independentProfiles
         let preparation = try await provisioningProfiles(
             mappings: prepared.bundleIDMappings,
             originalMainBundleID: app.originalBundleIdentifier,
             mappedMainBundleID: prepared.mappedMainBundleID,
-            extensionProfileStrategy: .independentProfiles,
+            extensionProfileStrategy: renewalStrategy,
             appName: app.displayName,
             appURL: prepared.appURL,
             workspace: prepared,
@@ -773,11 +775,25 @@ actor ApplePortalSigningService {
         let bindings = Dictionary(uniqueKeysWithValues: materials.map {
             ($0.binding.bundleIdentifier, $0.binding)
         })
+        // 完整性判据**按策略分叉**（2026-09-24）：
+        //  · 独立模式：每个目标（主 App + 每个扩展）各一份描述文件 ⇒ 份数必须等于目标数；
+        //  · 共享模式：门户里只有主 App 的 App ID ⇒ **只应**取回主 App 那一份，扩展嵌入的就是它
+        //    （与设备端只登记这一份相符）。多一份说明「策略」与「门户实际返回」不一致，
+        //    宁可失败也别猜 —— 猜错就是把扩展的描述文件漏续，而记录写着已续签 ✗。
+        // ⚠️ 份数与结果都必须用**解析后**的策略：`provisioningProfiles` 内部可能因
+        // 「扩展请求了主 App 没有声明的能力」把共享**降级**成独立（`resolvedForSigning`）
+        // ⇒ 用请求的策略会出现「拿回 N 份描述文件却按共享模式解释」的自相矛盾 ✗。
+        let resolvedRenewalStrategy = preparation.extensionProfileStrategy
+        let expectedProfileCount = resolvedRenewalStrategy == .sharedMainProfile
+            ? 1
+            : prepared.bundleIDMappings.count
         guard bindings[prepared.mappedMainBundleID] != nil,
-              bindings.count == prepared.bundleIDMappings.count else {
+              bindings.count == expectedProfileCount else {
             throw Self.failure(
                 title: "描述文件不完整",
-                reason: "Apple 未返回已安装应用全部目标所需的描述文件。",
+                reason: resolvedRenewalStrategy == .sharedMainProfile
+                    ? "共享主描述文件续签本应只取回主应用那一份描述文件，实际取回 \(bindings.count) 份。"
+                    : "Apple 未返回已安装应用全部目标所需的描述文件。",
                 recovery: "执行完整重签以重新建立应用身份",
                 code: "SEAL-PROFILE-333"
             )
@@ -787,7 +803,8 @@ actor ApplePortalSigningService {
             teamID: team.identifier,
             certificateSerialNumber: resolvedSerial,
             deviceIdentifier: deviceIdentifier,
-            materials: materials.sorted { $0.binding.bundleIdentifier < $1.binding.bundleIdentifier }
+            materials: materials.sorted { $0.binding.bundleIdentifier < $1.binding.bundleIdentifier },
+            extensionProfileStrategy: resolvedRenewalStrategy
         )
     }
 
@@ -2250,6 +2267,21 @@ actor ApplePortalSigningService {
                             // 描述文件里不会有它们，请求集必须同步清空，否则事后
                             // validateEntitlements 必报 SEAL-ENTITLEMENT-401「权限缺失」。
                             requestedEntitlements[mappedBundleID] = [:]
+                            // ⚠️ **降级必须留痕**（2026-09-24 真机，构建 29）：这里原本**没有任何日志** ✗
+                            // ⇒ 真机上只看到「权限缺失 SEAL-ENTITLEMENT-401」，看不出根因是
+                            // 「Apple 先拒了能力、Seal 自己降级成空」。而且共享主描述文件模式下
+                            // **只有主 App 走 updateFeatures** ⇒ 降级只清了主 App 的请求集，
+                            // 扩展的请求集还留着 ⇒ 签后逐 bundle 校验必红（LiveContainer 的
+                            // LiveProcess 就是这么连续失败的）。
+                            await diagnostic(
+                                "签名：Apple 拒绝了 \(mappedBundleID) 的这组能力（3001），已按空能力重发；"
+                                    + "本轮该 App ID 的描述文件不会授予任何能力"
+                                    + (resolvedExtensionProfileStrategy == .sharedMainProfile
+                                        && mappedBundleID == mappedMainBundleID
+                                        ? "。⚠️ 共享主描述文件模式下**扩展嵌入的就是这一份**，"
+                                            + "扩展请求的独有能力将无法满足"
+                                        : "")
+                            )
                         }
                         if team.type != .free {
                             // 同上：App Group 的分配也是 per-bundle-ID 的门户写入（付费账号才走）。
@@ -3019,11 +3051,40 @@ struct ProfileOnlyPortalResult: Sendable {
     let certificateSerialNumber: String
     let deviceIdentifier: String
     let materials: [ProfileOnlyProfileMaterial]
+    /// 本次续签**实际使用的**策略（取自应用记录，见 `prepareProfileOnlyRenewal`）。
+    let extensionProfileStrategy: AppExtensionProfileStrategy
 
     var profileBindings: [String: ProvisioningProfileBinding] {
         Dictionary(uniqueKeysWithValues: materials.map {
             ($0.binding.bundleIdentifier, $0.binding)
         })
+    }
+
+    /// 某个目标（主 App / 扩展）**实际依赖的那一份**描述文件。
+    ///
+    /// ⚠️ 共享模式下扩展嵌入的就是主 App 那一份（`materials` 里只有它）⇒ 必须按**主 App 的键**
+    /// 去取。若照独立模式那样用扩展自己的 Bundle ID 去查，会查不到 ⇒ 记录更新器抛
+    /// `SEAL-PROFILE-342`「缺少扩展的已核验描述文件」，把一次成功的续签误报成失败 ✗。
+    func binding(forBundle bundleIdentifier: String) -> ProvisioningProfileBinding? {
+        switch extensionProfileStrategy {
+        case .sharedMainProfile:
+            return profileBindings[mappedMainBundleID]
+        case .independentProfiles:
+            return profileBindings[bundleIdentifier]
+        }
+    }
+
+    /// 目标 → 描述文件的解析结果：**键是实际目标 Bundle ID**，值是它依赖的那一份描述文件。
+    /// 共享模式下多个键会指向同一个值（这是对的：它们真的共用一份）。
+    func resolvedBindings(
+        forBundleIdentifiers bundleIdentifiers: [String]
+    ) -> [String: ProvisioningProfileBinding] {
+        var resolved: [String: ProvisioningProfileBinding] = [:]
+        for bundleIdentifier in bundleIdentifiers {
+            guard let binding = binding(forBundle: bundleIdentifier) else { continue }
+            resolved[bundleIdentifier] = binding
+        }
+        return resolved
     }
 }
 

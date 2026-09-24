@@ -3599,11 +3599,16 @@ def violations(load=read):
         "func prepareProfileOnlyRenewal(",
         "private func existingProfileOnlyCertificate(",
     )
-    check("extensionProfileStrategy: .independentProfiles," in profile_only_body,
-          "R65⑨: profile-only 续签必须**保持独立描述文件** ✗ —— 这不是漏改，是有意的不对称："
-          "续签只复用**已存在**的 App ID（`requiresExistingAppIDs: true`，门户里查不到就抛 "
-          "`SEAL-PROFILE-337`），而共享模式下扩展 App ID 从未注册过 ⇒ 改成共享必然拿不到"
-          "扩展描述文件；且续签不允许丢扩展（`allowDroppingExtensions: false`）")
+    check("let renewalStrategy = app.extensionProfileStrategy ?? .independentProfiles" in profile_only_body
+          and "extensionProfileStrategy: renewalStrategy," in profile_only_body
+          and "extensionProfileStrategy: .independentProfiles," not in profile_only_body
+          and "app.effectiveExtensionProfileStrategy" not in profile_only_body,
+          "R65⑨: profile-only 续签的策略必须取自**记录**（`app.extensionProfileStrategy`）✗ —— "
+          "两头都错、而且都不报错：① 用 `effectiveExtensionProfileStrategy`（它是 "
+          "`defaultFor(isSeal:)`、**不看记录**）会把历史上按独立描述文件签过的应用当成共享 ⇒ "
+          "只注入主 App 一份描述文件 ⇒ **扩展自己的描述文件根本没续上，而记录却写着已续签** ✗；"
+          "② 写死 `.independentProfiles` 则让共享模式的应用永远进不了快路径 —— "
+          "构建 29 真机实证：抖音被逼成 658 MB 完整重签 + 安装（约 4 分钟）")
     target_record_source = strip_comments(load("Seal/Core/Signing/SigningTargetRecord.swift"))
     check("bundleIdentifier = signedBundleIdentifier" in target_record_source,
           "R65⑩: `SigningTargetRecord` 的记录键必须是**实际被重签的 Bundle ID** ✗ —— "
@@ -3623,36 +3628,39 @@ def violations(load=read):
           "R65⑫: 策略单测必须仍在断言「Seal 独立、普通共享」两个方向 ✗ —— "
           "测试被删空或改宽之后，纯策略的行为就没有任何东西在守")
 
-    # ⑬–⑯：两个真机回归的判据（2026-09-24，构建 27）。它们的错法同样**不报错、不崩**：
-    #  ⑬ 续签准入不再排除共享策略 ⇒ 抖音们又在门户阶段报 SEAL-PROFILE-337（用户只看到「失败 1」）；
-    #  ⑭ 回退判据没有纯函数/单测 ⇒ 改坏了没人知道；
+    # ⑬–⑰：共享主描述文件的两个真机回归（2026-09-24，构建 27 / 29）。它们的错法同样
+    # **不报错、不崩**，只在真机上表现为「续签悄悄变慢」或「某个 App 死活签不上」：
+    #  ⑬ 续签准入又按策略一刀切 ⇒ 含扩展应用被逼成完整重签（构建 29：抖音 658 MB / 约 4 分钟）；
+    #  ⑭ 回退判据/共享续签的关键单测被删空 ⇒ 不变量没人守；
     #  ⑮ 只在策略类型里加纯函数、调用点仍用请求的策略 ⇒ 回退是**空转**（最阴的一种：测试全绿）；
-    #  ⑯ 去掉回退诊断 ⇒ 真机上看不出「为什么这次又慢又费配额」。
+    #  ⑯ 去掉回退诊断 ⇒ 真机上看不出「为什么这次又慢又费配额」；
+    #  ⑰ 共享续签的「份数」判据写成独立模式那句 ⇒ 正常续签被误判「描述文件不完整」而失败。
     renewal_policy_source = strip_comments(load("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift"))
-    evaluate_body = section_or_empty(
-        renewal_policy_source,
-        "static func evaluate(app: AppRecord) -> Decision {",
-        "private static func nonBlank(",
-    )
-    check(".requiresFullResign(.sharedMainProfileHasNoExtensionAppIDs)" in evaluate_body
-          and "app.effectiveExtensionProfileStrategy == .sharedMainProfile" in evaluate_body
-          and "app.extensions.isEmpty" in evaluate_body,
-          "R65⑬: profile-only 续签必须排除「共享主描述文件 + 含扩展」的应用 ✗ —— "
-          "共享模式只为应用注册主 App 的 App ID，扩展的 App ID 在门户里从未存在，"
-          "续签必然报 SEAL-PROFILE-337（真机实证：构建 27 抖音批量续签失败）⇒ 这类应用只能完整重签")
+    check("sharedMainProfileHasNoExtensionAppIDs" not in renewal_policy_source
+          and "effectiveExtensionProfileStrategy" not in renewal_policy_source,
+          "R65⑬: 续签准入**不得**再按描述文件策略一刀切 ✗ —— "
+          "2026-09-24 真机（构建 29）：曾用「共享主描述文件 + 含扩展 ⇒ 完整重签」把抖音的快路径整个丢掉"
+          "（变成 658 MB 完整重签 + 安装）；而 `effectiveExtensionProfileStrategy` 是 "
+          "`defaultFor(isSeal:)`、**不看记录** ⇒ 连历史上按独立描述文件签过、扩展 App ID 明明存在的"
+          "应用也被误判。准入只判「记录是否完整」，策略交回续签侧按记录分流")
     strategy_tests_source = load("SealTests/Signing/AppExtensionProfileStrategyTests.swift")
     renewal_policy_tests_source = load("SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift")
+    renewal_record_tests_source = load("SealTests/Renewal/ProfileOnlyRenewalRecordUpdaterTests.swift")
     check("static func sharedProfileBlocker(" in strategy_source
           and "static func resolvedForSigning(" in strategy_source
           and "func resolvedForSigningFallsBackToIndependentProfilesWhenAnExtensionNeedsExtraEntitlements()"
           in strategy_tests_source
           and "func resolvedForSigningNeverUpgradesIndependentProfilesToShared()" in strategy_tests_source
-          and "func installedThirdPartyAppWithExtensionsRequiresFullResignBecauseSharedProfileHasNoExtensionAppIDs()"
-          in renewal_policy_tests_source,
-          "R65⑭: 两个回退判据必须是**纯函数**且关键单测仍在 ✗ —— "
-          "共享描述文件装不下扩展独有的能力（真机实证：LiveContainer 的 LiveProcess 请求 "
+          and "func eligibilityDoesNotDependOnTheExtensionProfileStrategy()" in renewal_policy_tests_source
+          and "func sharedMainProfileIsRecordedForEveryTargetWithoutCollapsingThem()"
+          in renewal_record_tests_source,
+          "R65⑭: 回退判据与共享续签的关键单测必须仍在 ✗ —— "
+          "① 共享描述文件装不下扩展独有的能力（真机实证：LiveContainer 的 LiveProcess 请求 "
           "increased-memory-limit，连续 5 次报 SEAL-ENTITLEMENT-401）；"
-          "测试被删空或改宽之后，这两条不变量就没有任何东西在守")
+          "② 续签准入不得再按策略一刀切（否则含扩展应用的快路径又被丢掉）；"
+          "③ 共享续签的记录**不得塌成一条**（`SigningTargetRecord(binding:)` 拿 profile 内的 "
+          "Bundle ID 当键 ⇒ 多个目标全并到主 App，缓存与安装前逐项校验失配）。"
+          "测试被删空或改宽之后，这三条不变量就没有任何东西在守")
     check("let resolvedExtensionProfileStrategy = AppExtensionProfileStrategy.resolvedForSigning("
           in portal_source
           and "extensionProfileStrategy: resolvedExtensionProfileStrategy," in portal_source,
@@ -3662,6 +3670,23 @@ def violations(load=read):
     check("签名：共享主描述文件不适用于本次 IPA" in portal_source,
           "R65⑯: 回退必须**留痕** ✗ —— 没有这条诊断，真机上「这次为什么变成独立模式、为什么又慢又费"
           "配额」完全看不出来（第②类日志必须带底层原因：是哪个扩展的哪个能力）")
+    record_updater_source = strip_comments(
+        load("Seal/Core/Renewal/ProfileOnlyRenewalRecordUpdater.swift")
+    )
+    check("let expectedProfileCount = resolvedRenewalStrategy == .sharedMainProfile"
+          in profile_only_body
+          and "extensionProfileStrategy: resolvedRenewalStrategy" in profile_only_body
+          and "func binding(forBundle bundleIdentifier: String) -> ProvisioningProfileBinding?"
+          in portal_source
+          and "case .sharedMainProfile:" in portal_source
+          and "SigningTargetRecord(binding: $0.value, signedBundleIdentifier: $0.key)"
+          in record_updater_source,
+          "R65⑰: 共享模式续签的「**一份描述文件 → 多个目标**」两处必须都接上 ✗ —— "
+          "① 份数判据：共享模式门户里只有主 App 的 App ID ⇒ 期望份数**恰好是 1**；"
+          "沿用独立模式那句「份数 == 目标数」会把一次正常的共享续签误判成「描述文件不完整」而失败；"
+          "② 记录侧：必须按**实际目标**解析（键=目标 Bundle ID、值=它依赖的那一份），"
+          "否则要么查不到（`SEAL-PROFILE-342` 把成功报成失败），"
+          "要么多条记录塌成一条（R65⑩ 的逐项校验失配）")
 
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
@@ -5284,11 +5309,12 @@ def main():
          "if profilePreparation.extensionProfileStrategy == .sharedMainProfile {",
          "if false {",
          "R65⑧: 重签阶段必须按策略决定 `sharedProfileBundleIDs`"),
-        # ⑨ 「顺手改成一致」：把 profile-only 续签也改成跟随策略 ⇒ 续签拿不到扩展描述文件 ✓ 报红。
+        # ⑨ 续签策略改成「跟随 effective」⇒ 历史上按独立描述文件签过的应用只续了主描述文件，
+        #    扩展那份没续上而记录写着已续签 ✓ 报红。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "extensionProfileStrategy: .independentProfiles,",
-         "extensionProfileStrategy: app.effectiveExtensionProfileStrategy,",
-         "R65⑨: profile-only 续签必须**保持独立描述文件**"),
+         "let renewalStrategy = app.extensionProfileStrategy ?? .independentProfiles",
+         "let renewalStrategy = app.effectiveExtensionProfileStrategy",
+         "R65⑨: profile-only 续签的策略必须取自**记录**"),
         # ⑩ 记录键改用 profile 的 Bundle ID ⇒ 扩展的记录并到主 App 上，逐项校验失配 ✓ 报红。
         ("Seal/Core/Signing/SigningTargetRecord.swift",
          "bundleIdentifier = signedBundleIdentifier",
@@ -5309,21 +5335,27 @@ def main():
          "AppExtensionProfileStrategy.defaultFor(isSeal: true) == .independentProfiles",
          "AppExtensionProfileStrategy.defaultFor(isSeal: true) == .sharedMainProfile",
          "R65⑫: 策略单测必须仍在断言「Seal 独立、普通共享」两个方向"),
-        # ⑬ 续签准入不再排除「共享策略 + 含扩展」⇒ 抖音们又在门户阶段报 SEAL-PROFILE-337 ✓ 报红。
+        # ⑬ 又把「按策略一刀切」加回准入 ⇒ 含扩展应用的快路径被丢掉（构建 29：抖音 658 MB 完整重签）✓ 报红。
         ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
-         "let sharesMainProfile = app.effectiveExtensionProfileStrategy == .sharedMainProfile",
-         "let sharesMainProfile = false",
-         "R65⑬: profile-only 续签必须排除「共享主描述文件 + 含扩展」的应用"),
-        # ⑭ 回退判据的关键单测被改名/删掉 ⇒ 两条不变量没人守 ✓ 报红。
+         "        return .eligible(targetBundleIdentifiers: targetBundleIdentifiers)",
+         "        _ = app.effectiveExtensionProfileStrategy\n"
+         "        return .eligible(targetBundleIdentifiers: targetBundleIdentifiers)",
+         "R65⑬: 续签准入**不得**再按描述文件策略一刀切"),
+        # ⑭ 回退判据的关键单测被改名/删掉 ⇒ 不变量没人守 ✓ 报红。
         ("SealTests/Signing/AppExtensionProfileStrategyTests.swift",
          "func resolvedForSigningFallsBackToIndependentProfilesWhenAnExtensionNeedsExtraEntitlements()",
          "func resolvedForSigningLegacy()",
-         "R65⑭: 两个回退判据必须是**纯函数**且关键单测仍在"),
-        # ⑭b 续签准入的关键单测被改名/删掉 ✓ 报红（与 ⑭ 同一条断言，两条锚点分别证明两边都在守）。
+         "R65⑭: 回退判据与共享续签的关键单测必须仍在"),
+        # ⑭b 续签准入的关键单测被改名/删掉 ✓ 报红（与 ⑭ 同一条断言，多条锚点分别证明每处都在守）。
         ("SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift",
-         "func installedThirdPartyAppWithExtensionsRequiresFullResignBecauseSharedProfileHasNoExtensionAppIDs()",
-         "func installedThirdPartyAppWithExtensionsLegacy()",
-         "R65⑭: 两个回退判据必须是**纯函数**且关键单测仍在"),
+         "func eligibilityDoesNotDependOnTheExtensionProfileStrategy()",
+         "func eligibilityLegacy()",
+         "R65⑭: 回退判据与共享续签的关键单测必须仍在"),
+        # ⑭c 共享续签「记录不塌」的关键单测被改名/删掉 ✓ 报红。
+        ("SealTests/Renewal/ProfileOnlyRenewalRecordUpdaterTests.swift",
+         "func sharedMainProfileIsRecordedForEveryTargetWithoutCollapsingThem()",
+         "func sharedMainProfileLegacy()",
+         "R65⑭: 回退判据与共享续签的关键单测必须仍在"),
         # ⑮ 调用点不再解析策略 ⇒ 回退空转（策略类型里那个纯函数变成死代码，而测试仍全绿）✓ 报红。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "let resolvedExtensionProfileStrategy = AppExtensionProfileStrategy.resolvedForSigning(",
@@ -5339,6 +5371,16 @@ def main():
          r'"签名：共享主描述文件不适用于本次 IPA —— 扩展 \(blocker.extensionBundleID) 请求了主 App "',
          r'"签名：已回退独立扩展描述文件 "',
          "R65⑯: 回退必须**留痕**"),
+        # ⑰ 共享续签的份数判据退回独立模式那句 ⇒ 一次正常的共享续签被误判「描述文件不完整」✓ 报红。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "let expectedProfileCount = resolvedRenewalStrategy == .sharedMainProfile",
+         "let expectedProfileCount = prepared.bundleIDMappings.count",
+         "R65⑰: 共享模式续签的「**一份描述文件 → 多个目标**」两处必须都接上"),
+        # ⑰b 记录不再按实际目标解析（退回 `SigningTargetRecord(binding:)`）⇒ 多个目标塌成一条 ✓ 报红。
+        ("Seal/Core/Renewal/ProfileOnlyRenewalRecordUpdater.swift",
+         "SigningTargetRecord(binding: $0.value, signedBundleIdentifier: $0.key)",
+         "SigningTargetRecord(binding: $0.value)",
+         "R65⑰: 共享模式续签的「**一份描述文件 → 多个目标**」两处必须都接上"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

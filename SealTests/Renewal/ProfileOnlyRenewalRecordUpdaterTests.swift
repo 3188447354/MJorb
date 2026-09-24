@@ -21,7 +21,10 @@ struct ProfileOnlyRenewalRecordUpdaterTests {
         )
 
         try ProfileOnlyRenewalRecordUpdater.apply(
-            bindings: [main.bundleIdentifier: main, extensionBinding.bundleIdentifier: extensionBinding],
+            resolvedBindings: [
+                main.bundleIdentifier: main,
+                extensionBinding.bundleIdentifier: extensionBinding
+            ],
             teamID: "TEAM123456",
             certificateSerialNumber: "00AABB",
             deviceIdentifier: "DEVICE-UDID",
@@ -34,6 +37,44 @@ struct ProfileOnlyRenewalRecordUpdaterTests {
         #expect(app.signingTargets.compactMap(\.profileUUID).sorted() == ["NEW-EXTENSION", "NEW-MAIN"])
         #expect(app.extensions.first?.provisioningProfileUUID == "NEW-EXTENSION")
         #expect(app.signedArtifactStatus == .installed)
+    }
+
+    @Test
+    func sharedMainProfileIsRecordedForEveryTargetWithoutCollapsingThem() throws {
+        let newExpiry = Date(timeIntervalSince1970: 1_900_000_000)
+        var app = makeApp(expiry: Date(timeIntervalSince1970: 1_800_000_000))
+        // 共享主描述文件：门户只取回**主 App 那一份**，扩展嵌入的就是它
+        // ⇒ 两个目标解析到**同一个** binding（这正是 `resolvedBindings` 的语义）。
+        let shared = binding(
+            bundleIdentifier: "com.example.demo.TEAM123456",
+            profileUUID: "NEW-MAIN",
+            expiry: newExpiry
+        )
+        let mainBundleIdentifier = "com.example.demo.TEAM123456"
+        let extensionBundleIdentifier = "com.example.demo.TEAM123456.share"
+
+        try ProfileOnlyRenewalRecordUpdater.apply(
+            resolvedBindings: [
+                mainBundleIdentifier: shared,
+                extensionBundleIdentifier: shared
+            ],
+            teamID: "TEAM123456",
+            certificateSerialNumber: "00AABB",
+            deviceIdentifier: "DEVICE-UDID",
+            to: &app
+        )
+
+        // 关键不变量（R65⑩）：记录**不能塌成一条**。若沿用 `SigningTargetRecord(binding:)`
+        // （它拿 **profile 内**的 bundleIdentifier 当键），两条记录会都变成主 App
+        // ⇒ 缓存与安装前校验逐项匹配失配 ✗。
+        #expect(app.signingTargets.count == 2)
+        #expect(
+            app.signingTargets.map(\.bundleIdentifier).sorted()
+                == [mainBundleIdentifier, extensionBundleIdentifier].sorted()
+        )
+        // 扩展记录的描述文件身份必须是**共享的那一份**（而不是「缺失」）。
+        #expect(app.extensions.first?.provisioningProfileUUID == "NEW-MAIN")
+        #expect(app.extensions.first?.provisioningProfileExpirationDate == newExpiry)
     }
 
     private func makeApp(expiry: Date) -> AppRecord {

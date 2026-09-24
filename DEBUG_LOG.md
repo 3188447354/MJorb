@@ -5,7 +5,50 @@
 
 ---
 
+## 2026-09-24 续签被逼成完整重签 + 共享描述文件降级未传播（构建 29）
+
+- **现象**（`Seal-log(8)(1).txt`，构建 1.3.5(29)，11:26–11:44）：
+  ① **续签退化成完整重签**：`11:40:04 续签路径已确认：需要完整重签并安装。` ⇒ 抖音 `658.2 MB` 整包重传 + 安装，`11:44:24` 才成功（约 4 分钟）；批量续签 `total: 2, succeeded: 1, failed: 1`；
+  ② **LiveContainer 仍签不上**：`11:28:27 [SEAL-ENTITLEMENT-401] 描述文件未授权 …LiveProcess 请求的权限：com.apple.developer.kernel.increased-memory-limit`，且 `11:28:24 App ID 阶段开始：共享主描述文件` —— **上一轮加的自动回退没有触发**（日志里没有那条回退诊断）。
+- **根因**：
+  ① 上一轮为修 `SEAL-PROFILE-337` 加的 `ProfileOnlyRenewalPolicy` 判据（「共享 + 含扩展 ⇒ 完整重签」）**把快路径整个丢掉了**；而且它用的 `app.effectiveExtensionProfileStrategy` 是 `defaultFor(isSeal:)`、**不看记录**（`AppRecord` 注释明写「字段仍会记录实际产物」，取用时却被忽略）⇒ 连历史上按**独立**描述文件签过、扩展 App ID 明明存在的应用也被误判成完整重签。真正的问题是**续签侧不支持共享策略**（`prepareProfileOnlyRenewal` 写死 `.independentProfiles`）。
+  ② 共享模式下**只有主 App 走 `updateFeatures`**；Apple 拒能力（3001）时 `downgradedToEmptyEntitlements` 只清了 `requestedEntitlements[主 App]`，而**全部 9 个 bundle 共用这一份主描述文件** ⇒ 扩展的请求集还留着 ⇒ 签后逐 bundle 校验必报 401。上一轮的回退判据跑在 Phase 1 **之前**，看不到这个降级 ⇒ 永远不触发。
+- **修复**：
+  ① `prepareProfileOnlyRenewal` 的策略改为**取自记录**：`app.extensionProfileStrategy ?? .independentProfiles`（1.3.5 之前的记录没有该字段 ⇒ 那时只有独立模式）；共享模式只取回主 App 一份描述文件，份数判据按策略分叉（共享 = 恰好 1 份）；`ProfileOnlyPortalResult` 新增 `binding(forBundle:)` / `resolvedBindings(forBundleIdentifiers:)`，把「一份描述文件 → 多个目标」解析清楚；`ProfileOnlyRenewalRecordUpdater` 改为按**实际目标**建记录（用 `SigningTargetRecord(binding:signedBundleIdentifier:)`），否则多条记录会**塌成主 App 一条**（R65⑩ 失配）。
+  ② 撤销 `ProfileOnlyRenewalPolicy` 里那条一刀切判据（准入不再看策略）。
+  ③ 给能力降级补**诊断**（原来完全没有日志）：写明「Apple 拒绝了哪个 App ID 的这组能力、已按空能力重发」，共享模式下追加「扩展嵌入的就是这一份」。
+- **涉及文件**：`Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift`、`Seal/Core/Renewal/ProfileOnlyRenewalRecordUpdater.swift`、`Seal/Core/Signing/SigningCoordinator.swift`、`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、`SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift`、`SealTests/Renewal/ProfileOnlyRenewalRecordUpdaterTests.swift`、`Scripts/verify-release-safety.py`、`RELEASE_NOTES.md`。
+- **验证状态**：守卫 R65 ⑨/⑬/⑭ 重写 + 新增 ⑰；新增单测 `sharedMainProfileIsRecordedForEveryTargetWithoutCollapsingThem`（钉「记录不塌」）与 `eligibilityDoesNotDependOnTheExtensionProfileStrategy`。⚠️ Windows 无 Xcode ⇒ 待 CI 编译/回归 + **真机复验**：抖音续签应显示「仅更新描述文件」，不再重传整包。
+- ⚠️ **LiveContainer 仍未解决**：降级传播这一轮只**加了日志**、没改行为 ⇒ 它的 401 仍在。可行修法见下一条。
+
+---
+
+## 2026-09-24 共享主描述文件的能力降级没有传播（LiveContainer 401 的根因）
+
+- **现象**：LiveContainer（主 App + 3 扩展）在共享模式下签名，`LiveProcess` 报
+  `[SEAL-ENTITLEMENT-401] 描述文件未授权 …increased-memory-limit`（构建 27 连续 5 次、构建 29 仍复现）。
+- **根因**：`ApplePortalSigningService` 的 Phase 1 里，`updateFeatures` 若被 Apple 拒（3001）
+  会返回 `downgradedToEmptyEntitlements`，调用方只清 `requestedEntitlements[mappedBundleID]`。
+  共享模式下 `portalMappings` **只有主 App** ⇒ 只清了主 App 的请求集；而主描述文件被
+  **全部 bundle 共用**（`validateEmbeddedProfiles` 拿它逐个 bundle 对账）⇒ 扩展请求集里的
+  独有能力没人清 ⇒ 必报 401。
+- **为什么上一轮的回退判据没救它**：`sharedProfileBlocker` 比较的是**应用声明的能力**
+  （主 App ⊇ 扩展），而实际决定描述文件内容的是**Apple 批了什么**。主 App 自己也声明了
+  `increased-memory-limit` ⇒ 判据认为「装得下」⇒ 不回退；Apple 拒了之后才缺，判据看不到。
+  ⇒ **「请求集」不等于「授予集」**，判据必须落在**授予集**上。
+- **候选修法**（未做，需真机）：在共享模式下 Phase 1 之后核对「主 App 实际获批的集合」能否
+  覆盖每个 bundle 的请求集；不能覆盖就**回退独立描述文件重跑一次 Phase 1**（扩展各自拿 App ID，
+  能力提交到它自己那份上）。⚠️ 不要图省事「把扩展的请求集也清空」—— 那是**静默降级**，
+  与 `RELEASE_NOTES` 明写的「不产出表面成功但无法运行的 IPA」冲突。
+- **本轮已做**：给降级补诊断（原来一条日志都没有）。
+
+---
+
 ## 2026-09-24 共享主描述文件的两个真机回归（构建 27）
+
+> ⚠️ **本条的两条修法都已被上一条（构建 29）修订**：① 「共享 + 含扩展 ⇒ 完整重签」把快路径丢掉了，
+> 已撤销，改为**续签侧支持共享策略**；② 「扩展请求了主 App 没有的能力就回退独立」的判据
+> 跑在 Phase 1 之前、看不到 Apple 的能力降级 ⇒ 对 LiveContainer 从未触发，根因见上一条。
 
 - **现象**（`Seal-log(7)(1).txt`，构建 1.3.5(27)，06:38–09:34）：
   ① 抖音（9 bundle = 主 1 + 扩展 8）批量续签失败：`[SEAL-PROFILE-337] App ID 身份已变化：Apple 门户中找不到 …DYShareExtension App ID`（同一批「成功 2、失败 1」）；

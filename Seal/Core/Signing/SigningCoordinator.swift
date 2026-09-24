@@ -602,8 +602,14 @@ actor SigningCoordinator {
         )
 
         var renewedApp = app
+        // 目标 → 描述文件的解析：共享主描述文件时多个目标指向同一份（见 `resolvedBindings`）。
+        let renewedTargetBundleIdentifiers = [result.mappedMainBundleID]
+            + app.extensions.compactMap(\.mappedBundleIdentifier)
+        let resolvedBindings = result.resolvedBindings(
+            forBundleIdentifiers: renewedTargetBundleIdentifiers
+        )
         try ProfileOnlyRenewalRecordUpdater.apply(
-            bindings: result.profileBindings,
+            resolvedBindings: resolvedBindings,
             teamID: result.teamID,
             certificateSerialNumber: result.certificateSerialNumber,
             deviceIdentifier: result.deviceIdentifier,
@@ -612,16 +618,19 @@ actor SigningCoordinator {
         renewedApp.lastInstallFailureCode = nil
         renewedApp.lastInstallFailureReason = nil
         try await appStore.save(renewedApp)
-        let verifiedProfiles = result.profileBindings.values
-            .sorted { $0.bundleIdentifier < $1.bundleIdentifier }
-            .map { binding in
-                let profileUUID = binding.profileUUID ?? "缺失"
-                return "\(binding.bundleIdentifier)：\(profileUUID)"
+        // ⚠️ 报**两个数**：注入了几份描述文件 vs 覆盖了几个目标。共享模式下这两个数**不相等**
+        // （1 份覆盖 9 个目标）—— 只报一个数会让真机上「为什么只注入 1 份」变成新的疑点 ✗。
+        let verifiedProfiles = resolvedBindings
+            .sorted { $0.key < $1.key }
+            .map { bundleIdentifier, binding in
+                "\(bundleIdentifier)：\(binding.profileUUID ?? "缺失")"
             }
             .joined(separator: "；")
         try? await logStore?.append(
             category: .renewal,
-            message: "profile-only 续签已由设备端逐份读回确认（\(result.profileBindings.count) 份）：\(verifiedProfiles)"
+            message: "profile-only 续签已由设备端逐份读回确认"
+                + "（注入 \(result.materials.count) 份描述文件、覆盖 \(resolvedBindings.count) 个目标）："
+                + verifiedProfiles
         )
         return renewedApp
     }

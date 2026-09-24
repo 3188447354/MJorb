@@ -18,7 +18,7 @@
   ① `ProfileOnlyRenewalPolicy` 新增 `.sharedMainProfileHasNoExtensionAppIDs`，`evaluate` 末尾（放在记录类判据**之后**，让更具体的提示优先）对「共享策略 + 含扩展」直接判完整重签。
   ② `AppExtensionProfileStrategy` 新增纯函数 `sharedProfileBlocker(mainBundleID:entitlementsByBundleID:)` 与 `resolvedForSigning(requested:mainBundleID:entitlementsByBundleID:)`：只把 `.sharedMainProfile` **降级**成 `.independentProfiles`（永不反向），并按 Bundle ID 字典序**稳定排序**（否则日志会抖）。`ApplePortalSigningService.provisioningProfiles` 在算完能力集后解析策略，`portalMappings` / 日志文案 / 返回的 `ProfilePreparation.extensionProfileStrategy` 三处**统一用解析后的值**（否则回退是空转），并加一条诊断写明是哪个扩展的哪个能力触发了回退。
 - **涉及文件**：`Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift`、`Seal/Core/Signing/AppExtensionProfileStrategy.swift`、`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、`SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift`、`SealTests/Signing/AppExtensionProfileStrategyTests.swift`、`RELEASE_NOTES.md`、`Scripts/verify-release-safety.py`。
-- **验证状态**：新增/改写的纯函数单测（含「永不反向」「稳定排序」两条不变量）；守卫 R65 扩到 ⑯。⚠️ Windows 本机无 Xcode ⇒ 待 GitHub Actions 编译/回归，以及**真机**复验：抖音续签应走完整重签、LiveContainer 应能签上（日志出现「共享主描述文件不适用于本次 IPA」）。
+- **验证状态**：新增/改写的纯函数单测（含「永不反向」「稳定排序」两条不变量）；守卫 R65 扩到 ⑯（**19 断言 / 19 锚点**），本地守卫 **510 checks / 268 mutations PASS**。✅ **GitHub Actions `iOS` run 29（`a33fc42`）三 job 全绿**（`build-package` / `signer-tests` / `swift-regression`）⇒ 编译与 `SealTests` 回归通过。⚠️ 仍待**真机**复验：抖音续签应走完整重签、LiveContainer 应能签上（日志出现「共享主描述文件不适用于本次 IPA」）。
 
 ---
 

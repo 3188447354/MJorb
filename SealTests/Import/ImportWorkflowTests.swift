@@ -294,12 +294,14 @@ struct ImportWorkflowTests {
 
     private func makeWorkflow(
         environment: Environment,
-        appID: UUID = UUID()
+        appID: UUID = UUID(),
+        runningSealBundleIdentifier: String? = nil
     ) -> ImportWorkflow {
         ImportWorkflow(
             parser: IPAParserService(),
             fileStore: environment.fileStore,
             appStore: environment.appStore,
+            runningSealBundleIdentifier: runningSealBundleIdentifier,
             now: { Date(timeIntervalSince1970: 1_750_000_000) },
             makeID: { appID }
         )
@@ -378,5 +380,296 @@ private extension ImportWorkflowTests {
 
     enum TestFailure: Error {
         case unexpectedState
+    }
+}
+
+// MARK: - 覆盖更新：导入新版 → 覆盖安装已安装应用（2026-09-25 用户反馈）
+
+extension ImportWorkflowTests {
+    /// 用户报「新导入的话就在待签页，覆盖更新安装就到已签名」。
+    /// 覆盖更新必须**复用已安装记录**（同 id / 同签名身份）并**清空旧版签名产物**：
+    /// 身份变了 installd 会并存第二个 App；旧签名产物留着会让「复用已签名包直接安装」
+    /// 把**旧版本**装回设备（用户会以为「更新没生效」）。
+    @Test
+    func overwriteUpdateReusesInstalledRecordIdentityAndClearsSignedArtifacts() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let installedID = UUID()
+        let accountID = UUID()
+        let originalPath = "Apps/\(installedID.uuidString)/Original.ipa"
+        let installed = AppRecord(
+            id: installedID,
+            originalBundleIdentifier: "com.example.demo",
+            mappedBundleIdentifier: "com.example.demo.3432ZHJUF9",
+            name: "Demo",
+            version: "1.0",
+            buildNumber: "1",
+            size: 10,
+            state: .installed,
+            expiryDate: Date(timeIntervalSince1970: 1_800_000_000),
+            accountID: accountID,
+            signingTeamID: "3432ZHJUF9",
+            certificateSerialNumber: "SERIAL",
+            signedDeviceIdentifier: "DEVICE",
+            provisioningProfileExpirationDate: Date(timeIntervalSince1970: 1_800_000_000),
+            lastSignedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            lastInstalledAt: Date(timeIntervalSince1970: 1_700_000_100),
+            ipaRelativePath: originalPath,
+            signedIPARelativePath: "Apps/\(installedID.uuidString)/Signed.ipa",
+            signedIPASHA256: "old-sha",
+            signedArtifactStatus: .installed,
+            preferredBundleIdentifier: "com.example.demo.3432ZHJUF9",
+            importedAt: Date(timeIntervalSince1970: 100)
+        )
+        let oldIPA = environment.documents.appending(path: originalPath)
+        try FileManager.default.createDirectory(
+            at: oldIPA.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("old".utf8).write(to: oldIPA)
+        try await environment.appStore.save(installed)
+
+        let source = try IPAArchiveFixture.make()
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let draftAppID = UUID()
+        let workflow = makeWorkflow(environment: environment, appID: draftAppID)
+
+        await workflow.prepare(sourceURL: source)
+        await workflow.confirm(target: .replaceInstalled(appID: installedID))
+
+        let updated = try requireCompleted(await workflow.state)
+        let records = try await environment.appStore.fetchAll()
+        // 只留一条记录：覆盖更新复用已安装记录，不新建
+        #expect(records.count == 1)
+        #expect(updated.id == installedID)
+        #expect(updated.version == "1.2.3")
+        #expect(updated.state == .installed)
+        #expect(updated.belongsInInstalledList)
+        // 签名身份必须保留：换了身份 installd 就会并存第二个 App
+        #expect(updated.mappedBundleIdentifier == "com.example.demo.3432ZHJUF9")
+        #expect(updated.accountID == accountID)
+        #expect(updated.signingTeamID == "3432ZHJUF9")
+        #expect(updated.certificateSerialNumber == "SERIAL")
+        #expect(updated.signedDeviceIdentifier == "DEVICE")
+        #expect(updated.lastInstalledAt == installed.lastInstalledAt)
+        // 旧版签名产物必须清空
+        #expect(updated.signedIPARelativePath == nil)
+        #expect(updated.signedIPASHA256 == nil)
+        #expect(updated.signedArtifactStatus == nil)
+        #expect(updated.hasPendingSelfUpdateSource)
+        // 文件目录键必须与记录 id 一致：AppFileStore 用 appID 同时决定目录名与相对路径，
+        // 两者不一致时签名阶段会去一个不存在的目录取包（覆盖后必然失败）。
+        #expect(updated.ipaRelativePath == originalPath)
+        #expect(FileManager.default.fileExists(atPath: oldIPA.path))
+        #expect(try Data(contentsOf: oldIPA) != Data("old".utf8))
+        // 草稿自己的 appID 不该在磁盘上留下任何目录
+        #expect(FileManager.default.fileExists(
+            atPath: environment.documents.appending(path: "Apps/\(draftAppID.uuidString)").path
+        ) == false)
+    }
+
+    /// 复核不过必须**安全回落**成新建，绝不覆盖别的记录。
+    /// 待签名记录是「同一 IPA 导入多个副本、用不同 Bundle ID 分别签名并存」那条刻意
+    /// 保留路径的产物，被替换掉就毁掉了多副本能力。
+    @Test
+    func overwriteUpdateFallsBackToNewRecordWhenTargetIsNotInstalled() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let pendingID = UUID()
+        let pending = AppRecord(
+            id: pendingID,
+            originalBundleIdentifier: "com.example.demo",
+            name: "Demo",
+            version: "1.0",
+            buildNumber: "1",
+            size: 10,
+            state: .preflightPassed,
+            ipaRelativePath: "Apps/\(pendingID.uuidString)/Original.ipa",
+            importedAt: Date(timeIntervalSince1970: 100)
+        )
+        try await environment.appStore.save(pending)
+
+        let source = try IPAArchiveFixture.make()
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let draftAppID = UUID()
+        let workflow = makeWorkflow(environment: environment, appID: draftAppID)
+
+        await workflow.prepare(sourceURL: source)
+        await workflow.confirm(target: .replaceInstalled(appID: pendingID))
+
+        let imported = try requireCompleted(await workflow.state)
+        let records = try await environment.appStore.fetchAll()
+        #expect(records.count == 2)
+        #expect(imported.id == draftAppID)
+        #expect(imported.belongsInInstalledList == false)
+        #expect(records.contains { $0.id == pendingID })
+    }
+
+    /// 目标记录在确认页停留期间被删掉 ⇒ 同样回落新建，而不是「随便挑一条替换」。
+    @Test
+    func overwriteUpdateFallsBackWhenTargetRecordIsGone() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let installedID = UUID()
+        let installed = AppRecord(
+            id: installedID,
+            originalBundleIdentifier: "com.example.demo",
+            name: "Demo",
+            version: "1.0",
+            buildNumber: "1",
+            size: 10,
+            state: .installed,
+            lastInstalledAt: Date(timeIntervalSince1970: 1_700_000_100),
+            ipaRelativePath: "Apps/\(installedID.uuidString)/Original.ipa",
+            importedAt: Date(timeIntervalSince1970: 100)
+        )
+        try await environment.appStore.save(installed)
+
+        let source = try IPAArchiveFixture.make()
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let draftAppID = UUID()
+        let workflow = makeWorkflow(environment: environment, appID: draftAppID)
+
+        await workflow.prepare(sourceURL: source)
+        await workflow.confirm(target: .replaceInstalled(appID: UUID()))
+
+        let imported = try requireCompleted(await workflow.state)
+        #expect(imported.id == draftAppID)
+        #expect(try await environment.appStore.fetchAll().count == 2)
+    }
+
+    /// 重试必须沿用用户已确认的「覆盖更新」目标：悄悄变回「新建」会让两条记录
+    /// 争同一个签名身份（签名时被 `SEAL-BUNDLE-004` 拦下），用户又回到待签页。
+    @Test
+    func retryKeepsTheConfirmedOverwriteTarget() async throws {
+        let store = ArmedFailOnceAppStore()
+        let environment = try makeEnvironment(appStore: store)
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let installedID = UUID()
+        let installed = AppRecord(
+            id: installedID,
+            originalBundleIdentifier: "com.example.demo",
+            mappedBundleIdentifier: "com.example.demo.3432ZHJUF9",
+            name: "Demo",
+            version: "1.0",
+            buildNumber: "1",
+            size: 10,
+            state: .installed,
+            accountID: UUID(),
+            lastInstalledAt: Date(timeIntervalSince1970: 1_700_000_100),
+            ipaRelativePath: "Apps/\(installedID.uuidString)/Original.ipa",
+            importedAt: Date(timeIntervalSince1970: 100)
+        )
+        await store.seed(installed)
+        await store.armFailure()
+
+        let source = try IPAArchiveFixture.make()
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let draftAppID = UUID()
+        let workflow = makeWorkflow(environment: environment, appID: draftAppID)
+
+        await workflow.prepare(sourceURL: source)
+        await workflow.confirm(target: .replaceInstalled(appID: installedID))
+        let failure = try requireFailure(await workflow.state)
+        #expect(failure.code == "SEAL-IPA-205")
+
+        await workflow.retry()
+
+        let updated = try requireCompleted(await workflow.state)
+        let records = try await environment.appStore.fetchAll()
+        #expect(records.count == 1)
+        #expect(updated.id == installedID)
+        #expect(updated.belongsInInstalledList)
+    }
+
+    /// 真机现象「连 Seal 自己也装不了」：记录里的身份（original/mapped/preferred）与
+    /// 导入包**都对不上**时，`preferredExistingSealRecordForImportedIPA` 返回 nil ⇒
+    /// 旧实现会新建一条 `isSeal == false` 的记录落到待签名页，签名时又被
+    /// `SEAL-BUNDLE-004` 拦下。兜底判据必须把「导入的就是**运行中**的 Seal」接住。
+    @Test
+    func importingTheRunningSealBuildFallsBackToSelfUpdateEvenWhenRecordIdentityDiffers() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let sealID = UUID()
+        let installedSeal = AppRecord(
+            id: sealID,
+            originalBundleIdentifier: "com.mjorb.seal.legacy",
+            name: "Seal",
+            version: "1.0",
+            buildNumber: "1",
+            size: 10,
+            state: .installed,
+            ipaRelativePath: "Apps/\(sealID.uuidString)/Original.ipa",
+            isSeal: true,
+            isPinned: true,
+            importedAt: Date(timeIntervalSince1970: 100)
+        )
+        try await environment.appStore.save(installedSeal)
+
+        let source = try IPAArchiveFixture.make(
+            apps: [
+                .init(
+                    directoryName: "Seal.app",
+                    bundleIdentifier: "com.mjorb.seal",
+                    name: "Seal",
+                    version: "2.0",
+                    buildNumber: "82"
+                )
+            ]
+        )
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let workflow = makeWorkflow(
+            environment: environment,
+            appID: UUID(),
+            runningSealBundleIdentifier: "com.mjorb.seal"
+        )
+
+        await workflow.prepare(sourceURL: source)
+        await workflow.confirm()
+
+        let imported = try requireCompleted(await workflow.state)
+        #expect(imported.id == sealID)
+        #expect(imported.isSeal)
+        #expect(imported.version == "2.0")
+        #expect(try await environment.appStore.fetchAll().count == 1)
+    }
+}
+
+private extension ImportWorkflowTests {
+    /// 与 `FailOnceAppStore` 的区别：可以先**预置**已安装记录、再武装失败。
+    /// 覆盖更新的重试用例需要「记录已在库里 + 第一次保存失败」这个组合。
+    actor ArmedFailOnceAppStore: AppStore {
+        private var records: [AppRecord] = []
+        private var remainingFailures = 0
+
+        func seed(_ record: AppRecord) {
+            records.removeAll { $0.id == record.id }
+            records.append(record)
+        }
+
+        func armFailure() {
+            remainingFailures += 1
+        }
+
+        func fetchAll() -> [AppRecord] {
+            records
+        }
+
+        func save(_ record: AppRecord) throws {
+            if remainingFailures > 0 {
+                remainingFailures -= 1
+                throw AppStoreError.invalidConfiguration
+            }
+            records.removeAll { $0.id == record.id }
+            records.append(record)
+        }
+
+        func replaceImportedApp(_ record: AppRecord) throws -> [AppRecord] {
+            []
+        }
+
+        func delete(id: UUID) {
+            records.removeAll { $0.id == id }
+        }
     }
 }

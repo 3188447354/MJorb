@@ -27,6 +27,9 @@ final class AppsViewModel: ObservableObject {
     @Published var isImportSheetPresented: Bool
     @Published private(set) var sheetDraft: ImportDraft?
     @Published private(set) var sheetFailure: ImportFailure?
+    /// 导入的 IPA 与某条**已安装**记录同身份时的覆盖更新候选（见 `ImportReplacementPolicy`）。
+    /// 非空 ⇒ 导入确认页给用户「覆盖更新 / 新建副本」的选择，而不是直接入库。
+    @Published private(set) var importReplacementCandidate: AppRecord?
     @Published var alertFailure: ImportFailure?
     @Published var accountSelectionApp: AppRecord?
     @Published var selectedOperationApp: AppRecord?
@@ -742,6 +745,7 @@ final class AppsViewModel: ObservableObject {
 
         alertFailure = nil
         sheetFailure = nil
+        importReplacementCandidate = nil
         isImportSheetPresented = false
         autoOpenSigningAfterImport = autoOpenSigning
         phase = .preparing
@@ -772,7 +776,10 @@ final class AppsViewModel: ObservableObject {
         phase = .committing
         sheetFailure = nil
         isImportSheetPresented = true
-        await workflow.confirm(preferredDraft: draft)
+        // 用户在确认页选的是「覆盖更新」还是「新建副本」，就在这一步定下来。
+        // 目标记录会在 `ImportWorkflow.commit` 里**按 id 复核**后才真的替换。
+        let target: ImportCommitTarget = importReplacementCandidate.map { .replaceInstalled(appID: $0.id) } ?? .newRecord
+        await workflow.confirm(preferredDraft: draft, target: target)
         await consumeWorkflowState()
     }
 
@@ -794,10 +801,60 @@ final class AppsViewModel: ObservableObject {
         }
         sheetDraft = nil
         sheetFailure = nil
+        importReplacementCandidate = nil
         isImportSheetPresented = false
         phase = .idle
         if let cleanupFailure {
             alertFailure = cleanupFailure
+        }
+    }
+
+    /// 用户在导入确认页选择「新建副本（不覆盖）」：放弃覆盖更新，按原行为新建一条
+    /// 待签名记录。这是「同一个 IPA 导入多个副本、用不同 Bundle ID 分别签名同时安装」
+    /// 那条刻意保留路径的入口。
+    func confirmImportAsNewRecord() async {
+        importReplacementCandidate = nil
+        await confirmImport()
+    }
+
+    /// 导入包是否与某条已安装记录同身份（⇒ 可以覆盖更新）。
+    /// 读**当前**记录而不是 `apps` 快照：用户可能在导入前刚装过东西。
+    /// 读失败回落 nil —— 那只会让本次走「新建」，不会破坏任何已有记录。
+    private func replacementCandidate(for draft: ImportDraft) async -> AppRecord? {
+        guard let appStore, let records = try? await appStore.fetchAll() else { return nil }
+        return ImportReplacementPolicy.installedReplacementCandidate(
+            for: draft.parsedIPA,
+            in: records
+        )
+    }
+
+    /// 覆盖更新的结果必须留痕。
+    ///
+    /// 用户点「覆盖更新」后，`ImportWorkflow.commit` 会**按 id 复核**目标记录；复核不过
+    ///（记录被删、或已不再是已安装状态）时会**安全回落**成新建一条待签名记录 ——
+    /// 结果又回到「待签名」页，看起来就像「覆盖更新没生效」。
+    /// 静默回落会让这个现象永远查不出原因，所以成功与回落各留一条带码日志。
+    private func logImportReplacementOutcome(
+        requested: AppRecord?,
+        record: AppRecord
+    ) async {
+        guard let requested else { return }
+        if record.belongsInInstalledList {
+            try? await logStore?.append(
+                category: .installation,
+                level: .info,
+                message: "导入覆盖更新：\(record.displayName) v\(requested.version) → v\(record.version)，"
+                    + "已替换已安装记录 \(record.id.uuidString)",
+                code: "SEAL-IPA-212"
+            )
+        } else {
+            try? await logStore?.append(
+                category: .installation,
+                level: .warning,
+                message: "覆盖更新目标已失效（记录 \(requested.id.uuidString) 已不是已安装状态），"
+                    + "已回落为新建待签名记录：\(record.displayName)",
+                code: "SEAL-IPA-213"
+            )
         }
     }
 
@@ -2524,10 +2581,19 @@ final class AppsViewModel: ObservableObject {
         case .awaitingConfirmation(let draft):
             sheetDraft = draft
             sheetFailure = nil
-            isImportSheetPresented = false
-            phase = .committing
-            await workflow.confirm(preferredDraft: draft)
-            await consumeWorkflowState()
+            if let candidate = await replacementCandidate(for: draft) {
+                // 覆盖更新会**替换**一条已安装记录（连带它的 IPA 与签名身份）——
+                // 这是破坏性操作，必须让用户看见并显式确认，不能像新建记录那样直接入库。
+                importReplacementCandidate = candidate
+                isImportSheetPresented = true
+                phase = .idle
+            } else {
+                importReplacementCandidate = nil
+                isImportSheetPresented = false
+                phase = .committing
+                await workflow.confirm(preferredDraft: draft)
+                await consumeWorkflowState()
+            }
         case .committing(let draft):
             phase = .committing
             sheetDraft = draft
@@ -2536,8 +2602,12 @@ final class AppsViewModel: ObservableObject {
             phase = .idle
             sheetDraft = nil
             sheetFailure = nil
+            // 用户点的是「覆盖更新」还是「新建副本」决定这次要不要留痕（见下方日志）。
+            let requestedOverwrite = importReplacementCandidate
+            importReplacementCandidate = nil
             isImportSheetPresented = false
             await load(force: true)
+            await logImportReplacementOutcome(requested: requestedOverwrite, record: record)
             lastImportCompletedInstalledApp = record.belongsInInstalledList
             importCompletionCount += 1
             if autoOpenSigningAfterImport {

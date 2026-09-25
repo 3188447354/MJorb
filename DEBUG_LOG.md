@@ -5,6 +5,70 @@
 
 ---
 
+## 2026-09-25 导入新版只落「待签名」页、装不上（含 Seal 自己）：`commit` 里 `existing` 被硬编码成 nil
+
+- **现象**（用户原话）：「我想要的是**覆盖安装**，目前有新版我都装不了，包括 seal 也是；
+  **新导入的话就在待签页**，覆盖更新安装就到已签名」。另一处相关反馈：导入新版后签名时报
+  「Bundle ID 冲突」。
+- **根因**：`ImportWorkflow.commit` 里 `let existing: AppRecord? = nil` 是**硬编码**，
+  原注释写着「同一个 IPA 允许导入多个副本，不查找待签名记录进行替换 / 每次导入都创建独立条目」。
+  只有 `existingSeal != nil`（导入的是 Seal 自己**且记录身份匹配**）才走替换分支 ⇒
+  **第三方导入新版恒新建一条待签名记录**（= 用户看到的「待签页」）。连锁三跳：
+  ① 新记录经 `preferenceSource` 继承同一条已安装记录的 `mappedBundleIdentifier`
+     ⇒ 签名时 `enforceBundleIdentifierUniqueness` 报 `SEAL-BUNDLE-004`「Bundle ID 冲突」；
+  ② 新记录 `belongsInInstalledList == false` ⇒ `SigningCoordinator.isInstalledRenewal` 为假
+     ⇒ 走不到续签那条**免免费账号 3-app 预检**的路径；
+  ③ 合起来就是用户看到的「有新版也装不了」。
+  Seal 自己另有一个缺口：`existingSealRecord` 只认
+  `preferredExistingSealRecordForImportedIPA`（original / mapped / preferred 三匹配），
+  记录身份与导入包**都对不上**时返回 nil ⇒ 新建 `isSeal == false` 的普通记录 ⇒ 同样被 004 拦下
+  —— 这就是「连 Seal 自己也装不了」。
+- **修复**：
+  ① 新增纯函数 `ImportReplacementPolicy`：候选 = **同原始 Bundle ID 且已安装**的第三方记录
+     （只认 `originalBundleIdentifier`，与 `userIdentityKeys` 正交；**待签名记录绝不参与**，
+     否则会毁掉「多副本」路径）；有多条时取最近安装 / 导入的那条。
+  ② 新增 `ImportCommitTarget`（`.newRecord` 默认 / `.replaceInstalled(appID:)`）显式表达意图；
+     提交时用 `confirmedReplacement(appID:)` **按 id 复核**，复核不过**回落新建**
+     （绝不把别的记录覆盖掉）。重试沿用**同一个**目标（否则重试会悄悄变回新建）。
+  ③ 新增 `makeInstalledUpdateRecord`：复用 `existing.id` 与全部签名身份字段
+     （mapped Bundle ID / 账号 / Team / 证书 / 描述文件 / `signingTargets`），
+     **清空** `signedIPARelativePath` / `signedIPASHA256` / `signedArtifactStatus`
+     （否则「复用已签名包直接安装」那条路径会把**旧版本**装回设备），置
+     `hasPendingSelfUpdateSource = true`（装好后由 `SigningCoordinator` 自动清零）。
+  ④ 🔴 **文件目录键必须等于记录 id**：`AppFileStore` 用 appID 同时决定 `Apps/<appID>/`
+     目录名与写进记录里的相对路径（`Original.ipa` / `Signed.ipa`）⇒ 原
+     `commitAppID = existingSeal?.id ?? draft.appID` 在覆盖更新时与记录 id 不一致，
+     签名阶段会去一个**不存在的目录**取包。已改为
+     `existingSeal?.id ?? existing?.id ?? draft.appID`。
+     ⚠️ 这个隐患在改动前**不可达**（`existing` 恒 nil），是「替换待签名记录」那条旧路径的遗留。
+  ⑤ UI：确认页检测到可覆盖记录时显示「更新方式 / 覆盖更新「名」（v旧 → v新）」，
+     主按钮变「覆盖更新」，并额外提供「**新建副本（不覆盖）**」出口 ——
+     破坏性操作必须由用户显式确认，不能静默替换。
+  ⑥ 留痕：覆盖成功记 `SEAL-IPA-212`，复核不过回落新建记 `SEAL-IPA-213`
+     （否则「点了覆盖更新却回到待签页」在日志里完全看不见，第②类日志必须能说出下一步做什么）。
+  ⑦ Seal 自更新兜底：新增构造参数 `runningSealBundleIdentifier`
+     （`AppContainer` 传 `Bundle.main.bundleIdentifier`），导入包 Bundle ID 与**运行中**的 Seal
+     相同 ⇒ 无论记录写成什么样都按自更新处理。
+- **涉及文件**：`Seal/Core/Import/ImportReplacementPolicy.swift`（新增）、
+  `Seal/Core/Import/ImportWorkflow.swift`、`Seal/Application/AppContainer.swift`、
+  `Seal/Features/Apps/AppsViewModel.swift`、`Seal/Features/Import/ImportConfirmationView.swift`、
+  `Seal/Features/Apps/AppsRootView.swift`、
+  `SealTests/Import/ImportReplacementPolicyTests.swift`（新增）、
+  `SealTests/Import/ImportWorkflowTests.swift`、
+  `Scripts/verify-release-safety.py`（R79）。
+- **验证状态**：守卫 R79（21 条断言 / 17 个变异锚点）两遍全绿；新增单测覆盖
+  「覆盖更新复用记录并清空签名产物」「目标非已安装 / 已删除时回落新建」「重试沿用覆盖目标」
+  「导入运行中的 Seal 走自更新」「判据的六条边界」；**真机回归待用户执行**
+  （清单见交付说明）。
+- **常犯坑位（新增）**：**「改动前不可达的隐患」不会因为新功能而消失，它只是被新功能激活了。**
+  `commitAppID` 少写一个 `existing?.id` 之所以没人发现，是因为 `existing` 恒为 nil ⇒
+  那行永远等价于 `draft.appID`。一旦让 `existing` 有值，它就立刻变成「覆盖后签名找不到源包」。
+  ⇒ 给一条**死路径**注入新语义时，必须把那条路径上**每一个**依赖「目标就是 draft」的假设
+  都重新读一遍（这里还有 `recordID` / `preferenceSource.excluding` / 文件目录键三处，
+  前两处原实现已经写对，只有文件目录键没有）。
+
+---
+
 ## 2026-09-25 删账号重加后「单点续签必失败、续签全部却成功」：设备核验三态被折成 Bool（构建 39 真机）
 
 - **现象**（用户复验）：① 删 Apple ID 重新添加后，点**一个**应用续签会走完**三个**应用的签名流程

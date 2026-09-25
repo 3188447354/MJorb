@@ -3398,6 +3398,84 @@ def violations(load=read):
     check("let isInstalledRenewal = app.belongsInInstalledList && forceResign && installAfterSigning" in coord
           and "|| isInstalledRenewal" in coord,
           "Profile-only: both renewal paths must bypass the free-account install precheck")
+    # R79: 「导入新版 → 覆盖更新已安装应用」必须真的复用那条记录（2026-09-25 用户反馈）。
+    #
+    # 用户报「新导入的话就在待签页，覆盖更新安装就到已签名」。根因是 `ImportWorkflow.commit`
+    # 里 `existing` 被**硬编码成 nil** ⇒ 每次导入都新建一条待签名记录；而新记录又会从
+    # `preferenceSource` 继承同一条已安装记录的 `mappedBundleIdentifier`，签名时与那条
+    # 记录争同一个身份被 `SEAL-BUNDLE-004` 拦下（用户同时报「同 Bundle ID 冲突」）。
+    #
+    # 覆盖更新是**破坏性操作**（替换记录 + 换掉 IPA 文件），所以下面每一条都必须钉住：
+    # 候选只认已安装的第三方记录、只认导入包的**原始**身份、提交前按 id 复核、
+    # 保留签名身份、清空旧签名产物、文件目录键与记录 id 一致。
+    policy = load("Seal/Core/Import/ImportReplacementPolicy.swift")
+    check("record.isSeal == false" in policy and "record.belongsInInstalledList" in policy,
+          "Import: 覆盖更新候选必须是已安装的第三方记录")
+    check("normalizedBundleIdentifier(record.originalBundleIdentifier) == target" in policy,
+          "Import: 覆盖更新判据必须只认导入包的原始 Bundle ID")
+    check("candidate.id == appID" in policy,
+          "Import: 替换目标必须按 id 复核后才执行")
+    check("guard target.isEmpty == false else { return nil }" in policy,
+          "Import: 空 Bundle ID 不得匹配任何记录")
+
+    workflow = load("Seal/Core/Import/ImportWorkflow.swift")
+    overwrite = section(workflow, "private static func makeInstalledUpdateRecord(", "\n    }")
+    check("id: existing.id," in overwrite,
+          "Overwrite: 覆盖更新必须复用已安装记录的 id")
+    check("mappedBundleIdentifier: existing.mappedBundleIdentifier," in overwrite
+          and "accountID: existing.accountID," in overwrite,
+          "Overwrite: 覆盖更新必须保留签名身份")
+    check("signedIPARelativePath: nil," in overwrite
+          and "signedIPASHA256: nil," in overwrite
+          and "signedArtifactStatus: nil," in overwrite,
+          "Overwrite: 覆盖更新必须清空旧版签名产物")
+    check("hasPendingSelfUpdateSource: true," in overwrite,
+          "Overwrite: 覆盖更新必须标记待安装新源")
+    check("if let existing, existing.belongsInInstalledList {" in workflow
+          and "return makeInstalledUpdateRecord(" in workflow,
+          "Overwrite: 已安装记录必须走覆盖更新分支")
+    # 文件目录键必须与记录 id 一致：`AppFileStore` 用 appID 同时决定 `Apps/<appID>/`
+    # 目录名与写进记录里的相对路径（`Original.ipa` / `Signed.ipa`）。不一致时签名阶段
+    # 会去一个不存在的目录取包 —— 覆盖更新**必然**失败。
+    check("let commitAppID = existingSeal?.id ?? existing?.id ?? draft.appID" in workflow,
+          "Overwrite: 文件目录键必须与记录 id 一致")
+    # 默认仍必须是「新建」：同一个 IPA 导入多个副本、用不同 Bundle ID 分别签名后同时
+    # 安装，是仓库刻意保留的路径（那条路径上的记录全是待签名状态）。
+    check("case .newRecord: existing = nil" in squash(workflow),
+          "Import: 默认提交目标必须仍是新建记录")
+    check("await commit(draft, target: retryTarget)" in workflow
+          and "retryTarget = target" in workflow,
+          "Import: 重试必须沿用用户已确认的提交目标")
+    check("guard let runningSealBundleIdentifier," in workflow
+          and "ImportReplacementPolicy.normalizedBundleIdentifier(parsed.bundleIdentifier)" in workflow,
+          "Import: Seal 自更新兜底必须比对运行中 Bundle ID")
+    check("runningSealBundleIdentifier: Bundle.main.bundleIdentifier"
+              in load("Seal/Application/AppContainer.swift"),
+          "Import: Seal 自更新必须有「导入的就是运行中的 Seal」兜底")
+
+    view_model = load("Seal/Features/Apps/AppsViewModel.swift")
+    check("ImportReplacementPolicy.installedReplacementCandidate(" in view_model,
+          "Import: 导入流程必须检测覆盖更新候选")
+    check("importReplacementCandidate.map { .replaceInstalled(appID: $0.id) } ?? .newRecord"
+              in view_model,
+          "Import: 提交目标必须由确认页的选择决定")
+    # 复核不过会**安全回落**成新建（结果又回到待签名页）⇒ 成功与回落都必须留痕，
+    # 否则「点了覆盖更新却回到待签页」在日志里完全看不见。
+    check('code: "SEAL-IPA-212"' in view_model and 'code: "SEAL-IPA-213"' in view_model,
+          "Import: 覆盖更新的成功与回落都必须留痕")
+
+    confirmation = load("Seal/Features/Import/ImportConfirmationView.swift")
+    check("if isOverwriteUpdate {" in confirmation and '"新建副本（不覆盖）"' in confirmation,
+          "Import: 覆盖更新必须给用户「新建副本」出口")
+    check('accessibilityIdentifier("import-summary-overwrite")' in confirmation,
+          "Import: 确认页必须显示覆盖更新的对象与版本变化")
+    check("onCreateCopy: { Task { await viewModel.confirmImportAsNewRecord() } }"
+              in load("Seal/Features/Apps/AppsRootView.swift"),
+          "Import: 确认页的「新建副本」必须接到新建路径")
+    check("func findsInstalledRecordForSameOriginalBundleIdentifier()"
+              in load("SealTests/Import/ImportReplacementPolicyTests.swift"),
+          "Import: 覆盖更新判据的关键单测必须仍在")
+
     auto_cleanup = section(coord, "private func autoCleanOrphanCertificatesIfPossible(",
                            "func installSignedArtifact(")
     check("guard let inventory = try? await inventoryService.fetchInventory(" in auto_cleanup,
@@ -6288,6 +6366,103 @@ def main():
          "            return withinReplacementGrace ? .awaitNextLaunch : .closeAsNotInstalled",
          "            return .closeAsNotInstalled",
          "R77①:"),
+    ]
+    mutations += [
+        # ── R79：覆盖更新（2026-09-25 用户反馈「新导入的话就在待签页」）──
+        # ① 候选不再要求「已安装」⇒ 待签名记录也会被当成覆盖目标 ✓ 报红。
+        ("Seal/Core/Import/ImportReplacementPolicy.swift",
+         "                    && record.belongsInInstalledList",
+         "                    && true",
+         "Import: 覆盖更新候选必须是已安装的第三方记录"),
+        # ② 判据改去比「签名后的身份」⇒ 「同原始包、不同签名身份」的副本会被一并吞掉 ✓ 报红。
+        ("Seal/Core/Import/ImportReplacementPolicy.swift",
+         "                    && normalizedBundleIdentifier(record.originalBundleIdentifier) == target",
+         "                    && normalizedBundleIdentifier(record.mappedBundleIdentifier ?? \"\") == target",
+         "Import: 覆盖更新判据必须只认导入包的原始 Bundle ID"),
+        # ③ 去掉按 id 复核 ⇒ 确认页停留期间目标被换掉也会照着替换 ✓ 报红。
+        ("Seal/Core/Import/ImportReplacementPolicy.swift",
+         "        guard let candidate = installedReplacementCandidate(for: parsed, in: records),\n"
+         "              candidate.id == appID else { return nil }\n"
+         "        return candidate",
+         "        return installedReplacementCandidate(for: parsed, in: records)",
+         "Import: 替换目标必须按 id 复核后才执行"),
+        # ④ 覆盖更新不保留签名身份（退回 nil）⇒ 目标 Bundle ID 变了，installd 会并存第二个 App ✓ 报红。
+        ("Seal/Core/Import/ImportWorkflow.swift",
+         "            mappedBundleIdentifier: existing.mappedBundleIdentifier,",
+         "            mappedBundleIdentifier: nil,",
+         "Overwrite: 覆盖更新必须保留签名身份"),
+        # ⑤ 覆盖更新不再复用记录 id ⇒ 记录与文件目录键不一致 ✓ 报红。
+        ("Seal/Core/Import/ImportWorkflow.swift",
+         "            id: existing.id,\n            originalBundleIdentifier: parsed.bundleIdentifier,",
+         "            id: draft.appID,\n            originalBundleIdentifier: parsed.bundleIdentifier,",
+         "Overwrite: 覆盖更新必须复用已安装记录的 id"),
+        # ⑥ 留着旧版签名产物 ⇒ 「复用已签名包直接安装」会把**旧版本**装回设备 ✓ 报红。
+        ("Seal/Core/Import/ImportWorkflow.swift",
+         "            signedIPARelativePath: nil,\n"
+         "            signedIPASHA256: nil,\n"
+         "            signedArtifactStatus: nil,\n"
+         "            preferredBundleIdentifier: existing.preferredBundleIdentifier,",
+         "            signedIPARelativePath: existing.signedIPARelativePath,\n"
+         "            signedIPASHA256: existing.signedIPASHA256,\n"
+         "            signedArtifactStatus: existing.signedArtifactStatus,\n"
+         "            preferredBundleIdentifier: existing.preferredBundleIdentifier,",
+         "Overwrite: 覆盖更新必须清空旧版签名产物"),
+        # ⑦ `makeRecord` 不再走覆盖更新分支 ⇒ 新代码成死代码，导入又落到待签名页 ✓ 报红。
+        ("Seal/Core/Import/ImportWorkflow.swift",
+         "        if let existing, existing.belongsInInstalledList {\n            return makeInstalledUpdateRecord(",
+         "        if false {\n            return makeInstalledUpdateRecord(",
+         "Overwrite: 已安装记录必须走覆盖更新分支"),
+        # ⑧ 文件目录键退回 `draft.appID` ⇒ 覆盖后签名阶段找不到源包 ✓ 报红。
+        ("Seal/Core/Import/ImportWorkflow.swift",
+         "            let commitAppID = existingSeal?.id ?? existing?.id ?? draft.appID",
+         "            let commitAppID = existingSeal?.id ?? draft.appID",
+         "Overwrite: 文件目录键必须与记录 id 一致"),
+        # ⑨ 「一律替换」⇒ 毁掉「同一 IPA 导入多个副本」这条刻意保留的路径 ✓ 报红。
+        ("Seal/Core/Import/ImportWorkflow.swift",
+         "            case .newRecord:\n                existing = nil",
+         "            case .newRecord:\n"
+         "                existing = ImportReplacementPolicy.installedReplacementCandidate(for: draft.parsedIPA, in: records)",
+         "Import: 默认提交目标必须仍是新建记录"),
+        # ⑩ 重试悄悄变回「新建」⇒ 两条记录争同一个签名身份 ✓ 报红。
+        ("Seal/Core/Import/ImportWorkflow.swift",
+         "        await commit(draft, target: retryTarget)",
+         "        await commit(draft, target: .newRecord)",
+         "Import: 重试必须沿用用户已确认的提交目标"),
+        # ⑪ 去掉 Seal 自更新兜底 ⇒ 导入运行中的 Seal 会新建 `isSeal == false` 的记录 ✓ 报红。
+        ("Seal/Application/AppContainer.swift",
+         "                runningSealBundleIdentifier: Bundle.main.bundleIdentifier\n",
+         "",
+         "Import: Seal 自更新必须有「导入的就是运行中的 Seal」兜底"),
+        # ⑫ 提交目标不再由确认页决定（恒为新建）⇒ 用户选了覆盖也没用 ✓ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "        let target: ImportCommitTarget = importReplacementCandidate.map { .replaceInstalled(appID: $0.id) } ?? .newRecord",
+         "        let target: ImportCommitTarget = .newRecord",
+         "Import: 提交目标必须由确认页的选择决定"),
+        # ⑬ 回落不再留痕 ⇒ 「点了覆盖更新却回到待签页」永远查不出原因 ✓ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         '                code: "SEAL-IPA-213"',
+         '                code: "SEAL-IPA-213x"',
+         "Import: 覆盖更新的成功与回落都必须留痕"),
+        # ⑭ 确认页去掉「新建副本（不覆盖）」出口 ⇒ 多副本路径在 UI 上无法到达 ✓ 报红。
+        ("Seal/Features/Import/ImportConfirmationView.swift",
+         "                if isOverwriteUpdate {",
+         "                if false {",
+         "Import: 覆盖更新必须给用户「新建副本」出口"),
+        # ⑮ 确认页不再显示覆盖对象 ⇒ 用户看不到「替换哪一条、从哪个版本到哪个版本」✓ 报红。
+        ("Seal/Features/Import/ImportConfirmationView.swift",
+         '                .accessibilityIdentifier("import-summary-overwrite")',
+         '                .accessibilityIdentifier("import-summary-compat")',
+         "Import: 确认页必须显示覆盖更新的对象与版本变化"),
+        # ⑯ 「新建副本」按钮接到别处（取消）⇒ 点了等于放弃导入 ✓ 报红。
+        ("Seal/Features/Apps/AppsRootView.swift",
+         "                        onCreateCopy: { Task { await viewModel.confirmImportAsNewRecord() } }",
+         "                        onCreateCopy: { Task { await viewModel.cancelImport() } }",
+         "Import: 确认页的「新建副本」必须接到新建路径"),
+        # ⑰ 判据的关键单测被改名/删掉 ⇒ 这条不变量没人守 ✓ 报红。
+        ("SealTests/Import/ImportReplacementPolicyTests.swift",
+         "func findsInstalledRecordForSameOriginalBundleIdentifier()",
+         "func findsInstalledRecordLegacy()",
+         "Import: 覆盖更新判据的关键单测必须仍在"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

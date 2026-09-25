@@ -70,7 +70,10 @@ struct AppContainer {
             let workflow = ImportWorkflow(
                 parser: IPAParserService(),
                 fileStore: fileStore,
-                appStore: appStore
+                appStore: appStore,
+                // 兜底判据用：导入的 IPA 就是这个**正在运行**的 Seal 自己时，
+                // 必须按自更新处理（见 `ImportWorkflow.existingSealRecord`）。
+                runningSealBundleIdentifier: Bundle.main.bundleIdentifier
             )
             // 启动即创建/更新 Documents/Seal-log.txt，让文件 App 中的 Seal 目录始终可见。
             // flush 会先加载已有日志，不会因本次镜像而清空历史。

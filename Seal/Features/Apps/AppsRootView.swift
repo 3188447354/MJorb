@@ -47,6 +47,7 @@ struct AppsRootView: View {
                 if let draft = viewModel.sheetDraft {
                     ImportConfirmationView(
                         draft: draft,
+                        replacementCandidate: viewModel.importReplacementCandidate,
                         isCommitting: viewModel.phase == .committing,
                         failure: viewModel.sheetFailure,
                         onCancel: { Task { await viewModel.cancelImport() } },
@@ -55,7 +56,8 @@ struct AppsRootView: View {
                                 if viewModel.sheetFailure == nil { await viewModel.confirmImport() }
                                 else { await viewModel.retryImport() }
                             }
-                        }
+                        },
+                        onCreateCopy: { Task { await viewModel.confirmImportAsNewRecord() } }
                     )
                     .presentationDetents([.medium, .large])
                 }

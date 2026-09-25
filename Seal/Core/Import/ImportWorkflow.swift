@@ -1,5 +1,16 @@
 import Foundation
 
+/// 一次导入要提交成什么。
+///
+/// 默认 `.newRecord`（新建一条待签名记录）—— 这也是「同一个 IPA 导入多个副本、
+/// 用不同 Bundle ID 分别签名同时安装」那条路径的形态。
+/// `.replaceInstalled` 是**覆盖更新**：用新导入的 IPA 替换一条**已安装**记录，
+/// 由用户在导入确认页显式选择（判据见 `ImportReplacementPolicy`）。
+enum ImportCommitTarget: Equatable, Sendable {
+    case newRecord
+    case replaceInstalled(appID: UUID)
+}
+
 actor ImportWorkflow {
     private(set) var state: ImportWorkflowState = .idle
 
@@ -8,19 +19,29 @@ actor ImportWorkflow {
     private let appStore: any AppStore
     private let now: @Sendable () -> Date
     private let makeID: @Sendable () -> UUID
+    /// 当前**运行中**的 Seal 自身 Bundle ID。只服务一条兜底判据：
+    /// 导入的 IPA 就是这个正在运行的 Seal 自己时，无论记录写成什么样都必须按
+    /// 「自更新」处理（否则会新建一条 `isSeal == false` 的普通记录落到「待签名」页，
+    /// 签名时又与已安装的 Seal 争同一个 Bundle ID 被 `SEAL-BUNDLE-004` 拦下）。
+    private let runningSealBundleIdentifier: String?
     private var retryDraft: ImportDraft?
+    /// 重试时必须沿用**同一个**提交目标：用户已经确认过「覆盖更新」，
+    /// 重试却悄悄变回「新建」会让两条记录争同一个签名身份。
+    private var retryTarget: ImportCommitTarget = .newRecord
     private(set) var lastCleanupFailure: ImportFailure?
 
     init(
         parser: IPAParserService,
         fileStore: AppFileStore,
         appStore: any AppStore,
+        runningSealBundleIdentifier: String? = nil,
         now: @escaping @Sendable () -> Date = Date.init,
         makeID: @escaping @Sendable () -> UUID = UUID.init
     ) {
         self.parser = parser
         self.fileStore = fileStore
         self.appStore = appStore
+        self.runningSealBundleIdentifier = runningSealBundleIdentifier
         self.now = now
         self.makeID = makeID
     }
@@ -62,13 +83,16 @@ actor ImportWorkflow {
         }
     }
 
-    func confirm(preferredDraft: ImportDraft? = nil) async {
+    func confirm(
+        preferredDraft: ImportDraft? = nil,
+        target: ImportCommitTarget = .newRecord
+    ) async {
         switch state {
         case .awaitingConfirmation(let draft):
-            await commit(draft)
+            await commit(draft, target: target)
         case .failed, .idle, .completed:
             guard let preferredDraft else { return }
-            await commit(preferredDraft)
+            await commit(preferredDraft, target: target)
         case .preparing, .committing:
             return
         }
@@ -77,7 +101,7 @@ actor ImportWorkflow {
     func retry() async {
         guard case .failed = state, let draft = retryDraft else { return }
         state = .awaitingConfirmation(draft)
-        await commit(draft)
+        await commit(draft, target: retryTarget)
     }
 
     func cancel() async {
@@ -109,7 +133,7 @@ actor ImportWorkflow {
         }
     }
 
-    private func commit(_ draft: ImportDraft) async {
+    private func commit(_ draft: ImportDraft, target: ImportCommitTarget) async {
         state = .committing(draft)
         var fileTransaction: PreparedAppFileTransaction?
         var databaseReplacedRecords: [AppRecord] = []
@@ -119,17 +143,35 @@ actor ImportWorkflow {
             let records = try await appStore.fetchAll()
             let existingSeal = Self.existingSealRecord(
                 for: draft.parsedIPA,
-                in: records
+                in: records,
+                runningSealBundleIdentifier: runningSealBundleIdentifier
             )
-            // 同一个 IPA 允许导入多个副本，不查找待签名记录进行替换
-            // 每次导入都创建独立条目，用不同 Bundle ID 签名可同时安装
-            let existing: AppRecord? = nil
+            // 覆盖更新的目标**当场复核**：用户在导入确认页停留期间记录可能已被删除、
+            // 或已不再是已安装状态 ⇒ 复核不过就回落「新建」，绝不把别的记录覆盖掉。
+            //
+            // ⚠️ 默认仍是「新建」：同一个 IPA 允许导入多个副本、用不同 Bundle ID
+            // 签名后同时安装，那条路径上的记录都是待签名状态，不能被替换掉。
+            let existing: AppRecord?
+            switch target {
+            case .newRecord:
+                existing = nil
+            case .replaceInstalled(let appID):
+                existing = ImportReplacementPolicy.confirmedReplacement(
+                    appID: appID,
+                    for: draft.parsedIPA,
+                    in: records
+                )
+            }
             let preferenceSource = Self.preferenceSource(
                 for: draft.parsedIPA,
                 in: records,
-                excluding: nil
+                excluding: existing?.id
             )
-            let commitAppID = existingSeal?.id ?? draft.appID
+            // 文件目录键必须与记录 id 一致：`AppFileStore` 用 appID 同时决定
+            // `Apps/<appID>/` 目录名与写进记录里的相对路径（`Original.ipa` / `Signed.ipa`），
+            // 两者不一致时签名阶段会去一个不存在的目录取包。覆盖更新复用 `existing.id`
+            // ⇒ 这里必须用同一个 id（否则覆盖后签名必然找不到源包）。
+            let commitAppID = existingSeal?.id ?? existing?.id ?? draft.appID
             let preferredIconData: Data?
             if let path = existingSeal?.preferredIconRelativePath
                 ?? existingSeal?.iconRelativePath
@@ -158,14 +200,10 @@ actor ImportWorkflow {
                 preferenceSource: preferenceSource
             )
             record.pendingFileTransactionID = transaction.id
-            if existingSeal == nil {
-                // 同一个 IPA 允许导入多个副本，用不同 Bundle ID 签名同时安装
-                // 不替换已存在的待签名记录，每次导入都创建独立条目
-                try await appStore.save(record)
-            } else {
-                databaseReplacedRecords = [existingSeal].compactMap { $0 }
-                try await appStore.save(record)
-            }
+            // 被替换的记录必须逐条记下来，回滚时按 id 恢复：
+            // 自更新替换的是 Seal 自己的记录，覆盖更新替换的是那条已安装记录。
+            databaseReplacedRecords = [existingSeal, existing].compactMap { $0 }
+            try await appStore.save(record)
             databaseRecord = record
 
             transaction = try await fileStore.finalizeImportCommit(transaction)
@@ -222,6 +260,7 @@ actor ImportWorkflow {
                 state = .failed(rollbackFailure)
             } else {
                 retryDraft = draft
+                retryTarget = target
                 state = .failed(originalFailure)
             }
         }
@@ -273,6 +312,7 @@ actor ImportWorkflow {
             lastCleanupFailure = await cancelStagedIPA(retryDraft.stagedIPA)
         }
         retryDraft = nil
+        retryTarget = .newRecord
     }
 
     private func cancelStagedIPA(_ stagedIPA: StagedIPA) async -> ImportFailure? {
@@ -302,6 +342,17 @@ actor ImportWorkflow {
                 draft: draft,
                 files: files,
                 existingSeal: existingSeal
+            )
+        }
+
+        // 覆盖更新：`existing` 是**已安装**记录 ⇒ 保留签名身份、清空旧版签名产物。
+        // 这与下面「替换待签名记录」（`existing?.id ?? draft.appID` 那段）语义不同：
+        // 那条路径要重置签名状态，这条路径必须**保住**它。
+        if let existing, existing.belongsInInstalledList {
+            return makeInstalledUpdateRecord(
+                draft: draft,
+                files: files,
+                existing: existing
             )
         }
 
@@ -397,6 +448,69 @@ actor ImportWorkflow {
         )
     }
 
+    /// 覆盖更新：用新导入的 IPA 替换一条**已安装**记录。
+    ///
+    /// 与「替换待签名记录」的关键差别是**保留签名身份**：`mappedBundleIdentifier` /
+    /// 账号 / 证书 / 描述文件字段全部沿用，这样 `BundleIDPolicy.targetBundleIdentifier`
+    /// 算出来的目标 ID 不变 ⇒ installd 覆盖设备上同一个 App，而不是并存第二个。
+    /// 同时它让 `belongsInInstalledList` 保持为真 ⇒ `AppsViewModel.runSigning` 里
+    /// `forceResign: forceResign || isRenewal` 为真 ⇒ 走完整重签并**免掉免费账号 3-app 预检**
+    ///（`SigningCoordinator.isInstalledRenewal`）。
+    ///
+    /// 🔴 必须清空 `signedIPARelativePath` / `signedIPASHA256` / `signedArtifactStatus`：
+    /// 它们描述的是**旧版本**的签名产物，留着会让「复用已签名包直接安装」那条路径
+    /// 把旧版本装回设备（用户会以为「更新没生效」）。
+    private static func makeInstalledUpdateRecord(
+        draft: ImportDraft,
+        files: StoredAppFiles,
+        existing: AppRecord
+    ) -> AppRecord {
+        let parsed = draft.parsedIPA
+        return AppRecord(
+            id: existing.id,
+            originalBundleIdentifier: parsed.bundleIdentifier,
+            mappedBundleIdentifier: existing.mappedBundleIdentifier,
+            name: parsed.name,
+            version: parsed.version,
+            buildNumber: parsed.buildNumber,
+            size: parsed.fileSize,
+            iconRelativePath: files.iconRelativePath,
+            state: .installed,
+            expiryDate: existing.expiryDate,
+            accountID: existing.accountID,
+            signingTeamID: existing.signingTeamID,
+            certificateSerialNumber: existing.certificateSerialNumber,
+            signedDeviceIdentifier: existing.signedDeviceIdentifier,
+            provisioningProfileUUID: existing.provisioningProfileUUID,
+            provisioningProfileName: existing.provisioningProfileName,
+            provisioningProfileCreationDate: existing.provisioningProfileCreationDate,
+            provisioningProfileExpirationDate: existing.provisioningProfileExpirationDate,
+            entitlementValidationStatus: existing.entitlementValidationStatus,
+            capabilityValidationStatus: existing.capabilityValidationStatus,
+            lastSignedAt: existing.lastSignedAt,
+            lastInstalledAt: existing.lastInstalledAt,
+            removedExtensionBundleIdentifiers: existing.removedExtensionBundleIdentifiers,
+            signingTargets: existing.signingTargets,
+            ipaRelativePath: files.ipaRelativePath,
+            signedIPARelativePath: nil,
+            signedIPASHA256: nil,
+            signedArtifactStatus: nil,
+            preferredBundleIdentifier: existing.preferredBundleIdentifier,
+            preferredDisplayName: existing.preferredDisplayName,
+            preferredIconRelativePath: files.preferredIconRelativePath
+                ?? existing.preferredIconRelativePath,
+            lastInstallFailureCode: nil,
+            lastInstallFailureReason: nil,
+            hasPendingSelfUpdateSource: true,
+            isSeal: false,
+            isPinned: existing.isPinned,
+            importedAt: existing.importedAt,
+            extensions: parsed.extensions,
+            importWarnings: parsed.importWarnings,
+            extensionProfileStrategy: existing.extensionProfileStrategy
+        )
+    }
+
     private static func existingPendingImportRecord(
         for parsed: ParsedIPA,
         in records: [AppRecord]
@@ -411,12 +525,26 @@ actor ImportWorkflow {
 
     private static func existingSealRecord(
         for parsed: ParsedIPA,
-        in records: [AppRecord]
+        in records: [AppRecord],
+        runningSealBundleIdentifier: String?
     ) -> AppRecord? {
-        SelfAppRecordSelection.preferredExistingSealRecordForImportedIPA(
+        // ① 记录匹配（覆盖 original / mapped / preferred 三种写法）。
+        if let matched = SelfAppRecordSelection.preferredExistingSealRecordForImportedIPA(
             in: records,
             importedBundleIdentifier: parsed.bundleIdentifier
-        )
+        ) {
+            return matched
+        }
+        // ② 兜底：导入包就是**当前正在运行的 Seal 自己**（Bundle ID 相同）⇒ 无论记录
+        //    写成什么样都必须按自更新处理。否则会新建一条 `isSeal == false` 的普通记录
+        //    落到「待签名」页，签名时又与已安装的 Seal 争同一个 Bundle ID 被拦下 ——
+        //    用户看到的就是「连 Seal 自己都装不了」。
+        guard let runningSealBundleIdentifier,
+              ImportReplacementPolicy.normalizedBundleIdentifier(parsed.bundleIdentifier)
+                == ImportReplacementPolicy.normalizedBundleIdentifier(runningSealBundleIdentifier)
+        else { return nil }
+        return records.first { $0.isSeal && $0.belongsInInstalledList }
+            ?? records.first { $0.isSeal }
     }
 
     private static func preferenceSource(

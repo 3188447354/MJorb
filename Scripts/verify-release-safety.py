@@ -4277,6 +4277,76 @@ def violations(load=read):
           "R81⑤: 缺绑定必须有三条单测（同 Team 放行 / 换 Team 拒绝 / 连 Team 都没有也拒绝）"
           "—— 这类判据的错法不崩、不编译失败，只在真机上「点了续签没反应」。")
 
+    # R82: Seal 自己**不再被排除**在 profile-only 之外（2026-09-25 真机，构建 44）。
+    #
+    # 现象：批量续签跑到 Seal 那一项时进程被**自替换**换掉 ⇒ 队列项还停在 `running`
+    # 就随进程消失 ⇒ 新进程启动后降级成未知，报 `SEAL-RENEW-007`「1 个应用的结果未知，
+    # 需要重新核验」；同一轮 `SEAL-SELF-109`（Seal 自更新安装遇到未预期错误）连报两次，
+    # 并引出多轮自替换结算 + `SEAL-INSTALL-707`。用户只能手动重试「续签全部」。
+    #
+    # 根因：`ProfileOnlyRenewalPolicy.evaluate` 第一句按**身份**排除 Seal
+    # （`guard app.isSeal == false else { … .sealSelfReplacement }`）⇒ Seal 续签
+    # **永远**走完整重签 + 自替换安装。而上游 SideStore 的 `refresh` 管线
+    # （`fetchProvisioningProfiles` / `cacheResignedMetadata` / `refreshApp`）对它自己
+    # 同样只注入描述文件、从不重签重装 —— 自替换只出现在 install / update / resign 管线里。
+    #
+    # ⚠️ 这几条守的是「**不得按身份一刀切**」，不是「Seal 一定要走快路径」：
+    #    记录不完整时回落完整重签是**正确**行为，由单测
+    #    `sealWithIncompleteRecordStillRequiresFullResign` 单独钉住。
+    r82_policy = strip_comments(load("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift"))
+    r82_coordinator = load("Seal/Core/Signing/SigningCoordinator.swift")
+    r82_renewal_coordinator = load("Seal/Core/Renewal/RenewalCoordinator.swift")
+    r82_tests = load("SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift")
+    check("isSeal" not in r82_policy,
+          "R82①: 续签准入**不得**再按身份排除 Seal ✗ —— 2026-09-25 真机（构建 44）："
+          "旧实现第一句 `guard app.isSeal == false else { … }` 让 Seal 续签**永远**走"
+          "完整重签 + 自替换安装 ⇒ 批量续签跑到 Seal 那一项时进程被系统换掉、队列项留在 "
+          "`running` ⇒ `SEAL-RENEW-007`「1 个应用的结果未知」＋ `SEAL-SELF-109`。"
+          "判定依据是**记录是否完整**，与「这是谁的应用」无关")
+    check("sealSelfReplacement" not in r82_policy,
+          "R82②: 那个「按身份一刀切」的枚举 case（`sealSelfReplacement`）不得复活 —— "
+          "删掉它是为了让「Seal 必须走完整重签」不再是一个**恒真**的默认结论")
+    r82_should_use = section_or_empty(
+        r82_coordinator,
+        "    private func shouldUseProfileOnlyRenewal(",
+        "    private func renewProfilesOnly("
+    )
+    r82_renew_only = section_or_empty(
+        r82_coordinator,
+        "    private func renewProfilesOnly(",
+        "    /// 只有「本机无私钥/绑定失效/证书名额满」"
+    )
+    check("isSeal" not in r82_should_use and "isSeal" not in r82_renew_only,
+          "R82③: `shouldUseProfileOnlyRenewal` 与 `renewProfilesOnly` 都**不得**再出现 "
+          "`isSeal` 判据 —— 只要任一处按身份排除，Seal 就又回到自替换那条路 ✗"
+          "（准入放行、执行侧又拦，等于没改）")
+    check("func sealIsEligibleForProfileOnlyLikeAnyThirdPartyApp()" in r82_tests
+          and "func sealWithIncompleteRecordStillRequiresFullResign()" in r82_tests,
+          "R82④: 必须有**两个方向**的单测 —— ① Seal 记录完整 ⇒ `.eligible`；"
+          "② Seal 记录不完整 ⇒ 照旧回落完整重签（去掉身份豁免**不是**后门）。"
+          "源码断言只能证明「结构在」，证明不了「真的放行」")
+
+    # R82（续）：**准入放行还不够** —— 批量结算侧原先**假定 Seal 续签必然是自替换**。
+    #
+    # `RenewalCoordinator` 的结算分支原来只判 `updated.isSeal`，然后无条件
+    # 「不计成功、留在 running、等新进程核验」。准入放行 profile-only 之后，Seal 那一项
+    # 其实**已经成功且进程没重启**，却仍会被记成「等待新进程核验」⇒ 启动时没有自替换事务
+    # 可结算 ⇒ 又变成 `SEAL-RENEW-007`「1 个应用的结果未知」。
+    # 这正是本项目反复出现的「**上游放行、下游又拦**」：改了一半、看起来改完了。
+    check("if updated.isSeal, currentRenewalExecutionPath != .profileOnly {"
+          in r82_renewal_coordinator,
+          "R82⑤: 批量结算必须按**实际路径**判断 Seal 那一项要不要等新进程核验 ✗ —— "
+          "只按 `updated.isSeal` 判断等于假定「Seal 续签必然是自替换」，"
+          "会让已经成功的快路径项永远停在等待确认里（`SEAL-RENEW-007`）。"
+          "判据用 `!= .profileOnly`：信号缺失时退回保守行为，不谎报成功")
+    check("await self.rememberRenewalExecutionPath(path)" in r82_renewal_coordinator,
+          "R82⑥: 结算要用的路径信号必须真的被**记录**下来 ✗ —— "
+          "`onRenewalExecutionPath` 回调只推给界面（`progress(...)`）是不够的，"
+          "协调器自己也得留住它，否则 R82⑤ 的判据恒为「非 profile-only」")
+    check("currentRenewalExecutionPath = nil" in r82_renewal_coordinator,
+          "R82⑦: 路径信号必须**按项重置** ✗ —— 上一项的 `.profileOnly` 泄漏到下一项，"
+          "就会把「其实换了进程」的 Seal 项误记成成功（静默丢一次核验）")
+
     # R71: 已安装列表设备核验 ＋ 安装重试路径的三条保护（2026-09-25 审查项 P1/P2/P4）。
     r71_verifier = load("Seal/Features/Apps/InstalledAppDeviceVerifier.swift")
     r71_channel = load("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift")
@@ -6858,6 +6928,58 @@ def main():
          "            binding = .recoveredFromMissingBinding\n        }",
          '            throw ImportFailure(code: "SEAL-AUTH-110")\n        }',
          "R81①: `validateAccountAndTeam` 不得再因"),
+        # ── R82：Seal 自己不得被排除在 profile-only 之外（2026-09-25 构建 44 真机）──
+        # ① 把「按身份排除 Seal」加回准入 ⇒ R82① 报红（Seal 又回到自替换那条路，
+        #    批量续签又会在 Seal 那一项把进程换掉）。
+        ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
+         "        guard app.state == .installed,\n",
+         "        guard app.isSeal == false else {\n"
+         "            return .requiresFullResign(.missingInstalledArtifact)\n"
+         "        }\n\n"
+         "        guard app.state == .installed,\n",
+         "R82①: 续签准入**不得**再按身份排除 Seal"),
+        # ② 把那个「按身份一刀切」的枚举 case 加回去 ⇒ R82② 报红
+        #    （它的存在本身就会让「Seal 走完整重签」重新变成恒真的默认结论）。
+        ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
+         "    enum FullResignReason: Equatable, Sendable {\n",
+         "    enum FullResignReason: Equatable, Sendable {\n        case sealSelfReplacement\n",
+         "R82②: 那个「按身份一刀切」的枚举 case"),
+        # ③ 在**执行侧**（而不是准入侧）按身份排除 ⇒ R82③ 报红
+        #    （「准入放行、下游又拦」是最难发现的一种退化：改了一半、看起来改完了）。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "        guard forceResign,\n"
+         "              installAfterSigning,\n",
+         "        guard forceResign,\n"
+         "              installAfterSigning,\n"
+         "              app.isSeal == false,\n",
+         "R82③: `shouldUseProfileOnlyRenewal` 与 `renewProfilesOnly` 都**不得**再出现"),
+        # ④ 把「Seal 记录完整 ⇒ 可用快路径」那条单测改名 ⇒ R82④ 报红（不变量没人守）。
+        ("SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift",
+         "func sealIsEligibleForProfileOnlyLikeAnyThirdPartyApp()",
+         "func sealEligibilityLegacy()",
+         "R82④: 必须有**两个方向**的单测"),
+        # ⑤ 把「记录不完整仍回落完整重签」那条单测改名 ⇒ R82④ 报红
+        #    （只守一个方向的话，「去掉身份豁免」就可能悄悄变成后门）。
+        ("SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift",
+         "func sealWithIncompleteRecordStillRequiresFullResign()",
+         "func sealIncompleteLegacy()",
+         "R82④: 必须有**两个方向**的单测"),
+        # ⑥ 结算退回「只看身份」⇒ R82⑤ 报红。**这正是本轮修的真问题**：
+        #    准入放行了，结算侧却仍假定「Seal 续签 = 自替换」⇒ 成功项永远停在等待确认。
+        ("Seal/Core/Renewal/RenewalCoordinator.swift",
+         "if updated.isSeal, currentRenewalExecutionPath != .profileOnly {",
+         "if updated.isSeal {",
+         "R82⑤: 批量结算必须按**实际路径**判断"),
+        # ⑦ 不再记录路径信号（只推给界面）⇒ R82⑥ 报红（判据恒为「非 profile-only」）。
+        ("Seal/Core/Renewal/RenewalCoordinator.swift",
+         "await self.rememberRenewalExecutionPath(path)",
+         "_ = path",
+         "R82⑥: 结算要用的路径信号必须真的被**记录**下来"),
+        # ⑧ 去掉按项重置 ⇒ R82⑦ 报红（上一项的 `.profileOnly` 泄漏到 Seal 那一项）。
+        ("Seal/Core/Renewal/RenewalCoordinator.swift",
+         "            currentRenewalExecutionPath = nil\n",
+         "",
+         "R82⑦: 路径信号必须**按项重置**"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

@@ -1,8 +1,12 @@
 import Foundation
 
-/// Decides whether an installed third-party app has enough persisted identity to
-/// attempt a profile-only refresh. The coordinator adds current-account and
-/// current-device checks before it can enter the device transaction.
+/// Decides whether an installed app has enough persisted identity to attempt a
+/// profile-only refresh. The coordinator adds current-account and current-device
+/// checks before it can enter the device transaction.
+///
+/// 🔴 **Seal 自己不再被排除**（2026-09-25）：它与任何第三方已装应用走**同一条**判据 ——
+/// 「只更新描述文件、不重新安装」对 Seal 同样适用，判定依据是**记录是否完整**，
+/// 与「这是谁的应用」无关。理由见 `evaluate(app:)`。
 enum ProfileOnlyRenewalPolicy {
     enum Decision: Equatable, Sendable {
         case eligible(targetBundleIdentifiers: [String])
@@ -10,7 +14,6 @@ enum ProfileOnlyRenewalPolicy {
     }
 
     enum FullResignReason: Equatable, Sendable {
-        case sealSelfReplacement
         case missingInstalledArtifact
         case incompleteSigningIdentity
         case missingTargetRecord
@@ -28,11 +31,28 @@ enum ProfileOnlyRenewalPolicy {
         isPresent ? .reuse : .requiresFullResign
     }
 
+    /// 判定「这条记录是否完整到足以只换描述文件」。
+    ///
+    /// 🔴 **Seal 自己不再被排除**（2026-09-25 真机，构建 44）。
+    ///
+    /// 旧实现的第一句是 `guard app.isSeal == false else { return .requiresFullResign(.sealSelfReplacement) }`
+    /// ⇒ Seal **永远**走完整重签 + **自替换安装** ⇒ 进程被系统换掉：
+    ///   · 批量续签跑到 Seal 那一项（第 3/3 项）时，队列项还停在 `running` 就随进程消失
+    ///     ⇒ 新进程启动后降级成未知，报 `SEAL-RENEW-007`「1 个应用的结果未知，需要重新核验」；
+    ///   · 同一轮里 `SEAL-SELF-109`（Seal 自更新安装遇到未预期错误）连报两次，
+    ///     并引出多轮自替换结算 + `SEAL-INSTALL-707`；
+    ///   · 用户看到的是「续签全部」反复中断、必须手动重试。
+    ///
+    /// 而「续签」在上游 SideStore 的稳定实现里**从不重签、从不重装** —— 它的
+    /// `PipelineStepDefinition.refresh` 只有 `fetchProvisioningProfiles` /
+    /// `cacheResignedMetadata` / `refreshApp` 三步，底层就是 misagent 的
+    /// `installProvisioningProfile`（本仓对应 `ProfileOnlyProvisioningProfileInstaller`
+    /// → `Minimuxer.installProvisioningProfile`），**对它自己同样如此**；
+    /// 自替换（`handleSelfReinstallation`）只出现在 install / update / resign 管线里。
+    ///
+    /// ⚠️ 这里删掉的是「按身份一刀切」，**不是安全边界**：记录不完整（缺已装产物 /
+    /// 缺签名身份 / 缺目标记录）时，下面几条判据**一条都没有放松**，照旧回落完整重签。
     static func evaluate(app: AppRecord) -> Decision {
-        guard app.isSeal == false else {
-            return .requiresFullResign(.sealSelfReplacement)
-        }
-
         guard app.state == .installed,
               app.signedArtifactStatus == .installed,
               app.hasSignedArtifact else {

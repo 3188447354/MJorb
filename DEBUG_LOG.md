@@ -5,6 +5,68 @@
 
 ---
 
+## 2026-09-25 Seal 自身续签改成「只更新描述文件、不重新安装」（运行时更新，不再自替换）
+
+- **背景**（用户要求）：「把 Seal 自身续签也做成更新描述文件不重新安装，能够运行时更新」。
+  构建 44 的真机日志把这条路的**代价**量化了：批量续签跑到 Seal 那一项（第 3/3）时，
+  Seal 必须**自替换**（重新签名 + 覆盖安装自己）⇒ 进程被系统换掉
+  ⇒ 队列项还停在 `running` 就随进程消失 ⇒ 新进程启动后降级成未知，报
+  `SEAL-RENEW-007`「上次续签被中断，1 个应用的结果未知，需要重新核验」
+  （`20:51:19` 与 `20:59:55` 各一次）；同一轮 `SEAL-SELF-109`（Seal 自更新安装遇到未预期错误）
+  **连报两次**（`20:52:45` / `20:53:00`），并引出多轮自替换结算 + 5 次 `SEAL-INSTALL-707`。
+  用户只能反复手动重试「续签全部」。
+- **根因**：`ProfileOnlyRenewalPolicy.evaluate` 第一句就是
+  `guard app.isSeal == false else { return .requiresFullResign(.sealSelfReplacement) }`
+  ⇒ **Seal 永远不走 profile-only 路径**，永远走完整重签 + 自替换安装。
+  即：Seal 是唯一**用不上**这条快路径的应用，而它恰好是每次批量续签都要跑的那一个。
+- 🔑 **上游 SideStore 的稳定做法（对照，本轮调研）**：它的续签管线 `PipelineStepDefinition.refresh`
+  只有三步 —— `fetchProvisioningProfiles`（45）/ `cacheResignedMetadata`（1）/ `refreshApp`（39），
+  **不含重签、不含安装**；`RefreshAppOperation` 对每个目标只做
+  `installProvisioningProfiles(_:)`（misagent 注入描述文件），**对 SideStore 自己同样如此**。
+  自替换（`handleSelfReinstallation`）只出现在 install / update / resign 管线里。
+  本仓对应实现是 `ProfileOnlyProvisioningProfileInstaller.installAndVerify`
+  → `Minimuxer.installProvisioningProfile(profile:)`（同样是 misagent、同样 30 秒有界、同样读回核验）。
+  ⇒ 「只换描述文件」对 Seal 在技术上**完全可行**，缺的只是那条按身份的一刀切。
+- **修复**：
+  - 删掉 `evaluate` 开头的身份豁免，以及只为它存在的枚举 case `FullResignReason.sealSelfReplacement`
+    （全仓唯一消费点是 `ApplePortalSigningService` 里**不带关联值**的 `== .requiresFullResign`，
+    删掉无副作用）。
+  - **安全边界一条都没放松**：记录不完整（缺已装产物 `hasSignedArtifact` / 缺签名身份 /
+    缺目标记录）时照旧回落完整重签 —— 删掉的是「按身份一刀切」，不是判据本身。
+  - `shouldUseProfileOnlyRenewal` 与 `renewProfilesOnly` 本来就没有 `isSeal` 分支
+    ⇒ 准入放行后自然走通，**无需改动**（守卫 R82③ 钉住「这两处今后也不得加」）。
+- 🔴 **只改准入是不够的 —— 批量结算侧还假定「Seal 续签 = 自替换」**（同一轮里发现的第二半）。
+  `RenewalCoordinator` 的结算分支原来只判 `updated.isSeal`，然后**无条件**
+  「不计成功、留在 `running`、等新进程核验」。准入放行之后，Seal 那一项其实**已经成功、
+  进程也没重启**，却仍被记成「等待新进程核验」⇒ 启动时根本没有自替换事务可结算
+  ⇒ 又变回 `SEAL-RENEW-007`。**这正是本项目反复出现的「上游放行、下游又拦」：
+  改了一半、看起来改完了。**
+  - 修法：把「要不要等新进程核验」的判据从**应用身份**换成**实际路径** ——
+    `SigningCoordinator` 本来就在设备端身份核验之后通过 `onRenewalExecutionPath` 回调
+    `.profileOnly` / `.fullResign`（这是权威信号，不需要再实现一遍判据）。
+    协调器（actor）新增 `currentRenewalExecutionPath` 留住它，**按项重置**，
+    结算改成 `if updated.isSeal, currentRenewalExecutionPath != .profileOnly`。
+  - ⚠️ 判据取 `!= .profileOnly`（**没明确确认是快路径就按保守处理**）：信号缺失时保持旧行为，
+    只会多一次「等待新进程核验」，不会把可能已被换掉的进程谎报成已完成。
+  - ⚠️ 顺带确认：证书轮换子流程调 `signAndInstall` 时**没有**传 `onRenewalExecutionPath`
+    （走默认 `{ _ in }`）⇒ 不会污染本项的路径记录。
+- **附带效果（重要）**：Seal 走 profile-only 后**不推 `.pushing` / `.installing` 阶段**，
+  所以 `SelfInstallAutoBackground.returnToHomeAfterSealUpload`（回主屏）与批量项的
+  `awaitingSealConfirmation` / `persistPendingBatchResultForSealUpdate`（载荷持久化）
+  **自然都不触发** —— 它们本来就是为「自替换必须让出前台、结果只能留给新进程核验」准备的，
+  这条路现在根本不需要（`awaitingConfirmation` 归 0 ⇒ 批量按正常 `completed` 收尾）。
+  ⚠️ **但记录不完整时 Seal 仍会回落完整重签 + 自替换**（例：每次 Seal 版本升级后
+  `SelfAppRegistrar` 原子重建记录会把 `signedIPARelativePath` 置 nil ⇒ `hasSignedArtifact` 为假）
+  ⇒ 那条路径**必须保留**；本轮只是让「记录完整」这个常见情形不再付出「换掉进程」的代价。
+- **涉及文件**：`Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift`（删豁免 + 论证注释）、
+  `Seal/Core/Renewal/RenewalCoordinator.swift`（结算按实际路径 + 按项重置）、
+  `SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift`（两条新单测，一正一反）、
+  `Scripts/verify-release-safety.py`（**R82**：7 断言 + 8 变异；守卫 631/375 → **638/383**）。
+- **验证状态**：⚠️ 待真机（构建号见交付单）。判据：批量续签跑到 Seal 那一项时日志出现
+  「续签路径已确认：仅更新描述文件」＋「profile-only 续签已由设备端逐份读回确认」，
+  且**不再出现** `开始自替换安装` / `SEAL-SELF-109` / `SEAL-RENEW-007`，
+  **进程不重启**（日志时间戳连续、不出现启动横幅）。
+
 ## 2026-09-25 扫回的记录导入覆盖更新后仍续签不了（`accountID` 压根没有）
 
 - **现象**（用户原话）：「当我导入已有应用时提示覆盖更新，点完就到了已安装页，但是点续签时却续签不了」
@@ -238,6 +300,8 @@
   `ProfileOnlyRenewalPolicy.evaluate` 第一句就是 `guard app.isSeal == false else {
   return .requiresFullResign(.sealSelfReplacement) }` ⇒ **Seal 永远不走 profile-only 路径**
   ⇒ 永远不执行那段 `containsProfile` 核验 ⇒ **永远不可能报 362**。
+  > ⚠️ **该身份豁免已于 1.3.15 撤销**（2026-09-25）：Seal 现在与普通应用走同一条准入判据，
+  > 记录完整时也走 profile-only。详见本文件顶部「Seal 自身续签改成只更新描述文件」那条。
   也就是说：**唯一能单点续签成功的应用，恰好就是唯一不使用这条路径的应用** —— 与根因完全互锁，
   这不是巧合。日志里 Seal 也确实走的是 `开始自替换安装`（完整重签），没有一条 362 属于它。
 - **根因（三个，必须分开看）**：
@@ -858,6 +922,19 @@
 ---
 
 ## 常犯坑位
+
+- 🔴 **「按身份一刀切」会把一条链路**永久**关掉，而且看起来像「设计如此」**（2026-09-25）。
+  `ProfileOnlyRenewalPolicy.evaluate` 第一句 `guard app.isSeal == false else { … }` 让 Seal
+  **永远**用不上「只换描述文件」的快路径 ⇒ 每次续签都必须**自替换**（重新签名 + 覆盖安装自己）
+  ⇒ 进程被系统换掉 ⇒ 批量续签队列项留在 `running` 就消失、变成未知（`SEAL-RENEW-007`）。
+  ⚠️ 这个豁免**不报错、不崩，还专门有一条单测钉着它**
+  （`sealAlwaysRequiresTheExistingFullResignRoute`）⇒ 它把「Seal 必须走完整重签」
+  变成了一个**恒真的默认结论**，读代码的人看不出那是一条限制。
+  ⇒ **判据：写「某某对象不适用」的豁免时，先问「这条路径对它真的不可行，还是只是没试过？」**
+  —— 前者要写明理由与代价，后者就是缺口 ✓。
+  ⇒ **别为豁免写「断言豁免存在」的单测**：那等于把限制固化成不变量 ——
+  本次删豁免时，正是那条单测第一个报红（它成了唯一「记得」这个限制的地方）。
+  同族：把判据从「**记录是否完整**」改成「**这是谁的应用**」＝ 用身份替代事实。
 
 - 🔴 **「本规则的锚点全对」≠「我改的那一行的锚点全对」**（2026-09-24，白跑一轮 11 分钟）。
   为 R65 把 `"App ID 阶段开始：\(extensionProfileStrategy == …)"` 改成

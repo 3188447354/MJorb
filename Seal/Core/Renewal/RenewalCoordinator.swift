@@ -57,6 +57,26 @@ actor RenewalCoordinator {
     /// 排障时拿到的只有日志，日志里却没有结论。
     private let logStore: SealLogStore?
 
+    /// 本项续签**实际**走的路径，由 `SigningCoordinator` 在设备端身份核验之后回调写入。
+    ///
+    /// 🔴 结算时必须用它区分两件事（2026-09-25）：
+    ///   · `.profileOnly` —— 只换描述文件，**进程不受影响** ⇒ 可以直接记成功；
+    ///   · `.fullResign`  —— 重新签名 + **覆盖安装 Seal 自己** ⇒ 当前进程会被系统换掉
+    ///     ⇒ 那一项必须保持 `running`，交给下次启动按真实运行包身份结算。
+    /// 旧实现只按 `updated.isSeal` 判断，等于**假定 Seal 续签必然是自替换** ——
+    /// 准入判据放行 profile-only 之后，这个假定会让「其实已经成功、进程也没重启」的
+    /// 那一项永远停在等待确认里，重新变成 `SEAL-RENEW-007`「结果未知」。
+    ///
+    /// ⚠️ 判据用 `!= .profileOnly`（**没有明确确认是快路径就按保守处理**）：
+    /// 信号缺失时保持旧行为，只会多一次「等待新进程核验」，不会把可能已被换掉的进程
+    /// 谎报成已完成。
+    private var currentRenewalExecutionPath: RenewalExecutionPath?
+
+    /// 记录本项续签实际走的路径。由 `@Sendable` 回调调用，故单独开一个 actor 方法。
+    private func rememberRenewalExecutionPath(_ path: RenewalExecutionPath) {
+        currentRenewalExecutionPath = path
+    }
+
     /// 单个应用续签总尝试次数上限，仅临时网络故障允许重试。
     private let maxAttempts = 3
     /// 重试前等待的基础秒数，第 n 次重试等待 baseRetryDelay * n。
@@ -243,6 +263,9 @@ actor RenewalCoordinator {
             // —— 自动重试循环：最多 maxAttempts 次 ——
             var lastError: Error?
             var updatedRecord: AppRecord?
+            // 路径信号按项重置：上一项的 `.profileOnly` 绝不能泄漏到下一项
+            //（泄漏的后果是 Seal 那一项被误记成成功，而它其实换了进程）。
+            currentRenewalExecutionPath = nil
 
             for attempt in 1...maxAttempts {
                 // 每次尝试都重新读取最新记录
@@ -287,6 +310,9 @@ actor RenewalCoordinator {
                             )
                         },
                         onRenewalExecutionPath: { path in
+                            // 先记进 actor（结算要用它判断「Seal 是否真的重新安装了自己」），
+                            // 再推给界面。顺序无关紧要，但两件事都必须做。
+                            await self.rememberRenewalExecutionPath(path)
                             await progress(
                                 .appRenewalExecutionPath(
                                     index: offset + 1,
@@ -358,7 +384,13 @@ actor RenewalCoordinator {
             }
 
             if let updated = updatedRecord {
-                if updated.isSeal {
+                // ⚠️ 「Seal 续签」**不再必然**意味着自替换（2026-09-25）：准入判据放行后，
+                // Seal 与普通应用一样可以只换描述文件，**进程不受影响** ⇒ 这一项就是
+                // 一个正常的成功项，不需要「留给新进程核验」。
+                // 只有 `fullResign`（重新签名 + 覆盖安装自己）才会把当前进程换掉。
+                // ⇒ 判据是**实际路径**，不是应用身份；用 `!= .profileOnly` 让信号缺失时
+                //   退回保守行为（多等一次核验，而不是谎报成功）。
+                if updated.isSeal, currentRenewalExecutionPath != .profileOnly {
                     // 自替换会杀掉当前进程；只有新进程读取运行包身份并与候选相符后，
                     // 才能写 completed。队列保持 running，交给启动期对账结算。
                     awaitingConfirmation += 1

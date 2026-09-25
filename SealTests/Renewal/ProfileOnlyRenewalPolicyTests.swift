@@ -21,12 +21,36 @@ struct ProfileOnlyRenewalPolicyTests {
     }
 
     @Test
-    func sealAlwaysRequiresTheExistingFullResignRoute() {
+    func sealIsEligibleForProfileOnlyLikeAnyThirdPartyApp() {
+        // 回归钉（2026-09-25 真机，构建 44）：旧实现第一句就**按身份**排除 Seal
+        // （`guard app.isSeal == false else { return .requiresFullResign(.sealSelfReplacement) }`）
+        // ⇒ Seal 续签**永远**走完整重签 + 自替换安装 ⇒ 进程被系统换掉：
+        // 批量续签队列项留在 `running` 变成未知（`SEAL-RENEW-007`）、
+        // 自替换安装报 `SEAL-SELF-109`、用户必须手动重试。
+        // 判定依据是**记录是否完整**，与「这是谁的应用」无关 —— 上游 SideStore 的
+        // `refresh` 管线对它自己也只注入描述文件、从不重签重装。
         let app = makeEligibleApp(isSeal: true)
 
         #expect(
             ProfileOnlyRenewalPolicy.evaluate(app: app)
-                == .requiresFullResign(.sealSelfReplacement)
+                == .eligible(
+                    targetBundleIdentifiers: [
+                        "com.example.demo.TEAM123456",
+                        "com.example.demo.TEAM123456.share"
+                    ]
+                )
+        )
+    }
+
+    @Test
+    func sealWithIncompleteRecordStillRequiresFullResign() {
+        // 反方向：去掉「按身份一刀切」**不是**后门 —— 记录不完整时 Seal 照旧回落完整重签。
+        var app = makeEligibleApp(isSeal: true)
+        app.accountID = nil
+
+        #expect(
+            ProfileOnlyRenewalPolicy.evaluate(app: app)
+                == .requiresFullResign(.incompleteSigningIdentity)
         )
     }
 

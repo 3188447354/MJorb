@@ -94,6 +94,26 @@
   改变异要连注释一起改。
   **自查法**：先只跑这几条变异做定点复验（每条 = 一遍 `violations()`，几十秒），
   确认「改掉判据真的报红」之后再跑整轮 —— 整轮在 OneDrive 上要 20 分钟以上。
+- 🔴 **CI 构建 42 单测红了 3 条 —— 全是测试数据错，不是实现错**（`swift-regression`）：
+  `InstalledRecordRecoveryPolicyTests` 的 `skipsBundleIdentifierAlreadyCoveredByARecord` /
+  `respectsDismissedTombstones` / `doesNotRecoverExtensionsAsStandaloneApps`。
+  ① 前两条：`Context` 的字段文档写着「已归一化 / 已大写」，但**没有任何东西强制它** ——
+  测试助手手搓 `Context` 时传了 `com.example.demo.seal.ABCDE12345`（Team 段**大写**），
+  而 `drafts()` 是按小写查表的 ⇒ `known` / `dismissed` 两条闸门**一条都没筛掉**。
+  ⇒ 修法**不是**改测试数据，而是把归一化搬进 `Context.init`：这个前置条件容易违反、
+  违反后**静默失效**（多建记录、把用户删掉的捞回来），只写在文档里不够。
+  顺带加一条 `contextNormalizesWhateverItIsGiven` 钉住「`init` 与 `context(...)` 两条
+  构造路径不会分叉」，测试助手改为**故意传原始值**。
+  ② 第三条：**扩展的映射形态写错了**。真实规则在 `BundleIDMapper.extensionBundleID` ——
+  扩展挂在**主 App 映射后**的 ID 下面（主 `…seal.ABCDE12345`、扩展
+  `…seal.ABCDE12345.share`），**不是**各自加 `.seal.<team>` 后缀。
+  写成 `com.example.demo.share.seal.ABCDE12345` 会让 `isExtensionBundleID` 的前缀判据落空
+  ⇒ 扩展被当独立 App 建记录（真机上就是一条点开就报错的僵尸）。
+  ⚠️ **`DeviceProfileCleaner` 那边的 `isExtensionBundleID` 判的也是「映射后 ID 的前缀」，
+  在回收场景是成立的**（它拿到的两边都是映射后 ID）—— 别因为这条测试就去改它。
+  ③ 教训：**新增单测时，测试里构造的「设备端数据」必须按真实映射规则造**
+  （`BundleIDMapper.extensionBundleID` / `BundleIDPolicy.recommendedBundleIdentifier`），
+  不能凭直觉拼字符串 —— 拼错了测试照样编译、只在 CI 上红。
 
 ---
 

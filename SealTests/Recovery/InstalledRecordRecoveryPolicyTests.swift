@@ -158,13 +158,20 @@ struct InstalledRecordRecoveryPolicyTests {
 
     /// 扩展不是独立安装的 App（`isAppInstalled` 对扩展恒为 false），
     /// 单独建记录只会得到一条点开就报错的僵尸记录。
+    ///
+    /// ⚠️ **扩展的映射形态必须以 `BundleIDMapper.extensionBundleID` 为准**：
+    /// 它把扩展挂到**主 App 映射后**的 ID 下面 —— `com.example.demo` + 扩展
+    /// `com.example.demo.share` ⇒ 主 `com.example.demo.seal.ABCDE12345`、
+    /// 扩展 `com.example.demo.seal.ABCDE12345.share`。
+    /// **不是**「各自加 `.seal.<team>` 后缀」（写成 `com.example.demo.share.seal.ABCDE12345`
+    /// 会让前缀判据落空 ⇒ 扩展被当独立 App 建记录；2026-09-25 CI 上正是这么红的）。
     @Test
     func doesNotRecoverExtensionsAsStandaloneApps() {
         let context = makeContext(teams: ["ABCDE12345"])
         let drafts = InstalledRecordRecoveryPolicy.drafts(
             profiles: [
                 makeProfile(bundleID: "com.example.demo.seal.ABCDE12345", team: "ABCDE12345"),
-                makeProfile(bundleID: "com.example.demo.share.seal.ABCDE12345", team: "ABCDE12345"),
+                makeProfile(bundleID: "com.example.demo.seal.ABCDE12345.share", team: "ABCDE12345"),
             ],
             context: context
         )
@@ -312,7 +319,8 @@ struct InstalledRecordRecoveryPolicyTests {
                 AppExtensionRecord(
                     name: "Share",
                     originalBundleIdentifier: "com.example.demo.share",
-                    mappedBundleIdentifier: "com.example.demo.share.seal.ABCDE12345"
+                    // 真实映射：扩展挂在**主 App 映射后**的 ID 下面（`BundleIDMapper.extensionBundleID`）。
+                    mappedBundleIdentifier: "com.example.demo.seal.ABCDE12345.share"
                 ),
             ]
         )
@@ -324,10 +332,41 @@ struct InstalledRecordRecoveryPolicyTests {
         )
         // 主 App 与扩展都算「已覆盖」。
         #expect(context.knownBundleIdentifiers.contains("com.example.demo.seal.abcde12345"))
-        #expect(context.knownBundleIdentifiers.contains("com.example.demo.share.seal.abcde12345"))
+        #expect(context.knownBundleIdentifiers.contains("com.example.demo.seal.abcde12345.share"))
         // Team 统一大写：记录的 Team 与账号的 Team 要能对上。
         #expect(context.knownTeamIdentifiers == ["ABCDE12345", "FGHIJ67890"])
         #expect(context.sealCanonicalBundleIdentifier == "com.mjorb.seal")
+    }
+
+    /// `Context` 的**归一化必须由类型自己保证**，不能靠调用方记得 ——
+    /// 传原始值（Team 段大写）进来，两张表也必须是归一化后的形态。
+    /// 2026-09-25 CI 实测：手搓 `Context` 传原始值会让 `known` / `dismissed`
+    /// 两条闸门同时失效（静默多建记录）。
+    @Test
+    func contextNormalizesWhateverItIsGiven() {
+        let raw = InstalledRecordRecoveryPolicy.Context(
+            knownBundleIdentifiers: ["com.example.demo.seal.ABCDE12345"],
+            knownTeamIdentifiers: ["abcde12345"],
+            dismissedBundleIdentifiers: ["com.example.demo.other.seal.ABCDE12345"],
+            sealCanonicalBundleIdentifier: "com.mjorb.seal"
+        )
+        #expect(raw.knownBundleIdentifiers == ["com.example.demo.seal.abcde12345"])
+        #expect(raw.knownTeamIdentifiers == ["ABCDE12345"])
+        #expect(raw.dismissedBundleIdentifiers == ["com.example.demo.other.seal.abcde12345"])
+        // Team 归一化规则本身（`Context.init` 与 `context(...)` 共用这一处出处）。
+        #expect(InstalledRecordRecoveryPolicy.normalizedTeamIdentifier("  abcde12345 ") == "ABCDE12345")
+        #expect(InstalledRecordRecoveryPolicy.normalizedTeamIdentifier("   ") == nil)
+        #expect(InstalledRecordRecoveryPolicy.normalizedTeamIdentifier(nil) == nil)
+        // 与 `context(...)` 产出的形态一致 ⇒ 两条构造路径不会分叉
+        //（同一批原始值分别喂给两条路径，结果必须相等）。
+        let viaContext = InstalledRecordRecoveryPolicy.context(
+            records: [],
+            accountTeamIdentifiers: ["abcde12345"],
+            dismissedBundleIdentifiers: ["com.example.demo.other.seal.ABCDE12345"],
+            sealCanonicalBundleIdentifier: "com.mjorb.seal"
+        )
+        #expect(raw.knownTeamIdentifiers == viaContext.knownTeamIdentifiers)
+        #expect(raw.dismissedBundleIdentifiers == viaContext.dismissedBundleIdentifiers)
     }
 
     // MARK: - 摘要
@@ -394,6 +433,8 @@ struct InstalledRecordRecoveryPolicyTests {
 
     // MARK: - 辅助
 
+    /// ⚠️ 这里**故意传原始值**（不预先小写/大写）：`Context` 的 `init` 必须自己归一化 ——
+    /// 2026-09-25 CI 实测过「文档写着已归一化、但没人强制」的后果（两条闸门静默失效）。
     private func makeContext(
         known: Set<String> = [],
         dismissed: Set<String> = [],

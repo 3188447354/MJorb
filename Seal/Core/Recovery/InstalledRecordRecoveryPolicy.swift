@@ -156,15 +156,47 @@ enum InstalledRecordRecoveryPolicy {
     }
 
     /// 本轮扫回的判据参数。
+    ///
+    /// ⚠️ **归一化放在 `init` 里，不靠调用方记得**：`drafts()` 是拿「设备端描述文件里的
+    /// Bundle ID」去查这两张表的 —— 那个值来自 Apple，Team 段是**大写**（`ABCDE12345`），
+    /// 而查询侧一律按小写比较。调用方漏归一化一次，`known` / `dismissed` 两条闸门就
+    /// **一条都筛不掉**（静默多建记录），而这两条闸门恰恰是「不重复建」「不把用户删掉的
+    /// 捞回来」的唯一保障。
+    ///
+    /// 2026-09-25 实测踩到：单测里手搓 `Context` 时传了原始值，`skipsBundleIdentifier
+    /// AlreadyCoveredByARecord` / `respectsDismissedTombstones` 两条用例直接红 ——
+    /// 文档写着「已归一化」，但没有任何东西**强制**它。现在由类型自己保证。
     struct Context: Equatable, Sendable {
-        /// 已有记录里出现过的生效 Bundle ID（含扩展，已归一化）。已覆盖的一律不再重建。
+        /// 已有记录里出现过的生效 Bundle ID（含扩展）。已覆盖的一律不再重建。
         let knownBundleIdentifiers: Set<String>
-        /// 可信 Team：已添加账号的 TeamID ＋ 已有记录的 `signingTeamID`（已大写）。
+        /// 可信 Team：已添加账号的 TeamID ＋ 已有记录的 `signingTeamID`。
         let knownTeamIdentifiers: Set<String>
-        /// 用户主动从已安装列表移除过的 Bundle ID（已归一化）。
+        /// 用户主动从已安装列表移除过的 Bundle ID。
         let dismissedBundleIdentifiers: Set<String>
         /// Seal 自己的规范 Bundle ID（`com.mjorb.seal`）；它的 `<规范>.…` 旧形态也一并排除。
         let sealCanonicalBundleIdentifier: String
+
+        init(
+            knownBundleIdentifiers: Set<String>,
+            knownTeamIdentifiers: Set<String>,
+            dismissedBundleIdentifiers: Set<String>,
+            sealCanonicalBundleIdentifier: String
+        ) {
+            self.knownBundleIdentifiers = Set(
+                knownBundleIdentifiers.map { InstalledRecordRecoveryPolicy.normalizedBundleIdentifier($0) }
+            )
+            self.knownTeamIdentifiers = Set(
+                knownTeamIdentifiers.compactMap {
+                    InstalledRecordRecoveryPolicy.normalizedTeamIdentifier($0)
+                }
+            )
+            self.dismissedBundleIdentifiers = Set(
+                dismissedBundleIdentifiers.map {
+                    InstalledRecordRecoveryPolicy.normalizedBundleIdentifier($0)
+                }
+            )
+            self.sealCanonicalBundleIdentifier = sealCanonicalBundleIdentifier
+        }
     }
 
     /// 扫回记录的统一标识，写进 `importWarnings` —— 签名页会把 `importWarnings`
@@ -428,7 +460,13 @@ enum InstalledRecordRecoveryPolicy {
         )
     }
 
-    private static func normalizedTeamIdentifier(_ value: String?) -> String? {
+    /// Team 归一化：去空白、空串视为「没有」、统一大写。
+    ///
+    /// ⚠️ **不是 `private`**：`Context.init` 要用它（`Context` 是嵌套类型），而单测也要
+    /// 直接钉住这条规则。Team 的大小写在这条链路上是**载荷性**的 —— 设备端描述文件里是
+    /// `ABCDE12345`、账号记录里可能是小写，不归一化就永远对不上（闸门静默失效）。
+    /// 规则只有这一处出处，`context(...)` 与 `Context.init` 都走它。
+    static func normalizedTeamIdentifier(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
               trimmed.isEmpty == false else { return nil }
         return trimmed.uppercased()

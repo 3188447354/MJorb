@@ -5,6 +5,81 @@
 
 ---
 
+## 2026-09-25 删账号重加后「单点续签必失败、续签全部却成功」：设备核验三态被折成 Bool（构建 39 真机）
+
+- **现象**（用户复验）：① 删 Apple ID 重新添加后，点**一个**应用续签会走完**三个**应用的签名流程
+  （「续签的一个，签名的 3 个」）；② 之后除 Seal 自己外，**其他应用单点续签全部失败**（连试三次），
+  而点「续签全部」却能全部成功。
+- **日志**（`Seal-log(20)(1).txt`，`构建 1.3.10 (39)`）：
+  `10:51:51 证书检查：远端 1 张，本机有私钥 0 张` → `10:51:57 撤销 …BCC6734D（运行中Seal=是）`
+  → `10:52:17 证书轮换事务：自动续签 2 个受旧证书影响的已安装应用，Seal 始终最后安装`（现象①，
+  连 Seal 共 3 个；前一轮 `10:43` 同链路是 `自动续签 1 个`）；
+  `10:56:18 / 10:56:44 / 10:57:48 开始续签：LiveContainer|Guoguo` → `续签路径已确认：仅更新描述文件`
+  → `10:56:34 / 10:57:00 / 10:58:04 [SEAL-PROFILE-362]`（三次，间隔各 16 / 15 / 16 秒）；
+  而**同一时段** `10:57:11` 起的批量续签（`SEAL-RENEW-020` 第 1/3、2/3、Seal 自续签）**全部成功**
+  （`10:57:14 / 10:57:24 / 10:57:45`）（现象②）。
+- 🔑 **独立佐证（用户原话「除了能单独续签 seal 以外，其他应用单独续签却续签不了」）**：
+  `ProfileOnlyRenewalPolicy.evaluate` 第一句就是 `guard app.isSeal == false else {
+  return .requiresFullResign(.sealSelfReplacement) }` ⇒ **Seal 永远不走 profile-only 路径**
+  ⇒ 永远不执行那段 `containsProfile` 核验 ⇒ **永远不可能报 362**。
+  也就是说：**唯一能单点续签成功的应用，恰好就是唯一不使用这条路径的应用** —— 与根因完全互锁，
+  这不是巧合。日志里 Seal 也确实走的是 `开始自替换安装`（完整重签），没有一条 362 属于它。
+- **根因（三个，必须分开看）**：
+  ① **删账号会连本机证书私钥一起删掉** —— 私钥存在该账号的 Keychain 条目里
+     （`AccountSecret.certificateP12BySerial`），`deleteAccount` 调 `keychain.delete(accountID:)`；
+     重加同一 Apple ID 拿到的是**新 UUID** ⇒ 读不回旧私钥 ⇒ 下次续签只能撤销旧证书、另建新的，
+     而**撤销会让所有用旧证书签名的已安装应用失效** ⇒ 必须自动重签它们（含 Seal）。
+     **行为本身正确且必要**（不重签那些应用会打不开），但用户事先毫不知情。
+  ② **`SEAL-PROFILE-362` 把设备核验的三态折成了二态**。`DeviceProfileInspector.containsProfile`
+     返回 `Bool?`（`nil` = 无法核验 / `false` = 身份不符 / `true` = 确认），调用点却写
+     `... == true` 后**直接抛错** ⇒ 通道抖动一次就落进同一条死路，应用**永久**续签不了。
+     单点与批量**调的是同一个 `signAndInstall`、同一份记录、同一张证书**，差别只在通道时序
+     ⇒ 批量恰好核验成功、单点恰好失败 —— 现象②「交替出现且规律稳定」由此而来。
+     ⚠️ 该核验还**没有超时保护**（`Provision.dumpProfiles` 是同步 FFI，本仓同步 FFI 无取消机制）
+     ⇒ 从「续签路径已确认」到抛错整段**无上限**（实测 16 秒；日志粒度不足以再细分
+     等通道 / `isReady()` / dump 各占多少）。
+  ③ **⚠️ 加重因素（本轮**未**改，属独立议题）：设备通道争用**。三次单点失败都紧跟在
+     `SEAL-INSTALL-707`（已安装页设备探测超时）之后十几秒内；同一窗口还有
+     `SEAL-PROFILE-322 … dump 尝试 2 次`（维护侧 dump **重试过**）与
+     `SEAL-STORAGE-006 维护作业…被打断`。已安装页探测走 `Minimuxer.isAppInstalled`、
+     维护/签名侧走 `Provision.dumpProfiles` —— **两条都是不可取消的同步 FFI、跑在同一个
+     设备会话上，彼此之间没有任何串行化**：`InstalledAppRefreshProbeGate` 只互斥「探测 vs 探测」
+     （且它在 FFI 真正返回**之前**就 `finish()` 释放了），`OperationCoordinator` 只管前台操作，
+     维护作业的 `MaintenanceGate` 只在**粗粒度检查点**才察觉前台已开始。
+     探测 2 秒超时后那条 FFI **仍在跑**，于是接下来十几秒内任何 `dumpProfiles` 都可能
+     拿不到可解析结果 ⇒ `containsProfile` 返回 `nil` ⇒ 撞上根因②。
+     **修根因②已经让续签不再失败**（回落完整重签）；③ 只让它**变慢**，要真正消除得给
+     全部设备 FFI 加统一串行化，风险远大于收益，留作独立议题（已在交付清单标注）。
+     📌 **上游同族证据（2026-08-26）**：SideStore `#1443`「Refresh All intermittently causes
+     misagent BrokenPipe / channel closed when profile installs overlap」——现象是**并发**的描述文件
+     （misagent）操作互相打断（`BrokenPipe: channel closed`），**同一应用几秒后单独重试就成功**，
+     证书/配对/VPN 全没变；报告者定位到「`PipelineRunner.perform()` 用 `withThrowingTaskGroup`
+     并发跑各应用、这一层**没有任何 misagent 串行化**」，并把期望行为写成
+     「safely support concurrent profile management **or serialize access to misagent**」。
+     与本案**同类**（只是输的那一次不同：他们批量内互相打断，我们单点撞上探测/维护的孤儿 FFI）。
+     ⇒ 结论：**misagent 侧缺并发保护是上游已知缺陷**，不是 Seal 独有。
+- **这是「问设备 → 按答案做决定」家族的第四处**（前三处：`DeviceProfileCleaner`、
+  `InstalledAppDeviceVerifier`、`DeviceProfileInspector.referencedCertificateSerials`）。
+  **教训：设备查询结果绝不能折成 `Bool`；「无法核验」必须有独立出口。**
+- **修复**：
+  - 新增顶层 `ProfileOnlyIdentity`（四态）＋ `ProfileOnlyIdentityVerifier`（纯函数、可注入设备查询 ⇒ 可单测）。
+  - **核验先于路径通知**，且**没明确通过就回落完整重签**（留痕 `SEAL-PROFILE-363`），
+    不再抛 `SEAL-PROFILE-362`（该码移入「已从源码移除」）。安全约束不破：profile-only 只是
+    **加速路径**，「不以本地旧记录直接覆盖设备」由**完整重签**天然满足（重新申请描述文件并注入，不读旧记录）。
+  - 核验查询加 **30 秒有界超时**（`HardTimeout.run(cancelsWorkOnTimeout: false)`）：
+    超时 ⇒ `nil`（无法核验）⇒ 回落，与 `ProfileOnlyProvisioningProfileInstaller` 同量级。
+  - 新增 `isInstalledRenewal`，让**两条**续签路径都跳过免费账号 3-app 预检（续签是覆盖安装、
+    不新增设备槽位）—— 否则回落路径会撞 `SEAL-APPID-DEVICELIMIT`，把修复变成另一种失败。
+  - 「删除 Apple ID」确认弹窗补告知：**会一并清除本机签名凭据；重新添加后需更换证书，
+    并自动重签关联应用**（现象①的源头告知）。
+- **验证状态**：守卫新增 7 条断言 ＋ 3 条变异锚点；单测 `ProfileOnlyIdentityVerifierTests`
+  钉住四条出口（重点：`nil` 必须落到 `.unavailable`，**不得**等于 `.mismatched`）。真机复验见交付清单。
+- ⚠️ **踩到的守卫坑（R22）**：把 `SEAL-PROFILE-362` 移入 `log-code-index.md` 的「已从源码移除」表时，
+  我在那一行的**说明里**写了新码（反引号包裹）⇒ R22 的 `table_codes()` 会把「已移除」表里
+  **所有反引号码**当成移除清单，于是判定 363「又回到源码里了」。
+  **规则：移除表的表格行里不要出现任何仍在源码的码**（要提就写不带反引号的纯文本或「见主表」）；
+  已在文档该节加了醒目提示。
+
 ## 2026-09-25 删除 Apple ID 后第三方应用仍无法续签：悬空引用的**第三处**（构建 37 真机）
 
 - **现象**（用户复验报告 ＋ 截图）：删 `sunuannian1@gmail.com` → 重新添加后，3 个应用抽屉都显示了 id，

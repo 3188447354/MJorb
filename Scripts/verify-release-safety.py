@@ -3364,6 +3364,40 @@ def violations(load=read):
           "Auto-cleanup: trigger must also cover SEAL-CERT-204b (isCertificateLimitError path)")
     check("let deviceReferenced = await DeviceProfileInspector.referencedCertificateSerials()" in coord,
           "Auto-cleanup: must consult device profile inspector")
+
+    # profile-only（只换描述文件）的设备端身份核验必须保持**三态**。
+    #
+    # 真机实证（2026-09-25 构建 39）：点**单个**应用续签连试三次全部报
+    # `SEAL-PROFILE-362`，而同一时段「续签全部」三次全过 —— 两条路径只差通道时序，
+    # 应用记录与证书完全相同。根因是旧实现把核验写成
+    # `containsProfile(...) == true` 后**直接抛错**：三态被折成二态，
+    # 「**无法核验**」（`nil`：通道抖动 / 枚举失败 / provider 被并发 reset）
+    # 与「**身份不符**」（`false`：记录确实过期）走同一条死路 ⇒ 应用**永久**续签不了。
+    #
+    # 正确语义：profile-only 只是**加速路径**，不是安全边界。「不以本地旧记录直接覆盖
+    # 设备」这条约束由**完整重签**天然满足（重新申请描述文件并注入，不读旧记录）
+    # ⇒ 核验没明确通过时回落完整重签，而不是放弃本轮。
+    check("case unavailable" in coord and "case mismatched" in coord
+          and "case missingRecordedIdentity" in coord,
+          "Profile-only: device identity verification must stay three-state")
+    check("case .none:" in coord and "return .unavailable" in coord,
+          "Profile-only: containsProfile nil must map to unavailable, never to mismatch")
+    check("await DeviceProfileInspector.containsProfile(" in coord,
+          "Profile-only: verification must query the device profile store")
+    check("if identity != .confirmed {" in coord,
+          "Profile-only: unconfirmed identity must fall back to full resign")
+    # 回落必须留痕：否则「核验没过就悄悄改走完整重签」在日志里完全看不见，
+    # 排障时只会看到「续签慢了」，说不出为什么。
+    # 而且**必须带上是哪一种「没问通」**（记录缺字段 / 设备端没有该身份 / 设备端枚举不可用）——
+    # 三者的下一步动作相同，但拿着日志要能说出该去修什么（第②类日志必须带底层原因）。
+    check("SEAL-PROFILE-363" in coord and "identity.fallbackReason" in coord,
+          "Profile-only: fallback to full resign must be logged with its underlying reason")
+    # 续签是覆盖安装**已存在**的应用，不新增免费账号设备槽位 ⇒ 两条续签路径
+    #（profile-only / 回落后的完整重签）都不该被 3-app 预检误拦。
+    # 漏掉「回落」这一支会让回落路径撞 SEAL-APPID-DEVICELIMIT，把修复变成另一种失败。
+    check("let isInstalledRenewal = app.belongsInInstalledList && forceResign && installAfterSigning" in coord
+          and "|| isInstalledRenewal" in coord,
+          "Profile-only: both renewal paths must bypass the free-account install precheck")
     auto_cleanup = section(coord, "private func autoCleanOrphanCertificatesIfPossible(",
                            "func installSignedArtifact(")
     check("guard let inventory = try? await inventoryService.fetchInventory(" in auto_cleanup,
@@ -4444,6 +4478,21 @@ def main():
          "resignAppsAffectedByCertificateSacrificeIfNeeded(signingSucceeded: signingSucceeded)",
          "// affected apps left dead after certificate sacrifice",
          "Sacrifice: affected installed apps must be re-signed after the retry succeeds"),
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "        case .none:\n            return .unavailable",
+         "        case .some(false):\n            return .unavailable",
+         "Profile-only: containsProfile nil must map to unavailable, never to mismatch"),
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "                if identity != .confirmed {",
+         "                if false {",
+         "Profile-only: unconfirmed identity must fall back to full resign"),
+        # ── R78：回落日志丢掉「究竟是哪一种没问通」⇒ 报红 ──
+        # 三态的原因必须各自可见：只说「核验未通过」时，排障无法区分
+        # 「记录过期」（该去修记录）与「通道没连上」（该去修通道）。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         '                        message: "profile-only 续签前置核验未通过（\\(identity.fallbackReason)），"',
+         '                        message: "profile-only 续签前置核验未通过，"',
+         "Profile-only: fallback to full resign must be logged"),
     ]
     mutations += [
         ("Seal/Infrastructure/Pairing/PairingStore.swift",

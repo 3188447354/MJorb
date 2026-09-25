@@ -47,10 +47,22 @@ struct CertificatesRootView: View {
             Button("取消", role: .cancel) { accountPendingDeletion = nil }
         } message: { account in
             let count = relatedApps.filter { $0.accountID == account.id }.count
+            // ⚠️ 必须说清「会一并清除本机签名凭据」：本机证书私钥就存在该账号的
+            // Keychain 条目里（`AccountSecret.certificateP12BySerial`），删账号会把它们
+            // 一起删掉。之后重新添加同一个 Apple ID 会拿到**新的账号标识**，读不回旧私钥
+            // ⇒ 下一次续签只能撤销旧证书、另建新证书；而撤销会让所有用旧证书签名的
+            // 已安装应用失效，于是**自动重签全部受影响应用**。
+            // 真机 2026-09-25 构建 39 反馈「点一个应用续签，结果签了三个」正是这条链路 ——
+            // 行为本身是必要的（不重签那些应用会打不开），但用户事先毫不知情。
+            // ⚠️ 刻意用三元表达式、与既有写法同构：`message:` 闭包是 `@ViewBuilder`，
+            // 结果构建器对「只含赋值语句的 if/else 分支」的解析与普通闭包不同，
+            // 这里不值得为了排版去冒这个风险（本机无 Swift 工具链，编译只能等 CI）。
             Text(
                 count == 0
-                    ? "删除后将移除此账号。"
-                    : "该账号关联过 \(count) 个应用。删除不会卸载应用。"
+                    ? "删除后将移除此账号，并一并清除本机保存的该账号签名凭据。"
+                    : "该账号关联过 \(count) 个应用。删除不会卸载应用，"
+                        + "但会一并清除本机保存的该账号签名凭据 —— 之后重新添加同一 Apple ID 时，"
+                        + "续签需要更换签名证书，这 \(count) 个应用会被自动重新签名安装一次。"
             )
         }
         .navigationDestination(

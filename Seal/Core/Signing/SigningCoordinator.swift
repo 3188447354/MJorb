@@ -11,6 +11,102 @@ struct KeylessCertificateSacrificeResult: Sendable {
     let affectedInstalledApps: [AppRecord]
 }
 
+/// `profile-only`（只换描述文件）准入的设备端身份核验结果 —— **三态，绝不能折成 `Bool`**。
+///
+/// 与 `DeviceProfileCleaner` / `InstalledAppDeviceVerifier` 同族：凡是「问设备 → 按答案
+/// 做决定」的路径，都必须保留「**无法核验**」这一态。把它折进「不存在」，通道抖动一次
+/// 就会被误读成「设备上没有」，进而做出错误决策。
+///
+/// ⚠️ 真机实证（2026-09-25 构建 39）：旧实现写 `containsProfile(...) == true` 后**直接抛
+/// `SEAL-PROFILE-362`**，把「无法核验」（`nil`）与「身份不符」（`false`）折成同一结果并
+/// 终结本轮 ⇒ 用户点单个应用续签**连试三次全部失败**（10:56:34 / 10:57:00 / 10:58:04，
+/// 三次都落在「已安装页设备探测刚超时」的十几秒内），而**同一时段**「续签全部」三次全过
+///（10:57:14 / 10:57:24 / 10:57:45）—— 两条路径调的是同一个 `signAndInstall`、同一份记录、
+/// 同一张证书，只差设备通道时序。
+enum ProfileOnlyIdentity: Equatable, Sendable {
+    /// 设备端确认存在 (Bundle ID, 描述文件 UUID, 证书序列号) 三元组。
+    case confirmed
+    /// 本地记录缺少核验所需字段（描述文件 UUID 或证书序列号）。
+    case missingRecordedIdentity
+    /// 设备端枚举成功，但目标身份不在其中 ⇒ 记录已与设备不符。
+    case mismatched
+    /// 通道或解析不可用 ⇒ **无法核验**（不是「设备上没有」）。
+    case unavailable
+
+    /// 回落完整重签时写进日志的原因。
+    ///
+    /// 三种情形的**下一步动作相同**（都是完整重签），但排障时必须能区分
+    /// 「记录过期」与「通道没连上」—— 否则日志只会说「核验失败」，
+    /// 拿着它说不出该去修什么。
+    var fallbackReason: String {
+        switch self {
+        case .confirmed:
+            return "设备端已确认"
+        case .missingRecordedIdentity:
+            return "本地记录缺少描述文件 UUID 或证书序列号"
+        case .mismatched:
+            return "设备端未找到记录中的描述文件身份"
+        case .unavailable:
+            return "设备端描述文件枚举不可用（通道未就绪或解析失败）"
+        }
+    }
+}
+
+/// 把「三态核验」抽成纯函数：`SigningCoordinator` 是 actor、依赖一长串服务，
+/// 测试构造不出来（本仓库对同类决策一律抽纯函数 + 单测）。
+enum ProfileOnlyIdentityVerifier {
+    /// 核验「设备上是否真的存在记录中的那份描述文件身份」。
+    ///
+    /// - Parameter inspect: 注入的设备查询实现。默认走 `DeviceProfileInspector`；
+    ///   单测注入假实现即可覆盖 `nil` / `false` / `true` 三条出口。
+    ///   返回值语义与 `DeviceProfileInspector.containsProfile` 一致：
+    ///   `nil` = 无法核验，`false` = 枚举成功但不存在，`true` = 确认存在。
+    static func verify(
+        app: AppRecord,
+        targetBundleIdentifier: String,
+        // ⚠️ 显式 `@Sendable`：本仓在 Swift 6 严格并发下，闭包参数的 Sendable 必须写出来
+        //（同族踩坑：「闭包默认 non-escaping ⇒ 透传 `@escaping` 要显式写」，云构建才暴露）。
+        inspect: @Sendable (String, String, String) async -> Bool? = { bundleIdentifier, profileUUID, certificateSerialNumber in
+            // ⚠️ `containsProfile` 内部走 `Provision.dumpProfiles` —— **同步 FFI**，本仓的
+            // 同步 FFI 没有取消机制（见 `BlockingCall.swift` 的说明）⇒ 必须自己加有界超时，
+            // 否则通道不通时这里会把整条续签链路拖成「假死」。
+            // 真机构建 39 实测：三次单点续签从「续签路径已确认」到 `SEAL-PROFILE-362`
+            // 分别隔了 16 / 15 / 16 秒 —— 这段区间含**等通道 + `isReady()` + 本次 dump**，
+            // 日志粒度不足以再细分，所以只断言「整段没有上限」，不把耗时全记在 dump 头上。
+            // 超时 ⇒ 返回 `nil`（**无法核验**）⇒ 调用方回落完整重签 —— 这正是
+            // 「通道不可用」该有的语义，而不是把它当成「设备上没有这份描述文件」。
+            // 30 秒与 `ProfileOnlyProvisioningProfileInstaller` 读回注入结果的上限同量级。
+            do {
+                return try await HardTimeout.run(
+                    seconds: 30,
+                    cancelsWorkOnTimeout: false
+                ) {
+                    await DeviceProfileInspector.containsProfile(
+                        bundleIdentifier: bundleIdentifier,
+                        profileUUID: profileUUID,
+                        certificateSerialNumber: certificateSerialNumber
+                    )
+                }
+            } catch {
+                return nil
+            }
+        }
+    ) async -> ProfileOnlyIdentity {
+        guard let profileUUID = app.provisioningProfileUUID,
+              let certificateSerialNumber = app.certificateSerialNumber else {
+            return .missingRecordedIdentity
+        }
+        switch await inspect(targetBundleIdentifier, profileUUID, certificateSerialNumber) {
+        case .some(true):
+            return .confirmed
+        case .some(false):
+            return .mismatched
+        case .none:
+            return .unavailable
+        }
+    }
+}
+
 private actor CertificateRotationTransactionState {
     private var revokedSerials: [String] = []
 
@@ -228,7 +324,10 @@ actor SigningCoordinator {
                 )
             }
 
-            let useProfileOnlyRenewal = shouldUseProfileOnlyRenewal(
+            // 续签 = 覆盖安装**已经存在**的应用（`belongsInInstalledList` 只对已装应用为真）。
+            // 单独立一个名字，是因为下面三处都要用同一个判据，写三遍必然漂移。
+            let isInstalledRenewal = app.belongsInInstalledList && forceResign && installAfterSigning
+            var useProfileOnlyRenewal = shouldUseProfileOnlyRenewal(
                 app: app,
                 accountID: accountID,
                 deviceIdentifier: deviceIdentifier,
@@ -237,17 +336,58 @@ actor SigningCoordinator {
                 forceResign: forceResign,
                 installAfterSigning: installAfterSigning
             )
-            if app.belongsInInstalledList, forceResign, installAfterSigning {
+            // 🔴 设备端身份核验必须**先于**路径通知，且**没明确通过就回落完整重签**。
+            //
+            // profile-only 只是**加速路径**，不是安全边界：「不以本地旧记录直接覆盖设备」
+            // 这条约束由完整重签天然满足（它重新向 Apple 申请描述文件并注入，完全不读旧记录）。
+            // 旧实现把核验写成 `containsProfile(...) == true` 后**直接抛 `SEAL-PROFILE-362`**：
+            // 三态被折成二态 ⇒ 「无法核验」（通道抖动 / 枚举失败）与「身份不符」走同一条死路，
+            // 应用就此**永久**续签不了（真机 2026-09-25 构建 39：点单个应用连试三次全报 362，
+            // 而同一时段「续签全部」三次全过 —— 记录与证书完全相同，只差通道时序）。
+            //
+            // ⚠️ 核验要等通道就绪（冷启动最长 75s），所以路径通知会晚于 `.waitingForChannel`
+            // 阶段。这是刻意的：宁可晚说，也不先说错（旧行为是先说「仅更新描述文件」、
+            // 再抛错，用户看到的是「说好只换描述文件，结果失败」）。
+            if useProfileOnlyRenewal {
+                if let channelStart {
+                    _ = try await channelStart.value
+                }
+                guard try await installChannel.isReady() else {
+                    throw Self.failure(
+                        reason: "描述文件续签前设备通道未就绪。",
+                        recovery: "确认 LocalDevVPN 已连接、设备已配对后重试",
+                        code: "SEAL-PROFILE-360"
+                    )
+                }
+                let identity = await ProfileOnlyIdentityVerifier.verify(
+                    app: app,
+                    targetBundleIdentifier: targetBundleIdentifier
+                )
+                if identity != .confirmed {
+                    useProfileOnlyRenewal = false
+                    try? await logStore?.append(
+                        category: .renewal,
+                        level: .warning,
+                        message: "profile-only 续签前置核验未通过（\(identity.fallbackReason)），"
+                            + "已自动回落完整重签以重新建立应用身份：\(app.name)",
+                        code: "SEAL-PROFILE-363"
+                    )
+                }
+            }
+            if isInstalledRenewal {
                 await onRenewalExecutionPath(
                     useProfileOnlyRenewal ? .profileOnly : .fullResign
                 )
             }
-            // profile-only 只更新已经在设备上存在的 profile，不会新增应用安装槽位；
-            // 因此不应被免费账号的 3-app 安装预检误拦。其余路径保留原有判定。
+            // 续签是**覆盖安装已存在的应用**，不新增免费账号的设备槽位 ⇒ 两条续签路径
+            //（profile-only / 完整重签）都不该被 3-app 安装预检误拦，交回 installd 裁决。
+            // 首次安装（`!forceResign` ⇒ `isInstalledRenewal == false`）保持原有判定。
             try await enforceFreeAccountInstallLimit(
                 app: app,
                 account: account,
-                bypassFreeAccountDeviceLimit: bypassFreeAccountDeviceLimit || useProfileOnlyRenewal
+                bypassFreeAccountDeviceLimit: bypassFreeAccountDeviceLimit
+                    || useProfileOnlyRenewal
+                    || isInstalledRenewal
             )
 
             if installAfterSigning, !forceResign,
@@ -265,29 +405,8 @@ actor SigningCoordinator {
             }
 
             if useProfileOnlyRenewal {
-                if let channelStart {
-                    _ = try await channelStart.value
-                }
-                guard try await installChannel.isReady() else {
-                    throw Self.failure(
-                        reason: "描述文件续签前设备通道未就绪。",
-                        recovery: "确认 LocalDevVPN 已连接、设备已配对后重试",
-                        code: "SEAL-PROFILE-360"
-                    )
-                }
-                guard let currentProfileUUID = app.provisioningProfileUUID,
-                      let currentCertificateSerialNumber = app.certificateSerialNumber,
-                      await DeviceProfileInspector.containsProfile(
-                        bundleIdentifier: targetBundleIdentifier,
-                        profileUUID: currentProfileUUID,
-                        certificateSerialNumber: currentCertificateSerialNumber
-                      ) == true else {
-                    throw Self.failure(
-                        reason: "无法在设备端确认当前应用的描述文件身份；不会以本地旧记录直接覆盖。",
-                        recovery: "执行完整重签以重新建立应用身份",
-                        code: "SEAL-PROFILE-362"
-                    )
-                }
+                // 走到这里说明设备端身份**已经**核验为 `confirmed`
+                //（核验与回落都在上方，见 `ProfileOnlyIdentityVerifier`）。
                 let originalURL = try await fileStore.fileURL(relativePath: app.ipaRelativePath)
                 return try await renewProfilesOnly(
                     app: app,

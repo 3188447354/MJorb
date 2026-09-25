@@ -5,6 +5,55 @@
 
 ---
 
+## 2026-09-25 安装失败的归因按前缀一刀切：把「所有问题」都算到 VPN 头上
+
+- **背景**（用户要求）：「除了之前的内置 VPN 的路子，其他做到最优最好的状态，
+  **只要开了外部 LocalDevVPN，就一定不要以为 VPN 来影响所有体验**」。
+- **现象**：任何 `SEAL-INSTALL-*` 失败，弹窗上唯一的「恢复」按钮都会把用户送进
+  「LocalDevVPN」设置页 —— 包括与本地隧道毫无关系的那些：
+  `702s`（设备存储空间不足）、`702l`（免费账号 3 应用上限）、`702f`（DRM 元数据残留）、
+  `702t`（安装超时 —— 超时 ≠ 失败）、`711…730` / `735`（签名包内容类，需重新签名）、
+  `737` / `738`（需重启 Seal）、`716`（本机签名包记录不完整）。
+  用户点完被送到一个**解决不了他问题**的页面，只能自己再退回来。
+- **根因（第一处）**：`AppsViewModel.settingsRoute(for:)` 里一条
+  `if failure.code.hasPrefix("SEAL-INSTALL-") { return .localDevVPN }`
+  ⇒ 安装族**全部**几十个码被路由到 VPN 页。
+  这是「按**码的形态**归因」，而不是「按**提示文案在让用户做什么**归因」。
+- **根因（第二处，同族）**：`SEAL-INSTALL-703`（设备配对不可用）与 `707`（无法刷新已安装应用）
+  也带 `SEAL-INSTALL-` 前缀 ⇒ 落进 `InstallFailureActionPolicy.action(for:)` 的**前缀兜底**
+  ⇒ 界面给出「重新安装」按钮。而它们的 recovery 文案是「重新连接手机并完成配对后重试」
+  —— **重装修不好一份失效的配对文件**；`SigningProgressView.isPairingFailure` 又只认
+  `SEAL-PAIR-` 前缀 ⇒ 认不出它们，按钮永远换不成「重新配对设备」。
+- **根因（第三处，过时文案）**：`SEAL-INSTALL-701` 的 reason 仍在说
+  「**付费账号的 Seal 会自动拉起内置隧道**」—— 而内置 `SealTunnel` 早已移除
+  （`SealTunnel/` 目录已空），`LocalDevVPNOnDemandActivator` 与 `MinimuxerInstallChannel`
+  的注释都明说「不再自动拉起内置隧道」。留着这句会让用户按一条**不存在**的路径排查。
+  同族的 5 处文案按「免费账号 / 付费账号」区分隧道依赖 —— 实际上**与账号类型无关**。
+- **修复**：
+  1. 新增 `Seal/Features/Settings/InstallFailureSettingsRoute.swift`：判据变成
+     **显式码集合**（8 条：701 / 705 / 706 / 706a / 706b / 706t / 708 / 710），
+     其余一律 `nil`（不跳转）；配对族引用 `InstallFailureActionPolicy.pairingCodes`（单一真源）。
+  2. `InstallFailureActionPolicy` 新增 `pairingCodes = {703, 707}`，
+     并在 `action(for:)` 里把配对判定排在**前缀兜底之前**（顺序就是安全本身）。
+  3. `SigningProgressView.isPairingFailure` 把这两条一并认成配对失败。
+  4. 6 处用户可见文案改成「Seal 不内置隧道（内置隧道已移除），一律依赖外部 LocalDevVPN」
+     /「Seal 依赖外部 LocalDevVPN 软件提供本地隧道」。
+- **涉及文件**：`Seal/Features/Settings/InstallFailureSettingsRoute.swift`（新）、
+  `Seal/Features/Apps/AppsViewModel.swift`、`Seal/Core/Installation/InstallChannelDiagnostic.swift`、
+  `Seal/Features/Apps/SigningProgressView.swift`、
+  `Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`、
+  `SealTests/Settings/InstallFailureSettingsRouteTests.swift`（新）、
+  `SealTests/Installation/InstallChannelDiagnosticClassificationTests.swift`、
+  `Scripts/verify-release-safety.py`。
+- **守卫与测试**：新增 **R83**（12 条断言 + 11 个变异锚点；守卫 **638/383 → 650/394**）。
+  其中 R83③b 是**同源闸门**：凡 recovery 恰为「检查是否打开 LocalDevVPN」的失败，
+  其 code 必须在集合里（并断言这样的失败 ≥ 5 条，防正则漂移后变成空集 ⇒ 永远绿）。
+  单测两个文件：路由三方向（通道码 ⇒ VPN / 无关安装码 ⇒ 不跳转 / 703·707 ⇒ 配对）
+  ＋ 三个动作集合两两互斥。
+- **验证状态**：⚠️ 待真机（CI 编译与单测通过 ≠ 可用；见 `docs/qa/2026-09-25-install-failure-vpn-attribution.md`）。
+
+---
+
 ## 2026-09-25 Seal 自身续签改成「只更新描述文件、不重新安装」（运行时更新，不再自替换）
 
 - **背景**（用户要求）：「把 Seal 自身续签也做成更新描述文件不重新安装，能够运行时更新」。
@@ -922,6 +971,24 @@
 ---
 
 ## 常犯坑位
+
+- 🔴 **按「码的形态」归因 ⇒ 把所有问题都算到同一个嫌疑人头上**（2026-09-25）。
+  `AppsViewModel.settingsRoute` 里一条 `hasPrefix("SEAL-INSTALL-") { return .localDevVPN }`
+  就把安装族**几十个**错误码全路由到 VPN 设置页 —— 设备存储不足、免费账号 3 应用上限、
+  DRM 残留、安装超时、签名包损坏、需重启 Seal 全在里面。
+  用户点弹窗上唯一的「恢复」按钮被送到一个**解决不了他问题**的页面。
+  ⚠️ 这个形态**不报错、不崩、界面看起来也「有引导」**，所以长期没人发现。
+  ⇒ **判据：写「错误码 → 某个去处」的映射时，问一句「我判的是这条错误码的
+  哪个属性？」** —— 判**前缀 / 数字区间 / 模块名**都是判形态；只有
+  「**这条提示的文案本身在让用户做什么**」才是判语义 ✓。
+  ⇒ 落地形态：**显式码集合 ＋ 一个同源闸门**（凡 recovery 文案写着「去检查 LocalDevVPN」
+  的失败，其 code 必须在集合里）—— 否则「文案让用户去查 VPN，却没有按钮能送他过去」。
+  ⇒ 同族：AGENTS.md §3 早就写着「错误码 → 按钮动作必须用显式码集合，禁止
+  `hasPrefix("SEAL-INSTALL-71"/"72"/"73")` 这类数字区间」—— 本次的缺陷正是同一条规矩的
+  **另一半**（数字区间换成了**完整前缀**，看起来更「安全」，其实一样是判形态）✗。
+  同族第三处：**过时文案**（「付费账号会自动拉起内置隧道」，而内置隧道已移除）——
+  文案与代码注释**互相矛盾**时，用户会按一条不存在的路径排查。
+  ⇒ **删掉一个机制时，要全仓 grep 它的名字（含用户可见文案）**，别只删实现。
 
 - 🔴 **「按身份一刀切」会把一条链路**永久**关掉，而且看起来像「设计如此」**（2026-09-25）。
   `ProfileOnlyRenewalPolicy.evaluate` 第一句 `guard app.isSeal == false else { … }` 让 Seal

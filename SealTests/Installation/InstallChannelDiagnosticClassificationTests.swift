@@ -163,14 +163,31 @@ struct InstallChannelDiagnosticClassificationTests {
         #expect(InstallFailureActionPolicy.action(for: "SEAL-PAIR-211") == nil)
     }
 
-    /// 每个安装族错误码只能命中一个动作； acknowledge 与 resign 两个集合不得重叠。
+    /// 703 / 707 用的是 `SEAL-INSTALL-` 前缀，但 recovery 文案是「重新配对 /
+    /// 重新连接手机并完成配对后重试」⇒ 绝不能落进「通道类，可安全重跑安装」那条兜底，
+    /// 否则界面会给出一个改不了结果的「重新安装」按钮。
+    @Test
+    func pairingPrefixedInstallCodesAreNotReinstall() {
+        for code in ["SEAL-INSTALL-703", "SEAL-INSTALL-707"] {
+            #expect(InstallFailureActionPolicy.action(for: code) == nil)
+            #expect(InstallFailureActionPolicy.pairingCodes.contains(code))
+        }
+    }
+
+    /// 每个安装族错误码只能命中一个动作；三个集合两两不得重叠 ——
+    /// 重叠会让同一个码在 `action(for:)` 里命中先判的那一条，后判的静默失效。
     @Test
     func actionSetsAreDisjoint() {
-        #expect(
-            InstallFailureActionPolicy.acknowledgeCodes.isDisjoint(
-                with: InstallFailureActionPolicy.resignCodes
-            )
-        )
+        let sets = [
+            InstallFailureActionPolicy.acknowledgeCodes,
+            InstallFailureActionPolicy.resignCodes,
+            InstallFailureActionPolicy.pairingCodes
+        ]
+        for i in sets.indices {
+            for j in sets.indices where j > i {
+                #expect(sets[i].isDisjoint(with: sets[j]))
+            }
+        }
     }
 
     @Test

@@ -4608,6 +4608,119 @@ def violations(load=read):
           "Scan/wire: 生产路径必须由 AppContainer 接上真扫描器 —— "
           "漏接线不会编译失败，只会让扫回永远停在 skipped-not-wired")
 
+    # R83: 安装失败的**归因**不得按错误码前缀一刀切（2026-09-25 用户诉求：
+    #      「只要开了外部 LocalDevVPN，就一定不要以为 VPN 来影响所有体验」）。
+    #
+    # 现象：`AppsViewModel.settingsRoute(for:)` 里一条 `hasPrefix("SEAL-INSTALL-")`
+    # 就把**全部**安装族错误路由到 `.localDevVPN` —— 包括与本地隧道毫无关系的那些：
+    # `702s`（设备存储空间不足）、`702l`（免费账号 3 应用上限）、`702f`（DRM 元数据残留）、
+    # `702t`（安装超时 —— 超时 ≠ 失败）、`711…730` / `735`（签名包内容类，需重新签名）、
+    # `737` / `738`（需重启 Seal）、`716`（本机签名包记录不完整）。
+    # 用户点弹窗上唯一的「恢复」按钮之后被送到一个**解决不了他问题**的页面。
+    #
+    # 同族第二处：`703`（设备配对不可用）/ `707`（无法刷新已安装应用）也带
+    # `SEAL-INSTALL-` 前缀，落进 `InstallFailureActionPolicy.action(for:)` 的前缀兜底
+    # ⇒ 界面给出「重新安装」按钮，而重装修不好一份失效的配对文件。
+    r83_vm = load("Seal/Features/Apps/AppsViewModel.swift")
+    r83_route = load("Seal/Features/Settings/InstallFailureSettingsRoute.swift")
+    r83_diag = load("Seal/Core/Installation/InstallChannelDiagnostic.swift")
+    r83_progress = load("Seal/Features/Apps/SigningProgressView.swift")
+    r83_channel = load("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift")
+    r83_route_tests = load("SealTests/Settings/InstallFailureSettingsRouteTests.swift")
+    r83_action_tests = load("SealTests/Installation/InstallChannelDiagnosticClassificationTests.swift")
+
+    check('InstallFailureSettingsRoute.route(forCode: failure.code)' in r83_vm
+          and 'hasPrefix("SEAL-INSTALL-") { return .localDevVPN }' not in r83_vm,
+          "R83①: `AppsViewModel.settingsRoute` 必须委派给 `InstallFailureSettingsRoute`，"
+          "且不得再出现「前缀判断 ⇒ `.localDevVPN`」那条老路 —— 一条前缀判断就把全部安装码"
+          "送去 LocalDevVPN 页，而其中大半与本地隧道无关；用户点「恢复」跳到解决不了问题的"
+          "页面，正是「把所有问题都算到 VPN 头上」")
+
+    r83_vpn_set = section_or_empty(
+        r83_route,
+        "    static let localDevVPNCodes: Set<String> = [",
+        "    ]"
+    )
+    r83_expected_vpn = [
+        "SEAL-INSTALL-701", "SEAL-INSTALL-705", "SEAL-INSTALL-706",
+        "SEAL-INSTALL-706a", "SEAL-INSTALL-706b", "SEAL-INSTALL-706t",
+        "SEAL-INSTALL-708", "SEAL-INSTALL-710",
+    ]
+    check(all(('"' + code + '"') in r83_vpn_set for code in r83_expected_vpn),
+          "R83②: 通道码集合必须**逐个点名**列出 8 个码（701 / 705 / 706 / 706a / 706b / "
+          "706t / 708 / 710）—— 少一个就会让那条失败退回「不跳转」，用户拿不到引导；"
+          "多一个就会把无关失败送去 VPN 页")
+    check(r83_vpn_set.count('"SEAL-INSTALL-') == 8,
+          "R83③: 通道码集合必须**恰好 8 条**（6 条 recovery 恰为「检查是否打开 LocalDevVPN」"
+          "＋ 706 由 `presentVPNRecovery` 配套 `pendingVPNAction` ＋ 706a 是设置页自己的码）"
+          "—— 新增/删除通道类码时要同步这里与单测")
+    # **同源闸门**：路由集合必须与 recovery 文案同源。凡是 recovery 恰为
+    # 「检查是否打开 LocalDevVPN」的失败，它的 code 就必须在集合里 ——
+    # 否则用户读到一句「检查是否打开 LocalDevVPN」，却没有任何按钮能把他送过去。
+    r83_vpn_codes = set(re.findall(r'"(SEAL-INSTALL-[0-9a-z]+)"', r83_vpn_set))
+    r83_recovery_codes = []
+    r83_channel_code = strip_comments(r83_channel)
+    for r83_match in re.finditer(r'recovery: "检查是否打开 LocalDevVPN"', r83_channel_code):
+        r83_next = re.search(r'code: "(SEAL-INSTALL-[0-9a-z]+)"', r83_channel_code[r83_match.end():])
+        if r83_next:
+            r83_recovery_codes.append(r83_next.group(1))
+    check(len(r83_recovery_codes) >= 5
+          and all(code in r83_vpn_codes for code in r83_recovery_codes),
+          "R83③b: 「recovery 文案在引导用户去检查 LocalDevVPN」的每一条失败，其 code 都必须在"
+          "通道码集合里（同源闸门）—— 少了哪一条，用户就会读到一句「检查是否打开 LocalDevVPN」"
+          "却没有任何按钮能把他送过去。⚠️ 下限 5 是防正则漂移后变成空集 ⇒ 永远绿")
+    check("SEAL-INSTALL-703" not in r83_vpn_set and "SEAL-INSTALL-707" not in r83_vpn_set,
+          "R83④: 通道码集合里**不得**出现配对码 703 / 707 —— 它们有各自的页面（`.pairing`），"
+          "放进来会让同一个码在 `route(forCode:)` 里命中先判的那条、后判的静默失效")
+
+    r83_pairing_set = section_or_empty(
+        r83_diag,
+        "    static let pairingCodes: Set<String> = [",
+        "    ]"
+    )
+    check('"SEAL-INSTALL-703"' in r83_pairing_set and '"SEAL-INSTALL-707"' in r83_pairing_set,
+          "R83⑤: `InstallFailureActionPolicy.pairingCodes` 必须显式列出 703 与 707 —— "
+          "它是**单一真源**：`SigningProgressView.isPairingFailure` 与 "
+          "`InstallFailureSettingsRoute.route` 都引用它，不要各自再抄一份")
+
+    r83_action = section_or_empty(
+        r83_diag,
+        "    static func action(for code: String) -> InstallFailureAction? {",
+        "\n    }"
+    )
+    check("pairingCodes.contains(code)" in r83_action
+          and 'hasPrefix("SEAL-INSTALL-")' in r83_action
+          and r83_action.index("pairingCodes.contains(code)")
+              < r83_action.index('hasPrefix("SEAL-INSTALL-")'),
+          "R83⑥: `action(for:)` 里配对码判定必须排在**前缀兜底之前** —— 顺序就是安全本身："
+          "排到后面时 703 / 707 会被算成「重新安装」，界面给出一个改不了结果的按钮，"
+          "而代码看起来仍然有配对判据（最难发现的一种退化）")
+
+    check("InstallFailureActionPolicy.pairingCodes.contains(failure.code)" in r83_progress,
+          "R83⑦: `SigningProgressView.isPairingFailure` 必须把 703 / 707 一并认成配对失败 —— "
+          "它原先只认 `SEAL-PAIR-` 前缀，于是这两条会落到 `isInstallChannelFailure`，"
+          "把「重新配对设备」按钮换成「重新安装」")
+
+    check("付费账号的 Seal 会自动拉起内置隧道" not in r83_channel,
+          "R83⑧: 文案不得再提「付费账号会自动拉起内置隧道」—— 内置 SealTunnel 已被移除，"
+          "`LocalDevVPNOnDemandActivator` 与 `MinimuxerInstallChannel` 的注释都明说"
+          "「不再自动拉起内置隧道」。留着这句会让用户按一条不存在的路径排查")
+
+    check("免费账号需先安装并打开外部 LocalDevVPN 软件" not in r83_channel
+          and "免费账号需使用外部 LocalDevVPN 软件" not in r83_channel,
+          "R83⑨: 不得再按「免费账号 / 付费账号」区分隧道依赖 —— Seal 一律依赖外部 "
+          "LocalDevVPN 提供本地隧道，与账号类型无关")
+
+    check("func channelFailuresRouteToLocalDevVPN(" in r83_route_tests
+          and "func nonChannelInstallFailuresDoNotRouteAnywhere(" in r83_route_tests
+          and "func pairingPrefixedInstallFailuresRouteToPairing(" in r83_route_tests,
+          "R83⑩: 必须有三个方向的单测 —— ① 通道码 ⇒ `.localDevVPN`；② 与 VPN 无关的安装码 "
+          "⇒ `nil`（不跳转）；③ 703 / 707 ⇒ `.pairing`。源码断言只能证明「集合在」，"
+          "证明不了「路由真的按集合走」")
+    check("func pairingPrefixedInstallCodesAreNotReinstall(" in r83_action_tests,
+          "R83⑪: `InstallChannelDiagnosticClassificationTests` 必须有 703 / 707 的回归单测 —— "
+          "「不落进前缀兜底」这件事只在界面上可见，守卫与单测缺一不可")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -6980,6 +7093,76 @@ def main():
          "            currentRenewalExecutionPath = nil\n",
          "",
          "R82⑦: 路径信号必须**按项重置**"),
+        # ── R83：安装失败归因不得按前缀一刀切（2026-09-25 用户诉求）──
+        # ① 把「前缀 ⇒ `.localDevVPN`」加回路由 ⇒ R83① 报红（用户点「恢复」又跳到
+        #    解决不了问题的 VPN 页）。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "        InstallFailureSettingsRoute.route(forCode: failure.code)\n",
+         "        if failure.code.hasPrefix(\"SEAL-INSTALL-\") { return .localDevVPN }\n"
+         "        return InstallFailureSettingsRoute.route(forCode: failure.code)\n",
+         "R83①: `AppsViewModel.settingsRoute` 必须委派给"),
+        # ② 往通道码集合里塞一个与隧道无关的码（设备存储不足）⇒ R83③ 报红。
+        ("Seal/Features/Settings/InstallFailureSettingsRoute.swift",
+         '        "SEAL-INSTALL-710"    // 无法经本地隧道连到设备\n',
+         '        "SEAL-INSTALL-710",   // 无法经本地隧道连到设备\n'
+         '        "SEAL-INSTALL-702s"   // 设备存储不足（与隧道无关）\n',
+         "R83③: 通道码集合必须**恰好 8 条**"),
+        # ③ 把配对码塞进通道码集合 ⇒ R83④ 报红（同一个码两条路由判据打架）。
+        ("Seal/Features/Settings/InstallFailureSettingsRoute.swift",
+         '        "SEAL-INSTALL-710"    // 无法经本地隧道连到设备\n',
+         '        "SEAL-INSTALL-710",   // 无法经本地隧道连到设备\n'
+         '        "SEAL-INSTALL-703"    // 配对（错放）\n',
+         "R83④: 通道码集合里**不得**出现配对码"),
+        # ④ 从 pairingCodes 里删掉 707 ⇒ R83⑤ 报红（它又会落回前缀兜底）。
+        ("Seal/Core/Installation/InstallChannelDiagnostic.swift",
+         '        "SEAL-INSTALL-703",\n        "SEAL-INSTALL-707"\n',
+         '        "SEAL-INSTALL-703"\n',
+         "R83⑤: `InstallFailureActionPolicy.pairingCodes` 必须显式列出"),
+        # ⑤ 把配对码判定挪到前缀兜底**之后** ⇒ R83⑥ 报红。这正是本轮修的真问题：
+        #    代码看起来仍然有配对判据，但 703 / 707 已被算成「重新安装」。
+        ("Seal/Core/Installation/InstallChannelDiagnostic.swift",
+         '        // 配对族必须排在下面那条前缀兜底**之前** —— 否则 703 / 707 会被算成\n'
+         '        // 「重新安装」，界面上给出一个改不了结果的按钮。\n'
+         '        if pairingCodes.contains(code) { return nil }\n'
+         '        // 同族动作相同，这一处前缀匹配是安全的；数字区间匹配才危险。\n'
+         '        return code.hasPrefix("SEAL-INSTALL-") ? .reinstall : nil\n',
+         '        // 同族动作相同，这一处前缀匹配是安全的；数字区间匹配才危险。\n'
+         '        if code.hasPrefix("SEAL-INSTALL-") { return .reinstall }\n'
+         '        if pairingCodes.contains(code) { return nil }\n'
+         '        return nil\n',
+         "R83⑥: `action(for:)` 里配对码判定必须排在"),
+        # ⑥ 让 isPairingFailure 退回「只认 SEAL-PAIR-」⇒ R83⑦ 报红（按钮换成「重新安装」）。
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         '        failure.code.hasPrefix("SEAL-PAIR-")\n'
+         '            || InstallFailureActionPolicy.pairingCodes.contains(failure.code)\n',
+         '        failure.code.hasPrefix("SEAL-PAIR-")\n',
+         "R83⑦: `SigningProgressView.isPairingFailure` 必须把 703 / 707 一并认成配对失败"),
+        # ⑦ 把过时文案写回去（「付费账号会自动拉起内置隧道」）⇒ R83⑧ 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "Seal 不内置隧道（内置隧道已移除），一律依赖外部 LocalDevVPN 软件把流量真正转发到设备",
+         "付费账号的 Seal 会自动拉起内置隧道",
+         "R83⑧: 文案不得再提"),
+        # ⑧ 把「免费账号」口径写回去 ⇒ R83⑨ 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "设备未响应。请确认 iPhone 已解锁、已连接 Wi-Fi，并检查是否打开 LocalDevVPN（Seal 依赖外部 LocalDevVPN 软件提供本地隧道）。",
+         "设备未响应。请确认 iPhone 已解锁、已连接 Wi-Fi，并检查是否打开 LocalDevVPN（免费账号需使用外部 LocalDevVPN 软件）。",
+         "R83⑨: 不得再按"),
+        # ⑨ 把「通道码 ⇒ VPN 页」那条单测改名 ⇒ R83⑩ 报红（不变量没人守）。
+        ("SealTests/Settings/InstallFailureSettingsRouteTests.swift",
+         "func channelFailuresRouteToLocalDevVPN(",
+         "func channelFailuresLegacy(",
+         "R83⑩: 必须有三个方向的单测"),
+        # ⑩ 把 703 / 707 的回归单测改名 ⇒ R83⑪ 报红。
+        ("SealTests/Installation/InstallChannelDiagnosticClassificationTests.swift",
+         "func pairingPrefixedInstallCodesAreNotReinstall()",
+         "func pairingLegacy()",
+         "R83⑪: `InstallChannelDiagnosticClassificationTests` 必须有 703 / 707 的回归单测"),
+        # ⑪ 让一条**非通道**失败的 recovery 也写成「检查是否打开 LocalDevVPN」⇒ R83③b 报红
+        #    （用户读到一句「检查是否打开 LocalDevVPN」，却没有任何按钮能送他过去）。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         '                recovery: "确认 LocalDevVPN 已连接、开发者模式已开启后重试",\n',
+         '                recovery: "检查是否打开 LocalDevVPN",\n',
+         "R83③b: 「recovery 文案在引导用户去检查 LocalDevVPN」的每一条失败"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

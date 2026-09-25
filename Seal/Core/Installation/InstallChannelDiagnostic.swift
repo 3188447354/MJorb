@@ -128,10 +128,25 @@ enum InstallFailureActionPolicy {
         "SEAL-INSTALL-735"
     ]
 
+    /// 配对族：`SEAL-INSTALL-703`（设备配对不可用）与 `707`（无法刷新已安装应用，
+    /// recovery 是「重新连接手机并完成配对后重试」）用的都是 `SEAL-INSTALL-` 前缀，
+    /// 但它们**不属于**「通道类，可安全重跑安装」——
+    /// 重复安装不会修好一份失效的配对文件。
+    ///
+    /// 这里是**单一真源**：`SigningProgressView.isPairingFailure` 与
+    /// `InstallFailureSettingsRoute` 都引用它，不要各自再抄一份。
+    static let pairingCodes: Set<String> = [
+        "SEAL-INSTALL-703",
+        "SEAL-INSTALL-707"
+    ]
+
     /// 返回 nil 表示不属于安装族（证书 / 配对 / 网络等由调用方其余判据处理）。
     static func action(for code: String) -> InstallFailureAction? {
         if acknowledgeCodes.contains(code) { return .acknowledge }
         if resignCodes.contains(code) { return .resign }
+        // 配对族必须排在下面那条前缀兜底**之前** —— 否则 703 / 707 会被算成
+        // 「重新安装」，界面上给出一个改不了结果的按钮。
+        if pairingCodes.contains(code) { return nil }
         // 同族动作相同，这一处前缀匹配是安全的；数字区间匹配才危险。
         return code.hasPrefix("SEAL-INSTALL-") ? .reinstall : nil
     }

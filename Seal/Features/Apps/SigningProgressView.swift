@@ -595,8 +595,12 @@ struct SigningProgressView: View {
         failure.code == "SEAL-APPID-301" || failure.code == "SEAL-APPID-304"
     }
 
+    /// 配对族。`SEAL-INSTALL-703` / `707` 用的是 `SEAL-INSTALL-` 前缀，
+    /// 但它们的 recovery 文案是「重新配对 / 重新连接手机并完成配对后重试」
+    /// ⇒ 必须给「重新配对设备」按钮，而不是落到 `isInstallChannelFailure` 的「重新安装」。
     private func isPairingFailure(_ failure: ImportFailure) -> Bool {
         failure.code.hasPrefix("SEAL-PAIR-")
+            || InstallFailureActionPolicy.pairingCodes.contains(failure.code)
     }
 
     private func isInstallChannelFailure(_ failure: ImportFailure) -> Bool {

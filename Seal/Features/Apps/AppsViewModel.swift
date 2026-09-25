@@ -2585,12 +2585,13 @@ final class AppsViewModel: ObservableObject {
         operationCoordinator?.end(lease)
     }
 
+    /// 失败 → 设置页的路由。判据在 `InstallFailureSettingsRoute`（显式码集合 + 可单测）。
+    ///
+    /// ⚠️ 这里原先按「`SEAL-INSTALL-` 前缀」一律判定为 `.localDevVPN`，把全部安装族错误
+    /// （存储不足 / 免费账号上限 / DRM 残留 / 超时 / 签名包损坏 / 需重启 Seal）都送去
+    /// VPN 页。**不要再把前缀判断写回这里。**
     private func settingsRoute(for failure: ImportFailure) -> SettingsRoute? {
-        if failure.code.hasPrefix("SEAL-AUTH-") { return .account }
-        if failure.code.hasPrefix("SEAL-CERT-") || failure.code.contains("CERT") { return .certificates }
-        if failure.code.hasPrefix("SEAL-PAIR-") || failure.code == "SEAL-INSTALL-703" { return .pairing }
-        if failure.code.hasPrefix("SEAL-INSTALL-") { return .localDevVPN }
-        return nil
+        InstallFailureSettingsRoute.route(forCode: failure.code)
     }
 
     private static func unexpectedSigningFailure(_ error: Error) -> ImportFailure {

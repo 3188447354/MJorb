@@ -1204,7 +1204,7 @@ actor MinimuxerInstallChannel: InstallChannel {
         }
         return ImportFailure(
             title: "无法连接到设备",
-            reason: "无法连接设备，且未能识别具体原因。请确认 iPhone 已解锁、已连接 Wi-Fi，并检查是否打开 LocalDevVPN（免费账号需先安装并打开外部 LocalDevVPN 软件）。",
+            reason: "无法连接设备，且未能识别具体原因。请确认 iPhone 已解锁、已连接 Wi-Fi，并检查是否打开 LocalDevVPN（Seal 依赖外部 LocalDevVPN 软件提供本地隧道）。",
             recovery: "检查是否打开 LocalDevVPN",
             code: "SEAL-INSTALL-705"
         )
@@ -1384,28 +1384,28 @@ actor MinimuxerInstallChannel: InstallChannel {
 
     private static let vpnTunnelUnavailableFailure = ImportFailure(
         title: "LocalDevVPN 未就绪",
-        reason: "本地隧道未就绪，无法连接设备。免费账号签名的 Seal 需先安装并打开外部 LocalDevVPN 软件；付费账号的 Seal 会自动拉起内置隧道，请检查 VPN 是否已开启，并确认已连接 Wi-Fi。",
+        reason: "本地隧道未就绪，无法连接设备。Seal 不内置隧道（内置隧道已移除），一律依赖外部 LocalDevVPN 软件把流量真正转发到设备：请先安装并打开它，确认已连接 Wi-Fi 后重试。",
         recovery: "检查是否打开 LocalDevVPN",
         code: "SEAL-INSTALL-701"
     )
 
     private static let deviceNotRespondingFailure = ImportFailure(
         title: "设备未响应",
-        reason: "设备未响应。请确认 iPhone 已解锁、已连接 Wi-Fi，并检查是否打开 LocalDevVPN（免费账号需先安装并打开外部 LocalDevVPN 软件）。",
+        reason: "设备未响应。请确认 iPhone 已解锁、已连接 Wi-Fi，并检查是否打开 LocalDevVPN（Seal 依赖外部 LocalDevVPN 软件提供本地隧道）。",
         recovery: "检查是否打开 LocalDevVPN",
         code: "SEAL-INSTALL-708"
     )
 
     private static let channelNotReadyFailure = ImportFailure(
         title: "设备连接失败",
-        reason: "无法建立到设备的连接（超时、网络不可达或无设备）。请确认 iPhone 已解锁、已连接 Wi-Fi，并检查是否打开 LocalDevVPN（免费账号需先安装并打开外部 LocalDevVPN 软件）。",
+        reason: "无法建立到设备的连接（超时、网络不可达或无设备）。请确认 iPhone 已解锁、已连接 Wi-Fi，并检查是否打开 LocalDevVPN（Seal 依赖外部 LocalDevVPN 软件提供本地隧道）。",
         recovery: "检查是否打开 LocalDevVPN",
         code: "SEAL-INSTALL-706b"
     )
 
     private static let channelTimeoutFailure = ImportFailure(
         title: "本地通道连接超时",
-        reason: "本地隧道在限定时间内未就绪，已自动重试过。仍失败请确认已连接 Wi-Fi，并检查是否打开 LocalDevVPN（免费账号需先安装并打开外部 LocalDevVPN 软件）。",
+        reason: "本地隧道在限定时间内未就绪，已自动重试过。仍失败请确认已连接 Wi-Fi，并检查是否打开 LocalDevVPN（Seal 依赖外部 LocalDevVPN 软件提供本地隧道）。",
         recovery: "检查是否打开 LocalDevVPN",
         code: "SEAL-INSTALL-706t"
     )
@@ -1429,7 +1429,7 @@ actor MinimuxerInstallChannel: InstallChannel {
         reason: "向设备传输并安装应用超过等待上限仍未完成，已停止等待。"
             + "底层安装调用不会被取消（同步调用没有取消机制），也不会自动重试 —— "
             + "所以它可能在你看到这条提示之后仍然完成安装。"
-            + "若多次出现，请检查 LocalDevVPN 连接是否稳定后再试（免费账号需使用外部 LocalDevVPN 软件）。",
+            + "若多次出现，请检查 LocalDevVPN 连接是否稳定后再试（Seal 依赖外部 LocalDevVPN 软件提供本地隧道）。",
         recovery: "先等 1–2 分钟，回列表确认这个 App 是否其实已经装上；确认没装上再重试",
         code: "SEAL-INSTALL-702t"
     )

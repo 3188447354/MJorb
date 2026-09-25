@@ -4,18 +4,30 @@ actor AppRecordRecovery {
     private let appStore: any AppStore
     private let fileStore: AppFileStore
     private let parser: IPAParserService
+    /// 已添加账号的读取口。只用来把扫回的记录挂回**同 Team 的账号**；
+    /// 不传（测试 / 预览）时记录照建，只是 `accountID` 留空。
+    private let accountsProvider: (@Sendable () async -> [AppleAccountRecord])?
+    /// 设备端扫回的注入点。**默认 nil = 完全不扫** —— 见 `InstalledAppScanning`：
+    /// `AppRecordRecoveryTests` 会直接调 `restoreMissingRecords()`，写死就会在 CI 的
+    /// 模拟器上真的去调 `Provision.dumpProfiles`。
+    private let deviceScanner: (any InstalledAppScanning)?
 
     init(
         appStore: any AppStore,
         fileStore: AppFileStore,
-        parser: IPAParserService = IPAParserService()
+        parser: IPAParserService = IPAParserService(),
+        accountsProvider: (@Sendable () async -> [AppleAccountRecord])? = nil,
+        deviceScanner: (any InstalledAppScanning)? = nil
     ) {
         self.appStore = appStore
         self.fileStore = fileStore
         self.parser = parser
+        self.accountsProvider = accountsProvider
+        self.deviceScanner = deviceScanner
     }
 
-    func restoreMissingRecords() async throws {
+    @discardableResult
+    func restoreMissingRecords() async throws -> InstalledRecordRecoverySummary {
         try await recoverPendingFileTransactions()
         try await reconcileKnownRecords()
 
@@ -72,6 +84,87 @@ actor AppRecordRecovery {
             )
             try await appStore.save(record)
         }
+
+        // ── 设备端扫回（2026-09-25 新增）───────────────────────────────
+        // 上面三步都只看得见**本地文件**；「只卸载了 Seal、其他 App 没卸载」的场景里
+        // 本地文件全没了，唯一的痕迹在设备端的描述文件里。放在最后是因为它要读
+        // 前两步刚修好的记录（「已覆盖的 Bundle ID」必须是最新的）。
+        return await recoverRecordsFromDeviceProfiles()
+    }
+
+    /// 设备端扫回：把「设备上装着、记录里没有」的 Seal 签名应用补回已安装列表。
+    ///
+    /// 代价可控：**候选为空就直接返回**，常见情况（记录齐全）只花一次 profile dump，
+    /// 不会给启动加一轮设备查询。有候选时先做**阳性对照**（拿 Seal 自己问），
+    /// 对照不过或任何一条查询抛错都**整轮中止、一条记录都不建** —— 与
+    /// `reconcileInstalledAppsWithDevice` 的「先问完再动手」是同一条纪律。
+    private func recoverRecordsFromDeviceProfiles() async -> InstalledRecordRecoverySummary {
+        var summary = InstalledRecordRecoverySummary()
+        // 没接线就**完全不碰设备**（测试 / 预览走这里）。`skipped-not-wired` 必须与
+        // `skipped-no-candidates` 分得开 —— 前者是「没人接这根线」（配置问题），
+        // 后者是「接了线、设备端确实没有可补的」（正常结论）。
+        guard let deviceScanner else {
+            summary.stage = "skipped-not-wired"
+            return summary
+        }
+        // 先 dump（候选只能从它推出来）；拿不到就整轮结束 —— 「读不到」绝不能当成
+        // 「设备上没有」，否则扫回会静默失效，用户永远等不到他的应用回来。
+        guard let profiles = await deviceScanner.scanProfileSummaries() else {
+            summary.stage = "skipped-dump-unavailable"
+            return summary
+        }
+        let records = (try? await appStore.fetchAll()) ?? []
+        var accounts: [AppleAccountRecord] = []
+        if let accountsProvider {
+            accounts = await accountsProvider()
+        }
+        let context = InstalledRecordRecoveryPolicy.context(
+            records: records,
+            accountTeamIdentifiers: Set(accounts.map(\.teamID)),
+            dismissedBundleIdentifiers: DismissedInstalledRecordTombstones.all(),
+            sealCanonicalBundleIdentifier: BundleIDPolicy.canonicalSealBundleIdentifier()
+        )
+        let drafts = InstalledRecordRecoveryPolicy.drafts(profiles: profiles, context: context)
+        summary.candidates = drafts.count
+        summary.samples = drafts.prefix(3).map(\.bundleIdentifier)
+        // 候选为空 ⇒ **一次设备查询都不发**（常见情况：记录齐全，只多花一次 dump）。
+        guard drafts.isEmpty == false else {
+            summary.stage = "skipped-no-candidates"
+            return summary
+        }
+        // 阳性对照 + 逐条核验，**先问完再动手**。
+        guard let confirmed = await deviceScanner.scanConfirmedInstalledBundleIdentifiers(
+            candidates: drafts.map(\.bundleIdentifier),
+            positiveControl: Bundle.main.bundleIdentifier
+        ) else {
+            summary.stage = "skipped-channel-unavailable"
+            return summary
+        }
+        for draft in drafts {
+            let accountID = accounts.first {
+                $0.teamID.caseInsensitiveCompare(draft.teamIdentifier) == .orderedSame
+            }?.id
+            guard let record = InstalledRecordRecoveryPolicy.makeRecord(
+                from: draft,
+                installedOnDevice: confirmed.contains(
+                    InstalledRecordRecoveryPolicy.normalizedBundleIdentifier(draft.bundleIdentifier)
+                ),
+                accountID: accountID
+            ) else {
+                summary.notInstalled += 1
+                continue
+            }
+            do {
+                try await appStore.save(record)
+                summary.recovered += 1
+            } catch {
+                let nsError = error as NSError
+                summary.stage = "failed-save"
+                summary.firstError = "\(nsError.domain) \(nsError.code)"
+                break
+            }
+        }
+        return summary
     }
 
     private func recoverPendingFileTransactions() async throws {

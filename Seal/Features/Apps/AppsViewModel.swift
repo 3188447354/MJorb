@@ -1489,6 +1489,28 @@ final class AppsViewModel: ObservableObject {
     }
 
 
+    /// 墓碑要覆盖这个 App 的**全部**生效 Bundle ID 形态（主 App ＋ 扩展）：
+    /// 扫回的候选是按设备端 profile 的 Bundle ID **逐个**判定的 —— 只记主 App，
+    /// 扩展的 profile 仍会被捞成候选（`isExtensionBundleID` 只有在父 App 也在候选里时才命中）。
+    private static func tombstoneBundleIdentifiers(for app: AppRecord) -> [String] {
+        var identifiers: [String] = []
+        if let main = ProfileReclaimPolicy.effectiveBundleID(
+            mapped: app.mappedBundleIdentifier,
+            preferred: app.preferredBundleIdentifier
+        ) {
+            identifiers.append(main)
+        }
+        for extensionRecord in app.extensions {
+            if let extensionID = ProfileReclaimPolicy.effectiveBundleID(
+                mapped: extensionRecord.mappedBundleIdentifier,
+                preferred: nil
+            ) {
+                identifiers.append(extensionID)
+            }
+        }
+        return identifiers
+    }
+
     func delete(_ app: AppRecord, refreshAfterDeletion: Bool = true) async -> Bool {
         guard let appStore, let fileStore else { return false }
         guard let operationLease = await acquireOperation(.maintainingStorage, appID: app.id) else { return false }
@@ -1511,6 +1533,16 @@ final class AppsViewModel: ObservableObject {
                     return false
                 }
                 throw error
+            }
+
+            // 记墓碑：删除记录**不会**卸载设备上的应用（确认文案就是这么写的），
+            // 而设备端扫回会把「设备上装着、记录里没有」的 Seal 签名应用补回列表 ——
+            // 少了这一笔，用户删一次、下次启动又回来一次，永远删不掉。
+            // 只在**已安装列表**里的记录上记：待签名记录没有设备端 profile，扫回本来就看不见它。
+            if app.belongsInInstalledList {
+                DismissedInstalledRecordTombstones.insert(
+                    Self.tombstoneBundleIdentifiers(for: app)
+                )
             }
 
             var historyFailure: ImportFailure?

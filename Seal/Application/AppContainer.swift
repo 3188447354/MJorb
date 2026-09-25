@@ -145,7 +145,13 @@ struct AppContainer {
             )
             let appRecordRecovery = AppRecordRecovery(
                 appStore: appStore,
-                fileStore: fileStore
+                fileStore: fileStore,
+                accountsProvider: {
+                    (try? await accountRepository.fetchAll()) ?? []
+                },
+                // 生产路径接上真扫描器。**漏接线不会编译失败**，只会让扫回永远停在
+                // `skipped-not-wired`（静默失效）—— 守卫 R80 的 `Scan/wire` 钉住它。
+                deviceScanner: DeviceInstalledAppScanner.live
             )
             let selfAppRegistrar = SelfAppMetadata.current().map {
                 SelfAppRegistrar(

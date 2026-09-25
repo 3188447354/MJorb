@@ -23,6 +23,11 @@ enum AppConfiguration {
         static let logsSubdirectory = "Logs"
         static let minimuxerLogsSubdirectory = "Logs/Minimuxer"
         static let sealLogFile = "Logs/Seal.json"
+        /// 「用户主动从已安装列表移除过」的 Bundle ID 墓碑
+        /// （见 `DismissedInstalledRecordTombstones`）。
+        /// ⚠️ **不能**改存 `UserDefaults`：Seal 自签覆盖安装会丢它，而墓碑一丢，
+        /// 用户删掉的记录下次启动就自己回来了。
+        static let dismissedInstalledRecordsFile = "DismissedInstalledRecords.json"
     }
 
     // MARK: - 限制

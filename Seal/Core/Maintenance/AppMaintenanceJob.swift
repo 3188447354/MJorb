@@ -22,6 +22,9 @@ final class AppMaintenanceJob {
         /// 未接线 / 记录读取失败时是带 `skipped-*` stage 的空摘要，而不是 nil ——
         /// 「为什么一份都没删」必须留在结果里，不能只靠猜。
         var profiles: ProfileCleanupSummary
+        /// 记录恢复里「设备端扫回」那一步的结果。同样带 `stage`，
+        /// 「一条都没补」与「根本没扫」必须分得开。
+        var recovered = InstalledRecordRecoverySummary()
     }
 
     enum Outcome: Equatable {
@@ -69,9 +72,10 @@ final class AppMaintenanceJob {
         defer { gate.end(token) }
 
         // ── 1. 记录恢复 ────────────────────────────────────────────────
+        var recoverySummary = InstalledRecordRecoverySummary()
         if let recovery {
             do {
-                try await recovery.restoreMissingRecords()
+                recoverySummary = try await recovery.restoreMissingRecords()
             } catch let failure as ImportFailure {
                 return .failed(failure)
             } catch {
@@ -79,6 +83,16 @@ final class AppMaintenanceJob {
             }
             if gate.shouldAbort(token) {
                 return .aborted(stage: "记录恢复", reason: "用户操作已开始")
+            }
+            // 只在**真的有候选**（或失败）时留痕：每次启动都写一条「扫了 0 个」
+            // 只会把真实信号挤出环形缓冲（本仓已有的教训，见 R12 轮询降噪）。
+            if recoverySummary.shouldLog {
+                try? await logStore?.append(
+                    category: .system,
+                    level: recoverySummary.stage.hasPrefix("failed") ? .warning : .info,
+                    message: recoverySummary.logMessage,
+                    code: "SEAL-RECOVER-001"
+                )
             }
         }
 
@@ -127,7 +141,11 @@ final class AppMaintenanceJob {
         case .aborted(let stage, let reason):
             return .aborted(stage: stage, reason: reason)
         case .done(let summary):
-            return .completed(MaintenanceReport(orphans: orphanReport, profiles: summary))
+            return .completed(MaintenanceReport(
+                orphans: orphanReport,
+                profiles: summary,
+                recovered: recoverySummary
+            ))
         }
     }
 

@@ -4325,6 +4325,165 @@ def violations(load=read):
           "R77②: 宽限期判据必须可观测（`SEAL-SELF-114`）—— 「为什么这次启动没结算」是"
           "真机排障时最先要回答的问题，静默保留事务会让它无从查起。")
 
+    # ── R80：设备端扫回已安装记录（2026-09-25 用户需求 A）────────────────────
+    # 「只卸载了 Seal、其他 Seal 签名的 App 没卸载」⇒ 记录（Seal.sqlite）随 Seal 一起没了，
+    # 设备上的 App 还在。唯一痕迹是**设备端的描述文件**（Bundle ID 形如 `<原始>.seal.<team>`）。
+    #
+    # 这条链路会**写记录**，而它的错法不崩、不编译失败，只在真机上多造或少造记录 ——
+    # 多造 = 列表里出现点开就报错的僵尸；少造 = 用户的应用永远回不来。所以每条判据都要钉住。
+    r80_policy = load("Seal/Core/Recovery/InstalledRecordRecoveryPolicy.swift")
+    check("ProfileReclaimPolicy.sealGeneratedMarker" in r80_policy
+          and "range.lowerBound > lowered.startIndex" in r80_policy
+          and "range.upperBound < lowered.endIndex" in r80_policy,
+          "Scan/shape: 扫回形态判据必须与 ProfileReclaimPolicy 同源（共用 `.seal.` marker、"
+          "前后都要有内容）—— 回收与扫回是同一条规则的两个方向，判据分叉必然自相矛盾")
+    check("context.knownTeamIdentifiers.contains(team)" in r80_policy,
+          "Scan/team: 候选的 Team 必须在可信集合里 —— 设备端 dump 出来的是**全部**描述文件，"
+          "含别的工具与旧账号留下的（真机实测 39 个 Bundle ID 变体 / 33 份孤儿）")
+    check("context.dismissedBundleIdentifiers.contains(normalized) == false" in r80_policy,
+          "Scan/tombstone: 用户主动从列表删过的 Bundle ID 不得被扫回 —— "
+          "否则删一次回来一次，永远删不掉")
+    check("canonicalBundleIdentifier: context.sealCanonicalBundleIdentifier" in r80_policy,
+          "Scan/seal: Seal 自己不得参与扫回（它的记录由 SelfAppRegistrar 专门管理，"
+          "再造一条会得到「两条都叫 Seal」）")
+    check("ProfileReclaimPolicy.isExtensionBundleID(" in r80_policy,
+          "Scan/extension: 扩展不得单独建记录（isAppInstalled 对扩展恒为 false ⇒ 点开就报错的僵尸）")
+    check("signedIPARelativePath: nil" in r80_policy
+          and "signedIPASHA256: nil" in r80_policy
+          and "signedArtifactStatus: nil" in r80_policy
+          and "signingTargets: []," in r80_policy,
+          "Scan/identity: 扫回记录不得带任何「已签名产物」痕迹 —— 它从来没有过本地 IPA，"
+          "填了会让下游拿一个不存在的文件去签名/安装")
+    check("            certificateSerialNumber: nil," in r80_policy,
+          "Scan/certificate: 扫回记录不得填证书序列号 —— 描述文件里的 DeveloperCertificates 是"
+          "**授权列表**、不是实际签名者；填了会让证书轮换把它排进「自动重签」（必然失败），"
+          "并让撤销证书的确认弹窗承诺一件做不到的事")
+    check("AppConfiguration.Paths.dismissedInstalledRecordsFile" in r80_policy
+          and "UserDefaults.standard" not in r80_policy,
+          "Scan/storage: 墓碑必须落在与其它状态文件同目录的 JSON 文件里 —— "
+          "UserDefaults 会被 Seal 自签覆盖安装清掉，墓碑一丢被删的记录就自己回来了")
+
+    r80_scanner = load("Seal/Infrastructure/Installation/DeviceInstalledAppScanner.swift")
+    check("            guard control == true else { return nil }" in r80_scanner,
+          "Scan/control: 设备核验必须先过阳性对照 —— Rust 侧 lookup 会把 RPC 失败也返回成 nil，"
+          "这种静默失败在单条查询上看不出来；对照不过就整轮不建记录")
+    check(squash("guard let installed = try? await InstalledAppDeviceVerifier.isInstalled("
+                 " bundleIdentifier: candidate ) else { return nil }") in squash(r80_scanner),
+          "Scan/abort: 任一条核验失败必须**整轮中止**（不得逐条 continue）—— "
+          "通道一抖动，剩下的候选会被读成「没装」，该补的 App 永远补不回来")
+    check("        guard candidates.isEmpty == false else { return [] }" in r80_scanner,
+          "Scan/empty: 候选为空时一次设备查询都不许发（常见情况只花一次 dump）")
+
+    r80_recovery = load("Seal/Core/Recovery/AppRecordRecovery.swift")
+    check("        return await recoverRecordsFromDeviceProfiles()" in r80_recovery,
+          "Scan/append: 扫回必须接在 restoreMissingRecords() 的**最后** —— "
+          "它要读前两步刚修好的记录（「已覆盖的 Bundle ID」必须是最新的）")
+    check("    @discardableResult\n    func restoreMissingRecords() async throws"
+          " -> InstalledRecordRecoverySummary {" in r80_recovery,
+          "Scan/summary: restoreMissingRecords 必须回传摘要 —— "
+          "「扫了 0 个」与「根本没扫」在日志上必须分得开")
+
+    r80_job = load("Seal/Core/Maintenance/AppMaintenanceJob.swift")
+    check("recoverySummary = try await recovery.restoreMissingRecords()" in r80_job,
+          "Scan/step1: 扫回必须在维护作业第 1 步「记录恢复」里取摘要")
+    r80_scan_call = r80_job.find("recovery.restoreMissingRecords()")
+    r80_sweep_call = r80_job.find("await sweepStaleProfiles(token: token)")
+    check(r80_scan_call != -1 and r80_sweep_call != -1 and r80_scan_call < r80_sweep_call,
+          "Scan/order: 扫回必须排在设备端描述文件清理**之前** —— 新补回的记录是那份 profile "
+          "唯一的本地引用，反过来的顺序会让清理把它当旧账删掉，而设备上的 App 正靠它运行")
+    check('                    code: "SEAL-RECOVER-001"' in r80_job,
+          "Scan/log: 扫回结果必须留痕（SEAL-RECOVER-001），否则「一条都没补」无从归因")
+    check("            if recoverySummary.shouldLog {" in r80_job,
+          "Scan/quiet: 没有候选时不得写日志 —— 每次启动一条「扫了 0 个」会把真实信号挤出环形缓冲")
+
+    check('                code: "SEAL-RECOVER-002"' in signing,
+          "Scan/reject: 扫回记录缺本地 IPA 时必须在重签入口明确拒绝 —— "
+          "否则下游 Data(contentsOf:) 抛的泛化「找不到文件」会让用户以为 Seal 坏了")
+    r80_reject_pos = signing.find('code: "SEAL-RECOVER-002"')
+    r80_accounts_pos = signing.find("let knownAccounts = try await accountRepository.fetchAll()")
+    check(r80_reject_pos != -1 and r80_accounts_pos != -1 and r80_reject_pos < r80_accounts_pos,
+          "Scan/before-accounts: 拒绝必须发生在账号解析与免费账号 3-app 预检**之前**，"
+          "否则用户会先被一条与真实原因无关的错误挡住")
+
+    r80_vm = load("Seal/Features/Apps/AppsViewModel.swift")
+    check(squash("if app.belongsInInstalledList { DismissedInstalledRecordTombstones.insert(")
+          in squash(r80_vm),
+          "Tombstone/write: 删除已安装记录时必须写墓碑 —— 删除**不会**卸载设备上的应用，"
+          "少了这一笔扫回下次启动就把它加回来")
+    check("    private static func tombstoneBundleIdentifiers(for app: AppRecord)"
+          " -> [String] {" in r80_vm,
+          "Tombstone/coverage: 墓碑必须覆盖主 App 与扩展的全部生效 Bundle ID —— "
+          "扫回是按设备端 profile 的 Bundle ID **逐个**判定的")
+
+    # ── R80b：有效期精确到秒（2026-09-25 用户需求 B）─────────────────────────
+    # 免费账号只有 7 天寿命，**分钟**粒度下同一分钟内续签两次完全同形 ——
+    # 而「这次拿到的确实是本轮新生成的那份描述文件」正是续签后唯一要核验的事。
+    check('        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"'
+          in load("Seal/Features/Settings/SettingsFormatters.swift"),
+          "SecondLevel/format: 有效期必须精确到秒（分钟粒度无法证伪「profile 是本轮新生成的」）")
+    check('        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"'
+          in load("Seal/Features/Apps/AppSigningSheet.swift"),
+          "SecondLevel/copy: AppSigningSheet 里的同格式副本必须一起改 —— "
+          "两处不一致会让同一天显示两种时间")
+
+    # ── R80c：取消 ≠ 超时（2026-09-25 真机 14:10:49）─────────────────────────
+    # `BlockingCall.bounded` 的 `catch { return nil }` 会把 `CancellationError` 折叠成 nil
+    # ⇒ 用户主动取消落进超时分支，被记成 `SEAL-INSTALL-702t` 失败
+    #（真机同一秒里 `SEAL-INSTALL-702t` 与 `SEAL-SIGN-012` 同时出现）。
+    r80_channel = load("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift")
+    check('if Task.isCancelled { await log( "安装等待被取消：' in squash(r80_channel),
+          "Cancel/progress: 带进度那条路径必须把取消与超时分开 —— 取消要原样抛 "
+          "CancellationError（runSigning 的 catch is CancellationError 才是它的出口："
+          "不弹窗、不记失败历史）")
+    check("if Task.isCancelled { throw CancellationError() }" in r80_channel,
+          "Cancel/staged: 已暂存包那条路径同样必须区分取消与超时")
+    check("if error is CancellationError || Task.isCancelled {" in r80_channel,
+          "Cancel/retry: 重试循环必须先识别取消 —— 否则会把同一笔安装再推一遍，"
+          "还会 Minimuxer.reset() 拆掉可能仍在跑的那条连接")
+    r80_timeout_region = section_or_empty(
+        r80_channel,
+        "                    guard outcome != nil else {",
+        "                        throw Self.installTimeoutFailure"
+    )
+    check("let waited = Int(Date().timeIntervalSince(startedAt))" in r80_timeout_region,
+          "Cancel/waited: 超时日志必须报**实际**等待 —— 真机同一条日志里心跳写「已等待 46 秒」、"
+          "超时行却写「已等待 803 秒」（用的是预算上限），两个数字互相矛盾。"
+          "⚠️ 判据必须**只落在超时那条路径内**：`beginInstallHeartbeat` 里有一句一模一样的"
+          "`let waited = ...`，断言整文件会让「只改超时那处」的变异照旧通过（2026-09-25 实踩）")
+    check("已等待 \\(Int(mergedTimeout)) 秒" not in r80_channel,
+          "Cancel/no-budget: 超时日志不得再报预算上限（已改为实际等待 ＋ 上限括注）")
+    # 取消判定必须是 catch 块里**最先**执行的判定：先 `lastError = error` 会把「我点了取消」
+    # 记成失败，再 `Minimuxer.reset()` 会拆掉可能仍在跑的那条连接并把整包重推一遍。
+    # ⚠️ 必须 `strip_comments` 后再比下标：这段区间里有一句**注释**写着 `Minimuxer.reset()`，
+    # 不比注释的话「取消判定被挪到 reset 之后」照样能通过（2026-09-25 实踩）。
+    r80_retry_code = strip_comments(section_or_empty(
+        r80_channel,
+        "                if error is CancellationError || Task.isCancelled {",
+        "        throw Self.installationFailure(lastError!)"
+    ))
+    check("throw CancellationError()" in r80_retry_code
+          and "lastError = error" in r80_retry_code
+          and "Minimuxer.reset()" in r80_retry_code
+          and r80_retry_code.index("throw CancellationError()")
+              < r80_retry_code.index("lastError = error")
+              < r80_retry_code.index("Minimuxer.reset()"),
+          "Cancel/order: 取消判定必须是 catch 块里**最先**执行的判定 —— 必须排在 "
+          "`lastError = error`（把取消记成失败）与 `Minimuxer.reset()`（拆掉可能仍在跑的"
+          "连接并重推一遍）之前；顺序一换，「我点了取消」就会被记成失败并重试")
+
+    check("deviceScanner: (any InstalledAppScanning)? = nil" in r80_recovery,
+          "Scan/inject: 设备扫描必须**注入 ＋ 默认 nil** —— AppRecordRecoveryTests 的三个用例"
+          "直接调 restoreMissingRecords()，写死就会在 CI 的模拟器上真的去调 "
+          "Provision.dumpProfiles（无设备可连的同步 FFI：白等 15 秒、还可能崩掉测试进程）")
+    check("guard let deviceScanner else {" in r80_recovery
+          and '"skipped-not-wired"' in r80_recovery,
+          "Scan/notwired: 未接线时必须留下 stage（skipped-not-wired）—— "
+          "否则「没人接这根线」会被读成「设备端确实没有可补的」，扫回静默失效")
+    check("deviceScanner: DeviceInstalledAppScanner.live"
+          in load("Seal/Application/AppContainer.swift"),
+          "Scan/wire: 生产路径必须由 AppContainer 接上真扫描器 —— "
+          "漏接线不会编译失败，只会让扫回永远停在 skipped-not-wired")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -6463,6 +6622,161 @@ def main():
          "func findsInstalledRecordForSameOriginalBundleIdentifier()",
          "func findsInstalledRecordLegacy()",
          "Import: 覆盖更新判据的关键单测必须仍在"),
+        # ── R80：设备端扫回 / 有效期秒级 / 取消 ≠ 超时（2026-09-25）──
+        # ① 形态判据不再要求 `.seal.` 在中间 ⇒ 任何含 `.seal.` 的 ID 都会被扫回 ✓ 报红。
+        ("Seal/Core/Recovery/InstalledRecordRecoveryPolicy.swift",
+         "        return range.lowerBound > lowered.startIndex && range.upperBound < lowered.endIndex",
+         "        return true",
+         "Scan/shape:"),
+        # ② 去掉 Team 可信判据 ⇒ 别的工具/旧账号留下的 profile 也会被补成记录 ✓ 报红。
+        ("Seal/Core/Recovery/InstalledRecordRecoveryPolicy.swift",
+         "                  context.knownTeamIdentifiers.contains(team) else { continue }",
+         "                  true else { continue }",
+         "Scan/team:"),
+        # ③ 墓碑判据取反 ⇒ 用户删过的反而被扫回、没删过的被跳过 ✓ 报红。
+        ("Seal/Core/Recovery/InstalledRecordRecoveryPolicy.swift",
+         "context.dismissedBundleIdentifiers.contains(normalized) == false",
+         "context.dismissedBundleIdentifiers.contains(normalized) == true",
+         "Scan/tombstone:"),
+        # ④ 给扫回记录填上证书序列号 ⇒ 证书轮换会选中它（必然失败），
+        #    撤销确认弹窗也会承诺一件做不到的事 ✓ 报红。
+        ("Seal/Core/Recovery/InstalledRecordRecoveryPolicy.swift",
+         "            certificateSerialNumber: nil,",
+         "            certificateSerialNumber: \"deadbeef\",",
+         "Scan/certificate:"),
+        # ⑤ 给扫回记录盖上「已安装签名产物」⇒ 下游会拿不存在的文件去安装 ✓ 报红。
+        ("Seal/Core/Recovery/InstalledRecordRecoveryPolicy.swift",
+         "            signedArtifactStatus: nil,",
+         "            signedArtifactStatus: .installed,",
+         "Scan/identity:"),
+        # ⑥ 墓碑文件名硬编码 ⇒ 与 AppConfiguration 漂移（写一份、读另一份）✓ 报红。
+        ("Seal/Core/Recovery/InstalledRecordRecoveryPolicy.swift",
+         "            .appending(path: AppConfiguration.Paths.dismissedInstalledRecordsFile)",
+         "            .appending(path: \"DismissedInstalledRecords.json\")",
+         "Scan/storage:"),
+        # ⑦ 去掉阳性对照 ⇒ 通道说假话时会把整批候选都读成「没装」✓ 报红。
+        ("Seal/Infrastructure/Installation/DeviceInstalledAppScanner.swift",
+         "            guard control == true else { return nil }",
+         "            guard true else { return nil }",
+         "Scan/control:"),
+        # ⑧ 逐条失败改成 continue ⇒ 「问一半、建一半」，通道一抖就静默漏掉该补的 App ✓ 报红。
+        ("Seal/Infrastructure/Installation/DeviceInstalledAppScanner.swift",
+         "            ) else { return nil }\n            if installed {",
+         "            ) else { continue }\n            if installed {",
+         "Scan/abort:"),
+        # ⑨ 候选为空也照发设备查询 ⇒ 每次启动都多花一轮设备探测 ✓ 报红。
+        ("Seal/Infrastructure/Installation/DeviceInstalledAppScanner.swift",
+         "        guard candidates.isEmpty == false else { return [] }",
+         "        guard true else { return [] }",
+         "Scan/empty:"),
+        # ⑩ 扫回不再接在 restoreMissingRecords() 末尾 ⇒ 恢复链路拿不到摘要 ✓ 报红。
+        ("Seal/Core/Recovery/AppRecordRecovery.swift",
+         "        return await recoverRecordsFromDeviceProfiles()",
+         "        _ = await recoverRecordsFromDeviceProfiles()\n"
+         "        return InstalledRecordRecoverySummary()",
+         "Scan/append:"),
+        # ⑪ 摘要不再回传 ⇒ 「扫了 0 个」与「根本没扫」重新混在一起 ✓ 报红。
+        ("Seal/Core/Recovery/AppRecordRecovery.swift",
+         "    @discardableResult\n    func restoreMissingRecords() async throws"
+         " -> InstalledRecordRecoverySummary {",
+         "    func restoreMissingRecords() async throws {",
+         "Scan/summary:"),
+        # ⑫ 清理调用改名 ⇒ 「扫回排在清理之前」这条顺序判据失去锚点 ✓ 报红。
+        ("Seal/Core/Maintenance/AppMaintenanceJob.swift",
+         "        let profileOutcome = await sweepStaleProfiles(token: token)",
+         "        let profileOutcome = await self.sweepStaleProfiles(token: token)",
+         "Scan/order:"),
+        # ⑬ 扫回不留痕 ⇒ 「一条都没补」无从归因 ✓ 报红。
+        ("Seal/Core/Maintenance/AppMaintenanceJob.swift",
+         '                    code: "SEAL-RECOVER-001"',
+         '                    code: "SEAL-RECOVER-001x"',
+         "Scan/log:"),
+        # ⑭ 无条件写日志 ⇒ 每次启动一条「扫了 0 个」，把真实信号挤出环形缓冲 ✓ 报红。
+        ("Seal/Core/Maintenance/AppMaintenanceJob.swift",
+         "            if recoverySummary.shouldLog {",
+         "            if true {",
+         "Scan/quiet:"),
+        # ⑮ 重签入口不再明确拒绝 ⇒ 用户拿到泛化的「找不到文件」✓ 报红。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         '                code: "SEAL-RECOVER-002"',
+         '                code: "SEAL-RECOVER-002x"',
+         "Scan/reject:"),
+        # ⑯ 删除已安装记录不写墓碑 ⇒ 扫回下次启动把它加回来 ✓ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "            if app.belongsInInstalledList {\n"
+         "                DismissedInstalledRecordTombstones.insert(",
+         "            if false {\n"
+         "                DismissedInstalledRecordTombstones.insert(",
+         "Tombstone/write:"),
+        # ⑰ 墓碑计算不再覆盖扩展 ⇒ 扩展的 profile 会被重新捞成候选 ✓ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "    private static func tombstoneBundleIdentifiers(for app: AppRecord) -> [String] {",
+         "    private static func tombstoneBundleIdentifiers(for app: AppRecord) -> [String]? {",
+         "Tombstone/coverage:"),
+        # ⑱ 有效期退回分钟粒度 ⇒ 同一分钟内续签两次完全同形 ✓ 报红。
+        ("Seal/Features/Settings/SettingsFormatters.swift",
+         '        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"',
+         '        formatter.dateFormat = "yyyy-MM-dd HH:mm"',
+         "SecondLevel/format:"),
+        # ⑲ 同格式副本没跟着改 ⇒ 同一天显示两种时间 ✓ 报红。
+        ("Seal/Features/Apps/AppSigningSheet.swift",
+         '        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"',
+         '        formatter.dateFormat = "yyyy-MM-dd HH:mm"',
+         "SecondLevel/copy:"),
+        # ⑳ 取消不再判 Task.isCancelled ⇒ 「我点了取消」被记成「安装超时」失败 ✓ 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "                        if Task.isCancelled {\n                            await log(",
+         "                        if false {\n                            await log(",
+         "Cancel/progress:"),
+        # ㉑ 已暂存包路径不再判取消 ⇒ 同上 ✓ 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "                        if Task.isCancelled { throw CancellationError() }",
+         "                        if false { throw CancellationError() }",
+         "Cancel/staged:"),
+        # ㉒ 重试循环不识别取消 ⇒ 会重试一次、还会 reset 拆掉仍在跑的连接 ✓ 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "                if error is CancellationError || Task.isCancelled {",
+         "                if false {",
+         "Cancel/retry:"),
+        # ㉓ 超时日志退回报预算上限 ⇒ 同一条日志里两个数字互相矛盾 ✓ 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "                        let waited = Int(Date().timeIntervalSince(startedAt))",
+         "                        let waited = Int(mergedTimeout)",
+         "Cancel/waited:"),
+        # ㉔ 超时文案里再写回预算上限 ⇒ 与心跳数字矛盾 ✓ 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         '                            "安装等待超时：\\(bundleID)，已等待 \\(waited) 秒"',
+         '                            "安装等待超时：\\(bundleID)，已等待 \\(Int(mergedTimeout)) 秒"',
+         "Cancel/no-budget:"),
+        # ㉕ 取消判定被挪到 `lastError = error` 之后 ⇒「我点了取消」先被记成失败，
+        #    再走 Minimuxer.reset() 拆掉可能仍在跑的那条连接并重推一遍 ✓ 报红。
+        #    ⚠️ 不能只把 reset 的条件改成 `if false`：那既没改变顺序、又碰不到
+        #    「顺序」这条判据（2026-09-25 实测该变异无判别力，已换掉）。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "                if error is CancellationError || Task.isCancelled {\n"
+         "                    throw CancellationError()\n"
+         "                }\n"
+         "                lastError = error",
+         "                lastError = error\n"
+         "                if error is CancellationError || Task.isCancelled {\n"
+         "                    throw CancellationError()\n"
+         "                }",
+         "Cancel/order:"),
+        # ㉖ 扫描器默认值改成 live ⇒ 单测直接调 restoreMissingRecords() 时会真的去调设备 FFI ✓ 报红。
+        ("Seal/Core/Recovery/AppRecordRecovery.swift",
+         "        deviceScanner: (any InstalledAppScanning)? = nil",
+         "        deviceScanner: (any InstalledAppScanning)? = DeviceInstalledAppScanner.live",
+         "Scan/inject:"),
+        # ㉗ 未接线不再留 stage ⇒ 「没人接线」与「没有可补的」混成一个结论 ✓ 报红。
+        ("Seal/Core/Recovery/AppRecordRecovery.swift",
+         '            summary.stage = "skipped-not-wired"',
+         '            summary.stage = "skipped-no-candidates"',
+         "Scan/notwired:"),
+        # ㉘ AppContainer 不再接线 ⇒ 扫回永远停在 skipped-not-wired（静默失效）✓ 报红。
+        ("Seal/Application/AppContainer.swift",
+         "                deviceScanner: DeviceInstalledAppScanner.live\n",
+         "",
+         "Scan/wire:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

@@ -838,7 +838,12 @@ actor MinimuxerInstallChannel: InstallChannel {
                         try Minimuxer.installIpa(bundleId: bundleID)
                     }
                     if case .some(.failure(let installError)) = installOutcome { throw installError }
-                    guard installOutcome != nil else { throw Self.installTimeoutFailure }
+                    guard installOutcome != nil else {
+                        // 取消同样会返回 nil（理由见另一条安装路径的说明）。
+                        // 混成超时会让「我点了取消」在签名历史里留下一条失败。
+                        if Task.isCancelled { throw CancellationError() }
+                        throw Self.installTimeoutFailure
+                    }
                 }
                 return
             } catch {
@@ -956,8 +961,29 @@ actor MinimuxerInstallChannel: InstallChannel {
                         throw installError
                     }
                     guard outcome != nil else {
+                        // 「已等待」必须报**实际**等待，不能报预算上限：2026-09-25 真机
+                        // （构建 40）同一条日志里心跳写着「已等待 46 秒」、这一行却写
+                        // 「已等待 803 秒」，两个数字互相矛盾 —— 把「是不是真等了 803 秒」
+                        // 变成了必须再查一遍的问题，而它本来只是一条日志。
+                        let waited = Int(Date().timeIntervalSince(startedAt))
+                        // 用户主动取消也会让 `offThread` 返回 nil：`HardTimeout.run` 的
+                        // 父任务取消分支 resume 的是 `CancellationError`，而
+                        // `BlockingCall.bounded` 把它折叠成了 nil。不区分就会把「我点了取消」
+                        // 记成「安装超时」（真机 14:10:49：取消与 702t 出现在同一秒）。
+                        // 两种情况底层那次安装都还在跑 ⇒ 都不重试，但成因必须分开写，
+                        // 并且取消要原样抛 `CancellationError`（见下方 catch 的说明）。
+                        if Task.isCancelled {
+                            await log(
+                                "安装等待被取消：\(bundleID)，已等待 \(waited) 秒"
+                                + "（未到上限 \(Int(mergedTimeout)) 秒）；"
+                                + "底层安装调用不会被取消，仍可能完成安装",
+                                level: .warning
+                            )
+                            throw CancellationError()
+                        }
                         await log(
-                            "安装等待超时：\(bundleID)，已等待 \(Int(mergedTimeout)) 秒",
+                            "安装等待超时：\(bundleID)，已等待 \(waited) 秒"
+                            + "（上限 \(Int(mergedTimeout)) 秒）",
                             level: .warning,
                             code: Self.installTimeoutFailure.code
                         )
@@ -967,6 +993,13 @@ actor MinimuxerInstallChannel: InstallChannel {
                 }
                 return
             } catch {
+                // 用户取消：既不重试、也不做重试前的 `Minimuxer.reset()`（那会把可能仍在
+                // 跑着的那次安装连接拆掉）—— 原样抛出。`runSigning` 的
+                // `catch is CancellationError` 才是取消该走的出口：不弹窗、不记失败历史
+                // （旧行为把它折成 702t，于是「我点了取消」在签名历史里留下一条失败）。
+                if error is CancellationError || Task.isCancelled {
+                    throw CancellationError()
+                }
                 lastError = error
                 guard attempt < maxAttempts else { break }
                 // 超时必须按「确定性拒绝」处理 —— 立即终止，不再重传重试（R05）。

@@ -189,6 +189,22 @@ actor SigningCoordinator {
                 code: "SEAL-SIGN-404"
             )
         }
+        // 设备端扫回重建的记录**没有本地原始 IPA**（记录是从设备端 profile 反推的，
+        // 那个文件从来没有存在过）。这类记录只能看、不能重签 —— 必须在这里明确拒绝，
+        // 而不是让下游 `Data(contentsOf:)` 抛一个泛化的「找不到文件」，
+        // 那会让用户以为是 Seal 坏了（`importWarnings` 里写的是同一句话）。
+        if app.isSeal == false,
+           app.state == .installed,
+           app.hasSignedArtifact == false,
+           app.signedArtifactStatus == nil,
+           (try? await fileStore.exists(relativePath: app.ipaRelativePath)) == false {
+            throw Self.failure(
+                reason: "「\(app.displayName)」是 Seal 从设备端扫回重建的记录，本地没有它的原始 IPA，无法重签或续签。",
+                recovery: "重新导入该应用的 IPA 后再签名；扫回记录只用于查看安装状态与有效期",
+                code: "SEAL-RECOVER-002"
+            )
+        }
+
         // 一次读全，两个用途：① 找本次要签的账号；② 给「绑定账号是否悬空」这条判据提供
         // **现存账号集合**（`SigningCertificateSelectionPolicy`，理由见 SEAL-AUTH-111 的注释）。
         let knownAccounts = try await accountRepository.fetchAll()

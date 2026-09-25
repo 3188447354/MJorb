@@ -5,6 +5,98 @@
 
 ---
 
+## 2026-09-25 重装 Seal 后找不回已安装应用（设备端扫回）＋ 有效期秒级 ＋ 取消被记成超时
+
+- **现象**（用户原话）：「当我只卸载了 seal，其他 seal 签名的 ipa 没有卸载，但这样我重新安装 seal，
+  之前通过 seal 安装的就进入不了 seal 已安装列表，能不能做到查到之前 seal 安装的并添加进已安装列表里；
+  另外所有时间的有效期限精确到秒」。另一批反馈来自构建 40 真机日志：
+  ① 同一条超时日志里心跳写「已等待 46 秒」、结论行写「已等待 803 秒」；
+  ② 14:10:49 同一秒出现 `SEAL-INSTALL-702t` 与 `SEAL-SIGN-012`（用户点了取消）。
+- **根因（需求 A）**：记录（`Seal.sqlite`）随 Seal 一起被卸载 ⇒ 设备上的应用还在，本地一条记录都没有。
+  唯一残留的证据是**设备端的描述文件**：Bundle ID 形如 `<原始>.seal.<team>`。
+  本仓的 `ProfileReclaimPolicy` 早已用这条形态规则做**回收**（删多余 profile），
+  但从来没有做它的**反向**（把 profile 折回记录）。
+- **修复（需求 A）**：新增「设备端扫回」，落在维护作业第 1 步（`AppRecordRecovery.restoreMissingRecords()` 末尾）：
+  ① `DeviceInstalledAppScanner.profileSummaries()` 走 `Provision.dumpProfiles` +
+     `ProvisioningProfileReader`（与 `DeviceProfileInspector` 同一条通道，按 UUID 去重，
+     `parsed == 0` 视为**读不到**而非空集），整段跑在 `BlockingCall.bounded(15 秒)` 里；
+  ② `InstalledRecordRecoveryPolicy`（纯函数，可单测）做**本地筛选**：形态同源（`.seal.` 前后都要有内容）、
+     Team 必须可信（已添加账号的 Team ∪ 已有记录的 `signingTeamID`）、已被记录覆盖的不重建、
+     用户删过的（墓碑）不重建、Seal 自己不参与、扩展不单独建记录、反推不出原始 Bundle ID 就不建；
+  ③ 候选非空才发设备查询：**阳性对照**（拿 `Bundle.main.bundleIdentifier` 问）+ 逐条
+     `InstalledAppDeviceVerifier.isInstalled`，**任一条抛错整轮中止、一条都不建**
+     （与 `reconcileInstalledAppsWithDevice` 的「先问完再动手」同一条纪律）；
+  ④ `makeRecord` 身份诚实：`state = .installed`、`mappedBundleIdentifier` 填设备真实 ID、
+     `signedIPARelativePath` / `signedIPASHA256` / `signedArtifactStatus` 全空
+     （⇒ `hasSignedArtifact == false`，天然进不了 profile-only 续签与「安装已签名产物」路径）、
+     `ipaRelativePath` 给**必然不存在**的占位路径、`version`/`size` 不编造、
+     `importWarnings` 写明「无本地原始 IPA」。
+- 🔴 **两处「好心办坏事」的坑，都在实现时被拦下**：
+  ① 给扫回记录填**证书序列号**（描述文件里恰好只授权一张时）会让两处破坏性链路立刻选中它 ——
+     证书轮换的「自动重签受影响应用」（它没有本地 IPA ⇒ 必然失败）与撤销证书的确认弹窗
+     （会承诺「这 N 个应用会被自动重新签名安装」，而其中一个永远不会成功）。
+     描述文件里的 `DeveloperCertificates` 是**授权列表**、不是**实际签名者**（本仓明文区分），
+     所以序列号**留空**。
+  ② 扫回**必须**排在维护作业第 4 步（设备端旧描述文件清理）**之前** —— 新补回的记录是那份 profile
+     唯一的本地引用，反过来的顺序会让清理把它当旧账删掉，而设备上的 App 正靠它运行（当场打不开）。
+     守卫 R80 用**下标顺序**钉住（只查「存在扫回调用」会被顺序骗过去）。
+- **修复（需求 B）**：`SealSettingsDateFormatter.dateFormat` → `"yyyy-MM-dd HH:mm:ss"`
+  （11 个调用点一处生效）；`AppSigningSheet` 里同格式的死代码副本一并改（两处不一致会让同一天显示两种时间）。
+  日志 / ISO8601 / 文件名格式**不动**。
+- **修复（取消 ≠ 超时）**：`BlockingCall.bounded` 的 `catch { return nil }` 会把
+  `CancellationError` 一并折叠成 nil ⇒ 用户主动取消落进超时分支、被记成 `SEAL-INSTALL-702t`。
+  三条出口都改：带进度路径与已暂存包路径先判 `Task.isCancelled` 抛 `CancellationError`；
+  重试循环 `catch` 开头 `if error is CancellationError || Task.isCancelled { throw CancellationError() }`
+  （**不重试、不 `Minimuxer.reset()`** —— reset 会拆掉可能仍在跑的那条连接，R05）。
+  `runSigning` 的 `catch is CancellationError`（不弹窗、不记失败）才是取消该走的出口。
+  顺带把超时日志改成报**实际**等待（`Date().timeIntervalSince(startedAt)`），
+  不再报预算上限 —— 真机那条「46 秒 vs 803 秒」的自相矛盾就是这么来的。
+- **用户可预期性**：新增 `DismissedInstalledRecordTombstones`（落
+  `applicationSupport/Seal/DismissedInstalledRecords.json`，**不用** `UserDefaults` ——
+  它会被 Seal 自签覆盖安装清掉，墓碑一丢被删的记录就自己回来了）；
+  `SigningCoordinator` 在重签入口对「扫回记录缺本地 IPA」明确拒绝（`SEAL-RECOVER-002`，
+  且**排在账号解析与免费账号 3-app 预检之前**，否则用户先被一条无关错误挡住）；
+  扫回结果并入 `MaintenanceReport.recovered`，`AppMaintenanceJob` 只在**真有候选或失败**时留痕
+  （`SEAL-RECOVER-001`，没有候选不写 —— 每次启动一条「扫了 0 个」会把真实信号挤出环形缓冲）。
+- **涉及文件**：新增 `Seal/Core/Recovery/InstalledRecordRecoveryPolicy.swift`、
+  `Seal/Infrastructure/Installation/DeviceInstalledAppScanner.swift`、
+  `SealTests/Recovery/InstalledRecordRecoveryPolicyTests.swift`；改
+  `Seal/Core/Recovery/AppRecordRecovery.swift`、`Seal/Core/Maintenance/AppMaintenanceJob.swift`、
+  `Seal/Application/AppContainer.swift`、`Seal/Features/Apps/AppsViewModel.swift`、
+  `Seal/Core/Signing/SigningCoordinator.swift`、`Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`、
+  `Seal/Features/Settings/SettingsFormatters.swift`、`Seal/Features/Apps/AppSigningSheet.swift`、
+  `Seal/Core/Configuration/AppConfiguration.swift`、`Scripts/verify-release-safety.py`（R80）。
+- 🔴 **设备扫描必须注入（默认 nil），不能写死**：`AppRecordRecovery.restoreMissingRecords()`
+  被 `AppRecordRecoveryTests` 的三个用例**直接调用** ⇒ 扫回写死在它里面，那三个用例就会在
+  CI 的模拟器上真的去调 `Provision.dumpProfiles`（**无设备可连**的同步 FFI：最坏白等 15 秒、
+  还可能直接崩掉测试进程）。改成 `protocol InstalledAppScanning` ＋
+  `deviceScanner: (any InstalledAppScanning)? = nil`（与 `StaleProfileSweeping` 同一做法），
+  生产路径由 `AppContainer` 接 `DeviceInstalledAppScanner.live`；未接线留
+  `skipped-not-wired`（必须与「设备端确实没有可补的」分得开）。
+  守卫 R80 的 `Scan/inject` / `Scan/notwired` / `Scan/wire` 三条钉住它。
+- **代价（有意接受）**：维护作业第 1 步多一次 profile dump（候选为空时**不发**设备查询）。
+  第 4 步本来就有一次 dump，所以最坏情况（隧道死）从约 15 秒变成约 30 秒，
+  常见情况只多一次亚秒级 dump。换来的是用户「重装 Seal 后应用全回来了」。
+- **验证状态**：⚠️ 编译 / 单测 / 真机回归待 CI 与真机确认（Windows 本机无法编译）。
+- 🔴 **「变异锚点存在」≠「变异有判别力」**（同一条守卫上一轮踩了两次，属于常犯坑位）：
+  ① `Cancel/waited` 的变异锚点是 24 空格缩进那处（唯一，命中超时结论行），变异**确实生效了**；
+  但断言写成「**整文件**里存在 `let waited = Int(Date().timeIntervalSince(startedAt))`」，
+  而 `beginInstallHeartbeat` 里有一句**一模一样**的（16 空格）⇒ 改掉超时那处后断言照样成立，
+  变异白写。
+  ② `Cancel/order` 的断言是「区间里存在 `Minimuxer.reset()`」，而那段区间里有一句**注释**
+  也写着 `Minimuxer.reset()` ⇒ 把真代码挪走/挪后都不影响它；同时原变异只把
+  `if detail.contains("MissingPackagePath") == false` 改成 `if false`（**根本没改变顺序**），
+  与「顺序」这条判据根本不是同一件事。
+  **两条规律**：(a) 断言必须**限定到唯一路径** —— 用 `section_or_empty` 切出那条分支再断言，
+  不要用整文件 `in`（同名字符串在别处出现是常态）；(b) 判「顺序」的断言必须
+  `strip_comments` 后再比下标，否则**注释会替真代码满足断言**。
+  另注：变异块换掉后**注释会留在原地**（本轮换 `Cancel/order` 时留下两条 `㉕`），
+  改变异要连注释一起改。
+  **自查法**：先只跑这几条变异做定点复验（每条 = 一遍 `violations()`，几十秒），
+  确认「改掉判据真的报红」之后再跑整轮 —— 整轮在 OneDrive 上要 20 分钟以上。
+
+---
+
 ## 2026-09-25 导入新版只落「待签名」页、装不上（含 Seal 自己）：`commit` 里 `existing` 被硬编码成 nil
 
 - **现象**（用户原话）：「我想要的是**覆盖安装**，目前有新版我都装不了，包括 seal 也是；

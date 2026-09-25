@@ -529,10 +529,12 @@ struct AppSigningSheet: View {
         return formatter
     }()
 
+    /// 目前**没有调用点**（在用的是 `SealSettingsDateFormatter`），保留是为了将来
+    /// 有人直接用它时不会绕开秒级粒度：两处格式必须一致，否则同一天会显示两种时间。
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return formatter
     }()
 }

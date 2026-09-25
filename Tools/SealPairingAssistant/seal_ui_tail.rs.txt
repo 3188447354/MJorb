@@ -61,9 +61,14 @@
             Some(Err(_)) => readiness_issues.push("无法读取开发者模式：重新连接数据线并确认信任"),
             _ => {}
         }
-        if matches!(self.ddi_mounted, Some(Err(_))) {
-            readiness_issues.push("开发者支持文件未就绪：保持 iPhone 解锁后重新检测");
-        }
+        // 🔴 开发者支持文件（DDI）挂载失败**不作为阻塞项**（2026-09-25 用户实测）：
+        //    Seal 的配对文件走 Lockdown / RPPairing（USB + usbmuxd），与开发者磁盘映像无关；
+        //    Seal 本体也从不挂载 DDI（那是给 JIT / 调试用的）。而 Windows 上没有 Xcode，
+        //    装不了 cryptex 形态的 DDI（doronz88/DeveloperDiskImage 明文说明），只能走
+        //    image mounter —— 它要求设备解锁，失败率不低。旧实现把它算进「需要处理 N 项」
+        //    ⇒ 主按钮只做「重新检测」、**永远生成不了配对文件**，用户被彻底卡住。
+        //    ⇒ 只提示、不拦路。`ddi_notice` 是这条判据的标识符，两道闸门都钉住它。
+        let ddi_notice = matches!(self.ddi_mounted, Some(Err(_)));
         let environment_ready = has_device && has_ios_version && !environment_checking
             && readiness_issues.is_empty();
 
@@ -143,6 +148,8 @@
             ("等待连接", "连接 iPhone", "使用数据线连接并解锁 iPhone，在设备上点按“信任”。")
         } else if !has_ios_version || environment_checking {
             ("设备已连接", "检查设备状态", "正在读取 iOS 版本并检查配对环境。")
+        } else if ddi_notice {
+            ("设备已连接", "可以开始", "开发者支持文件未挂载：不影响生成配对文件，可直接继续。")
         } else {
             ("设备已连接", "可以开始", "已识别设备信息，将按系统版本生成配对文件。")
         };
@@ -376,7 +383,8 @@
                     None if !has_device => "待连接",
                     None => "检测中",
                     Some(Ok(())) => "已就绪",
-                    Some(Err(_)) => "检查失败",
+                    // 不影响配对：见 `ddi_notice` 处的说明。
+                    Some(Err(_)) => "检查失败（不影响配对）",
                 };
                 let detail_rows = [
                     ("开发者模式", developer_text, matches!(self.dev_mode_enabled, Some(Ok(true)))),

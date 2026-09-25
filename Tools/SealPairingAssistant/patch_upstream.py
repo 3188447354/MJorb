@@ -180,6 +180,10 @@ def verify(root: pathlib.Path) -> None:
         '"开发者模式"',
         '"无线调试"',
         '"开发者支持文件"',
+        # 2026-09-25：开发者支持文件（DDI）挂载失败**不得**再作为阻塞项 —— 旧实现把它算进
+        # 「需要处理 N 项」，主按钮就只做「重新检测」、**永远生成不了配对文件**
+        #（Seal 的配对走 Lockdown / RPPairing，与 DDI 无关）。`ddi_notice` 是判据标识符。
+        "ddi_notice",
         "正在读取 iOS 版本…",
         "现在可关闭此窗口",
     ]
@@ -206,6 +210,8 @@ def verify(root: pathlib.Path) -> None:
         "IPHONE_MODEL",
         "iphone_model.rgba",
         "button_rect.center_bottom() + egui::vec2(0.0, 24.0)",
+        # 2026-09-25：DDI 挂载失败不得再回到「阻塞项」形态（那会卡死生成）。
+        'readiness_issues.push("开发者支持文件',
     ]
     present = [item for item in forbidden if item in main]
     if present:

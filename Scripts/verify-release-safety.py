@@ -3374,9 +3374,11 @@ def violations(load=read):
     # 「**无法核验**」（`nil`：通道抖动 / 枚举失败 / provider 被并发 reset）
     # 与「**身份不符**」（`false`：记录确实过期）走同一条死路 ⇒ 应用**永久**续签不了。
     #
-    # 正确语义：profile-only 只是**加速路径**，不是安全边界。「不以本地旧记录直接覆盖
-    # 设备」这条约束由**完整重签**天然满足（重新申请描述文件并注入，不读旧记录）
-    # ⇒ 核验没明确通过时回落完整重签，而不是放弃本轮。
+    # 正确语义（2026-09-26 再修订，见 R84④）：profile-only 只是**加速路径**，不是安全边界。
+    # 「不以本地旧记录直接覆盖设备」这条约束**不靠核验** —— 注入的描述文件是**当场从 Apple
+    # 门户取的新文件**，不是本地旧记录；真正的安全网是注入后**逐份读回确认**
+    #（`ProfileOnlyProvisioningProfileInstaller` → `SEAL-PROFILE-354`）。
+    # ⇒ 核验结果只作诊断留痕，**不再回落完整重签**（旧行为让每次续签都重装了一遍）。
     check("case unavailable" in coord and "case mismatched" in coord
           and "case missingRecordedIdentity" in coord,
           "Profile-only: device identity verification must stay three-state")
@@ -3384,14 +3386,15 @@ def violations(load=read):
           "Profile-only: containsProfile nil must map to unavailable, never to mismatch")
     check("await DeviceProfileInspector.containsProfile(" in coord,
           "Profile-only: verification must query the device profile store")
+    # ⚠️ 语义在 2026-09-26 变了（R84④）：核验结果**不再决定续签路径**，只作为诊断信号留痕。
+    # 这个分支仍然必须存在（否则连日志都没有），但**不得**再出现 `useProfileOnlyRenewal = false`
+    #（那是「每次续签都回落完整重装」的直接来源，见 R84④）。
     check("if identity != .confirmed {" in coord,
-          "Profile-only: unconfirmed identity must fall back to full resign")
-    # 回落必须留痕：否则「核验没过就悄悄改走完整重签」在日志里完全看不见，
-    # 排障时只会看到「续签慢了」，说不出为什么。
-    # 而且**必须带上是哪一种「没问通」**（记录缺字段 / 设备端没有该身份 / 设备端枚举不可用）——
+          "Profile-only: unconfirmed identity must still be surfaced as a diagnostic")
+    # 留痕必须带上是哪一种「没问通」（记录缺字段 / 设备端没有该身份 / 设备端枚举不可用）——
     # 三者的下一步动作相同，但拿着日志要能说出该去修什么（第②类日志必须带底层原因）。
     check("SEAL-PROFILE-363" in coord and "identity.fallbackReason" in coord,
-          "Profile-only: fallback to full resign must be logged with its underlying reason")
+          "Profile-only: 核验未确认必须留痕（SEAL-PROFILE-363）并带上是哪一种没问通")
     # 续签是覆盖安装**已存在**的应用，不新增免费账号设备槽位 ⇒ 两条续签路径
     #（profile-only / 回落后的完整重签）都不该被 3-app 预检误拦。
     # 漏掉「回落」这一支会让回落路径撞 SEAL-APPID-DEVICELIMIT，把修复变成另一种失败。
@@ -4721,6 +4724,100 @@ def violations(load=read):
           "R83⑪: `InstallChannelDiagnosticClassificationTests` 必须有 703 / 707 的回归单测 —— "
           "「不落进前缀兜底」这件事只在界面上可见，守卫与单测缺一不可")
 
+    # R84: 续签「全部不重装」的闭环（2026-09-26，构建 46 真机）。
+    #
+    # 现象（用户原话「签名续签链路你弄坏了」＋「续签需要全部不重装」）：构建 46 日志
+    # 01:24:24 → 01:29:40 这五分钟里，Seal 与 Guoguo 的续签**全部**回落成完整重签 + 重装。
+    #
+    # 根因 A：`ProfileOnlyRenewalPolicy.evaluate` 只看持久化记录，而 Seal 自身的记录由
+    #   `SelfAppRegistrar` 维护 —— 它**从不写** `signedDeviceIdentifier` /
+    #   `signingTargets` / `signedIPARelativePath`（⇒ `hasSignedArtifact` 恒为 false）
+    #   ⇒ 2026-09-25 那次「不按身份排除 Seal」（R82）在真机上**一次都没生效过**。
+    # 根因 B：`SEAL-PROFILE-363` 把「设备端核验未确认」当成回落条件 ⇒ 每次续签都重装。
+    # 根因 C：证书轮换自动撤销「运行中 Seal」正在用的证书 ⇒ 自替换 ⇒ 进程被杀 ⇒ 续签中断。
+    #
+    # ⚠️ 这几条守的是「**不得再退回按记录 / 按核验结果一刀切**」，不是「一定要走快路径」：
+    #    运行产物身份读不出来时回落完整重签是**正确**行为。
+    r84_policy = load("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift")
+    r84_coord = load("Seal/Core/Signing/SigningCoordinator.swift")
+    r84_portal = load("Seal/Infrastructure/Signing/ApplePortalSigningService.swift")
+    r84_vm = load("Seal/Features/Apps/AppsViewModel.swift")
+    r84_policy_tests = load("SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift")
+    r84_gate_tests = load("SealTests/Signing/SigningCertificateRotationGateTests.swift")
+    r84_363_block = section_or_empty(
+        r84_coord,
+        "            if useProfileOnlyRenewal {\n                if let channelStart {",
+        "            if isInstalledRenewal {"
+    )
+    check("static func liveIdentity(" in r84_policy
+          and "installedIdentity.isComplete," in r84_policy
+          and "mainTarget.bundleIdentifier.caseInsensitiveCompare(mappedMainBundleIdentifier) "
+              "== .orderedSame" in r84_policy,
+          "R84①: 续签准入必须有**记录之外的实时身份通道**，且「身份完整」是硬门槛 ✗ —— "
+          "只认持久化记录时 Seal 自身永远不合格（`SelfAppRegistrar` 从不写 "
+          "`signedDeviceIdentifier` / `signingTargets` / `signedIPARelativePath`）"
+          "⇒ 每次续签都完整重签 + 自替换（构建 46：`SEAL-SELF-109` ＋ 续签被中断）。"
+          "上游 SideStore 的 `refresh` 准入看的是**已安装产物的签名证书**，不看记录")
+    check("return .eligible(targetBundleIdentifiers: liveIdentity.targetBundleIdentifiers)"
+          in r84_policy,
+          "R84②: 实时身份命中时必须直接判 `.eligible`，**不得**再走记录判据 ✗ —— "
+          "否则「新增了通道」只是装饰：记录缺字段的应用（Seal 自身）照旧被拒")
+    check("              case .eligible = ProfileOnlyRenewalPolicy.evaluate(\n"
+          "                  app: app,\n"
+          "                  liveIdentity: liveIdentity\n"
+          "              )," in r84_coord
+          and "await liveProfileOnlyIdentity(for: app)" in r84_coord,
+          "R84③: 准入必须**真的用上**双通道 ✗ —— `liveProfileOnlyIdentity(for:)` 算了"
+          "却不传给 `evaluate`，等于「上游算好了、下游又退回记录判据」——"
+          "这正是本项目反复出现的「改了一半、看起来改完了」")
+    # ⚠️ 必须 `strip_comments` 之后再判 `useProfileOnlyRenewal = false`：本块里**注释**中
+    # 引用了旧写法（「旧行为：没明确通过就 `useProfileOnlyRenewal = false`」）——
+    # 不剥注释就会把注释当代码，让这条断言**恒假**（R84 自己的第一版正是这么写错的，
+    # 靠 `check-mutation-power.py` 的基线失败才发现）。
+    r84_363_code = strip_comments(r84_363_block)
+    check("SEAL-PROFILE-363" in r84_363_code
+          and "identity.fallbackReason" in r84_363_code
+          and "useProfileOnlyRenewal = false" not in r84_363_code,
+          "R84④: `SEAL-PROFILE-363` 只能**留痕**，不得再回落完整重签 ✗ —— "
+          "构建 46 真机：Guoguo 每次续签都被它拦下（01:26:41 / 01:27:12 两条 363），"
+          "01:28:08 才以完整重签成功 ⇒ 用户看到的就是「续签全都要重装」。"
+          "上游 `refresh` 管线**完全不枚举设备描述文件**，真正的安全网在注入后的逐份读回")
+    check("static func isBoundToCurrentDevice(" in r84_policy
+          and "return liveIdentity != nil" in r84_policy
+          and "signedDeviceIdentifier?.caseInsensitiveCompare(deviceIdentifier) == .orderedSame"
+              in r84_policy,
+          "R84⑤: 设备绑定必须**双通道**：记录通道不得放松"
+          "（`signedDeviceIdentifier` 仍要匹配），只有实时身份通道才免除 ✗ —— "
+          "把整条判据放松成「总是通过」会让「换设备后仍按旧记录注入」变成可能")
+    # ⚠️ 调用点被 Swift 的 100 列折行拆成两行（`SigningCertificateRotationGate` +
+    # 换行 + `.candidatesExcludingRunningSealCertificate(`）⇒ 只能分段判，
+    # 写成一条连续字符串会**恒假**。
+    check("SigningCertificateRotationGate" in r84_portal
+          and ".candidatesExcludingRunningSealCertificate(" in r84_portal
+          and "candidates: rotationCandidates," in r84_portal
+          and "guard rotationCandidates.isEmpty == false else {" in r84_portal,
+          "R84⑥: 证书轮换**不得**自动撤销「运行中 Seal」正在用的证书 ✗ —— "
+          "构建 46：01:24:37 撤销 …442EB5AF（运行中Seal=是）→ 重签 Seal → "
+          "01:24:50 强制 exit(0) → 01:25:30 `SEAL-SELF-109`。撤销后 Seal 只能靠自替换恢复，"
+          "那一步失败 Seal 当场打不开（构建 38 变砖同因）。上游撤销**必须经用户确认**")
+    check("guard operationCoordinator?.activeLease == nil else {" in r84_vm
+          and "SEAL-INSTALL-708" in r84_vm,
+          "R84⑦: 已安装页设备核验必须与前台操作**互斥** ✗ —— 它走同步 FFI、"
+          "和签名 / 安装 / 续签共用同一条设备会话；构建 46 三次 `SEAL-INSTALL-707`"
+          "（01:25:01 / 01:26:40 / 01:29:11）全落在续签与自替换进行中，"
+          "既抢不到会话又把失败弹窗推给用户")
+    check("func liveIdentityAdmitsAnAppWhoseRecordIsIncomplete()" in r84_policy_tests
+          and "func liveIdentityForADifferentBundleIdentifierDoesNotAdmitTheRecord()"
+              in r84_policy_tests
+          and "func incompleteLiveIdentityIsNeverAnAdmissionTicket()" in r84_policy_tests
+          and "func liveIdentityPathDoesNotRequireAPersistedDeviceBinding()" in r84_policy_tests
+          and "func runningSealCertificateIsExcludedWhenSigningThirdPartyApp()" in r84_gate_tests
+          and "func runningSealCertificateStaysWhenSigningSealItself()" in r84_gate_tests
+          and "func emptyResultWhenTheOnlyCandidateIsTheRunningSealCertificate()" in r84_gate_tests,
+          "R84⑧: 必须有两个方向的单测 —— ① 实时身份完整 ⇒ 放行；② 身份读不出来 / "
+          "Bundle ID 对不上 ⇒ 照旧回落；③ 轮换剔除运行中 Seal 的证书（且自身签名时不剔）。"
+          "源码断言只能证明「结构在」，证明不了「真的放行」")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -4959,14 +5056,14 @@ def main():
         ("Seal/Core/Signing/SigningCoordinator.swift",
          "                if identity != .confirmed {",
          "                if false {",
-         "Profile-only: unconfirmed identity must fall back to full resign"),
-        # ── R78：回落日志丢掉「究竟是哪一种没问通」⇒ 报红 ──
+         "Profile-only: unconfirmed identity must still be surfaced as a diagnostic"),
+        # ── R78：核验未确认的日志丢掉「究竟是哪一种没问通」⇒ 报红 ──
         # 三态的原因必须各自可见：只说「核验未通过」时，排障无法区分
         # 「记录过期」（该去修记录）与「通道没连上」（该去修通道）。
         ("Seal/Core/Signing/SigningCoordinator.swift",
-         '                        message: "profile-only 续签前置核验未通过（\\(identity.fallbackReason)），"',
-         '                        message: "profile-only 续签前置核验未通过，"',
-         "Profile-only: fallback to full resign must be logged"),
+         '                        message: "profile-only 续签的设备端核验未确认（\\(identity.fallbackReason)），"',
+         '                        message: "profile-only 续签的设备端核验未确认，"',
+         "Profile-only: 核验未确认必须留痕"),
     ]
     mutations += [
         ("Seal/Infrastructure/Pairing/PairingStore.swift",
@@ -7163,6 +7260,61 @@ def main():
          '                recovery: "确认 LocalDevVPN 已连接、开发者模式已开启后重试",\n',
          '                recovery: "检查是否打开 LocalDevVPN",\n',
          "R83③b: 「recovery 文案在引导用户去检查 LocalDevVPN」的每一条失败"),
+        # ── R84：续签「全部不重装」的闭环（2026-09-26 构建 46 真机）──
+        # ① 去掉「身份完整」这道门槛（半份身份也能当准入门票）⇒ R84① 报红。
+        ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
+         "              installedIdentity.isComplete,\n",
+         "",
+         "R84①: 续签准入必须有"),
+        # ② 让实时身份命中后仍走记录判据 ⇒ R84② 报红（新通道变成装饰）。
+        ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
+         "            return .eligible(targetBundleIdentifiers: liveIdentity.targetBundleIdentifiers)\n",
+         "            return evaluate(app: app)\n",
+         "R84②: 实时身份命中时必须直接判"),
+        # ③ 算了实时身份却不传下去 ⇒ R84③ 报红（「上游算好了、下游又退回」）。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "              case .eligible = ProfileOnlyRenewalPolicy.evaluate(\n"
+         "                  app: app,\n"
+         "                  liveIdentity: liveIdentity\n"
+         "              ),\n",
+         "              case .eligible = ProfileOnlyRenewalPolicy.evaluate(\n"
+         "                  app: app,\n"
+         "                  liveIdentity: nil\n"
+         "              ),\n",
+         "R84③: 准入必须**真的用上**双通道"),
+        # ④ 把「核验未通过就回落」加回去 ⇒ R84④ 报红。**这正是本轮修的真问题。**
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "                if identity != .confirmed {\n"
+         "                    try? await logStore?.append(\n",
+         "                if identity != .confirmed {\n"
+         "                    useProfileOnlyRenewal = false\n"
+         "                    try? await logStore?.append(\n",
+         "R84④: `SEAL-PROFILE-363` 只能**留痕**"),
+        # ⑤ 把设备绑定判据放松成「总是通过」⇒ R84⑤ 报红。
+        ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
+         "        return liveIdentity != nil\n    }\n",
+         "        return true\n    }\n",
+         "R84⑤: 设备绑定必须**双通道**"),
+        # ⑥ 不再剔除运行中 Seal 的证书 ⇒ R84⑥ 报红（Seal 又会被自动撤销 + 自替换）。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "                candidates: rotationCandidates,\n",
+         "                candidates: candidates,\n",
+         "R84⑥: 证书轮换**不得**自动撤销"),
+        # ⑦ 去掉「与前台操作互斥」的闸门 ⇒ R84⑦ 报红（707 噪音与抢会话回来）。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "        guard operationCoordinator?.activeLease == nil else {\n",
+         "        guard true else {\n",
+         "R84⑦: 已安装页设备核验必须与前台操作**互斥**"),
+        # ⑧ 把「实时身份放行」那条单测改名 ⇒ R84⑧ 报红（不变量没人守）。
+        ("SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift",
+         "func liveIdentityAdmitsAnAppWhoseRecordIsIncomplete()",
+         "func liveIdentityAdmitsLegacy()",
+         "R84⑧: 必须有两个方向的单测"),
+        # ⑨ 把「轮换剔除」那条单测改名 ⇒ R84⑧ 报红。
+        ("SealTests/Signing/SigningCertificateRotationGateTests.swift",
+         "func runningSealCertificateIsExcludedWhenSigningThirdPartyApp()",
+         "func runningSealLegacy()",
+         "R84⑧: 必须有两个方向的单测"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

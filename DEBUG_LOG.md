@@ -5,6 +5,74 @@
 
 ---
 
+## 2026-09-26 续签「全都要重装」：准入只看记录、核验一票否决、轮换撤了运行中 Seal 的证书
+
+- **背景**（用户原话）：「签名续签链路你弄坏了；另外续签需要全部不重装；严格把控所有给你链路，
+  不要串；好好深入研究，并发的问题都给解决；把上游代码研究透，能直接照抄就直接搬过来」。
+  输入日志：构建 1.3.16 / 46（2026-09-26 01:24–01:29，仅五分钟）。
+- **现象**（日志时间线）：
+  - 01:24:30「开始续签：Seal」→ 紧接着「续签路径已确认：**需要完整重签并安装**」，
+    而且**没有** `SEAL-PROFILE-363`；
+  - 01:24:32「证书检查：远端 1 张，本机有私钥 **0** 张，可复用 0 张；Seal 在用但无私钥 1 张」；
+  - 01:24:37「证书轮换：撤销 …442EB5AF，原因=无本机私钥，**运行中Seal=是**」
+    → 重签 Seal → 01:24:50「3 秒内进程仍存活（转场未生效），强制 exit(0)」
+    → 01:25:30 `SEAL-SELF-109` 中止；
+  - 01:26:41 / 01:27:12 两条 `SEAL-PROFILE-363`（Guoguo）→ 回落完整重签 → 01:28:08 才成功；
+  - 01:25:01 / 01:26:40 / 01:29:11 三次 `SEAL-INSTALL-707`（设备探测超时）。
+  ⇒ **Seal 与 Guoguo 的续签全部重装了一遍**，Seal 自身还被换了进程。
+- **根因 A（准入只看记录）**：`ProfileOnlyRenewalPolicy.evaluate(app:)` 要求 9 类记录字段齐全，
+  其中 `signedDeviceIdentifier` / `signingTargets` / `signedIPARelativePath`（⇒ `hasSignedArtifact`）
+  由 `SelfAppRegistrar` 维护 —— 它**从不写**这三项。⇒ 2026-09-25 那次「不按身份排除 Seal」
+  （R82）在真机上**一次都没生效过**：每次都在准入处 `return false`，所以连 363 都不会出现。
+  ⚠️ 这正是「上游放行、下游又拦」的第三种形态：**准入放行了、判据本身却恒假**。
+- **根因 B（核验一票否决）**：`SEAL-PROFILE-363` 把「设备端核验未确认」当成回落条件。
+  而核验输入是**本地 DB 记录**（可能与设备现实错位），走同步 FFI 枚举、30 秒上限 ⇒ 又慢又误拦。
+  上游 `refresh` 管线**根本不枚举设备描述文件**（`dumpProfiles` 在 SideStore 全仓只有设置页一处
+  业务调用），准入只核验「已安装产物的签名证书是否仍在门户活动列表」
+  （`VerifyCertificateOperation(willResign: false)`）。
+- **根因 C（轮换撤了运行中 Seal 的证书）**：`ApplePortalSigningService.rotateCertificatesAndCreateIdentity`
+  会把「运行中 Seal 正在用」的证书当普通「无本机私钥」候选**自动撤销**。撤销后 Seal 只能靠
+  自替换安装恢复，那一步失败 Seal 当场打不开（构建 38 变砖同因）。上游 `CertificateProvisioningFlow`
+  里撤销**必须经用户确认**；本仓没有等价的「撤 Seal 自己的证书」确认入口
+  （`revokeKeylessCertificatesAfterConfirmation` 会跳过 Seal 的证书）⇒ 死路。
+- **根因 D（并发抢设备会话）**：`AppsViewModel.reconcileInstalledAppsWithDevice` 的设备核验
+  走同步 FFI，与签名 / 安装 / 续签**共用同一条 RSD 会话**；续签进行中必然超时，
+  还把失败弹窗推给用户。⚠️ **根因是并发，不是预算太短** —— 调大 `timeoutSeconds` 只会让
+  每次失败等更久，并让「尽力读取」的核验借走安装链路的验证预算（守卫 G 正是防这个）。
+- **修复**：
+  1. 新增 `LiveProfileOnlyIdentity` + `ProfileOnlyRenewalPolicy.liveIdentity(installedIdentity:app:)`
+     ＋ `evaluate(app:liveIdentity:)`：以**运行产物**（`SelfAppMetadata.current()` 读运行包 CMS 身份）
+     作为第二条准入通道，对齐上游「准入看已安装产物」。
+     ⚠️ 只在 `app.isSeal` 时读 —— `SelfAppMetadata.current()` 读 `Bundle.main`，
+     对第三方 App 用会读成 **Seal 自己**的身份（假阳性）。
+  2. `SigningCoordinator.shouldUseProfileOnlyRenewal` 改双通道；设备绑定判据拆成
+     `ProfileOnlyRenewalPolicy.isBoundToCurrentDevice`（记录通道**不放松**）。
+  3. `SEAL-PROFILE-363` 降级为**纯诊断日志**；核验上限 30 秒 → 5 秒；安全网交给
+     注入后的逐份读回（`ProfileOnlyProvisioningProfileInstaller.installAndVerify` → `SEAL-PROFILE-354`）。
+  4. 新增 `SigningCertificateRotationGate.candidatesExcludingRunningSealCertificate`：
+     非 Seal 自身签名时**剔除**运行中 Seal 的证书；剔除后为空则抛回原 `SEAL-CERT-204b`。
+  5. `AppsViewModel` 设备核验与前台操作**互斥**（有前台操作时整体跳过，记 `SEAL-INSTALL-708`）。
+  6. 修正 `ProfileOnlyRenewalPolicy` 里「上游 refresh 三步」的**过时注释**（已证为五步）。
+- **涉及文件**：`Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift`、
+  `Seal/Core/Signing/SigningCoordinator.swift`、
+  `Seal/Core/Signing/SigningCertificateRotationGate.swift`（新）、
+  `Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、
+  `Seal/Features/Apps/AppsViewModel.swift`、
+  `Seal/Core/Apps/InstalledAppRefreshProbePolicy.swift`（仅补说明，值不变）、
+  `SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift`、
+  `SealTests/Signing/SigningCertificateRotationGateTests.swift`（新）、
+  `docs/qa/log-code-index.md`（363 语义）、`Scripts/verify-release-safety.py`（R84）。
+- **⚠️ 本轮写守卫时踩到的坑（值得记）**：R84④ 的第一版判据是
+  `"useProfileOnlyRenewal = false" not in <block>`，而那个 block 的**注释里**恰好引用了
+  旧写法 ⇒ 断言**恒假**。守卫自己没报「写错了」，只在
+  `check-mutation-power.py` 的 **BASELINE FAIL** 里露出来。
+  ⇒ 两条纪律：① 判「源码里不得出现某写法」时先 `strip_comments`（它保留字符串字面量）；
+  ② **新写的 `check()` 一定要先跑定点判别力脚本看基线**，别直接跑整轮。
+  同轮第二个同族坑：R84⑥ 的判据把被 Swift 折行拆开的两行写成一条连续字符串 ⇒ 同样恒假。
+- **验证状态**：静态守卫 + 单测（待 CI）；**真机回归未做**（本机无 Xcode/Swift）。
+
+---
+
 ## 2026-09-25 安装失败的归因按前缀一刀切：把「所有问题」都算到 VPN 头上
 
 - **背景**（用户要求）：「除了之前的内置 VPN 的路子，其他做到最优最好的状态，

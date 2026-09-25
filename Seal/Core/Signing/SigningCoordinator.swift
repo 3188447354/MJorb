@@ -73,12 +73,13 @@ enum ProfileOnlyIdentityVerifier {
             // 真机构建 39 实测：三次单点续签从「续签路径已确认」到 `SEAL-PROFILE-362`
             // 分别隔了 16 / 15 / 16 秒 —— 这段区间含**等通道 + `isReady()` + 本次 dump**，
             // 日志粒度不足以再细分，所以只断言「整段没有上限」，不把耗时全记在 dump 头上。
-            // 超时 ⇒ 返回 `nil`（**无法核验**）⇒ 调用方回落完整重签 —— 这正是
-            // 「通道不可用」该有的语义，而不是把它当成「设备上没有这份描述文件」。
-            // 30 秒与 `ProfileOnlyProvisioningProfileInstaller` 读回注入结果的上限同量级。
+            // 超时 ⇒ 返回 `nil`（**无法核验**），而不是把它当成「设备上没有这份描述文件」。
+            // ⚠️ 自 2026-09-26 起核验**不再决定续签路径**（只留痕，见调用点）⇒ 上限从 30 秒
+            // 收到 5 秒：它不再值 30 秒的等待，而 `dumpProfiles` 是同步 FFI、超时后底层仍在跑，
+            // 会让后续的注入与 `Task.sleep` 一起被推迟（同族分析见 AGENTS.md 安装章节）。
             do {
                 return try await HardTimeout.run(
-                    seconds: 30,
+                    seconds: 5,
                     cancelsWorkOnTimeout: false
                 ) {
                     await DeviceProfileInspector.containsProfile(
@@ -358,8 +359,21 @@ actor SigningCoordinator {
             // 续签 = 覆盖安装**已经存在**的应用（`belongsInInstalledList` 只对已装应用为真）。
             // 单独立一个名字，是因为下面三处都要用同一个判据，写三遍必然漂移。
             let isInstalledRenewal = app.belongsInInstalledList && forceResign && installAfterSigning
+            // 🔴 **记录之外的实时身份通道**（2026-09-26，构建 46 真机）。
+            //
+            // `ProfileOnlyRenewalPolicy.evaluate(app:)` 只看持久化记录，而 Seal 自身的记录
+            // 由 `SelfAppRegistrar` 维护 —— 它**从不写** `signedDeviceIdentifier` /
+            // `signingTargets` / `signedIPARelativePath`（⇒ `hasSignedArtifact` 恒为 false）
+            // ⇒ 2026-09-25 那次「不按身份排除 Seal」在真机上**一次都没生效过**。
+            // 构建 46 日志证据：01:24:30「开始续签：Seal」紧接着就是「续签路径已确认：
+            // 需要完整重签并安装」，而且**没有** `SEAL-PROFILE-363` ⇒ 是在准入处就返回了 false。
+            //
+            // 上游 SideStore 的 `refresh` 准入是**已安装产物的签名证书**，不看记录；
+            // 本仓对自身的等价物就是 `SelfAppMetadata.current()`（读运行包的 CMS 身份）。
+            let liveProfileOnlyIdentity = await liveProfileOnlyIdentity(for: app)
             var useProfileOnlyRenewal = shouldUseProfileOnlyRenewal(
                 app: app,
+                liveIdentity: liveProfileOnlyIdentity,
                 accountID: accountID,
                 deviceIdentifier: deviceIdentifier,
                 targetBundleIdentifier: targetBundleIdentifier,
@@ -390,17 +404,34 @@ actor SigningCoordinator {
                         code: "SEAL-PROFILE-360"
                     )
                 }
+                // ⚠️ 设备端核验**只留痕、不再决定路径**（2026-09-26，对照上游 SideStore 后改）。
+                //
+                // 旧行为：没明确通过就 `useProfileOnlyRenewal = false` ＋ 记 `SEAL-PROFILE-363`
+                // ⇒ 回落完整重签（几百 MB 重装）。真机（构建 46）里 Guoguo 每次续签都被它拦下
+                // —— 01:26:41 与 01:27:12 两条 363，随后 01:28:08 才以完整重签成功。
+                // 这正是用户报的「续签全都要重装」。
+                //
+                // 上游 `refresh` 管线**完全不枚举设备描述文件**（`dumpProfiles` 在 SideStore
+                // 全仓只有设置页一处业务调用）：它从门户取一份**新**描述文件直接注入
+                //（`RefreshAppOperation` → `installProvisioningProfiles`），准入只核验
+                //「已安装产物的签名证书是否仍在门户活动列表」
+                //（`VerifyCertificateOperation(willResign: false)`）—— 与「设备上有没有
+                // 这份 profile」无关。而本仓的核验输入是**本地 DB 记录**（可能与设备现实错位），
+                // 走同步 FFI 枚举、还有上限 ⇒ 既慢又会误拦。
+                //
+                // ⇒ 真正的安全网挪到**注入之后**：`ProfileOnlyProvisioningProfileInstaller
+                //   .installAndVerify` 会逐份读回设备确认（上游连这一步都没有）。
+                //   注入没落地就抛 `SEAL-PROFILE-354`，绝不会谎报成功。
                 let identity = await ProfileOnlyIdentityVerifier.verify(
                     app: app,
                     targetBundleIdentifier: targetBundleIdentifier
                 )
                 if identity != .confirmed {
-                    useProfileOnlyRenewal = false
                     try? await logStore?.append(
                         category: .renewal,
                         level: .warning,
-                        message: "profile-only 续签前置核验未通过（\(identity.fallbackReason)），"
-                            + "已自动回落完整重签以重新建立应用身份：\(app.name)",
+                        message: "profile-only 续签的设备端核验未确认（\(identity.fallbackReason)），"
+                            + "按上游做法继续只更新描述文件（注入后会逐份读回确认）：\(app.name)",
                         code: "SEAL-PROFILE-363"
                     )
                 }
@@ -766,8 +797,24 @@ actor SigningCoordinator {
     }
 
 
+    /// 取「运行产物的实时签名身份」，作为记录之外的第二条续签准入通道。
+    ///
+    /// ⚠️ 只在 `app.isSeal` 时读：`SelfAppMetadata.current()` 读的是 `Bundle.main`，
+    /// 对第三方 App 调用会得到 **Seal 自己**的身份 —— 那会把「记录不完整」的第三方应用
+    /// 误判成合格。这与本项目反复出现的「上游放行、下游又拦」是同一种错的两面：
+    /// 这里放行的是**错的对象**。
+    private func liveProfileOnlyIdentity(for app: AppRecord) async -> LiveProfileOnlyIdentity? {
+        guard app.isSeal else { return nil }
+        let metadata = await MainActor.run { SelfAppMetadata.current() }
+        return ProfileOnlyRenewalPolicy.liveIdentity(
+            installedIdentity: metadata?.installedIdentity,
+            app: app
+        )
+    }
+
     private func shouldUseProfileOnlyRenewal(
         app: AppRecord,
+        liveIdentity: LiveProfileOnlyIdentity?,
         accountID: UUID,
         deviceIdentifier: String,
         targetBundleIdentifier: String,
@@ -779,9 +826,19 @@ actor SigningCoordinator {
               installAfterSigning,
               app.accountID == accountID,
               app.mappedBundleIdentifier?.caseInsensitiveCompare(targetBundleIdentifier) == .orderedSame,
-              app.signedDeviceIdentifier?.caseInsensitiveCompare(deviceIdentifier) == .orderedSame,
-              case .eligible = ProfileOnlyRenewalPolicy.evaluate(app: app),
-              let storedSerial = app.certificateSerialNumber else {
+              ProfileOnlyRenewalPolicy.isBoundToCurrentDevice(
+                  app: app,
+                  deviceIdentifier: deviceIdentifier,
+                  liveIdentity: liveIdentity
+              ),
+              case .eligible = ProfileOnlyRenewalPolicy.evaluate(
+                  app: app,
+                  liveIdentity: liveIdentity
+              ),
+              let storedSerial = ProfileOnlyRenewalPolicy.effectiveCertificateSerialNumber(
+                  app: app,
+                  liveIdentity: liveIdentity
+              ) else {
             return false
         }
         guard let selectedCertificateSerialNumber else { return true }

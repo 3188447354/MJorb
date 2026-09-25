@@ -1472,9 +1472,31 @@ actor ApplePortalSigningService {
                 reuseStatusBySerial: reuseStatusBySerial,
                 runningSealSerialNumbers: sealActualSignerSerials
             )
-            guard candidates.isEmpty == false else { throw failure }
+            // 🔴 **绝不自动撤销「运行中 Seal」正在用的证书**（2026-09-26，构建 46 真机）。
+            //
+            // 构建 46 日志完整重演了这条链路：01:24:37 `证书轮换：撤销 …442EB5AF，
+            // 原因=无本机私钥，运行中Seal=是` → 重签 Seal → 01:24:50「3 秒内进程仍存活
+            //（转场未生效），强制 exit(0)」→ 01:25:30 `SEAL-SELF-109` 中止。
+            // 撤销之后 Seal 只能靠本事务末尾的**自替换安装**恢复，那一步失败 Seal 当场打不开
+            //（构建 38 就是这样变砖的）。上游 `CertificateProvisioningFlow` 里撤销**必须经
+            // 用户确认**，本仓没有等价的确认入口 ⇒ 这里的选择是**不做**（剔除候选）。
+            // 剔除后为空 ⇒ `throw failure`（原 `SEAL-CERT-204b` 名额满），交回既有的
+            // 自动清理 / `SEAL-CERT-204e` 用户确认路径 —— 那条路径同样跳过 Seal 的证书。
+            let rotationCandidates = SigningCertificateRotationGate
+                .candidatesExcludingRunningSealCertificate(
+                    candidates: candidates,
+                    isSigningSeal: isSeal
+                )
+            guard rotationCandidates.isEmpty == false else {
+                await diagnostic(
+                    "证书轮换：候选只剩 Seal 正在使用的证书 ⇒ 不自动撤销"
+                        + "（撤销后 Seal 需重装，那一步失败即打不开），交回既有清理/确认路径",
+                    level: .warning
+                )
+                throw failure
+            }
             return try await rotateCertificatesAndCreateIdentity(
-                candidates: candidates,
+                candidates: rotationCandidates,
                 sealSignerConfirmed: sealSignerConfirmed,
                 certificates: certificates,
                 secret: secret,

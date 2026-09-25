@@ -58,8 +58,13 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
 - 序列号跨来源比对必须**归一化（去前导零/大小写）**，否则误判「证书已轮换」（`normalizedSerialNumber`）。
 - 签名/续签处于 LocalDevVPN 环境，无法可靠自动重登 Apple；会话过期统一引导到「我的」页重新验证，
   **不要实现会触发 2FA 的签名页验证码路径**。
-- `SigningCoordinator` 里预拉起隧道的 `channelStart = Task { installChannel.start() }` 在缓存命中
-  提前 return / 抛错路径上不会被取消，会与安装阶段的 `start()` 并发 —— 碰这块时一并处理。
+- `SigningCoordinator` 里预拉起隧道的 `channelStart = Task { installChannel.start() }`：
+  **这条已于 2026-09-26 逐行复核，确认不再是缺陷** —— 旧记录说「缓存命中提前 return / 抛错路径上
+  不会被取消，会与安装阶段的 `start()` 并发」，两点都不成立：
+  ① 紧邻的 `defer { channelStart?.cancel() }` 就挂在同一个 `do` 作用域上，提前 return 与 throw
+     都会执行它；② `MinimuxerInstallChannel.start()` 本身是**单飞**的
+     （`if let inFlightStart { return try await inFlightStart.value }`，「已有诊断在跑就加入它」）。
+  ⇒ **别再照抄旧记录去「顺手修」它**；要动隧道启动，先读这两个位置。
 
 ### 安装
 - 上传与安装必须在**同一条缓存 RemotePairing 会话**上（jas / IdeviceGateway 共同不变量）；
@@ -123,6 +128,29 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
   ⇒ 默认值要在「不打扰用户」那侧，想弹阻断式提示必须**显式**传 `true`。守卫 **R71②**。
 
 ### 续签
+- 🔴 **「只更新描述文件」的准入有两条通道，缺一条就等于没有**（2026-09-26，构建 46 真机）：
+  ① **记录通道** `ProfileOnlyRenewalPolicy.evaluate(app:)` —— 要求持久化记录里的签名身份 /
+     目标记录 / 已装产物齐全；
+  ② **实时身份通道** `evaluate(app:liveIdentity:)` —— 以**运行产物**为准
+     （`SelfAppMetadata.current()` 读运行包 CMS 身份，对齐上游 SideStore
+     `CertificateManager.getSigningCertificate(at: Bundle.Info.activeBundleURL)`）。
+  ⚠️ 只有 ① 时，**Seal 自身永远不合格**：它的记录由 `SelfAppRegistrar` 维护，而它**从不写**
+  `signedDeviceIdentifier` / `signingTargets` / `signedIPARelativePath`（⇒ `hasSignedArtifact`
+  恒为 false）⇒ 2026-09-25 那次「不按身份排除 Seal」（R82）在真机上**一次都没生效过**，
+  每次续签仍走完整重签 + 自替换。**判据要同时改准入与执行两侧**（守卫 R82③ + R84①③）。
+  ⚠️ 实时身份**只在 `app.isSeal` 时读**：`SelfAppMetadata.current()` 读 `Bundle.main`，
+  对第三方 App 用会读成 **Seal 自己**的身份（假阳性）。
+- 🔴 **`SEAL-PROFILE-363` 只是诊断日志，不决定续签路径**（2026-09-26 起）。
+  旧行为「设备端核验没明确通过 ⇒ 回落完整重签」是「续签全都要重装」的直接来源。
+  上游 `refresh` 管线**根本不枚举设备描述文件**（`dumpProfiles` 在 SideStore 全仓只有设置页
+  一处业务调用）；真正的安全网是**注入之后逐份读回**（`ProfileOnlyProvisioningProfileInstaller`
+  → `SEAL-PROFILE-354`），注入没落地照样报错。守卫 R84④ 钉住「不得再 `useProfileOnlyRenewal = false`」。
+- 🔴 **绝不自动撤销「运行中 Seal 正在用」的证书**（`SigningCertificateRotationGate`）。
+  撤销后 Seal 只能靠自替换安装恢复，那一步失败 Seal 当场打不开（构建 38 变砖同因；
+  构建 46 又重演了一次：撤销 → 重签 → 强制 exit(0) → `SEAL-SELF-109` → 续签中断）。
+  上游 `CertificateProvisioningFlow` 里撤销**必须经用户确认**；本仓**没有**「撤 Seal 自己的证书」
+  的确认入口（`revokeKeylessCertificatesAfterConfirmation` 会跳过 Seal 的证书）
+  ⇒ 正确的选择是**不做**（剔除候选），不是「自动做完再补救」。守卫 R84⑥。
 - 免费账号 3-app 上限是**设备级、跨不同 Apple ID/team 累计**；判据在
   `SigningCoordinator` 的设备级计数（`account.isFreeTeam`、排除付费账号应用、排除待装自身、`>=3`
   抛 `SEAL-APPID-DEVICELIMIT`）。
@@ -185,6 +213,16 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
 - **纯函数化才能测**：判据落在 actor / 网络 / `#if !targetEnvironment(simulator)` 里就测不到。
   新增不变量时把判定抽成可单测的纯函数（`errorDetail`/`isTerminalInstallError`/
   `InstallFailureActionPolicy` 都是这么挪出 `#if` 的），并补一条守卫测试。
+- 🔴 **写守卫时，新 `check()` 必须先跑 `check-mutation-power.py <tree> <前缀>` 看基线**，
+  再跑整轮。整轮在 OneDrive 上 >20 分钟，而新写的判据最容易犯两种**静默恒假**的错
+  （2026-09-26 一轮里同时踩到两条，都是靠 `ASSERT FAILURES` 的基线失败才发现的）：
+  ① 判「源码里不得出现某写法」时**忘了 `strip_comments`** —— 注释里引用了那个写法，
+     于是断言恒假。`strip_comments()` 保留字符串字面量，所以 `code: "SEAL-XXX"` 这类判据不受影响；
+  ② 判据里写了一条**被 Swift 折行拆开**的连续字符串（例如
+     `SigningCertificateRotationGate\n    .candidatesExcludingRunningSealCertificate(`）
+     ⇒ 恒假。**先 `grep` 确认那串在文件里真的连续存在**。
+  同族：`section()` 的 start/end marker 也必须先用 `grep` 核对（Read 工具会截断长行，
+  照抄截断后的文本必然失配）。
 
 ## 6. 版本与发布
 

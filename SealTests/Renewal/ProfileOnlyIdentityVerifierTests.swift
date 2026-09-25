@@ -45,8 +45,12 @@ struct ProfileOnlyIdentityVerifierTests {
     /// 🔴 本测试是这次修复的**核心回归钉**。
     ///
     /// `nil` = 设备通道或解析不可用 ⇒ **无法核验**。旧实现把它当成「核验失败」并
-    /// 终结本轮，导致应用永久续签不了。新行为必须落到 `.unavailable`，
-    /// 由调用方**回落完整重签**，而不是抛错。
+    /// 终结本轮，导致应用永久续签不了。新行为必须落到 `.unavailable`，而不是抛错。
+    ///
+    /// ⚠️ **2026-09-26 起调用方不再回落完整重签**：核验结果只作为诊断信号留痕
+    ///（`SEAL-PROFILE-363` 的语义已从「已回落」改成「未确认但继续」），
+    /// 因为上游 `refresh` 管线根本不枚举设备描述文件。这里的四态契约不变 ——
+    /// 它仍然必须把「无法核验」与「身份不符」**分开**。
     @Test
     func unavailableWhenDeviceInspectionIsImpossible() async {
         let app = makeApp()

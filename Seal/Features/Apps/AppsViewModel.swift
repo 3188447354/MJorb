@@ -560,6 +560,28 @@ final class AppsViewModel: ObservableObject {
         let installedRecords = installedApps
         guard installedRecords.isEmpty == false else { return false }
 
+        // 🔴 **与前台操作互斥**（2026-09-26，构建 46 真机）。
+        //
+        // 设备核验走的是同步 FFI（`Minimuxer.isAppInstalled`），和签名 / 安装 / 续签
+        // 共用同一条 RSD 会话。构建 46 日志里 3 次 `SEAL-INSTALL-707`
+        //（01:25:01 / 01:26:40 / 01:29:11）全部落在续签与自替换进行中 ——
+        // 它既抢不到会话（预算必然超时），又把失败弹窗推给用户。
+        // 上游 `refresh` 管线在批次开始处只做**一次** `ensureMinimuxerReady()`，
+        // 期间不做任何并发的设备查询 ⇒ 这里对齐：有前台操作时**直接跳过**，
+        // 不探测、不报错、不弹窗（列表保留本地快照，下次空闲再核验）。
+        //
+        // ⚠️ 这与 `MaintenanceGate` 是**两条不同的闸门**：维护作业是「低优先级、
+        //    可抢占」，它自己会让路；而这里是**用户主动打开已安装页**触发的核验，
+        //    必须由它自己让路，否则就会去抢续签的设备会话。
+        guard operationCoordinator?.activeLease == nil else {
+            try? await logStore?.append(
+                category: .system,
+                message: "已安装页设备核验跳过：有前台操作正在进行（避免与其抢占同一条设备会话）",
+                code: "SEAL-INSTALL-708"
+            )
+            return false
+        }
+
         // 导入与已安装 IPA 相同（签名后的 Bundle ID 一致）会残留多条相同身份的记录，
         // iOS 无法并存同 Bundle ID 的应用，这里按身份合并去重，只保留真实存在的一条。
         var mutations = [await removeDuplicateInstalledRecords(installedRecords)]

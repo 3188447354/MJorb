@@ -68,7 +68,7 @@
 | `SEAL-RENEW-024` | 批量续签结果已从持久化载荷恢复 | `AppsViewModel.swift` |
 | `SEAL-RENEW-025` | 批量续签结果抽屉已关闭（带最终计数） | `AppsViewModel.swift` |
 | `SEAL-RENEW-026` | 上次续签被中断，但 N 个应用的结果**已从载荷结算**（不再标为未知）—— 正常路径留痕 | `AppsViewModel.swift` |
-| `SEAL-PROFILE-363` | `profile-only`（只换描述文件）的设备端身份核验没明确通过，**已自动回落完整重签**（带原因：记录缺字段 / 设备端没有该身份 / 设备端枚举不可用）。出现它意味着这一项比预期慢，但**仍会成功** —— 不是失败 | `SigningCoordinator.swift` |
+| `SEAL-PROFILE-363` | `profile-only`（只换描述文件）的设备端身份核验**没有确认**（带原因：记录缺字段 / 设备端没有该身份 / 设备端枚举不可用）。⚠️ **2026-09-26 起它只是诊断信号，不再回落完整重签** —— 按上游 SideStore 的做法继续只更新描述文件，由注入后的逐份读回（`SEAL-PROFILE-354`）兜底。出现它意味着记录与设备现实可能有偏差，但**仍会成功** —— 不是失败 | `SigningCoordinator.swift` |
 
 ## 账号清单同步
 

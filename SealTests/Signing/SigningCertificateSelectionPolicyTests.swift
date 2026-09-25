@@ -273,6 +273,78 @@ struct SigningCertificateSelectionPolicyTests {
         #expect(binding == .consistent)
     }
 
+    // MARK: - 缺账号绑定（2026-09-25 真机，构建 43）
+
+    /// 🔴 核心回归：记录里**压根没有**账号绑定 —— 设备端扫回的记录就是这样
+    /// （`AppRecordRecovery` 扫回时按 Team 匹配账号，而扫回发生在「配对之后、
+    /// 添加 Apple ID 之前」，那一刻账号库还是空的）。当前账号与记录的 Team 相同
+    /// ⇒ 必须**放行**，并如实报出「这是缺绑定回退」。
+    ///
+    /// 旧实现直接抛 `SEAL-AUTH-110`「缺少签名账号记录」⇒ 扫回的记录**永远**续签不了。
+    /// 真机日志（构建 43）：`开始续签：Guoguo，Apple ID：sun***@gmail.com` 之后
+    /// **立刻**报 110 —— 上游 `RenewalAccountResolver` 已按同 Team 解析成功，是这里又拦下的。
+    @Test
+    func missingAccountBindingFallsBackToSameTeam() throws {
+        let account = makeAccount(localSerial: "LOCAL", selectedSerial: "LOCAL")
+        var app = makeApp(state: .installed)
+        app.accountID = nil
+        app.signingTeamID = account.teamID
+
+        let binding = try SigningCertificateSelectionPolicy.validateAccountAndTeam(
+            for: app,
+            account: account,
+            knownAccountIDs: Set([account.id])
+        )
+
+        #expect(binding == .recoveredFromMissingBinding)
+    }
+
+    /// 缺绑定**不能**成为绕过 Team 判据的后门：Team 不同仍然必须拒绝
+    /// （换 Team 会让 Bundle ID 前缀 / Keychain 访问组 / App Group 失配）。
+    @Test
+    func missingAccountBindingStillRejectsDifferentTeam() {
+        let account = makeAccount(localSerial: "LOCAL", selectedSerial: "LOCAL")
+        var app = makeApp(state: .installed)
+        app.accountID = nil
+        app.signingTeamID = "OTHERTEAM"
+
+        do {
+            try SigningCertificateSelectionPolicy.validateAccountAndTeam(
+                for: app,
+                account: account,
+                knownAccountIDs: Set([account.id])
+            )
+            Issue.record("Expected Team mismatch failure for a missing binding")
+        } catch let failure as ImportFailure {
+            #expect(failure.code == "SEAL-AUTH-112")
+        } catch {
+            Issue.record("Expected ImportFailure, got \(error)")
+        }
+    }
+
+    /// 既没有账号绑定、**又**没有 Team ⇒ 仍然拒绝（`SEAL-AUTH-113`）。
+    /// 放行的前提是「Team 能证明签名身份不变」；两样都没有就无从判断，宁可拒绝。
+    @Test
+    func missingAccountBindingAndMissingTeamStillRejected() {
+        let account = makeAccount(localSerial: "LOCAL", selectedSerial: "LOCAL")
+        var app = makeApp(state: .installed)
+        app.accountID = nil
+        app.signingTeamID = nil
+
+        do {
+            try SigningCertificateSelectionPolicy.validateAccountAndTeam(
+                for: app,
+                account: account,
+                knownAccountIDs: Set([account.id])
+            )
+            Issue.record("Expected missing-team failure when there is no binding either")
+        } catch let failure as ImportFailure {
+            #expect(failure.code == "SEAL-AUTH-113")
+        } catch {
+            Issue.record("Expected ImportFailure, got \(error)")
+        }
+    }
+
     private func makeAccount(
         localSerial: String?,
         selectedSerial: String?

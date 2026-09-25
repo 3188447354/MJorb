@@ -244,16 +244,31 @@ actor SigningCoordinator {
             account: account,
             knownAccountIDs: knownAccountIDs
         )
-        // 绑定账号已**悬空**（删过 Apple ID 再重新添加 ⇒ 账号拿到新 UUID）⇒ 本轮是按
-        // **同 Team** 放行的，必须留痕：否则日志里只看到「续签成功」，既说不出用的是哪个
-        // 账号、也看不出「记录已经过期」。⚠️ 只记 email 的掩码形式（日志会脱敏 UUID）。
-        if case .recoveredFromDanglingBinding = accountBinding {
+        // 账号绑定不可用（悬空 / 压根没记过）⇒ 本轮是按**同 Team** 放行的，必须留痕：
+        // 否则日志里只看到「续签成功」，既说不出用的是哪个账号、也看不出「记录已经过期」。
+        // ⚠️ 只记 email 的掩码形式（日志会脱敏 UUID）。
+        // 🔴 两种成因**分开记**：悬空 = 用户删过 Apple ID（重新添加会拿到新 UUID）；
+        //    缺绑定 = 这条记录是设备端扫回来的（本地从未签过）。两者下一步动作不同，
+        //    折成一条会丢掉归因能力（2026-09-25 构建 43 真机：扫回的记录全部报
+        //    `SEAL-AUTH-110`，日志里既没有回退记录、也看不出它其实是「扫回的」）。
+        switch accountBinding {
+        case .consistent:
+            break
+        case .recoveredFromDanglingBinding:
             try? await logStore?.append(
                 category: .signing,
                 level: .info,
                 message: "续签账号回退：\(app.name) 记录的签名账号已不在账号库中，"
                     + "按同 Team（\(account.teamID)）改用 \(account.maskedEmail) 续签。",
                 code: "SEAL-AUTH-111a"
+            )
+        case .recoveredFromMissingBinding:
+            try? await logStore?.append(
+                category: .signing,
+                level: .info,
+                message: "续签账号回退：\(app.name) 没有记录签名账号（设备端扫回重建的记录），"
+                    + "按同 Team（\(account.teamID)）改用 \(account.maskedEmail) 续签。",
+                code: "SEAL-AUTH-111b"
             )
         }
         let effectiveCertificateSerialNumber = try SigningCertificateSelectionPolicy

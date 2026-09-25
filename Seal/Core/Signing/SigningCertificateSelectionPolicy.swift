@@ -13,6 +13,13 @@ enum SigningCertificateSelectionPolicy {
         case consistent
         /// 绑定账号已**悬空**（账号被删过、又重新添加 ⇒ UUID 变了），已按同 Team 放行
         case recoveredFromDanglingBinding(previousAccountID: UUID)
+        /// 记录里**从来没有**账号绑定 —— 设备端扫回的记录就是这样，已按同 Team 放行。
+        ///
+        /// 与 `.recoveredFromDanglingBinding` 是**同一族、不同成因**：那条是「UUID 指向一个
+        /// 已经不在账号库里的账号」，这条是「压根没记过」。两者的**放行判据相同**
+        /// （都交给同 `signingTeamID` 判据），但日志必须能分开 ——
+        /// 前者说明用户删过 Apple ID，后者说明这条记录是设备端扫回来的（本地从未签过）。
+        case recoveredFromMissingBinding
     }
 
     /// 校验「所选账号」有没有资格给这个应用续签。
@@ -42,7 +49,36 @@ enum SigningCertificateSelectionPolicy {
     ///
     /// - 绑定账号**仍在**账号库 ⇒ 这是真的「用了别的账号」⇒ **拒绝**（保护不丢）；
     /// - 绑定账号**已悬空** ⇒ 交给同 `signingTeamID` 判据：同 Team 放行（签名身份、
-    ///   Keychain 访问组、App Group 都不变），换 Team 拒绝（`SEAL-AUTH-112`）。
+    ///   Keychain 访问组、App Group 都不变），换 Team 拒绝（`SEAL-AUTH-112`）；
+    /// - 绑定账号**压根没有**（`nil`）⇒ 同上（交给同 Team 判据）。见下节。
+    ///
+    /// ## 第四种表现：`accountID` 压根没有（2026-09-25 真机，构建 43 实证）
+    ///
+    /// 上一节讲的是「UUID 指向一个已经不存在的账号」。这一节是「**从来没记过账号**」——
+    /// 旧实现把它当成「无法自动续签」直接抛 `SEAL-AUTH-110`，而它其实是**合法状态**：
+    ///
+    /// `AppRecordRecovery.recoverRecordsFromDeviceProfiles` 扫回记录时按 Team 匹配账号
+    /// （`accounts.first { $0.teamID == draft.teamIdentifier }?.id`），而**扫回恰好发生在
+    /// 「配对成功之后、用户添加 Apple ID 之前」** ⇒ 那一刻账号库是空的 ⇒ `accountID` 写 `nil`。
+    /// 之后导入覆盖更新会**如实继承**这个 `nil`
+    /// （`ImportWorkflow.makeInstalledUpdateRecord` 传的就是 `existing.accountID`），
+    /// 于是这条记录**永远**续签不了。
+    ///
+    /// 真机现象（构建 43）：重装 Seal → 扫回 2 个应用 → 导入 IPA 覆盖更新 → 点「立即续签」
+    /// ⇒ **全部**报 `SEAL-AUTH-110`「缺少签名账号记录」；而**紧邻的上一条**日志正是
+    /// `开始续签：Guoguo，Apple ID：sun***@gmail.com，Team：…` ——
+    /// 说明 `RenewalAccountResolver` 已经按同 Team **成功解析出账号**（上游放行），
+    /// 是**这里**又把它拦下了 ⇒ 又一次「上游放行、下游又拦，等于没修」。
+    ///
+    /// ⇒ 这与 `RenewalAccountResolver`（守卫 R68）／上一节的悬空 UUID（R70）是
+    /// **同一个「悬空引用」陷阱家族的第四处**。判据不变：**决定签名身份的是
+    /// `signingTeamID`，不是 `accountID`**。缺 `accountID` 不影响安全性 ——
+    /// 同 Team 的账号签出来的是同一个签名身份，installd 覆盖的仍是设备上同一个 App。
+    ///
+    /// ⚠️ 放行的**前提**是 Team 判据仍然生效：既没有账号绑定、**又**没有 Team 时，
+    /// 会落到下面的 `SEAL-AUTH-113`（缺少团队记录）⇒ 仍然拒绝 ✓。
+    /// 续签成功后 `SigningCoordinator.applySigningResult` 会把 `accountID` 写回记录
+    /// （`app.accountID = accountID`）⇒ 这条记录**自愈**，下次就走正常路径了。
     @discardableResult
     static func validateAccountAndTeam(
         for app: AppRecord,
@@ -75,32 +111,34 @@ enum SigningCertificateSelectionPolicy {
             return .consistent
         }
         guard app.state == .installed || app.isSeal else { return .consistent }
-        guard let boundAccountID = app.accountID else {
-            throw ImportFailure(
-                title: "缺少签名账号记录",
-                reason: "这个应用没有记录上次签名使用的 Apple ID，无法自动续签。",
-                recovery: "重新导入 IPA 并签名安装；Seal 自身请在「我的」中添加对应 Apple ID",
-                code: "SEAL-AUTH-110"
-            )
-        }
-        // 🔴 刻意**不做**「UUID 直接相等」的 guard（理由见本函数文档注释）：
-        //    绑定账号可能已**悬空**（删过 Apple ID 再重新添加 ⇒ 账号拿到新 UUID），
-        //    那时「UUID 不等」并不代表「用了别的账号」，只代表「记录过期了」。
+        // 🔴 刻意**不做**「`accountID` 必须有值」的 guard（理由见本函数文档注释的
+        //    「第四种表现」）：记录里没有账号绑定是**合法状态** —— 设备端扫回的记录就是
+        //    这样（扫回发生在「配对之后、添加 Apple ID 之前」，那一刻账号库还是空的）。
+        //    决定签名身份的是 `signingTeamID`，缺 `accountID` 只说明「本地没记过」，
+        //    不影响同 Team 续签的安全性。
         var binding: AccountBinding = .consistent
-        if boundAccountID != account.id {
-            // 绑定账号**仍在**账号库 ⇒ 这才是真的「用了别的账号」⇒ 拒绝（保护不丢）。
-            // 传 `nil`（未提供账号库）时视为「仍存在」⇒ 保持旧行为，宁可拒绝。
-            let boundAccountStillExists = knownAccountIDs?.contains(boundAccountID) ?? true
-            if boundAccountStillExists {
-                throw ImportFailure(
-                    title: "Apple ID 不匹配",
-                    reason: "这个应用是用其他 Apple ID 签名的，续签必须使用原账号。",
-                    recovery: "在「我的」中切换到原 Apple ID，或用当前账号重新签名安装",
-                    code: "SEAL-AUTH-111"
-                )
+        if let boundAccountID = app.accountID {
+            // 🔴 同样刻意**不做**「UUID 直接相等」的 guard（理由见本函数文档注释）：
+            //    绑定账号可能已**悬空**（删过 Apple ID 再重新添加 ⇒ 账号拿到新 UUID），
+            //    那时「UUID 不等」并不代表「用了别的账号」，只代表「记录过期了」。
+            if boundAccountID != account.id {
+                // 绑定账号**仍在**账号库 ⇒ 这才是真的「用了别的账号」⇒ 拒绝（保护不丢）。
+                // 传 `nil`（未提供账号库）时视为「仍存在」⇒ 保持旧行为，宁可拒绝。
+                let boundAccountStillExists = knownAccountIDs?.contains(boundAccountID) ?? true
+                if boundAccountStillExists {
+                    throw ImportFailure(
+                        title: "Apple ID 不匹配",
+                        reason: "这个应用是用其他 Apple ID 签名的，续签必须使用原账号。",
+                        recovery: "在「我的」中切换到原 Apple ID，或用当前账号重新签名安装",
+                        code: "SEAL-AUTH-111"
+                    )
+                }
+                // 已悬空 ⇒ 不在这里拦，落到下面的同 Team 判据（同 Team 才放行）。
+                binding = .recoveredFromDanglingBinding(previousAccountID: boundAccountID)
             }
-            // 已悬空 ⇒ 不在这里拦，落到下面的同 Team 判据（同 Team 才放行）。
-            binding = .recoveredFromDanglingBinding(previousAccountID: boundAccountID)
+        } else {
+            // 记录里从来没有账号绑定（设备端扫回的记录）⇒ 同样交给同 Team 判据。
+            binding = .recoveredFromMissingBinding
         }
         guard let teamID = normalized(app.signingTeamID) else {
             throw ImportFailure(

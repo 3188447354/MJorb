@@ -4223,6 +4223,60 @@ def violations(load=read):
           "R70⑤: 悬空回退之后**必须**仍然过 Team 判据（换 Team 要拒绝，`SEAL-AUTH-112`）——"
           "否则「悬空」会变成绕过团队校验的后门。两处（Seal 分支 ＋ 第三方分支）都要在。")
 
+    # R81: `accountID` 缺失不得拦下续签（2026-09-25 真机，构建 43）。
+    #
+    # 与 R68（`RenewalAccountResolver`）／R70（悬空 UUID）是**同一个「悬空引用」陷阱家族的
+    # 第四处**：前两处讲「UUID 指向一个已不存在的账号」，这一处是「**从来没记过**账号」。
+    #
+    # 成因：`AppRecordRecovery.recoverRecordsFromDeviceProfiles` 扫回记录时按 Team 匹配账号
+    # （`accounts.first { $0.teamID == draft.teamIdentifier }?.id`），而扫回发生在
+    # 「配对成功之后、用户添加 Apple ID 之前」⇒ 那一刻账号库是空的 ⇒ 记录里 `accountID`
+    # 写 nil；导入覆盖更新会**如实继承**它（`ImportWorkflow.makeInstalledUpdateRecord`
+    # 传的就是 `existing.accountID`）⇒ 这条记录**永远**续签不了。
+    #
+    # 真机现象（构建 43）：重装 Seal → 扫回 2 个应用 → 导入 IPA 覆盖更新 → 点「立即续签」
+    # ⇒ 全部报 `SEAL-AUTH-110`，而**紧邻的上一条**日志正是
+    # `开始续签：Guoguo，Apple ID：sun***@gmail.com` ⇒ 上游已按同 Team 解析成功，
+    # 是 policy 又拦下的（又一次「上游放行、下游又拦，等于没修」）。
+    r81_policy = load("Seal/Core/Signing/SigningCertificateSelectionPolicy.swift")
+    r81_coordinator = load("Seal/Core/Signing/SigningCoordinator.swift")
+    r81_tests = load("SealTests/Signing/SigningCertificateSelectionPolicyTests.swift")
+    # ⚠️ 只查**代码形式**（`code: "SEAL-AUTH-110"`）：本函数的文档注释里刻意写了
+    #    `SEAL-AUTH-110` 来记录第四种表现，查裸串会恒假红。
+    check('code: "SEAL-AUTH-110"' not in r81_policy,
+          "R81①: `validateAccountAndTeam` 不得再因「记录里没有账号绑定」拒绝续签 —— "
+          "`accountID` 缺失是**合法状态**（设备端扫回的记录），旧实现抛 `SEAL-AUTH-110` "
+          "让这类记录**永远**续签不了（2026-09-25 构建 43 真机）。")
+    check("        if let boundAccountID = app.accountID {" in r81_policy
+          and "binding = .recoveredFromMissingBinding" in r81_policy
+          and "case recoveredFromMissingBinding" in r81_policy,
+          "R81②: `accountID` 缺失必须走 `.recoveredFromMissingBinding` 分支、"
+          "落到同 Team 判据，而不是提前 `throw`。")
+    check("SEAL-AUTH-111b" in r81_coordinator,
+          "R81③: 缺绑定回退必须能被调用方看见 —— `SigningCoordinator` 要写 "
+          "`SEAL-AUTH-111b`（与悬空的 `-111a` **分开**记：两种成因的下一步动作不同）。")
+    # ④ 缺绑定分支**不得提前 return**，且它之后必须紧跟着同 Team 判据 ——
+    #    否则「缺绑定」就成了绕过团队校验的后门（换 Team 也会被放行）。
+    #    ⚠️ 区段终点用 `title: "缺少团队记录"`（唯一）而**不是**那行 `guard let teamID`：
+    #    后者在 Seal 分支（12 空格）里也含 8 空格子串 ⇒ `split` 会取到更早那处、提前截断。
+    r81_tail = section_or_empty(
+        r81_policy,
+        "        } else {",
+        'title: "缺少团队记录"'
+    )
+    check("binding = .recoveredFromMissingBinding" in r81_tail
+          and "guard let teamID = normalized(app.signingTeamID) else {" in r81_tail
+          and "return" not in r81_tail,
+          "R81④: 缺绑定分支**不得提前 return** —— 它必须落到下面的同 Team 判据"
+          "（换 Team 要拒绝），否则「缺绑定」会变成绕过团队校验的后门。")
+    # ⑤ 行为由单测钉住（源码断言只能证明「结构在」，证明不了「真的放行」）。
+    check("missingAccountBindingFallsBackToSameTeam" in r81_tests
+          and "missingAccountBindingStillRejectsDifferentTeam" in r81_tests
+          and "missingAccountBindingAndMissingTeamStillRejected" in r81_tests
+          and "#expect(binding == .recoveredFromMissingBinding)" in r81_tests,
+          "R81⑤: 缺绑定必须有三条单测（同 Team 放行 / 换 Team 拒绝 / 连 Team 都没有也拒绝）"
+          "—— 这类判据的错法不崩、不编译失败，只在真机上「点了续签没反应」。")
+
     # R71: 已安装列表设备核验 ＋ 安装重试路径的三条保护（2026-09-25 审查项 P1/P2/P4）。
     r71_verifier = load("Seal/Features/Apps/InstalledAppDeviceVerifier.swift")
     r71_channel = load("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift")
@@ -6449,9 +6503,11 @@ def main():
          "R69⑤: 配对助手的"),
         # ── R70：悬空绑定不得用裸 UUID 比较拦下续签（2026-09-25 构建 37 真机）──
         # ① 悬空分流退回「裸比较」⇒ R70① 报红（这正是真机上线时的形态）。
+        #    ⚠️ 缩进是 12 空格：R81 把这段包进了 `if let boundAccountID = app.accountID {`
+        #    （`accountID` 缺失也是合法状态，见 R81）—— 改缩进时要同步这里。
         ("Seal/Core/Signing/SigningCertificateSelectionPolicy.swift",
-         "        if boundAccountID != account.id {",
-         "        if boundAccountID == account.id {",
+         "            if boundAccountID != account.id {",
+         "            if boundAccountID == account.id {",
          "R70①: `validateAccountAndTeam` 必须按"),
         # ② 缺省值改成 `?? false` ⇒ 未提供账号库的调用点会静默放行 ⇒ R70② 报红。
         ("Seal/Core/Signing/SigningCertificateSelectionPolicy.swift",
@@ -6777,6 +6833,31 @@ def main():
          "                deviceScanner: DeviceInstalledAppScanner.live\n",
          "",
          "Scan/wire:"),
+        # ── R81：`accountID` 缺失不得拦下续签（2026-09-25 构建 43 真机）──
+        # ① 删掉「缺绑定 ⇒ 同 Team 放行」分支 ⇒ R81②/R81④ 报红（扫回的记录又续签不了）。
+        ("Seal/Core/Signing/SigningCertificateSelectionPolicy.swift",
+         "        } else {\n"
+         "            // 记录里从来没有账号绑定（设备端扫回的记录）⇒ 同样交给同 Team 判据。\n"
+         "            binding = .recoveredFromMissingBinding\n"
+         "        }",
+         "        }",
+         "R81②: `accountID` 缺失必须走"),
+        # ② 缺绑定分支里提前 `return`（跳过 Team 判据）⇒ R81④ 报红（顺序就是安全本身）。
+        ("Seal/Core/Signing/SigningCertificateSelectionPolicy.swift",
+         "            binding = .recoveredFromMissingBinding\n        }",
+         "            binding = .recoveredFromMissingBinding\n            return binding\n        }",
+         "R81④: 缺绑定分支"),
+        # ③ 去掉缺绑定的留痕码 ⇒ R81③ 报红（日志里看不出这是「扫回的记录」）。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         'code: "SEAL-AUTH-111b"',
+         'code: "SEAL-AUTH-111a"',
+         "R81③: 缺绑定回退必须能被调用方看见"),
+        # ④ 把「缺绑定 ⇒ 同 Team 放行」改回「直接抛 `SEAL-AUTH-110`」⇒ R81① 报红
+        #    （这正是真机上线时的形态：上游放行、下游又拦）。
+        ("Seal/Core/Signing/SigningCertificateSelectionPolicy.swift",
+         "            binding = .recoveredFromMissingBinding\n        }",
+         '            throw ImportFailure(code: "SEAL-AUTH-110")\n        }',
+         "R81①: `validateAccountAndTeam` 不得再因"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

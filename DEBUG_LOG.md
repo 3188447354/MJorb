@@ -5,6 +5,46 @@
 
 ---
 
+## 2026-09-25 扫回的记录导入覆盖更新后仍续签不了（`accountID` 压根没有）
+
+- **现象**（用户原话）：「当我导入已有应用时提示覆盖更新，点完就到了已安装页，但是点续签时却续签不了」
+  （构建 1.3.13 / 43 真机日志）。日志序列：18:13:31 `SEAL-RECOVER-001` 扫回 2 个应用 →
+  18:14:01 添加 Apple ID → 18:28:58 / 18:29:12 `SEAL-IPA-212` 导入覆盖更新 →
+  点「立即续签」⇒ 18:29:20 / 18:29:25 / 18:30:23 **三次全部**报
+  `SEAL-AUTH-110`「缺少签名账号记录」。
+- **根因**：`SigningCertificateSelectionPolicy.validateAccountAndTeam` 里有一句
+  `guard let boundAccountID = app.accountID else { throw … SEAL-AUTH-110 }`。
+  而扫回的记录 `accountID` 必然是 `nil` —— `AppRecordRecovery.recoverRecordsFromDeviceProfiles`
+  按 Team 匹配账号（`accounts.first { $0.teamID == draft.teamIdentifier }?.id`），
+  扫回**发生在「配对成功之后、用户添加 Apple ID 之前」**（日志：18:13:31 扫回、18:14:01 才添加）
+  ⇒ 那一刻账号库是空的 ⇒ 写 `nil`；导入覆盖更新又**如实继承**这个 `nil`
+  （`ImportWorkflow.makeInstalledUpdateRecord` 传的就是 `existing.accountID`）⇒ 这条记录**永远**续签不了。
+- 🔴 **又一次「上游放行、下游又拦，等于没修」**：日志里 `SEAL-AUTH-110` 的**上一条**正是
+  `开始续签：Guoguo，Apple ID：sun***@gmail.com，Team：…` —— 说明
+  `RenewalAccountResolver` 已按同 Team **成功解析出账号**，是 policy 又拦下的。
+  这是「**悬空引用**」陷阱家族的**第四种表现**（前三：证书轮换 `candidate.accountID == accountID`、
+  续签 `??` 兜底被悬空 UUID 短路、R70 的悬空 UUID 裸比较）。
+- **修复**：改**判据本身**，不是改文案 —— `accountID` 缺失是**合法状态**。
+  决定签名身份的是 `signingTeamID` 而不是 `accountID`；同 Team 的账号签出的是同一个签名身份，
+  installd 覆盖的仍是设备上同一个 App。`AccountBinding` 新增第三态
+  `.recoveredFromMissingBinding`（与 `.recoveredFromDanglingBinding` 同族不同成因：
+  那条是「UUID 指向已不存在的账号」，这条是「压根没记过」），放行后**仍过同 Team 判据** ——
+  既无绑定又无 Team 时落到 `SEAL-AUTH-113`，**仍然拒绝**（不是后门）。
+  `SigningCoordinator` 按态分记 `SEAL-AUTH-111b`（悬空的 `-111a` 保留，两者下一步动作不同）。
+  续签成功后 `applySigningResult` 会把 `accountID` 写回 ⇒ 记录**自愈**。
+- 🔴 **只改这一处就够**（已全仓核对）：`continueSigningRequest` 里也有
+  `guard let accountID = app.accountID … SEAL-AUTH-104c`，但 `requestSigning` 对
+  `belongsInInstalledList` 的应用**直接走 `startBatchRefresh`** ⇒ 那个分支不可达（与日志一致：
+  用户看到的是 110 而不是 104c）。`ProfileOnlyRenewalPolicy` 的 `app.accountID != nil`
+  与 `SigningCoordinator` 两处缓存命中判据（770 / 1623）都只是**优雅降级**（退回完整重签），
+  不是闸门；`SettingsViewModel` / `AppDetailView` 那两处只用于展示。
+- **涉及文件**：`Seal/Core/Signing/SigningCertificateSelectionPolicy.swift`、
+  `Seal/Core/Signing/SigningCoordinator.swift`、
+  `SealTests/Signing/SigningCertificateSelectionPolicyTests.swift`（+3 条）、
+  `Scripts/verify-release-safety.py`（**R81**：5 断言 + 4 变异；并把 R70① 的变异锚点缩进
+  8 → 12 空格 —— 本轮把那段包进了 `if let`）。
+- **验证状态**：⚠️ 编译 / 单测 / 真机回归待 CI 与真机确认（Windows 本机无法编译）。
+
 ## 2026-09-25 重装 Seal 后找不回已安装应用（设备端扫回）＋ 有效期秒级 ＋ 取消被记成超时
 
 - **现象**（用户原话）：「当我只卸载了 seal，其他 seal 签名的 ipa 没有卸载，但这样我重新安装 seal，

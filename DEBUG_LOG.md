@@ -5,6 +5,54 @@
 
 ---
 
+## 2026-09-26 恢复证书自动轮换：1.3.17 的「绝不撤销运行中 Seal 的证书」把免费账号锁死了
+
+- **背景**（用户原话）：「你这不自动给我撤销证书，我下载 seal 啥也干不了，全被拦截了」。
+  输入日志：构建 1.3.17 / 47（2026-09-26 09:03–09:05）。
+- **现象**（日志时间线）：
+  - 09:04:32「准备签名：LiveContainer」→ 09:04:39「证书轮换：候选只剩 Seal 正在使用的证书
+    ⇒ 不自动撤销」→ 09:04:41 `[SEAL-CERT-204b]`（3022 名额满）；
+  - 09:05:06「准备签名：微信」→ 09:05:19 同一条「不自动撤销」→ 09:05:22 `[SEAL-CERT-204b]`；
+  - 09:05:36「开始续签：Seal」→ 09:05:39 `[SEAL-PROFILE-334]` 当前证书不可续签。
+  ⇒ **三条路径（签第三方 App、签另一个、续签 Seal 自己）全部失败**，用户「啥也干不了」。
+- **根因**：1.3.17 为了修「撤销运行中 Seal 的证书 → 自替换失败 → 变砖」（构建 38 / 46），
+  在 `ApplePortalSigningService` 撞 204b 后的轮换分支前加了一道闸门
+  （`SigningCertificateRotationGate.candidatesExcludingRunningSealCertificate`）：
+  **签非 Seal 时剔除所有「运行中 Seal 正在用」的候选**；剔除后为空就 `throw` 回原始 204b。
+  ⚠️ 免费团队只有 **1 个**活动槽位，而 Seal 自己的证书在覆盖安装后**必然**丢失本机私钥
+  ⇒ 它**就是**唯一候选 ⇒ 被剔除 ⇒ 永远建不出新证书 ⇒ **永久死锁**。
+- **为什么「剔除」本来就是多余的**：`rotationRank` 早已把 Seal 的证书排在**最后**
+  （`isRunningSealCertificate ⇒ 3`，普通证书 0/1/2）⇒ 只有「别无选择」时才会撤到它 ——
+  这正是原设计：「最后撤 Seal 的证书 → 本事务末尾自替换恢复」。
+  另外两条路径（`SEAL-CERT-204e` 一键全撤、`CertificateCleanupPolicy` 自动清理）
+  也都跳过 Seal 的证书 ⇒ **没有任何出口**，只剩死锁。
+- **修复**：删除 `SigningCertificateRotationGate`，调用点恢复 `candidates: candidates`。
+  安全性改由**三条**保证（缺一条都不行）：① `rotationRank` 把 Seal 的证书排最后；
+  ② 撤销前必须发 warning 说清后果；③ 撤销后由 `resignAppsAffectedByCertificateRotation`
+  （`includeSeal: true`）在本事务末尾以新证书重签并重装 Seal 恢复。
+  ⇒ 变砖的真凶是**自替换安装失败**，不是撤销本身；而「不撤」的代价是链路整体不可用 ✗。
+- **同时改掉规格侧**：`CertificateTakeoverPolicy`（无生产调用点，但是被守卫与单测断言的
+  验收规格）原写「真实签名者 A 永远不能成为撤销候选」，且单测
+  `fullSlotsWithOnlySignerBlocks` 断言「只剩 A 一张时必须 blocked」——
+  那等于把死锁钉成契约。现改为「**A 排最后但仍进候选**」，
+  规格与运行时（`rotationCandidates`）重新同义。
+- **上游对照**：SideStore 的 `CertificateProvisioningFlow` 是**先创建** → 撞 3022 才
+  `replaceCertificate`（撤销 → 再创建）；它**从不把自己排除在候选之外** —— 本次与上游一致。
+- **涉及文件**：`Seal/Core/Signing/SigningCertificateRotationGate.swift`（删除）、
+  `Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、
+  `Seal/Core/Signing/CertificateTakeoverPolicy.swift`、
+  `SealTests/Signing/SigningCertificateRotationGateTests.swift`（删除）、
+  `SealTests/Signing/SigningCertificateMaterialPolicyTests.swift`、
+  `SealTests/Signing/CertificateTakeoverPolicyTests.swift`、`Scripts/verify-release-safety.py`。
+- **验证状态**：新增单测
+  `capacityRecoveryStillOffersTheRunningSealCertificateWhenItIsTheOnlyOne`（候选不得为空）
+  与 `fullSlotsWithOnlySignerStillOffersIt`（只剩 A 时仍提供候选）；
+  守卫 R84⑥ 改为**反向契约**（不得出现闸门、必须 `candidates: candidates,`、
+  Seal 的证书必须排最后）＋ 3 个变异锚点；Takeover 断言与变异同步。
+  本机无 Swift 工具链 ⇒ 待 CI 编译与 Swift 回归；真机待验（构建 48）。
+
+---
+
 ## 2026-09-26 续签「全都要重装」：准入只看记录、核验一票否决、轮换撤了运行中 Seal 的证书
 
 - **背景**（用户原话）：「签名续签链路你弄坏了；另外续签需要全部不重装；严格把控所有给你链路，
@@ -1039,6 +1087,29 @@
 ---
 
 ## 常犯坑位
+
+- 🔴 **「为了安全而关掉一条链路」= 把可用性彻底交出去，而它看起来像「更保守」**（2026-09-26）。
+  构建 46 的真机症状（「撤销运行中 Seal 的证书 → 自替换失败 → Seal 变砖」）被我判断成
+  「撤销本身是根因」，于是在证书轮换的调用点加了「剔除运行中 Seal 的证书」的闸门。
+  ⇒ 结果是**免费账号彻底死锁**：免费团队只有 **1 个**活动槽位，而 Seal 自己的证书在
+  覆盖安装后**必然**丢失本机私钥 ⇒ 它往往是**唯一**候选 ⇒ 被剔除 ⇒ 抛回
+  `SEAL-CERT-204b`（3022 名额满）⇒ **签任何 App、续签任何 App 全部失败**
+  （构建 47 真机：LiveContainer / 微信 / Seal 自身三条路径被同一道闸门拦死，
+  用户原话「我下载 seal 啥也干不了，全被拦截了」）。
+  ⚠️ 这个闸门**有注释论证、有独立文件、有 4 条单测、还有守卫 R84⑥ 钉着它** ——
+  整套「看起来像设计如此」的包装，让「链路整体不可用」看起来像一个安全决定 ✗。
+  ⇒ **判据：动「要不要允许某个破坏性动作」之前，先问「不允许的时候，还有没有出路？」**
+  —— 若答案是「没有」（免费账号只有一个槽位），那就**不是**在收紧，而是在**关停** ✓。
+  ⇒ 正确形态是**排好顺序 + 说清后果 + 准备恢复**，不是「不做」：
+  ① `SigningCertificateMaterialPolicy.rotationRank` 把 Seal 的证书**排到最后**
+  （只有别无选择才轮到它）；② 撤销前必须发 warning（讲明「Seal 将在本事务末尾重装」）；
+  ③ 撤销后由 `resignAppsAffectedByCertificateRotation(includeSeal: true)` 在末尾恢复。
+  ⇒ 真凶是**自替换安装失败**（构建 38 / 46 的 `SEAL-SELF-109`），不是撤销本身 ——
+  **认错一个环节会把整条链路一起赔进去**，这就是「根因没找准就动手」的代价 ✗。
+  ⇒ 同族（同一个 bug 的另一半）：`CertificateTakeoverPolicy` 的**规格**也写着
+  「真实签名者 A 永远不能成为撤销候选」，且有单测 `fullSlotsWithOnlySignerBlocks`
+  断言「只剩 A 一张时必须 blocked」—— 那正是把死锁**钉成了契约**。
+  ⇒ **规格与运行时必须一起改**，否则下一个人照着规格去「修」运行时，死锁就会回来 ✓。
 
 - 🔴 **按「码的形态」归因 ⇒ 把所有问题都算到同一个嫌疑人头上**（2026-09-25）。
   `AppsViewModel.settingsRoute` 里一条 `hasPrefix("SEAL-INSTALL-") { return .localDevVPN }`

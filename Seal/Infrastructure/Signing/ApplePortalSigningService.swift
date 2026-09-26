@@ -1472,31 +1472,26 @@ actor ApplePortalSigningService {
                 reuseStatusBySerial: reuseStatusBySerial,
                 runningSealSerialNumbers: sealActualSignerSerials
             )
-            // 🔴 **绝不自动撤销「运行中 Seal」正在用的证书**（2026-09-26，构建 46 真机）。
+            // 🔴 **必须允许撤到「运行中 Seal」那一张**（2026-09-26，构建 47 真机回归）。
             //
-            // 构建 46 日志完整重演了这条链路：01:24:37 `证书轮换：撤销 …442EB5AF，
-            // 原因=无本机私钥，运行中Seal=是` → 重签 Seal → 01:24:50「3 秒内进程仍存活
-            //（转场未生效），强制 exit(0)」→ 01:25:30 `SEAL-SELF-109` 中止。
-            // 撤销之后 Seal 只能靠本事务末尾的**自替换安装**恢复，那一步失败 Seal 当场打不开
-            //（构建 38 就是这样变砖的）。上游 `CertificateProvisioningFlow` 里撤销**必须经
-            // 用户确认**，本仓没有等价的确认入口 ⇒ 这里的选择是**不做**（剔除候选）。
-            // 剔除后为空 ⇒ `throw failure`（原 `SEAL-CERT-204b` 名额满），交回既有的
-            // 自动清理 / `SEAL-CERT-204e` 用户确认路径 —— 那条路径同样跳过 Seal 的证书。
-            let rotationCandidates = SigningCertificateRotationGate
-                .candidatesExcludingRunningSealCertificate(
-                    candidates: candidates,
-                    isSigningSeal: isSeal
-                )
-            guard rotationCandidates.isEmpty == false else {
-                await diagnostic(
-                    "证书轮换：候选只剩 Seal 正在使用的证书 ⇒ 不自动撤销"
-                        + "（撤销后 Seal 需重装，那一步失败即打不开），交回既有清理/确认路径",
-                    level: .warning
-                )
-                throw failure
-            }
+            // 构建 47 一度在这里加了「剔除运行中 Seal 的证书」的闸门，结果是**免费账号彻底死锁**：
+            // 免费团队只有一个活动槽位，而 Seal 自己的证书在覆盖安装后必然丢失本机私钥
+            // ⇒ 它往往是唯一候选 ⇒ 被剔除 ⇒ 抛回 `SEAL-CERT-204b`（3022 名额满）
+            // ⇒ **签任何 App、续签任何 App 全部失败**（真机实测：`SEAL-CERT-204b …code=3022`
+            //   连报，LiveContainer / 微信 / Seal 自身三条路径被同一道闸门拦死，用户「啥也干不了」）。
+            //
+            // 安全网不是「不撤」，而是**三条**（缺一条都不行）：
+            // ① `SigningCertificateMaterialPolicy.rotationRank` 把 Seal 的证书**排到最后**
+            //    （`isRunningSealCertificate ⇒ 3`）⇒ 只有别无选择时才轮到它；
+            // ② `rotateCertificatesAndCreateIdentity` 撤销前**必须**先发 warning 说明后果；
+            // ③ 撤销之后由 `resignAppsAffectedByCertificateRotation(includeSeal: true)`
+            //    在本事务末尾以新证书重签并重装 Seal 恢复。
+            // ⇒ 变砖的真凶是**自替换安装失败**（构建 38 / 46 的 `SEAL-SELF-109`），
+            //   不是撤销本身；而「不撤」的代价是链路整体不可用 ✗。
+            //
+            // ⚠️ 上游 SideStore 的 `CertificateProvisioningFlow` 也**从不把自己排除在候选之外**。
             return try await rotateCertificatesAndCreateIdentity(
-                candidates: rotationCandidates,
+                candidates: candidates,
                 sealSignerConfirmed: sealSignerConfirmed,
                 certificates: certificates,
                 secret: secret,

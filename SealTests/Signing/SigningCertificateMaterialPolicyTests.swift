@@ -74,6 +74,23 @@ struct SigningCertificateMaterialPolicyTests {
     }
 
     @Test
+    func capacityRecoveryStillOffersTheRunningSealCertificateWhenItIsTheOnlyOne() {
+        // 🔴 免费团队只有一个活动槽位，而 Seal 自己的证书在覆盖安装后必然丢失本机私钥
+        // ⇒ 若把它从候选里剔除，账号就**永久**建不出新证书：构建 47 真机实测，
+        // 签任何 App / 续签任何 App 都报 `SEAL-CERT-204b`（3022 名额满），用户「啥也干不了」。
+        // ⇒ 它必须**仍在候选里**，只是排在最后（撤销后的恢复由证书轮换子流程负责）。
+        let candidates = SigningCertificateMaterialPolicy.rotationCandidates(
+            remoteSerialNumbers: ["SEAL"],
+            reuseStatusBySerial: [:],
+            runningSealSerialNumbers: ["0SEAL"]
+        )
+
+        #expect(candidates.isEmpty == false)
+        #expect(candidates.map(\.serialNumber) == ["SEAL"])
+        #expect(candidates.last?.isRunningSealCertificate == true)
+    }
+
+    @Test
     func missingOrCorruptP12DoesNotCountAsLocalPrivateKey() {
         var secret = AccountSecret(email: "test@example.invalid", accountIdentifier: "test", dsid: "test", authToken: "test", password: nil)
         #expect(SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: "AA11") == nil)

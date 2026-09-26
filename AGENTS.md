@@ -58,6 +58,17 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
 - 序列号跨来源比对必须**归一化（去前导零/大小写）**，否则误判「证书已轮换」（`normalizedSerialNumber`）。
 - 签名/续签处于 LocalDevVPN 环境，无法可靠自动重登 Apple；会话过期统一引导到「我的」页重新验证，
   **不要实现会触发 2FA 的签名页验证码路径**。
+- 🔴 **证书轮换里「不能撤谁」这类豁免，先问「不允许的时候还有没有出路」**（2026-09-26，构建 47 真机）：
+  免费团队只有 **1 个**活动证书槽位，而 Seal 自己的证书在覆盖安装后**必然**丢失本机私钥
+  ⇒ 一旦把「运行中 Seal 正在用」的证书从轮换候选里剔除，账号就**永久**建不出新证书
+  ⇒ 签任何 App 都报 `SEAL-CERT-204b`（3022），**整条签名 / 续签链路不可用** ✗
+  （用户实测：签 LiveContainer / 微信 / 续签 Seal 三条路径全被同一道闸门拦死）。
+  ⇒ 正确形态是**排好顺序 ＋ 说清后果 ＋ 准备恢复**（`SigningCertificateMaterialPolicy.rotationRank`
+  把 Seal 的证书排最后 ＋ 撤销前 warning ＋ `resignAppsAffectedByCertificateRotation(includeSeal: true)`
+  在本事务末尾重签重装），**不是「不做」** ✓。变砖的真凶是**自替换安装失败**
+  （`SEAL-SELF-109`），不是撤销本身。
+  ⚠️ 同族：`CertificateTakeoverPolicy` 的**规格**与它的单测也要同步改 ——
+  「断言豁免存在」的单测会把死锁钉成契约 ✓。
 - `SigningCoordinator` 里预拉起隧道的 `channelStart = Task { installChannel.start() }`：
   **这条已于 2026-09-26 逐行复核，确认不再是缺陷** —— 旧记录说「缓存命中提前 return / 抛错路径上
   不会被取消，会与安装阶段的 `start()` 并发」，两点都不成立：

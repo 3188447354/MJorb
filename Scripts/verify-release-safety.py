@@ -3541,15 +3541,23 @@ def violations(load=read):
         check("SelfAppMetadata.current()?.certificateSerialNumbers.first" not in text
               and "runningSealSerials" not in text,
               f"Seal self-protection: profile-based signer inference must be gone in {path}")
-    # 接管决策：空槽位直接建、满槽位只能请求撤销非 A 候选、签名者未知一律阻断。
+    # 接管决策：空槽位直接建、满槽位**先撤普通证书、把运行中 Seal 的签名者 A 排最后**
+    #（2026-09-26，构建 47：把 A 排除会让免费账号永久死锁，见 R84⑥）、签名者未知一律阻断。
     takeover = load("Seal/Core/Signing/CertificateTakeoverPolicy.swift")
     check("case reuseLocal(serialNumber: String)" in takeover
           and "case createLocal" in takeover
           and "case requestRevocation(candidateSerialNumbers: [String])" in takeover
           and "case blocked(reason: String)" in takeover
           and "guard identityComplete," in takeover
-          and "remoteSerialNumbers.filter { normalize($0) != protected }" in takeover,
-          "Takeover: decision policy must cover reuse/create/requestRevocation/blocked and never offer A")
+          and "let ordinaryCandidates = remoteSerialNumbers.filter { normalize($0) != protected }"
+              in takeover
+          and "let runningSealCandidates = remoteSerialNumbers.filter { normalize($0) == protected }"
+              in takeover
+          and "let ordered = ordinaryCandidates + runningSealCandidates" in takeover
+          and "return .requestRevocation(candidateSerialNumbers: ordered)" in takeover,
+          "Takeover: decision policy must cover reuse/create/requestRevocation/blocked and keep "
+          "the running Seal signer **last but still a candidate** "
+          "(excluding it deadlocks free teams)")
     # 手动撤销（证书页逐张撤销）必须先挡住真实签名者 A；身份不可读时拒绝一切撤销。
     check("CertificateRevocationImpact.isActualSealSigner(" in settings_vm
           and "SEAL-CERT-230a" in settings_vm,
@@ -4734,7 +4742,11 @@ def violations(load=read):
     #   `signingTargets` / `signedIPARelativePath`（⇒ `hasSignedArtifact` 恒为 false）
     #   ⇒ 2026-09-25 那次「不按身份排除 Seal」（R82）在真机上**一次都没生效过**。
     # 根因 B：`SEAL-PROFILE-363` 把「设备端核验未确认」当成回落条件 ⇒ 每次续签都重装。
-    # 根因 C：证书轮换自动撤销「运行中 Seal」正在用的证书 ⇒ 自替换 ⇒ 进程被杀 ⇒ 续签中断。
+    # 根因 C（🔴 **已被构建 47 真机推翻**）：R84 第一版判断「证书轮换自动撤销运行中 Seal 的证书」
+    #   是续签中断的根因，于是在调用点加了「剔除运行中 Seal 的证书」的闸门。结果免费账号
+    #  （1 个活动槽位 ＋ Seal 自己的证书覆盖安装后必然丢本机私钥）**彻底死锁**：签任何 App 都报
+    #   `SEAL-CERT-204b`（3022）。⇒ 已撤销该闸门；安全性改由「排最后 + 撤销前 warning +
+    #   末尾重签恢复」保证（R84⑥ 现在守的是这个**反向**契约）。
     #
     # ⚠️ 这几条守的是「**不得再退回按记录 / 按核验结果一刀切**」，不是「一定要走快路径」：
     #    运行产物身份读不出来时回落完整重签是**正确**行为。
@@ -4742,8 +4754,9 @@ def violations(load=read):
     r84_coord = load("Seal/Core/Signing/SigningCoordinator.swift")
     r84_portal = load("Seal/Infrastructure/Signing/ApplePortalSigningService.swift")
     r84_vm = load("Seal/Features/Apps/AppsViewModel.swift")
+    r84_material_policy = load("Seal/Core/Signing/SigningCertificateMaterialPolicy.swift")
     r84_policy_tests = load("SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift")
-    r84_gate_tests = load("SealTests/Signing/SigningCertificateRotationGateTests.swift")
+    r84_material_policy_tests = load("SealTests/Signing/SigningCertificateMaterialPolicyTests.swift")
     r84_363_block = section_or_empty(
         r84_coord,
         "            if useProfileOnlyRenewal {\n                if let channelStart {",
@@ -4789,17 +4802,23 @@ def violations(load=read):
           "R84⑤: 设备绑定必须**双通道**：记录通道不得放松"
           "（`signedDeviceIdentifier` 仍要匹配），只有实时身份通道才免除 ✗ —— "
           "把整条判据放松成「总是通过」会让「换设备后仍按旧记录注入」变成可能")
-    # ⚠️ 调用点被 Swift 的 100 列折行拆成两行（`SigningCertificateRotationGate` +
-    # 换行 + `.candidatesExcludingRunningSealCertificate(`）⇒ 只能分段判，
-    # 写成一条连续字符串会**恒假**。
-    check("SigningCertificateRotationGate" in r84_portal
-          and ".candidatesExcludingRunningSealCertificate(" in r84_portal
-          and "candidates: rotationCandidates," in r84_portal
-          and "guard rotationCandidates.isEmpty == false else {" in r84_portal,
-          "R84⑥: 证书轮换**不得**自动撤销「运行中 Seal」正在用的证书 ✗ —— "
-          "构建 46：01:24:37 撤销 …442EB5AF（运行中Seal=是）→ 重签 Seal → "
-          "01:24:50 强制 exit(0) → 01:25:30 `SEAL-SELF-109`。撤销后 Seal 只能靠自替换恢复，"
-          "那一步失败 Seal 当场打不开（构建 38 变砖同因）。上游撤销**必须经用户确认**")
+    # ⚠️ 这一段守的是**反向**契约（2026-09-26，构建 47 真机）：R84 第一版在这里加了
+    # 「剔除运行中 Seal 的证书」的闸门，结果免费账号（只有一个活动槽位，而 Seal 自己的
+    # 证书在覆盖安装后必然丢失本机私钥）**彻底死锁** —— 签任何 App 都报
+    # `SEAL-CERT-204b`（3022 名额满），用户「啥也干不了」。
+    # ⇒ 安全网不是「不撤」，而是「**排到最后** + 撤销前 warning + 末尾重签恢复」。
+    # ⚠️ 必须 `strip_comments` 之后再判 `not in`：本段上面那几行注释里就写着闸门的名字。
+    r84_portal_code = strip_comments(r84_portal)
+    check("SigningCertificateRotationGate" not in r84_portal_code
+          and "candidatesExcludingRunningSealCertificate" not in r84_portal_code
+          and "guard rotationCandidates.isEmpty == false else {" not in r84_portal_code
+          and "candidates: candidates," in r84_portal_code
+          and "if candidate.isRunningSealCertificate { return 3 }" in r84_material_policy,
+          "R84⑥: 证书轮换**必须**能撤到「运行中 Seal」那一张，且它必须排在**最后** ✗ —— "
+          "把 Seal 的证书从候选里剔除 = 免费账号（只有一个活动槽位）**永久死锁**："
+          "它覆盖安装后必然丢本机私钥，剔除后就再也建不出新证书，"
+          "签任何 App 都报 `SEAL-CERT-204b`（3022）。构建 47 真机实测三条路径全被拦死。"
+          "安全性由「排最后 + 撤销前 warning + 末尾重签恢复」保证，不靠「不撤」")
     check("guard operationCoordinator?.activeLease == nil else {" in r84_vm
           and "SEAL-INSTALL-708" in r84_vm,
           "R84⑦: 已安装页设备核验必须与前台操作**互斥** ✗ —— 它走同步 FFI、"
@@ -4811,12 +4830,12 @@ def violations(load=read):
               in r84_policy_tests
           and "func incompleteLiveIdentityIsNeverAnAdmissionTicket()" in r84_policy_tests
           and "func liveIdentityPathDoesNotRequireAPersistedDeviceBinding()" in r84_policy_tests
-          and "func runningSealCertificateIsExcludedWhenSigningThirdPartyApp()" in r84_gate_tests
-          and "func runningSealCertificateStaysWhenSigningSealItself()" in r84_gate_tests
-          and "func emptyResultWhenTheOnlyCandidateIsTheRunningSealCertificate()" in r84_gate_tests,
+          and "func capacityRecoveryStillOffersTheRunningSealCertificateWhenItIsTheOnlyOne()"
+              in r84_material_policy_tests,
           "R84⑧: 必须有两个方向的单测 —— ① 实时身份完整 ⇒ 放行；② 身份读不出来 / "
-          "Bundle ID 对不上 ⇒ 照旧回落；③ 轮换剔除运行中 Seal 的证书（且自身签名时不剔）。"
-          "源码断言只能证明「结构在」，证明不了「真的放行」")
+          "Bundle ID 对不上 ⇒ 照旧回落；③ 轮换候选**唯一**是运行中 Seal 的证书时，"
+          "候选**不得**为空（它排最后但仍可撤）。源码断言只能证明「结构在」，"
+          "证明不了「真的放行」")
 
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
@@ -7295,11 +7314,25 @@ def main():
          "        return liveIdentity != nil\n    }\n",
          "        return true\n    }\n",
          "R84⑤: 设备绑定必须**双通道**"),
-        # ⑥ 不再剔除运行中 Seal 的证书 ⇒ R84⑥ 报红（Seal 又会被自动撤销 + 自替换）。
+        # ⑥ 把候选换回「剔除运行中 Seal」的形态 ⇒ R84⑥ 报红（免费账号又会被死锁）。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "                candidates: rotationCandidates,\n",
          "                candidates: candidates,\n",
-         "R84⑥: 证书轮换**不得**自动撤销"),
+         "                candidates: rotationCandidates,\n",
+         "R84⑥: 证书轮换**必须**能撤到"),
+        # ⑥b 把「Seal 的证书排最后」改成「排最前」⇒ R84⑥ 报红（先撤命根子）。
+        ("Seal/Core/Signing/SigningCertificateMaterialPolicy.swift",
+         "        if candidate.isRunningSealCertificate { return 3 }",
+         "        if candidate.isRunningSealCertificate { return -1 }",
+         "R84⑥: 证书轮换**必须**能撤到"),
+        # ⑥c 把「剔除运行中 Seal 的证书」的闸门插回调用点 ⇒ R84⑥ 报红（死锁回归）。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "            // 付费团队或 Apple 侧规则变化时，以明确 3022 为触发点执行同一轮换链路。\n",
+         "            let rotationCandidates = SigningCertificateRotationGate"
+         ".candidatesExcludingRunningSealCertificate(\n"
+         "                candidates: candidates, isSigningSeal: isSeal\n"
+         "            )\n"
+         "            // 付费团队或 Apple 侧规则变化时，以明确 3022 为触发点执行同一轮换链路。\n",
+         "R84⑥: 证书轮换**必须**能撤到"),
         # ⑦ 去掉「与前台操作互斥」的闸门 ⇒ R84⑦ 报红（707 噪音与抢会话回来）。
         ("Seal/Features/Apps/AppsViewModel.swift",
          "        guard operationCoordinator?.activeLease == nil else {\n",
@@ -7310,11 +7343,16 @@ def main():
          "func liveIdentityAdmitsAnAppWhoseRecordIsIncomplete()",
          "func liveIdentityAdmitsLegacy()",
          "R84⑧: 必须有两个方向的单测"),
-        # ⑨ 把「轮换剔除」那条单测改名 ⇒ R84⑧ 报红。
-        ("SealTests/Signing/SigningCertificateRotationGateTests.swift",
-         "func runningSealCertificateIsExcludedWhenSigningThirdPartyApp()",
-         "func runningSealLegacy()",
+        # ⑨ 把「Seal 的证书仍在候选里」那条单测改名 ⇒ R84⑧ 报红。
+        ("SealTests/Signing/SigningCertificateMaterialPolicyTests.swift",
+         "func capacityRecoveryStillOffersTheRunningSealCertificateWhenItIsTheOnlyOne()",
+         "func capacityRecoveryLegacy()",
          "R84⑧: 必须有两个方向的单测"),
+        # ⑩ 把「A 排最后但仍进候选」改回「排除 A」⇒ Takeover 断言报红（免费账号死锁回归）。
+        ("Seal/Core/Signing/CertificateTakeoverPolicy.swift",
+         "        let ordered = ordinaryCandidates + runningSealCandidates\n",
+         "        let ordered = ordinaryCandidates\n",
+         "Takeover: decision policy must cover"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

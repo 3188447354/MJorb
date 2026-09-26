@@ -57,7 +57,14 @@ struct InstalledAppActionSheet: View {
                 for: viewModel.localCertificateAvailability(for: app)
             ) {
                 Divider().padding(.leading, 14)
-                certificateRebuildNoteRow(note)
+                signingNoteRow(note)
+            }
+            if let note = AppSigningPresentationHelpers.pendingUpdateNote(
+                for: app,
+                runningVersion: Version.current
+            ) {
+                Divider().padding(.leading, 14)
+                signingNoteRow(note)
             }
             Divider().padding(.leading, 14)
             metadataValueRow("描述文件", AppSigningPresentationHelpers.profileUUIDText(for: app))
@@ -95,7 +102,7 @@ struct InstalledAppActionSheet: View {
     /// 「证书序列号」行下面的说明：本机没有该证书私钥 ⇒ 下一次续签会**完整重签并安装**。
     /// 与详情页同一份文案真源（`AppSigningPresentationHelpers.localCertificateRebuildDetail`），
     /// 两处各写一句迟早会漂移成「一个说重签、一个说只更新描述文件」。
-    private func certificateRebuildNoteRow(_ note: String) -> some View {
+    private func signingNoteRow(_ note: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "arrow.triangle.2.circlepath")
                 .font(.system(size: 11, weight: .semibold))

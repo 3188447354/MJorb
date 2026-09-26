@@ -341,7 +341,7 @@ struct SigningProgressView: View {
                 for: viewModel.localCertificateAvailability(for: session.app)
             ) {
                 Divider().padding(.leading, 14)
-                certificateRebuildNoteRow(note)
+                signingNoteRow(note)
             }
             Divider().padding(.leading, 14)
             runtimeRow("Bundle ID", runtimeBundleIdentifier(session))
@@ -399,7 +399,7 @@ struct SigningProgressView: View {
     /// 「证书序列号」行下面的说明：本机没有该证书私钥 ⇒ 这一次续签会**完整重签并安装**。
     /// 与详情页 / 操作抽屉共用同一份文案真源
     ///（`AppSigningPresentationHelpers.localCertificateRebuildDetail`）。
-    private func certificateRebuildNoteRow(_ note: String) -> some View {
+    private func signingNoteRow(_ note: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "arrow.triangle.2.circlepath")
                 .font(.system(size: 11, weight: .semibold))

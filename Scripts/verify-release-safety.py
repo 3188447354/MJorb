@@ -4795,11 +4795,15 @@ def violations(load=read):
           in r84_policy,
           "R84②: 实时身份命中时必须直接判 `.eligible`，**不得**再走记录判据 ✗ —— "
           "否则「新增了通道」只是装饰：记录缺字段的应用（Seal 自身）照旧被拒")
-    check("              case .eligible = ProfileOnlyRenewalPolicy.evaluate(\n"
-          "                  app: app,\n"
-          "                  liveIdentity: liveIdentity\n"
-          "              )," in r84_coord
-          and "await liveProfileOnlyIdentity(for: app)" in r84_coord,
+    # ⚠️ 2026-09-26（R89）：准入改成「先算 `decision` 再进 guard」—— 判据本身没变
+    #（`evaluate(app:liveIdentity:)` 仍然真的收到实时身份），但**调用形态**变了：
+    # 原断言钉的是 `case .eligible = ProfileOnlyRenewalPolicy.evaluate(` 这段内联调用。
+    # 断言必须跟着**新的调用形态**走，同时保留「算了却不用」这条真退化。
+    r84_coord_code = strip_comments(r84_coord)
+    check("let decision = ProfileOnlyRenewalPolicy.evaluate(app: app, liveIdentity: liveIdentity)"
+          in r84_coord_code
+          and "case .eligible = decision," in r84_coord_code
+          and "await liveProfileOnlyIdentity(for: app)" in r84_coord_code,
           "R84③: 准入必须**真的用上**双通道 ✗ —— `liveProfileOnlyIdentity(for:)` 算了"
           "却不传给 `evaluate`，等于「上游算好了、下游又退回记录判据」——"
           "这正是本项目反复出现的「改了一半、看起来改完了」")
@@ -4943,10 +4947,16 @@ def violations(load=read):
         "    private func shouldUseProfileOnlyRenewal(",
         "\n    private func renewProfilesOnly("
     )
-    check("SEAL-PROFILE-364" in r85_gate
-          and "ProfileOnlyRenewalPolicy.localCertificateMaterialBlock(" in r85_gate
-          and "certificateSerialNumber: app.certificateSerialNumber" in r85_gate
-          and "return false" in r85_gate,
+    # ⚠️ 必须 `strip_comments` 之后再判：这段代码里有**注释**写着 `SEAL-PROFILE-364`
+    # （2026-09-26 R89 新增的那句「与 `SEAL-PROFILE-364` 同一条纪律」）——
+    # 直接用 `in` 会被注释满足，把「把 364 改成 363」的变异判成有判别力，
+    # 而真正的留痕已经没了（2026-09-26 实测：变异 ⑥ `Guard failed mutation check`）。
+    # 与 R89⑤ 是同一个坑：**判据串必须落在代码上，不能落在注释上**。
+    r85_gate_code = strip_comments(r85_gate)
+    check('code: "SEAL-PROFILE-364"' in r85_gate_code
+          and "ProfileOnlyRenewalPolicy.localCertificateMaterialBlock(" in r85_gate_code
+          and "certificateSerialNumber: app.certificateSerialNumber" in r85_gate_code
+          and "return false" in r85_gate_code,
           "R85⑦: 准入必须**提前**判定本机有没有这张证书的私钥，没有就 `return false`"
           "（回落完整重签）并留痕 `SEAL-PROFILE-364` ✗ —— "
           "否则执行侧会抛 `SEAL-PROFILE-334`，而准入已经宣布「仅更新描述文件」")
@@ -5143,6 +5153,125 @@ def violations(load=read):
               r88_code, "guard let controlBundleID", "guard controlInstalled")),
           "R88⑥: 拿不到对照 Bundle ID 也必须 fail closed（`return false`）✗ —— "
           "对照缺失时「当作通过」等于把整道网拆掉")
+
+    # ── R89：「记录里的源包版本 ≠ 正在运行的版本」⇒ 不得走 profile-only 快路径 ─────────
+    #
+    # 用户 2026-09-26 实测（原话）：「我是将 1.3.20 直接导入 1.3.19 的 seal 里，它没有在待签名页
+    # 而是在已安装显示了 1.3.20 版，点续签是直接续签了，但是关于里还是 1.3.19 —— 是不是续签的
+    # 还是 1.3.19、显示的是 1.3.20」。
+    #
+    # 根因：覆盖更新（`ImportWorkflow.makeSelfUpdateRecord` / `makeInstalledUpdateRecord`）
+    # **刻意**把记录写成**新导入包**的版本号并置 `hasPendingSelfUpdateSource` —— 这条记录要
+    # 保留新版本号，等下一次安装生效（否则更新源与「已安装列表显示的版本号」都会丢）。
+    # 而实时身份通道原先只比对 **Bundle ID 相等** ⇒ 放行 profile-only
+    #（只换描述文件、**从不安装**）⇒ 新版本永远装不上，界面却一直显示新版本号。
+    #
+    # ⚠️ 判据必须是**版本比较**，不能用 `hasPendingSelfUpdateSource`：那个标志对 Seal
+    # **永远清不掉**（自替换安装成功后进程被系统换掉，清标志那行走的是普通安装路径；
+    # 而 `SelfAppRegistrar` 的待安装分支刻意一直保留它）⇒ 拿它当判据会把快路径永久关停，
+    # 那正是 1.3.17「续签全都要重装」的坑。
+    #
+    # ⚠️ 也不能只看「记录版本更新」这一侧：两边任一读不出来时**不得声称**有待安装更新，
+    # 否则会把一次正常的续签说成必须重装（与 R85 的 `.undetermined` 同一条纪律）。
+    r89_policy = load("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift")
+    r89_coord = load("Seal/Core/Signing/SigningCoordinator.swift")
+    r89_present = load("Seal/Features/Apps/AppPresentation.swift")
+    r89_detail = load("Seal/Features/Apps/AppDetailView.swift")
+    r89_sheet = load("Seal/Features/Apps/InstalledAppActionSheet.swift")
+    r89_policy_tests = load("SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift")
+    r89_present_tests = load("SealTests/Apps/AppPresentationTests.swift")
+    r89_index = load("docs/qa/log-code-index.md")
+
+    r89_judge = section_or_empty(
+        r89_policy,
+        "    static func hasPendingUpdateSource(",
+        "\n    /// 记录之外的**第二条准入通道**"
+    )
+    check("Version.compare(recorded, running) != .orderedSame" in r89_judge
+          and "nonBlank(recordedVersion)" in r89_judge
+          and "nonBlank(runningVersion)" in r89_judge,
+          "R89①: 「有已导入的更新源」判据必须是**版本比较**，且两边任一读不出来时返回 `false` ✗ —— "
+          "读不出来就说「有待安装」会把一次正常的续签说成必须重装；"
+          "而改用 `hasPendingSelfUpdateSource` 更糟：它对 Seal 永远清不掉 ⇒ 快路径被永久关停")
+
+    r89_live_eval = section_or_empty(
+        r89_policy,
+        "    static func evaluate(\n",
+        "\n    /// 准入通过后判定「设备绑定」是否成立。"
+    )
+    check("hasPendingUpdateSource(" in r89_live_eval
+          and "liveIdentity.runningVersion" in r89_live_eval
+          and ".requiresFullResign(.pendingSelfUpdateSource)" in r89_live_eval,
+          "R89②: 实时身份通道必须比对「记录版本 vs 运行版本」，不一致就回落完整重签 ✗ —— "
+          "只看 Bundle ID 相等会把「已导入 1.3.20、实际跑着 1.3.19」判成合格，"
+          "于是新版本永远装不上而界面一直显示新版本号")
+
+    check(r89_policy.count("let runningVersion: String") == 1
+          and "runningVersion: resolvedRunningVersion" in r89_policy
+          and "let resolvedRunningVersion = nonBlank(runningVersion) else {" in r89_policy,
+          "R89③: 运行版本必须随实时身份一起取出，并过 `nonBlank` 守卫 ✗ —— "
+          "空串会被 `Version.compare` 当成 0，与任何真实版本都不等 ⇒ 误判成「有待安装更新」")
+
+    r89_live_identity_fn = section_or_empty(
+        r89_coord,
+        "    private func liveProfileOnlyIdentity(for app: AppRecord) async -> LiveProfileOnlyIdentity? {",
+        "\n    private func shouldUseProfileOnlyRenewal("
+    )
+    check("runningVersion: metadata?.version," in r89_live_identity_fn
+          and "guard app.isSeal else { return nil }" in r89_live_identity_fn,
+          "R89④: 调用点必须传**正在运行的版本**（`metadata?.version`），"
+          "且仍只在 `app.isSeal` 时读 ✗ —— `SelfAppMetadata.current()` 读的是 `Bundle.main`，"
+          "对第三方 App 用它会得到 Seal 自己的版本（假阳性）；"
+          "而传成 `app.version`（记录版本）会让这条判据恒假 —— 那正是本次要修的 bug")
+
+    r89_gate = section_or_empty(
+        r89_coord,
+        "    private func shouldUseProfileOnlyRenewal(",
+        "\n    private func renewProfilesOnly("
+    )
+    # ⚠️ 必须 `strip_comments` 之后再判：这段代码**上面就有一行注释**写着
+    # `SEAL-PROFILE-365`（解释「为什么这次没走快路径」）—— 直接用 `in` 会被注释满足，
+    # 把 `code:` 改名的变异判成「有判别力」，留痕其实已经没了（2026-09-26 实测：⑤b NO POWER）。
+    r89_gate_code = strip_comments(r89_gate)
+    check('code: "SEAL-PROFILE-365"' in r89_gate_code
+          and "if case .requiresFullResign(.pendingSelfUpdateSource) = decision" in r89_gate_code
+          and "let decision = ProfileOnlyRenewalPolicy.evaluate(" in r89_gate_code,
+          "R89⑤: 这条拒绝必须**留痕**（`SEAL-PROFILE-365`），且归因**精确**"
+          "（只认这一个 case）✗ —— guard 里只判 `case .eligible`，被拒的理由会被吞掉，"
+          "真机只能看到「需要完整重签并安装」而查不出为什么；"
+          "把所有拒绝都算到这一条头上则会误导排查")
+
+    check('case .pendingSelfUpdateSource: "已导入的更新源尚未安装"' in r89_policy,
+          "R89⑥: `describe(_:)` 必须给这条理由一句可读说明 ✗ —— "
+          "新 case 漏了它，日志里就会出现一个没有解释的枚举名")
+
+    check("SEAL-PROFILE-365" in r89_index,
+          "R89⑦: 新日志码必须登记进 `docs/qa/log-code-index.md` 的**主表** ✗ —— "
+          "用户发来日志时第一件事就是查码表")
+
+    check("AppSigningPresentationHelpers.pendingUpdateNote(" in r89_detail
+          and "AppSigningPresentationHelpers.pendingUpdateNote(" in r89_sheet
+          and "static func pendingUpdateNote(" in r89_present
+          and "ProfileOnlyRenewalPolicy.hasPendingUpdateSource(" in r89_present
+          and "guard app.isSeal," in r89_present,
+          "R89⑧: 界面必须说清「列表上的版本号是**待安装的源包**」"
+          "（详情页 ＋ 操作抽屉都要接上），且判据与准入**同源**、只对 Seal 生效 ✗ —— "
+          "界面说「要重装」而准入走快路径（或反过来）都会让用户白等一次；"
+          "拿 Seal 的运行版本去比第三方应用的记录版本则必然误报")
+
+    check("func liveIdentityRefusesProfileOnlyWhileAnImportedUpdateIsNotInstalledYet()"
+          in r89_policy_tests
+          and "func pendingUpdateSourceIsClaimedOnlyWhenBothVersionsAreComparable()"
+              in r89_policy_tests
+          and "func unreadableRunningVersionIsNeverAnAdmissionTicket()" in r89_policy_tests,
+          "R89⑨: 必须有三个方向的单测 —— ① 版本不一致 ⇒ 回落完整重签、一致 ⇒ 回快路径；"
+          "② 判据三态（读不出来**不声称**）；③ 运行版本读不出来 ⇒ 整条通道放弃。"
+          "源码断言只能证明「结构在」，证明不了「判对了」")
+
+    check("func pendingUpdateNoteOnlySpeaksWhenTheRecordDescribesSomethingNotInstalledYet()"
+          in r89_present_tests,
+          "R89⑩: 文案 helper 必须有单测 —— 版本一致 / 第三方应用 / 运行版本读不到"
+          "都必须返回 `nil`（「只在真的有待安装更新时才说话」这件事只在界面上可见）")
 
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
@@ -7609,14 +7738,8 @@ def main():
          "R84②: 实时身份命中时必须直接判"),
         # ③ 算了实时身份却不传下去 ⇒ R84③ 报红（「上游算好了、下游又退回」）。
         ("Seal/Core/Signing/SigningCoordinator.swift",
-         "              case .eligible = ProfileOnlyRenewalPolicy.evaluate(\n"
-         "                  app: app,\n"
-         "                  liveIdentity: liveIdentity\n"
-         "              ),\n",
-         "              case .eligible = ProfileOnlyRenewalPolicy.evaluate(\n"
-         "                  app: app,\n"
-         "                  liveIdentity: nil\n"
-         "              ),\n",
+         "        let decision = ProfileOnlyRenewalPolicy.evaluate(app: app, liveIdentity: liveIdentity)\n",
+         "        let decision = ProfileOnlyRenewalPolicy.evaluate(app: app, liveIdentity: nil)\n",
          "R84③: 准入必须**真的用上**双通道"),
         # ④ 把「核验未通过就回落」加回去 ⇒ R84④ 报红。**这正是本轮修的真问题。**
         ("Seal/Core/Signing/SigningCoordinator.swift",
@@ -7838,6 +7961,84 @@ def main():
          '拿不到阳性对照的 Bundle ID ⇒ 本轮一条记录都不删。",\n                    code: "SEAL-INSTALL-739"\n                )\n                return false',
          '拿不到阳性对照的 Bundle ID ⇒ 本轮一条记录都不删。",\n                    code: "SEAL-INSTALL-739"\n                )\n                return true',
          "R88⑥: 拿不到对照 Bundle ID 也必须 fail closed"),
+
+        # ── R89：「记录里的源包版本 ≠ 正在运行的版本」⇒ 不得走 profile-only 快路径 ──
+        # ① 把版本判据翻过来（相等才算「有待安装」）⇒ R89① 报红。
+        ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
+         "        return Version.compare(recorded, running) != .orderedSame\n",
+         "        return Version.compare(recorded, running) == .orderedSame\n",
+         "R89①: 「有已导入的更新源」判据必须是**版本比较**"),
+        # ② 算了版本却不据此回落（`_ =` 丢弃结果）⇒ R89② 报红。
+        #    **这正是本次要修的 bug 的形态**：判据在、但不影响控制流。
+        ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
+         "            guard hasPendingUpdateSource(\n"
+         "                recordedVersion: app.version,\n"
+         "                runningVersion: liveIdentity.runningVersion\n"
+         "            ) == false else {\n"
+         "                return .requiresFullResign(.pendingSelfUpdateSource)\n"
+         "            }\n",
+         "            _ = hasPendingUpdateSource(\n"
+         "                recordedVersion: app.version,\n"
+         "                runningVersion: liveIdentity.runningVersion\n"
+         "            )\n",
+         "R89②: 实时身份通道必须比对"),
+        # ③ 忘了归一化空串 ⇒ R89③ 报红（空串会被当成 0，与任何版本都不等 ⇒ 误判成有待安装）。
+        ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
+         "              let resolvedRunningVersion = nonBlank(runningVersion) else {\n",
+         "              let resolvedRunningVersion = runningVersion else {\n",
+         "R89③: 运行版本必须随实时身份一起取出"),
+        # ④ 传**记录**版本而不是**运行**版本 ⇒ R89④ 报红。
+        #    这是最隐蔽的一种退化：代码看起来仍然「比了版本」，但两边是同一个值 ⇒ 判据恒假。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "            runningVersion: metadata?.version,\n",
+         "            runningVersion: app.version,\n",
+         "R89④: 调用点必须传**正在运行的版本**"),
+        # ⑤ 把所有拒绝都算到这一条头上（归因不再精确）⇒ R89⑤ 报红。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "            if case .requiresFullResign(.pendingSelfUpdateSource) = decision {\n",
+         "            if true {\n",
+         "R89⑤: 这条拒绝必须**留痕**"),
+        # ⑤b 把留痕码改名（这条拒绝又变成静默）⇒ R89⑤ 报红。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         '                    code: "SEAL-PROFILE-365"\n',
+         '                    code: "SEAL-PROFILE-366"\n',
+         "R89⑤: 这条拒绝必须**留痕**"),
+        # ⑥ 让这条理由没有可读说明 ⇒ R89⑥ 报红（日志里只剩一个没有解释的枚举名）。
+        ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
+         '        case .pendingSelfUpdateSource: "已导入的更新源尚未安装"\n',
+         '        case .pendingSelfUpdateSource: ""\n',
+         "R89⑥: `describe(_:)` 必须给这条理由一句可读说明"),
+        # ⑦ 把索引里的码改名 ⇒ R89⑦ 报红（用户查码表查不到）。
+        ("docs/qa/log-code-index.md",
+         "| `SEAL-PROFILE-365` |",
+         "| `SEAL-PROFILE-366` |",
+         "R89⑦: 新日志码必须登记进"),
+        # ⑧ 详情页漏接这条说明 ⇒ R89⑧ 报红（同一个状态一个界面说、另一个不说）。
+        ("Seal/Features/Apps/AppDetailView.swift",
+         "            if let note = AppSigningPresentationHelpers.pendingUpdateNote(\n"
+         "                for: app,\n"
+         "                runningVersion: Version.current\n"
+         "            ) {\n"
+         "                Divider()\n"
+         "                signingNoteRow(note)\n"
+         "            }\n",
+         "",
+         "R89⑧: 界面必须说清"),
+        # ⑧b 界面自己另算一份判据（不再与准入同源）⇒ R89⑧ 报红。
+        ("Seal/Features/Apps/AppPresentation.swift",
+         "              ProfileOnlyRenewalPolicy.hasPendingUpdateSource(\n",
+         "              app.hasPendingSelfUpdateSource ||\n",
+         "R89⑧: 界面必须说清"),
+        # ⑨ 把「版本不一致 ⇒ 完整重签」那条单测改名 ⇒ R89⑨ 报红（不变量没人守）。
+        ("SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift",
+         "func liveIdentityRefusesProfileOnlyWhileAnImportedUpdateIsNotInstalledYet()",
+         "func liveIdentityRefusesLegacy()",
+         "R89⑨: 必须有三个方向的单测"),
+        # ⑩ 把文案 helper 的单测改名 ⇒ R89⑩ 报红。
+        ("SealTests/Apps/AppPresentationTests.swift",
+         "func pendingUpdateNoteOnlySpeaksWhenTheRecordDescribesSomethingNotInstalledYet()",
+         "func pendingUpdateNoteLegacy()",
+         "R89⑩: 文案 helper 必须有单测"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

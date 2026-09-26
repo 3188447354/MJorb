@@ -5,6 +5,73 @@
 
 ---
 
+## 2026-09-26 导入新版 Seal 后点「续签」不会真正装上：profile-only 准入只比 Bundle ID、不比版本
+
+- **背景**（用户原话）：「我是将 1.3.20 直接导入 1.3.19 的 seal 里，它没有在待签名页而是在已安装
+  显示了 1.3.20 版，点续签是直接续签了，但是关于里还是 1.3.19 —— 是不是续签的还是 1.3.19、
+  显示的是 1.3.20，延伸到推送版本更新的时候要怎么操作设计」。
+- **现象（用户看到的三件事，逐条对上代码）**：
+  1. **落在「已安装」页、显示 1.3.20**：覆盖更新（`ImportWorkflow.makeSelfUpdateRecord` /
+     `makeInstalledUpdateRecord`）**刻意**把记录写成**新导入包**的版本号（`version: parsed.version`）
+     并置 `hasPendingSelfUpdateSource = true`，同时**保留** `mappedBundleIdentifier` / 账号 /
+     证书 / 描述文件（`state: .installed`），只清掉 `signedIPARelativePath` / `signedIPASHA256` /
+     `signedArtifactStatus` ⇒ 它**按设计**进已安装列表，而列表上那个版本号描述的是
+     「**已导入的源包**」，不是「设备上正在跑的包」。
+  2. **点「续签」直接续签了**：走的是 profile-only（`renewProfilesOnly`）—— **只换描述文件、
+     从不安装** ⇒ 设备上跑的还是 1.3.19。
+  3. **「关于」里仍是 1.3.19**：`Bundle.main` 的 `CFBundleShortVersionString` = **正在运行的版本**，
+     这一条是**真话**。⇒ **用户的两个疑问答案都是「是」**：续签的确实是 1.3.19，
+     显示的 1.3.20 是「待安装的源包版本」。
+- **根因**：`ProfileOnlyRenewalPolicy.evaluate(app:liveIdentity:)` 的**实时身份通道**
+  （Seal 自己专用；第三方应用走记录通道，缺 `signedArtifactStatus` 本就会回落完整重签）
+  原先**只比对 Bundle ID 相等** ⇒ 直接 `.eligible` ⇒ 放行快路径。
+  于是「已导入 1.3.20、实际跑着 1.3.19」被判定合格，新版本**永远装不上**，
+  而界面与记录一直显示 1.3.20 —— 一条**自洽的假象**，用户只能从「关于」页看出不对。
+- **⚠️ 不能用 `hasPendingSelfUpdateSource` 当判据（本轮差点踩，已避开）**：那个标志对 Seal
+  **永远清不掉** —— 自替换安装成功后进程被系统换掉，清标志那行
+  （`SigningCoordinator.swift` 里 `updated.hasPendingSelfUpdateSource = false`）走的是**普通安装**
+  路径（`isSelfReplacement: false`），而 Seal 自己的自替换安装走
+  `SelfReplacementCoordinator.submitPrepared` → `installChannel.install(..., isSelfReplacement: true)`，
+  且 `SelfAppRegistrar` 的待安装分支**刻意一直保留**它（源文件还在、记录版本 ≥ 运行版本就保留，
+  否则「更新源」与列表版本号都会丢）⇒ 拿它当判据 = 把快路径**永久关停**，
+  那正是 1.3.17「续签全都要重装」的坑。
+- **修复**（判据改用**版本比较** —— 它是**自愈**的：装完新版本后记录版本与运行版本自然相等，
+  不需要清任何标志）：
+  1. `ProfileOnlyRenewalPolicy` 新增**唯一判据纯函数**（准入与界面**共用同一份**，防两处漂移）
+     `hasPendingUpdateSource(recordedVersion:runningVersion:)`：两边都要过 `nonBlank`，
+     任一读不出来 ⇒ 返回 `false`（**不得声称**有待安装更新，与 R85 的 `.undetermined` 同一条纪律）。
+  2. `LiveProfileOnlyIdentity` 新增 `runningVersion`（来源：`SelfAppMetadata.current()?.version`
+     = `Bundle.main` 的营销版本）；`liveIdentity(installedIdentity:runningVersion:app:)` 里过
+     `nonBlank` 守卫。**只有 `app.isSeal` 时才读** —— `SelfAppMetadata.current()` 读的是
+     `Bundle.main`，对第三方应用用它会拿到 Seal 自己的版本（假阳性）。
+  3. 实时身份通道改为：版本不一致 ⇒ `.requiresFullResign(.pendingSelfUpdateSource)`
+     ⇒ 回落**完整重签 + 安装**，一次就把新版本装上。
+  4. 这条拒绝原先**静默**（guard 里只判 `case .eligible`，被拒理由被丢掉）⇒ 现在先算
+     `decision`、再进 guard，并在 guard 失败后**精确归因**留痕 `SEAL-PROFILE-365`（**警告级**）：
+     「记录里的版本 X 与正在运行的版本不一致，本次改为完整重签并安装，装完新版本才真正生效」。
+     ⚠️ 归因必须只认这一个 case（与 `SEAL-PROFILE-364` 同一条纪律）。
+  5. 界面（详情页 + 操作抽屉）在「证书序列号」附近多一行
+     `AppSigningPresentationHelpers.pendingUpdateNote(for:runningVersion:)`：
+     「已导入的新版本还没装上：本次续签会完整重签并安装，装完新版本才真正生效；
+     之后续签回到只更新描述文件。」判据与准入**同源**（同一个纯函数）、只对 Seal 生效。
+- **涉及文件**：`Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift`、
+  `Seal/Core/Signing/SigningCoordinator.swift`、`Seal/Features/Apps/AppPresentation.swift`、
+  `Seal/Features/Apps/AppDetailView.swift`、`Seal/Features/Apps/InstalledAppActionSheet.swift`、
+  `Seal/Features/Apps/SigningProgressView.swift`（helper 改名，进度卡片**不**接新文案）、
+  `SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift`（+4 条）、
+  `SealTests/Apps/AppPresentationTests.swift`（+1 条）、
+  `docs/qa/log-code-index.md`（登记 `SEAL-PROFILE-365`）。
+- **守卫**：**R89**（① 判据必须是版本比较 + 双侧 `nonBlank`；② 实时通道必须回落
+  `.pendingSelfUpdateSource`；③ `runningVersion` 必须随实时身份取出并过 `nonBlank`；
+  ④ 调用点必须传**运行**版本且仍只在 `app.isSeal`；⑤ 拒绝必须留痕 `SEAL-PROFILE-365` 且归因精确；
+  ⑥ `describe` 有可读说明；⑦ 新码已登记索引；⑧ 界面两处接上 + 与准入同源 + 只对 Seal；
+  ⑨ 三个方向的单测；⑩ 文案 helper 有单测）＋ 10 条变异项。
+  ⚠️ 同时修了 **R85⑦ / R89⑤ 两处「判据被注释满足」**（见「常犯坑位」）。
+- **验证状态**：静态守卫通过（两遍，`698 checks / 447 mutations`）。**待** CI 编译 + 真机回归
+  （真机判据见 `RELEASE_NOTES.md` 1.3.21）。
+
+---
+
 ## 2026-09-26 构建 49 真机日志复盘：保活文案自相矛盾、自身记录同步失败说不出原因、已安装页对账缺阳性对照
 
 - **背景**：用户发来构建 49（1.3.19）真机日志（12:05 导出，248 条）要求复查。上一轮四项
@@ -1208,6 +1275,18 @@
 ---
 
 ## 常犯坑位
+
+- 🔴 **`in` 判据会被「注释」满足 ⇒ 变异失去判别力（本轮一次踩到两条）**（2026-09-26）。
+  判据写成 `"SEAL-PROFILE-364" in gate`，而那段代码**上面就有一行注释**解释
+  「与 `SEAL-PROFILE-364` 同一条纪律」⇒ 把真码里的 `code: "SEAL-PROFILE-364"` 改成 `363`
+  之后断言**照样成立**，变异白写（R85⑦ 的变异 ⑥ 当场报 `Guard failed mutation check`）。
+  同一轮新增的 R89⑤ 也是同一形态（新注释里写了 `SEAL-PROFILE-365`）。
+  ⚠️ 已知的旧笔记只写了「判**顺序**的断言要 `strip_comments`」（见下方那条），
+  很容易被读成「只有顺序判据才需要」✗ —— **普通 `in` 判据同样需要**。
+  ⇒ **判据串必须落在代码上**：`strip_comments(区间)` 之后再 `in`，并把串写成**带上下文的形式**
+  （`code: "SEAL-PROFILE-364"` 而不是裸的 `SEAL-PROFILE-364`），这样注释怎么写都不会替真码满足它 ✓。
+  ⇒ 自查法：改完一段代码后 **grep 一遍自己刚写的注释里有没有出现被其它断言引用的字符串**
+  （日志码、函数名、枚举 case 都是高发词），有就回去把那条断言改成 `strip_comments` ✓。
 
 - 🔴 **共享查询 API 的「答否」可能不是「没有」，而是「通道坏了」——没有阳性对照的删除路径会把记录和文件一起删掉**（2026-09-26）。
   `Minimuxer.isAppInstalled`（Lockdown 路径）的实现是 `inst.lookup(appId:) != nil`，

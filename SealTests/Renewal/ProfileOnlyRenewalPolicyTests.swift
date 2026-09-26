@@ -151,6 +151,7 @@ struct ProfileOnlyRenewalPolicyTests {
         let app = makeSealRecordAsWrittenBySelfAppRegistrar()
         let live = ProfileOnlyRenewalPolicy.liveIdentity(
             installedIdentity: installedIdentity(bundleIdentifier: "com.example.demo.TEAM123456"),
+            runningVersion: app.version,
             app: app
         )
 
@@ -166,6 +167,107 @@ struct ProfileOnlyRenewalPolicyTests {
         )
     }
 
+    // MARK: - 「已导入的更新源尚未安装」（R89，2026-09-26 用户实测）
+
+    /// 🔴 用户原话：「我是将 1.3.20 直接导入 1.3.19 的 seal 里……点续签是直接续签了，
+    /// 但是关于里还是 1.3.19 —— 是不是续签的还是 1.3.19、显示的是 1.3.20」。
+    ///
+    /// 根因：覆盖更新（`ImportWorkflow.makeSelfUpdateRecord`）刻意把记录写成**新导入包**的
+    /// 版本号（并置 `hasPendingSelfUpdateSource`），而设备上跑的还是旧版；而实时身份通道
+    /// 原先只比对 **Bundle ID 相等** ⇒ 放行 profile-only（只换描述文件、**从不安装**）
+    /// ⇒ 新版本永远装不上，界面却一直显示新版本号。
+    @Test
+    func liveIdentityRefusesProfileOnlyWhileAnImportedUpdateIsNotInstalledYet() {
+        let app = makeSealRecordAsWrittenBySelfAppRegistrar()
+        // 记录里是新导入的源包版本，而正在跑的仍是旧版 —— 这正是覆盖更新后的窗口。
+        let stale = ProfileOnlyRenewalPolicy.liveIdentity(
+            installedIdentity: installedIdentity(bundleIdentifier: "com.example.demo.TEAM123456"),
+            runningVersion: "1.3.16",
+            app: app
+        )
+
+        #expect(stale != nil)
+        #expect(
+            ProfileOnlyRenewalPolicy.evaluate(app: app, liveIdentity: stale)
+                == .requiresFullResign(.pendingSelfUpdateSource)
+        )
+
+        // 反过来：版本一致（更新已经装上）时必须回到快路径 —— 否则会把
+        // 「每次续签都要重装」请回来（1.3.17 那个坑）。
+        let sameVersion = ProfileOnlyRenewalPolicy.liveIdentity(
+            installedIdentity: installedIdentity(bundleIdentifier: "com.example.demo.TEAM123456"),
+            runningVersion: app.version,
+            app: app
+        )
+        #expect(
+            ProfileOnlyRenewalPolicy.evaluate(app: app, liveIdentity: sameVersion)
+                == .eligible(targetBundleIdentifiers: ["com.example.demo.TEAM123456"])
+        )
+    }
+
+    /// 判据本身的三态：**两边都读得出、且语义化相等**才算「没有待安装更新」；
+    /// 任一边读不出来时返回 `false`（不声称）而不是 `true`（猜成有待安装）——
+    /// 后者会把一次正常的续签说成必须重装。
+    @Test
+    func pendingUpdateSourceIsClaimedOnlyWhenBothVersionsAreComparable() {
+        #expect(
+            ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
+                recordedVersion: "1.3.20",
+                runningVersion: "1.3.19"
+            )
+        )
+        // `v` 前缀与补零都算同一版本（`Version.compare` 的语义化比较）。
+        #expect(
+            ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
+                recordedVersion: "v1.3.20",
+                runningVersion: "1.3.20.0"
+            ) == false
+        )
+        #expect(
+            ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
+                recordedVersion: "1.3.20",
+                runningVersion: "1.3.20"
+            ) == false
+        )
+        #expect(
+            ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
+                recordedVersion: nil,
+                runningVersion: "1.3.20"
+            ) == false
+        )
+        #expect(
+            ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
+                recordedVersion: "1.3.20",
+                runningVersion: nil
+            ) == false
+        )
+        #expect(
+            ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
+                recordedVersion: "   ",
+                runningVersion: "1.3.20"
+            ) == false
+        )
+    }
+
+    /// 版本不一致时，实时身份**仍然**必须能构造出来 —— 否则会退化成
+    /// 「回落记录通道」，而记录通道对 Seal 恒判 `.missingInstalledArtifact`，
+    /// 归因就从「有更新没装」变成「记录里缺少已安装产物」（日志会误导排查）。
+    @Test
+    func aPendingUpdateStillReadsTheRunningIdentityInsteadOfFallingBack() {
+        let app = makeSealRecordAsWrittenBySelfAppRegistrar()
+        let live = ProfileOnlyRenewalPolicy.liveIdentity(
+            installedIdentity: installedIdentity(bundleIdentifier: "com.example.demo.TEAM123456"),
+            runningVersion: "1.3.16",
+            app: app
+        )
+
+        #expect(live?.runningVersion == "1.3.16")
+        #expect(
+            ProfileOnlyRenewalPolicy.evaluate(app: app, liveIdentity: nil)
+                != .requiresFullResign(.pendingSelfUpdateSource)
+        )
+    }
+
     @Test
     func liveIdentityForADifferentBundleIdentifierDoesNotAdmitTheRecord() {
         // `SelfAppMetadata.current()` 读的是 `Bundle.main` —— 若被误用到第三方 App 上，
@@ -173,6 +275,7 @@ struct ProfileOnlyRenewalPolicyTests {
         let app = makeSealRecordAsWrittenBySelfAppRegistrar()
         let foreign = ProfileOnlyRenewalPolicy.liveIdentity(
             installedIdentity: installedIdentity(bundleIdentifier: "com.other.app.TEAM999999"),
+            runningVersion: app.version,
             app: app
         )
 
@@ -197,7 +300,33 @@ struct ProfileOnlyRenewalPolicyTests {
         )
 
         #expect(
-            ProfileOnlyRenewalPolicy.liveIdentity(installedIdentity: incomplete, app: app) == nil
+            ProfileOnlyRenewalPolicy.liveIdentity(
+                installedIdentity: incomplete,
+                runningVersion: app.version,
+                app: app
+            ) == nil
+        )
+    }
+
+    /// 运行版本读不出来时**整体放弃**（返回 `nil`），不猜 —— 空串会被 `Version.compare`
+    /// 当成 0，与任何真实版本都不等 ⇒ 会被误判成「有待安装更新」而把快路径关掉。
+    @Test
+    func unreadableRunningVersionIsNeverAnAdmissionTicket() {
+        let app = makeSealRecordAsWrittenBySelfAppRegistrar()
+
+        #expect(
+            ProfileOnlyRenewalPolicy.liveIdentity(
+                installedIdentity: installedIdentity(bundleIdentifier: "com.example.demo.TEAM123456"),
+                runningVersion: nil,
+                app: app
+            ) == nil
+        )
+        #expect(
+            ProfileOnlyRenewalPolicy.liveIdentity(
+                installedIdentity: installedIdentity(bundleIdentifier: "com.example.demo.TEAM123456"),
+                runningVersion: "   ",
+                app: app
+            ) == nil
         )
     }
 
@@ -208,6 +337,7 @@ struct ProfileOnlyRenewalPolicyTests {
         let app = makeSealRecordAsWrittenBySelfAppRegistrar()
         let live = ProfileOnlyRenewalPolicy.liveIdentity(
             installedIdentity: installedIdentity(bundleIdentifier: "com.example.demo.TEAM123456"),
+            runningVersion: app.version,
             app: app
         )
 
@@ -237,7 +367,8 @@ struct ProfileOnlyRenewalPolicyTests {
             profileUUID: "MAIN-PROFILE",
             certificateSerialNumber: "00AABB",
             teamIdentifier: "TEAM123456",
-            targetBundleIdentifiers: ["com.example.demo.TEAM123456"]
+            targetBundleIdentifiers: ["com.example.demo.TEAM123456"],
+            runningVersion: "1.0"
         )
 
         #expect(

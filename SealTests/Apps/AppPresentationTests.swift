@@ -153,16 +153,90 @@ struct AppPresentationTests {
         )
     }
 
-    private func makeApp(state: AppState, expiryDate: Date?) -> AppRecord {
+    // MARK: - 「已导入的新版本还没装上」说明（R89，2026-09-26 用户实测）
+
+    /// 用户 2026-09-26 实测：把 1.3.20 的 IPA 导入 1.3.19 的 Seal 里 ⇒ 列表与详情页显示
+    /// **1.3.20**，而「关于」里仍是 **1.3.19**（「是不是续签的还是 1.3.19、显示的是 1.3.20」）。
+    /// 这句话要说的正是这个错位：列表上的版本号是**待安装的源包**，要续签一次才会真正生效。
+    ///
+    /// 这里钉住**「什么时候说话」**；「出现在哪个界面」由守卫按源码文本钉
+    /// （详情页与操作抽屉共用同一份真源）。
+    @Test
+    func pendingUpdateNoteOnlySpeaksWhenTheRecordDescribesSomethingNotInstalledYet() {
+        // 记录里写的是**新导入的源包**版本，而正在运行的仍是旧版。
+        let importedNewer = makeApp(
+            state: .installed,
+            expiryDate: now.addingTimeInterval(6 * 86_400),
+            version: "1.3.20",
+            isSeal: true
+        )
+
+        #expect(
+            AppSigningPresentationHelpers.pendingUpdateNote(
+                for: importedNewer,
+                runningVersion: "1.3.19"
+            ) == AppSigningPresentationHelpers.pendingUpdateDetail
+        )
+        // 文案必须同时说清「这一次会重装」与「之后不再重装」——
+        // 缺后半句，用户会以为「每次续签都要重装」，而那正是这套快路径要消除的误解。
+        #expect(
+            AppSigningPresentationHelpers.pendingUpdateDetail.contains("完整重签并安装")
+                && AppSigningPresentationHelpers.pendingUpdateDetail.contains("只更新描述文件")
+        )
+
+        // 版本一致（更新已经装上）⇒ 不说话，否则每次续签都会看到一句假警报。
+        let alreadyInstalled = makeApp(
+            state: .installed,
+            expiryDate: now.addingTimeInterval(6 * 86_400),
+            version: "1.3.19",
+            isSeal: true
+        )
+        #expect(
+            AppSigningPresentationHelpers.pendingUpdateNote(
+                for: alreadyInstalled,
+                runningVersion: "1.3.19"
+            ) == nil
+        )
+
+        // 第三方应用不说话：只有 Seal 自己的运行包能被 `Bundle.main` 读到，
+        // 拿 Seal 的版本去比第三方应用的记录版本必然误报。
+        let thirdParty = makeApp(
+            state: .installed,
+            expiryDate: now.addingTimeInterval(6 * 86_400),
+            version: "1.3.20"
+        )
+        #expect(
+            AppSigningPresentationHelpers.pendingUpdateNote(
+                for: thirdParty,
+                runningVersion: "1.3.19"
+            ) == nil
+        )
+
+        // 运行版本读不到 ⇒ 不说话（不能凭空告诉用户「有更新待安装」）。
+        #expect(
+            AppSigningPresentationHelpers.pendingUpdateNote(
+                for: importedNewer,
+                runningVersion: nil
+            ) == nil
+        )
+    }
+
+    private func makeApp(
+        state: AppState,
+        expiryDate: Date?,
+        version: String = "1.0.0",
+        isSeal: Bool = false
+    ) -> AppRecord {
         AppRecord(
             originalBundleIdentifier: "com.seal.example",
             name: "示例应用",
-            version: "1.0.0",
+            version: version,
             buildNumber: "1",
             size: 82_400_000,
             state: state,
             expiryDate: expiryDate,
             ipaRelativePath: "Apps/Example.ipa",
+            isSeal: isSeal,
             importedAt: now
         )
     }

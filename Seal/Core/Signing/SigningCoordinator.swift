@@ -813,11 +813,20 @@ actor SigningCoordinator {
     /// 对第三方 App 调用会得到 **Seal 自己**的身份 —— 那会把「记录不完整」的第三方应用
     /// 误判成合格。这与本项目反复出现的「上游放行、下游又拦」是同一种错的两面：
     /// 这里放行的是**错的对象**。
+    ///
+    /// 🔴 **必须同时传「正在运行的版本」**（2026-09-26 用户实测）：覆盖更新
+    /// （`ImportWorkflow.makeSelfUpdateRecord` / `makeInstalledUpdateRecord`）刻意把记录写成
+    /// **新导入包**的版本号并置 `hasPendingSelfUpdateSource`，而设备上跑的还是旧版。
+    /// 只看 Bundle ID 相等的准入会把这个窗口判成合格 ⇒ 走 profile-only
+    ///（**只换描述文件、从不安装**）⇒ 新版本永远装不上，界面却一直显示新版本号
+    /// （用户实测：导入 1.3.20 到 1.3.19，点续签「直接续签了」，「关于」里仍是 1.3.19）。
+    /// 传进去之后 `evaluate` 会回落完整重签并安装，装完两边自然相等。
     private func liveProfileOnlyIdentity(for app: AppRecord) async -> LiveProfileOnlyIdentity? {
         guard app.isSeal else { return nil }
         let metadata = await MainActor.run { SelfAppMetadata.current() }
         return ProfileOnlyRenewalPolicy.liveIdentity(
             installedIdentity: metadata?.installedIdentity,
+            runningVersion: metadata?.version,
             app: app
         )
     }
@@ -833,6 +842,9 @@ actor SigningCoordinator {
         forceResign: Bool,
         installAfterSigning: Bool
     ) async -> Bool {
+        // 🔴 先算决策、再进 guard：guard 里只判 `case .eligible`，被拒的**理由**会被吞掉，
+        // 而「为什么这次没走快路径」正是真机排查的第一问（见下面 `SEAL-PROFILE-365`）。
+        let decision = ProfileOnlyRenewalPolicy.evaluate(app: app, liveIdentity: liveIdentity)
         guard forceResign,
               installAfterSigning,
               app.accountID == accountID,
@@ -842,14 +854,31 @@ actor SigningCoordinator {
                   deviceIdentifier: deviceIdentifier,
                   liveIdentity: liveIdentity
               ),
-              case .eligible = ProfileOnlyRenewalPolicy.evaluate(
-                  app: app,
-                  liveIdentity: liveIdentity
-              ),
+              case .eligible = decision,
               let storedSerial = ProfileOnlyRenewalPolicy.effectiveCertificateSerialNumber(
                   app: app,
                   liveIdentity: liveIdentity
               ) else {
+            // 🔴 **「已导入的更新源尚未安装」必须留痕**（2026-09-26 用户实测）。
+            //
+            // 这条拒绝以前是**静默**的：guard 只判 `case .eligible`，被拒的理由被丢掉
+            // ⇒ 真机上只能看到「续签路径已确认：需要完整重签并安装」，
+            // 查不出是「记录不完整」「Bundle ID 对不上」还是「有更新没装」。
+            // 而这一条的后果最反直觉：用户导入新版本、点续签，界面照旧显示新版本号，
+            // 实际跑的却还是旧版 —— 用户报的正是「是不是续签的还是 1.3.19」。
+            //
+            // ⚠️ 归因必须**精确**：只有 `decision` 恰好是这一条时才说这句话，
+            // 不能把「别的判据拦下的」也算到它头上（与 `SEAL-PROFILE-364` 同一条纪律）。
+            if case .requiresFullResign(.pendingSelfUpdateSource) = decision {
+                try? await logStore?.append(
+                    category: .renewal,
+                    level: .warning,
+                    message: "profile-only 快路径不可用（\(ProfileOnlyRenewalPolicy.describe(.pendingSelfUpdateSource))）："
+                        + "记录里的版本 \(app.version) 与正在运行的版本不一致，"
+                        + "本次改为完整重签并安装，装完新版本才真正生效：\(app.name)",
+                    code: "SEAL-PROFILE-365"
+                )
+            }
             return false
         }
         if let selectedCertificateSerialNumber,

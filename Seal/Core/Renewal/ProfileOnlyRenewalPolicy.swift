@@ -9,7 +9,7 @@ import Foundation
 /// （`CacheSigningCertOperation`）。本仓对**自身**有完全等价的现成物：
 /// `SelfAppMetadata.current()` 读运行包的 CMS 签名身份（`AppBundleSigningIdentityReader`）。
 ///
-/// 由 `ProfileOnlyRenewalPolicy.liveIdentity(installedIdentity:app:)` 构造；
+/// 由 `ProfileOnlyRenewalPolicy.liveIdentity(installedIdentity:runningVersion:app:)` 构造；
 /// 只有「运行包能自证身份」时才存在（任何一项读不出来 ⇒ `nil`，**绝不猜**）。
 struct LiveProfileOnlyIdentity: Equatable, Sendable {
     /// 运行包主目标的 Bundle ID（从 CMS 身份里读出来的那个）。
@@ -19,6 +19,16 @@ struct LiveProfileOnlyIdentity: Equatable, Sendable {
     let teamIdentifier: String
     /// 该应用在设备上实际存在的全部签名目标（主 App ＋ 扩展）。
     let targetBundleIdentifiers: [String]
+    /// **正在运行的那个包**的 `CFBundleShortVersionString`。
+    ///
+    /// 🔴 为什么必须有（2026-09-26 用户实测）：记录里的 `version` 描述的是**已导入的源包**，
+    /// 不是「设备上正在跑的那个」。覆盖更新（`ImportWorkflow.makeInstalledUpdateRecord`）
+    /// 会把它写成新导入包的版本，并把 `hasPendingSelfUpdateSource` 置真 —— 这条记录**刻意**
+    /// 保留新版本号，等下一次安装生效（见 `SelfAppRegistrar` 那段注释）。
+    /// 而 profile-only 只换描述文件、**从不安装** ⇒ 只看 Bundle ID 相等的准入会把
+    /// 「已导入 1.3.20、实际跑着 1.3.19」判成合格 ⇒ 新版本**永远装不上**，
+    /// 界面却一直显示 1.3.20（用户实测：「关于」里仍是 1.3.19）。
+    let runningVersion: String
 }
 
 /// Decides whether an installed app has enough persisted identity to attempt a
@@ -66,6 +76,19 @@ enum ProfileOnlyRenewalPolicy {
         ///   （同一份日志已证明这条路通：撤销 `…E9DA0CD9` 后新建 `…976EFE08`，
         ///   随后 LiveContainer / Guoguo 的完整重签都复用了它。）
         case missingLocalCertificateMaterial
+
+        /// 🔴 **记录里有一条「已导入但尚未生效」的更新源**（2026-09-26，用户实测）。
+        ///
+        /// 覆盖更新把记录写成**新导入包**的版本号（`hasPendingSelfUpdateSource = true`，
+        /// 见 `ImportWorkflow.makeInstalledUpdateRecord`），而设备上跑的还是旧版。
+        /// 此时 profile-only 只换描述文件、**从不安装** ⇒ 新版本永远装不上，
+        /// 而界面（`AppPresentation` 的 `v\(app.version)`）一直显示新版本号。
+        ///
+        /// 真机复现：把 1.3.20 的 IPA 手动导入 1.3.19 的 Seal ⇒ 落在「已安装」并显示 1.3.20，
+        /// 点「续签」直接走 profile-only ⇒ 「关于」里仍是 1.3.19。
+        /// 对**第三方**应用不会出现这个问题（它们的记录缺 `signedArtifactStatus`，
+        /// 记录通道本来就回落完整重签）—— 只有 Seal 自己走「运行产物身份」这条第二通道。
+        case pendingSelfUpdateSource
     }
 
     enum PortalAppIDDecision: Equatable, Sendable {
@@ -123,6 +146,7 @@ enum ProfileOnlyRenewalPolicy {
         case .incompleteSigningIdentity: "记录里的签名身份不完整"
         case .missingTargetRecord: "记录里缺少签名目标"
         case .missingLocalCertificateMaterial: "本机没有该证书的私钥"
+        case .pendingSelfUpdateSource: "已导入的更新源尚未安装"
         }
     }
 
@@ -269,11 +293,17 @@ enum ProfileOnlyRenewalPolicy {
     ///   `isComplete == false`（主程序或任一扩展的 CMS 身份读不出来）时整体放弃：
     ///   半份身份不能当准入门票（与 `CertificateCleanupPolicy` 的 `identityConfidence` 同口径）。
     ///
+    /// - Parameter runningVersion: `SelfAppMetadata.current()?.version` —— **正在运行的那个包**
+    ///   的版本。它与记录里的 `version` 是两件事：记录描述「已导入的源包」，可能更新。
+    ///   读不到（空串）时整体放弃，**不猜**（空串会被 `Version.compare` 当成 0，
+    ///   与任何真实版本都不等 ⇒ 会误判成「有待安装更新」）。
+    ///
     /// ⚠️ 调用方**必须**只在「这确实是该 app 自己的运行包」时调用 —— `SelfAppMetadata.current()`
     /// 读的是 `Bundle.main`，对第三方 App 用它会读成 **Seal 自己**的身份（假阳性）。
     /// 见 `SigningCoordinator.liveProfileOnlyIdentity(for:)`。
     static func liveIdentity(
         installedIdentity: InstalledIdentity?,
+        runningVersion: String?,
         app: AppRecord
     ) -> LiveProfileOnlyIdentity? {
         guard let installedIdentity,
@@ -283,7 +313,8 @@ enum ProfileOnlyRenewalPolicy {
               mainTarget.bundleIdentifier.caseInsensitiveCompare(mappedMainBundleIdentifier) == .orderedSame,
               let profileUUID = nonBlank(mainTarget.profileUUID),
               let serialNumber = nonBlank(mainTarget.signerSerialNumber),
-              let teamIdentifier = nonBlank(mainTarget.teamIdentifier) else {
+              let teamIdentifier = nonBlank(mainTarget.teamIdentifier),
+              let resolvedRunningVersion = nonBlank(runningVersion) else {
             return nil
         }
         let targets = [mappedMainBundleIdentifier] + app.extensions.compactMap {
@@ -296,8 +327,39 @@ enum ProfileOnlyRenewalPolicy {
             profileUUID: profileUUID,
             certificateSerialNumber: serialNumber,
             teamIdentifier: teamIdentifier,
-            targetBundleIdentifiers: targets
+            targetBundleIdentifiers: targets,
+            runningVersion: resolvedRunningVersion
         )
+    }
+
+    /// 🔴 **唯一判据**：「记录里描述的那个源包」与「正在运行的那个包」是不是同一个版本。
+    ///
+    /// `true` = 记录里有一条**已导入但尚未生效**的更新源。
+    ///
+    /// 为什么必须单独立出来（2026-09-26 用户实测）：这条判断有**两个**消费方 ——
+    /// ① 准入（`evaluate(app:liveIdentity:)`：版本不一致就回落完整重签）；
+    /// ② 界面（`AppSigningPresentationHelpers.pendingUpdateNote(for:runningVersion:)`：
+    ///    在详情页 / 操作抽屉里说明「本次续签会完整重签并安装」）。
+    /// 两处各写一份必然漂移成「准入说要做、界面不说」或反过来（本项目最反复的坑）。
+    ///
+    /// ⚠️ **不能用 `AppRecord.hasPendingSelfUpdateSource` 代替它**：那个标志对 Seal
+    /// **永远清不掉** —— 自替换安装成功后进程被系统换掉，清标志的那行
+    /// （`SigningCoordinator` 里 `updated.hasPendingSelfUpdateSource = false`）
+    /// 走的是普通安装路径；而 `SelfAppRegistrar` 的待安装分支刻意一直保留它。
+    /// 版本比较则是**自愈**的：装完新版本后记录版本与运行版本自然相等。
+    ///
+    /// ⚠️ 两边任一读不出来 ⇒ 返回 `false`（**不声称**有待安装更新）：
+    ///   · 准入侧：`liveIdentity.runningVersion` 在 `liveIdentity(...)` 里已被 `nonBlank`
+    ///     守卫过 ⇒ 只可能是 `app.version` 为空（记录损坏，现实里不会出现）；
+    ///   · 界面侧：读不到运行版本时不能凭空告诉用户「有更新待安装」，
+    ///     那会把一次正常的续签说成必须重装（与 R85 的 `.undetermined` 同一条纪律）。
+    static func hasPendingUpdateSource(
+        recordedVersion: String?,
+        runningVersion: String?
+    ) -> Bool {
+        guard let recorded = nonBlank(recordedVersion),
+              let running = nonBlank(runningVersion) else { return false }
+        return Version.compare(recorded, running) != .orderedSame
     }
 
     /// 记录之外的**第二条准入通道**：以「运行产物的实时身份」为准（对齐上游 `refresh`）。
@@ -309,6 +371,14 @@ enum ProfileOnlyRenewalPolicy {
     /// ⚠️ 两条通道**都不放松**的是「身份必须可核验」：实时身份必须 `isComplete`
     /// （主程序 ＋ 全部扩展的 CMS 都读得出来）、主目标 Bundle ID 必须与记录里的映射 ID
     /// 一致、profile UUID 与签名者序列号都必须非空。
+    ///
+    /// 🔴 **再加一条：记录里的源包版本必须等于正在运行的版本**（2026-09-26，用户实测）。
+    /// 覆盖更新刻意把记录写成**新导入包**的版本号（`hasPendingSelfUpdateSource`），
+    /// 而设备上跑的还是旧版 ⇒ 此时放行 profile-only 等于宣布「更新已生效」，
+    /// 而它只换描述文件、从不安装 ⇒ **新版本永远装不上，界面却一直显示新版本号**。
+    /// 版本不一致 ⇒ 回落完整重签（它会用 `app.ipaRelativePath` 里的**新包**重新签名并安装，
+    /// 装完记录版本与运行版本重新相等 —— 这条判据**自愈**，不依赖任何「待安装」标志：
+    /// Seal 走的是自替换安装，进程会被系统换掉，清标志那行根本轮不到它）。
     static func evaluate(
         app: AppRecord,
         liveIdentity: LiveProfileOnlyIdentity?
@@ -317,6 +387,16 @@ enum ProfileOnlyRenewalPolicy {
            let mappedMainBundleIdentifier = nonBlank(app.mappedBundleIdentifier),
            liveIdentity.mainBundleIdentifier.caseInsensitiveCompare(mappedMainBundleIdentifier)
                == .orderedSame {
+            // ⚠️ 比较的是**营销版本**（`CFBundleShortVersionString`）—— 那正是更新通道
+            // 判「有没有新版本」用的单位（见 `AGENTS.md` §6）。同版本重建（只换构建号）
+            // 不在这里拦：那种情况记录会被 `SelfAppRegistrar` 对齐回运行版本，
+            // 而「同版本重建也强制完整重装」会把 1.3.17 那个「续签全都要重装」的坑请回来。
+            guard hasPendingUpdateSource(
+                recordedVersion: app.version,
+                runningVersion: liveIdentity.runningVersion
+            ) == false else {
+                return .requiresFullResign(.pendingSelfUpdateSource)
+            }
             return .eligible(targetBundleIdentifiers: liveIdentity.targetBundleIdentifiers)
         }
         return evaluate(app: app)

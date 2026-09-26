@@ -85,7 +85,14 @@ struct AppDetailView: View {
                 for: viewModel.localCertificateAvailability(for: app)
             ) {
                 Divider()
-                certificateRebuildNoteRow(note)
+                signingNoteRow(note)
+            }
+            if let note = AppSigningPresentationHelpers.pendingUpdateNote(
+                for: app,
+                runningVersion: Version.current
+            ) {
+                Divider()
+                signingNoteRow(note)
             }
             Divider()
             detailRow("Team ID", app.signingTeamID ?? "未记录")
@@ -191,7 +198,7 @@ struct AppDetailView: View {
     /// 与 `serialDetailRow` 分开画的原因：序列号是**等宽长串**（中间省略、可选中），
     /// 而说明是一句需要**折行读全**的中文 —— 挤在同一行会让两者都读不清。
     /// 文案真源在 `AppSigningPresentationHelpers.localCertificateRebuildDetail`。
-    private func certificateRebuildNoteRow(_ note: String) -> some View {
+    private func signingNoteRow(_ note: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "arrow.triangle.2.circlepath")
                 .font(.system(size: 11, weight: .semibold))

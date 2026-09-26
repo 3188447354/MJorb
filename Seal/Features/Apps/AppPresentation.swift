@@ -202,6 +202,45 @@ enum AppSigningPresentationHelpers {
         availability == .needsFullResign ? localCertificateRebuildNote : nil
     }
 
+    /// 「有已导入的新版本还没装上」的说明（详情页 / 操作抽屉用）。
+    ///
+    /// 🔴 为什么必须有（2026-09-26 用户实测）：把新版 IPA 导入到**已安装**的 Seal 上时，
+    /// 记录立刻被写成**新导入包**的版本号（`ImportWorkflow.makeSelfUpdateRecord`），
+    /// 于是列表与详情页显示的是**新版本**，而设备上跑的仍是旧版 —— 用户看到的正是
+    /// 「显示了 1.3.20，但『关于』里还是 1.3.19」。这句话把两者的关系说清楚：
+    /// 列表上的版本号是**待安装的源包**，要续签一次才会真正生效。
+    ///
+    /// 措辞刻意分两段（与 `localCertificateRebuildDetail` 同一套写法）：
+    ///   · 前半句说**这一次会发生什么**（会完整重签并安装）——
+    ///     否则用户看到进度条在重传整包会以为「只是续签，怎么又重装了」；
+    ///   · 后半句说**以后会怎样**（回到只更新描述文件）——
+    ///     否则用户会以为「每次续签都要重装」。
+    static let pendingUpdateDetail =
+        "已导入的新版本还没装上：本次续签会完整重签并安装，装完新版本才真正生效；"
+        + "之后续签回到只更新描述文件。"
+
+    /// 该状态要不要说这句话；不需要时返回 `nil`。
+    ///
+    /// 判据与准入**同源**（`ProfileOnlyRenewalPolicy.hasPendingUpdateSource`）——
+    /// 界面说「要重装」而准入走快路径（或反过来）都会让用户白等一次。
+    ///
+    /// ⚠️ 只对 Seal 生效：只有它自己的运行包能被 `Bundle.main` 读到
+    ///（`runningVersion` 由调用方传 `Version.current`）。第三方应用的记录通道本来就会
+    /// 因为「缺已装产物」回落完整重签，不需要这句话。
+    static func pendingUpdateNote(
+        for app: AppRecord,
+        runningVersion: String?
+    ) -> String? {
+        guard app.isSeal,
+              ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
+                  recordedVersion: app.version,
+                  runningVersion: runningVersion
+              ) else {
+            return nil
+        }
+        return pendingUpdateDetail
+    }
+
     /// 证书序列号展示值：完整序列号（只留十六进制、转大写、不截断）。
     /// 行标题固定为「证书序列号」，因此这里不再重复「序列号 · 」前缀。
     static func certificateSerialText(serial: String?) -> String {

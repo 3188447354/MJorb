@@ -1685,15 +1685,76 @@ final class AppsViewModel: ObservableObject {
     ///
     /// ⚠️ 必须留痕「是谁触发的」：真机排查的第一个问题永远是「用户当时是不是自己点的」，
     /// 而这条链路在后台跑、界面上什么都没有 —— 日志是唯一的证据。
+    ///
+    /// 🔴 **点火前必须先等设备通道真正就绪**（2026-09-26 构建 53 真机）。
+    ///
+    /// 快捷指令触发走的是**冷启动的新进程**（`SEAL-BACKGROUND-001` 会与 `-006`
+    /// 在同一秒出现，因为它是 `SealApp.init()` 里发的），此时设备通道还在起步。
+    /// 而 `SigningCoordinator` 里那道「profile-only 之前先 `isReady()`」的闸门
+    /// **只是一次裸 TCP 可达性探测**（`Minimuxer.ready()` → `testDeviceConnection`，
+    /// 连的是 `rsdPort` / `lockdowndPort`）—— 隧道端口一通它就放行。
+    /// 构建 53 的日志正是这个组合：闸门放行（**没有** `SEAL-PROFILE-360`），
+    /// 紧接着 `SEAL-PROFILE-363` 的 `fallbackReason` 却写着
+    /// 「设备端描述文件枚举不可用（通道未就绪或解析失败）」，
+    /// 最终两项都以 `Minimuxer.MinimuxerError 1`（`NoConnection`）失败；
+    /// 而同一构建、几分钟前的前台续签 2/2 成功。
+    /// ⇒ 点火前改用**强判据**：`installChannel.start()` 会走完整个诊断
+    /// （reset + RSD 握手 + 轮询；已就绪时 900 秒缓存秒回、失败熔断 60 秒、单飞合并并发启动）。
     func refreshAllFromBackgroundTrigger() {
         Task { [weak self] in
-            try? await self?.logStore?.append(
+            guard let self else { return }
+            try? await self.logStore?.append(
                 category: .renewal,
                 message: "快捷指令在后台触发「续签全部应用」（未打开 App）",
                 code: "SEAL-BACKGROUND-006"
             )
+            await self.awaitDeviceChannelBeforeBackgroundRenewal()
+            self.refreshAll()
         }
-        refreshAll()
+    }
+
+    /// 后台触发的点火前置：**先把设备通道拉起来，再续签**（见 `refreshAllFromBackgroundTrigger`）。
+    ///
+    /// ⚠️ **刻意不调 `clearFailureCooldown()`**：那是「用户主动刷新」的语义（设置页里点重试）。
+    /// 这里只借 `start()` 自己的三件套（900 秒成功缓存 / 60 秒失败熔断 / 单飞），
+    /// 所以通道本来就好的时候它**秒回**，不会平白多等一轮 75 秒诊断。
+    ///
+    /// ⚠️ **等不到也必须照常点火**：这条链路的价值是「不打开 App 也能续」，
+    /// 改成「通道不成就什么都不做」等于把功能关掉（技能 §7.18 的坑）。
+    /// 等不到就点火，让 `RenewalCoordinator` 的**通道瞬时错误重试**去兜底，
+    /// 并留痕 `-009`（带原因与等待秒数）供真机对账。
+    private func awaitDeviceChannelBeforeBackgroundRenewal() async {
+        guard let installChannel else { return }
+        let startedAt = Date()
+        try? await logStore?.append(
+            category: .renewal,
+            message: "后台触发：先确认设备通道就绪再点火（冷启动时通道可能还在起步）",
+            code: "SEAL-BACKGROUND-007"
+        )
+        let failureDetail: String?
+        do {
+            _ = try await installChannel.start()
+            failureDetail = nil
+        } catch {
+            let nsError = error as NSError
+            failureDetail = "\(nsError.domain) \(nsError.code)"
+        }
+        let waited = Int(Date().timeIntervalSince(startedAt))
+        if let failureDetail {
+            try? await logStore?.append(
+                category: .renewal,
+                level: .warning,
+                message: "后台触发：设备通道未就绪（\(failureDetail)），等待 \(waited) 秒后仍照常点火；"
+                    + "本轮失败的项会按「通道瞬时错误」自动重试",
+                code: "SEAL-BACKGROUND-009"
+            )
+        } else {
+            try? await logStore?.append(
+                category: .renewal,
+                message: "后台触发：设备通道已就绪（等待 \(waited) 秒），开始续签",
+                code: "SEAL-BACKGROUND-008"
+            )
+        }
     }
 
     /// 「重试失败项」：只重试上一轮失败的 App，避免对已成功应用重复签名/上传/安装。
@@ -2744,10 +2805,18 @@ final class AppsViewModel: ObservableObject {
         InstallFailureSettingsRoute.route(forCode: failure.code)
     }
 
+    /// ⚠️ 这里**必须**带上 `[域 码]`：旧文案是「技术信息已写入脱敏日志」，
+    /// 而全仓**没有任何地方**记录那个原始 `error`
+    /// （`grep -rn "technicalDetail\|rawError\|underlyingError"` = 0 命中）
+    /// ⇒ 那句话在骗下一个人：真机失败时根因**在导出的日志里根本不存在**
+    /// （2026-09-26 构建 53 实证：21:12:07 一条 `SEAL-SIGN-500`，除了那句话什么都没有）。
+    /// 对照批量链路 —— `RenewalCoordinator.normalize` 会把 `[域 码: 描述]` 拼进 reason，
+    /// 所以 `SEAL-RENEW-500` 的根因是看得见的。守卫 R92 钉住这三处都要带。
     private static func unexpectedSigningFailure(_ error: Error) -> ImportFailure {
+        let nsError = error as NSError
         return ImportFailure(
             title: "签名失败",
-            reason: "签名流程遇到未预期错误，技术信息已写入脱敏日志。",
+            reason: "签名流程遇到未预期错误。\n[\(nsError.domain) \(nsError.code)]",
             recovery: "重试",
             code: "SEAL-SIGN-500"
         )

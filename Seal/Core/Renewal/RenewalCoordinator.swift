@@ -190,11 +190,20 @@ actor RenewalCoordinator {
     /// Retry only classified transient network errors. Authentication, certificate,
     /// storage and package failures need an explicit recovery action. Installation
     /// already has its own retry budget; do not multiply it by resigning the app.
+    ///
+    /// 🔴 **设备通道的瞬时失败也算可重试**（2026-09-26 构建 53 真机）：
+    /// 后台触发的那一轮两项都以 `Minimuxer.MinimuxerError 1`（`NoConnection`）失败，
+    /// 而同一构建、几分钟前的前台续签 2/2 成功 —— 那是**通道抖动**，不是记录有问题。
+    /// 旧行为把它当成终态错误 ⇒ 整轮白做、用户必须手动再点一次。
+    ///
+    /// ⚠️ 这一条必须**排在网络错误判定之前**：通道错误的 `NSError` 域是
+    /// `Minimuxer.MinimuxerError`，`AppleServiceFailurePolicy.isNetworkError` 认不出来。
     nonisolated static func isRetryable(_ error: Error) -> Bool {
         if error is CancellationError { return false }
         if let failure = error as? ImportFailure {
             return failure.code.hasPrefix("SEAL-NET-")
         }
+        if DeviceChannelTransientPolicy.isTransientChannelFailure(error) { return true }
         return AppleServiceFailurePolicy.isNetworkError(error)
     }
 
@@ -375,7 +384,13 @@ actor RenewalCoordinator {
                     lastError = error
                     // 还能重试就等待后继续
                     if attempt < maxAttempts && Self.isRetryable(error) {
-                        let delay = baseRetryDelay * UInt64(attempt)
+                        // 通道类失败用**更长**的退避：隧道恢复是秒级到十几秒级的事，
+                        // 2 秒退避几乎必然撞在还没恢复的窗口里，重试等于白跑
+                        //（见 `DeviceChannelTransientPolicy.channelRetryDelayNanoseconds`）。
+                        let base = DeviceChannelTransientPolicy.isTransientChannelFailure(error)
+                            ? DeviceChannelTransientPolicy.channelRetryDelayNanoseconds
+                            : baseRetryDelay
+                        let delay = base * UInt64(attempt)
                         try? await Task.sleep(nanoseconds: delay)
                         continue
                     }

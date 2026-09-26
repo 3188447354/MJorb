@@ -5537,6 +5537,128 @@ def violations(load=read):
           "压缩策略错 ⇒ 体积或 installd 兼容性受损；`layoutOnly` 少跳一步 ⇒ "
           "目标集合对不上。这些**都不会在本地暴露**，只能靠 CI 里的新单测")
 
+    # ── R92：后台触发的**设备通道时序** ＋ 通道瞬时错误重试 ＋ 未预期错误可观测 ──────
+    # 来源：2026-09-26 构建 53 真机（用户导出 `Seal-log`）。
+    #   21:10:37 `SEAL-BACKGROUND-006`（快捷指令触发）＋ 同秒 `-001`（保活）
+    #            ⇒ **触发链路是通的**；
+    #   21:10:43 `SEAL-PROFILE-363` 的 `fallbackReason` =「设备端描述文件枚举**不可用**
+    #            （通道未就绪或解析失败）」⇒ **点火那一刻通道确实不可用**；
+    #   21:11:05 / 21:11:35 两项均以 `Minimuxer.MinimuxerError 1`（`NoConnection`）失败；
+    #   同一构建、几分钟前（21:09:34 / 21:09:43）前台续签 **2/2 成功**。
+    #   ⇒ 三条判据：① 点火前必须用**强判据**等通道；② 通道瞬时错误必须可重试；
+    #     ③ 未预期错误必须带 `[域 码]`（否则下一次还是查不出根因）。
+    r92_view_model = load("Seal/Features/Apps/AppsViewModel.swift")
+    r92_view_model_code = strip_comments(r92_view_model)
+    # ⚠️ `section_or_empty` 的结束锚点是**一行注释** ⇒ 必须先切段、再剥注释
+    #（反过来锚点会被剥掉，切出空串 ⇒ 所有断言在空区间里失败）。
+    r92_trigger = strip_comments(section_or_empty(
+        r92_view_model,
+        "    func refreshAllFromBackgroundTrigger() {",
+        "\n    /// 「重试失败项」"
+    ))
+    r92_wait = strip_comments(section_or_empty(
+        r92_view_model,
+        "    private func awaitDeviceChannelBeforeBackgroundRenewal() async {",
+        "\n    /// 「重试失败项」"
+    ))
+    r92_signing = strip_comments(load("Seal/Core/Signing/SigningCoordinator.swift"))
+    r92_renewal = strip_comments(load("Seal/Core/Renewal/RenewalCoordinator.swift"))
+    r92_policy = strip_comments(load("Seal/Core/Renewal/DeviceChannelTransientPolicy.swift"))
+    r92_index = load("docs/qa/log-code-index.md")
+    r92_policy_tests = load("SealTests/Renewal/DeviceChannelTransientPolicyTests.swift")
+    r92_minimuxer_cases = re.findall(
+        r"^    case ([A-Za-z_][A-Za-z0-9_]*)\s*$",
+        strip_comments(load("Vendor/Minimuxer/Sources/MinimuxerError.swift")),
+        re.M
+    )
+    r92_await_call = "await self.awaitDeviceChannelBeforeBackgroundRenewal()"
+
+    check(r92_await_call in r92_trigger
+          and "self.refreshAll()" in r92_trigger
+          and r92_trigger.index(r92_await_call) < r92_trigger.index("self.refreshAll()"),
+          "R92①: 后台触发必须**先等设备通道就绪、再点火**（等待调用要排在 `refreshAll()` 之前）✗ —— "
+          "快捷指令走的是**冷启动的新进程**（`SEAL-BACKGROUND-001` 与 `-006` 同秒出现），"
+          "点火那一刻通道还在起步；构建 53 真机那一轮两项都以 `MinimuxerError 1` 失败")
+
+    check("_ = try await installChannel.start()" in r92_wait
+          and "isReady()" not in r92_wait
+          and "clearFailureCooldown()" not in r92_wait,
+          "R92②: 等通道必须用**强判据** `installChannel.start()`（走完 reset + RSD 握手 + 轮询）✗ —— "
+          "不得退化成 `isReady()`（`Minimuxer.ready()` 只是一次裸 TCP 可达性探测，"
+          "隧道端口一通就放行 —— 构建 53 真机正是「闸门放行、紧接着枚举失败」这个组合）；"
+          "也不得调 `clearFailureCooldown()`（那是「用户主动刷新」的语义，"
+          "会让每次后台触发都白等一轮 75 秒诊断）")
+
+    # ⚠️ 判据串必须带**上下文**（`code: "…"` / 反引号），不能写裸码：
+    #   变异形态是「把码改名」（`-008` → `-008x`），而 `SEAL-BACKGROUND-008x`
+    #   **仍然包含** `SEAL-BACKGROUND-008` ⇒ 裸码断言在变异后照样成立 ⇒ 变异没有判别力
+    #   （2026-09-26 用 check-mutation-power.py 抓到，两条 R92③ 都是这个形态）。
+    check('code: "SEAL-BACKGROUND-007"' in r92_view_model_code
+          and 'code: "SEAL-BACKGROUND-008"' in r92_view_model_code
+          and 'code: "SEAL-BACKGROUND-009"' in r92_view_model_code
+          and "`SEAL-BACKGROUND-007`" in r92_index
+          and "`SEAL-BACKGROUND-008`" in r92_index
+          and "`SEAL-BACKGROUND-009`" in r92_index,
+          "R92③: 等待通道的三个码（`-007` 开始等 / `-008` 已就绪 / `-009` 未就绪仍点火）"
+          "必须都留痕**并登记进 `docs/qa/log-code-index.md`** ✗ —— "
+          "这条链路在后台跑、界面上什么都没有，用户发来日志时第一件事就是查码表")
+
+    check(r92_wait.count("return") == 1
+          and "if let failureDetail {" in r92_wait,
+          "R92④: 等不到通道也必须**照常点火**（不得 early return）✗ —— "
+          "把这条链路改成「通道不成就什么都不做」等于把功能关掉（技能 §7.18）；"
+          "兜底交给 R92⑥ 的通道瞬时错误重试。`return` 恰好 1 处 = 顶部那个 "
+          "`guard let installChannel else { return }`")
+
+    check(r92_minimuxer_cases[:3] == ["NoDevice", "NoConnection", "PairingFile"]
+          and 'minimuxerErrorDomain = "Minimuxer.MinimuxerError"' in r92_policy
+          and "transientChannelErrorCodes: Set<Int> = [0, 1]" in r92_policy
+          and "static func isTransientChannelFailure(_ error: Error) -> Bool {" in r92_policy,
+          "R92⑤: 通道瞬时判据的「域 + 序号」必须与 `MinimuxerError` 的声明顺序一致 ✗ —— "
+          "判据是**结构化**的（domain ＋ case 序号），而序号是「声明顺序」的隐式契约："
+          "一旦有人在 `NoDevice` 前面插 case 或换序，判据就**静默失效**"
+          "（只在真机上表现为「本该重试却没有重试」，日志里看不出任何异常）；"
+          "另外 `Error` 重载必须保留 —— 调用点只拿得到 `Error`，而判据本体必须是"
+          "「可构造输入的纯函数」（测试 target 看不到 `MinimuxerError`）")
+
+    check("if DeviceChannelTransientPolicy.isTransientChannelFailure(error) { return true }"
+          in r92_renewal
+          and r92_renewal.index(
+              "if DeviceChannelTransientPolicy.isTransientChannelFailure(error) { return true }"
+          ) < r92_renewal.index("return AppleServiceFailurePolicy.isNetworkError(error)"),
+          "R92⑥: 通道瞬时判定必须排在网络错误判定**之前** ✗ —— "
+          "通道错误的 `NSError` 域是 `Minimuxer.MinimuxerError`，"
+          "`AppleServiceFailurePolicy.isNetworkError` 认不出来 ⇒ 排到后面等于没加")
+
+    check("DeviceChannelTransientPolicy.channelRetryDelayNanoseconds" in r92_renewal
+          and "channelRetryDelayNanoseconds: UInt64 = 8_000_000_000" in r92_policy,
+          "R92⑦: 通道类失败必须用**更长**的退避（8 秒基数，而网络重试是 2 秒）✗ —— "
+          "隧道恢复是秒级到十几秒级的事；构建 53 真机两项失败相隔 30 秒以上 ⇒ "
+          "2/4 秒的退避几乎必然撞在通道还没恢复的窗口里，重试等于白跑")
+
+    check('reason: "签名流程遇到未预期错误。\\n[\\(nsError.domain) \\(nsError.code)]"'
+          in r92_view_model_code
+          and 'reason: "安装流程遇到未预期错误。\\n[\\(nsError.domain) \\(nsError.code)]"'
+          in r92_signing
+          and 'app.lastInstallFailureReason = "安装流程遇到未预期错误。\\n[\\(nsError.domain) \\(nsError.code)]"'
+          in r92_signing
+          and 'reason: "Seal 自更新安装遇到未预期错误。\\n[\\(nsError.domain) \\(nsError.code)]"'
+          in r92_signing
+          and "技术信息已写入脱敏日志" not in r92_view_model_code
+          and "技术信息已写入脱敏日志" not in r92_signing,
+          "R92⑧: 四处「未预期错误」的文案必须带 `[域 码]`，旧文案不得复活 ✗ —— "
+          "旧文案「技术信息已写入脱敏日志」是**空话**：那个原始 `error` 全仓没有任何地方记录"
+          "（`grep -rn \"technicalDetail\\|rawError\\|underlyingError\"` = 0 命中）"
+          "⇒ 真机失败时根因在导出的日志里根本不存在"
+          "（2026-09-26 构建 53：21:12:07 一条 `SEAL-SIGN-500`，除了那句话什么都没有）")
+
+    check("func deviceAbsentAndConnectionLostAreTransient()" in r92_policy_tests
+          and "func pairingFileIsDeliberatelyNotTransient()" in r92_policy_tests
+          and "func channelRetryDelayIsLongerThanNetworkRetryBase()" in r92_policy_tests
+          and "func renewalCoordinatorTreatsChannelFailuresAsRetryable()" in r92_policy_tests,
+          "R92⑨: 通道瞬时判据必须有单测 ✗ —— "
+          "它的错法只在真机上表现为「本该重试却没有重试」，不崩、不报错、日志里也看不出来")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -8349,9 +8471,13 @@ def main():
          "                \"用 Seal 续签全部应用\",\n",
          "R90⑧:"),
         # ⑨ 后台触发绕开 `refreshAll()`、直接进 `startBatchRefresh()`（单飞判据被绕过）⇒ R90⑨ 报红。
+        #    ⚠️ 锚点在 2026-09-26 收窄过：旧锚点是「`refreshAll()` ＋ 函数收尾 ＋ 下一段的文档注释」，
+        #    而 1.3.24 把触发层改成「先 `await` 等通道、再 `refreshAll()`」⇒ `refreshAll()`
+        #    不再是函数最后一句 ⇒ 旧锚点失配（守卫会报 `Mutation anchor missing`）。
+        #    改成**只钉那一行调用**（全文件唯一），锚点越短越不容易被无关编辑带坏。
         ("Seal/Features/Apps/AppsViewModel.swift",
-         "        refreshAll()\n    }\n\n    /// 「重试失败项」",
-         "        startBatchRefresh()\n    }\n\n    /// 「重试失败项」",
+         "            self.refreshAll()",
+         "            self.startBatchRefresh()",
          "R90⑨:"),
         # ⑩ 后台触发的留痕码改名（又变回静默触发）⇒ R90⑩ 报红。
         ("Seal/Features/Apps/AppsViewModel.swift",
@@ -8468,6 +8594,98 @@ def main():
          "func layoutOnlyKeepsMappingsAndExtensionSetIdenticalToSigning()",
          "func layoutOnlyLegacy()",
          "R91⑪:"),
+
+        # ── R92：后台触发的通道时序 / 通道瞬时重试 / 未预期错误可观测 ──
+        # ① 点火前不再等通道（退回「拿到容器就续签」）⇒ R92① 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "            await self.awaitDeviceChannelBeforeBackgroundRenewal()\n",
+         "",
+         "R92①:"),
+        # ①b 把等待挪到点火**之后**（顺序反了）⇒ R92① 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "            await self.awaitDeviceChannelBeforeBackgroundRenewal()\n"
+         "            self.refreshAll()",
+         "            self.refreshAll()\n"
+         "            await self.awaitDeviceChannelBeforeBackgroundRenewal()",
+         "R92①:"),
+        # ② 等待退化成弱判据 `isReady()`（裸 TCP 探测）。
+        #    ⚠️ 锚点必须带上下文：`_ = try await installChannel.start()` 在 AppsViewModel 里
+        #    出现 3 次（`refreshSigningChannel` / `beginSigningChannel` / 这里），
+        #    只替换第一处 ⇒ 变异**不会**碰到等待函数 ⇒ 白写一条变异。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "            _ = try await installChannel.start()\n"
+         "            failureDetail = nil",
+         "            _ = await installChannel.isReady()\n"
+         "            failureDetail = nil",
+         "R92②:"),
+        # ②b 顺手清掉失败熔断（每次后台触发都白等一轮 75 秒诊断）⇒ R92② 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "        guard let installChannel else { return }\n        let startedAt = Date()",
+         "        guard let installChannel else { return }\n"
+         "        await installChannel.clearFailureCooldown()\n        let startedAt = Date()",
+         "R92②:"),
+        # ③ `-008` 被改名（代码与码表脱节）⇒ R92③ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         'code: "SEAL-BACKGROUND-008"',
+         'code: "SEAL-BACKGROUND-008x"',
+         "R92③:"),
+        # ③b 码表里漏登记 `-009` ⇒ R92③ 报红。
+        ("docs/qa/log-code-index.md",
+         "SEAL-BACKGROUND-009",
+         "SEAL-BACKGROUND-009x",
+         "R92③:"),
+        # ④ 等不到通道就 early return（等于把功能关掉）⇒ R92④ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "        if let failureDetail {",
+         "        if let failureDetail {\n            return",
+         "R92④:"),
+        # ⑤ `MinimuxerError` 的 case 换序（判据静默失效）⇒ R92⑤ 报红。
+        ("Vendor/Minimuxer/Sources/MinimuxerError.swift",
+         "    case NoDevice\n    case NoConnection",
+         "    case NoConnection\n    case NoDevice",
+         "R92⑤:"),
+        # ⑤b 码集合多收 `PairingFile`（记录问题被当成瞬时抖动）⇒ R92⑤ 报红。
+        ("Seal/Core/Renewal/DeviceChannelTransientPolicy.swift",
+         "transientChannelErrorCodes: Set<Int> = [0, 1]",
+         "transientChannelErrorCodes: Set<Int> = [0, 1, 2]",
+         "R92⑤:"),
+        # ⑤c 错误域写错（判据恒假）⇒ R92⑤ 报红。
+        ("Seal/Core/Renewal/DeviceChannelTransientPolicy.swift",
+         'minimuxerErrorDomain = "Minimuxer.MinimuxerError"',
+         'minimuxerErrorDomain = "MinimuxerError"',
+         "R92⑤:"),
+        # ⑤d `Error` 重载被改名（调用点只能拿 `Error`；判据必须保留「可构造输入」的那个入口）
+        #    ⇒ R92⑤ 报红。⚠️ 改名而不是删掉：**保持这条变异仍能编译**，
+        #    这样「断言有没有判别力」与「Swift 能不能编译」两件事互不干扰。
+        ("Seal/Core/Renewal/DeviceChannelTransientPolicy.swift",
+         "    static func isTransientChannelFailure(_ error: Error) -> Bool {",
+         "    static func channelTransientFailure(_ error: Error) -> Bool {",
+         "R92⑤:"),
+        # ⑥ 通道判定被删（退回「只重试网络错误」）⇒ R92⑥ 报红。
+        ("Seal/Core/Renewal/RenewalCoordinator.swift",
+         "        if DeviceChannelTransientPolicy.isTransientChannelFailure(error) { return true }\n",
+         "",
+         "R92⑥:"),
+        # ⑦ 通道退避被调回网络基数（重试必然撞在通道还没恢复时）⇒ R92⑦ 报红。
+        ("Seal/Core/Renewal/DeviceChannelTransientPolicy.swift",
+         "channelRetryDelayNanoseconds: UInt64 = 8_000_000_000",
+         "channelRetryDelayNanoseconds: UInt64 = 2_000_000_000",
+         "R92⑦:"),
+        # ⑧ `SEAL-SIGN-500` 的文案退回「技术信息已写入脱敏日志」（空话复活）⇒ R92⑧ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         'reason: "签名流程遇到未预期错误。\\n[\\(nsError.domain) \\(nsError.code)]"',
+         'reason: "签名流程遇到未预期错误，技术信息已写入脱敏日志。"',
+         "R92⑧:"),
+        # ⑧b `SEAL-SELF-109` 的文案退回旧写法 ⇒ R92⑧ 报红。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         'reason: "Seal 自更新安装遇到未预期错误。\\n[\\(nsError.domain) \\(nsError.code)]"',
+         'reason: "Seal 自更新安装遇到未预期错误。"',
+         "R92⑧:"),
+        # ⑨ 关键单测被改名（不变量没人守）⇒ R92⑨ 报红。
+        ("SealTests/Renewal/DeviceChannelTransientPolicyTests.swift",
+         "func pairingFileIsDeliberatelyNotTransient()",
+         "func pairingFileIsTransient()",
+         "R92⑨:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

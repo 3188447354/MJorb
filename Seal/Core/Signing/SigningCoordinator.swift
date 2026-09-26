@@ -779,8 +779,12 @@ actor SigningCoordinator {
             throw reported
         } catch {
             // 非 ImportFailure 的意外错误同样可能发生在撤销之后 ⇒ 也要如实告知。
+            // ⚠️ 文案里**必须**带 `[域 码]`：旧文案是「技术信息已写入脱敏日志」，
+            // 而那个原始 `error` 全仓没有任何地方记录 ⇒ 真机失败时根因查不到
+            //（2026-09-26 构建 53 实证）。守卫 R92 钉住。
+            let nsError = error as NSError
             let unexpected = Self.failure(
-                reason: "安装流程遇到未预期错误，技术信息已写入脱敏日志。",
+                reason: "安装流程遇到未预期错误。\n[\(nsError.domain) \(nsError.code)]",
                 recovery: "重试",
                 code: "SEAL-INSTALL-500"
             )
@@ -1399,10 +1403,12 @@ actor SigningCoordinator {
             try await persistAppState(app)
             throw failure
         } catch {
+            let nsError = error as NSError
             app.state = app.state == .installed ? .installed : .signed
             app.signedArtifactStatus = .installFailed
             app.lastInstallFailureCode = "SEAL-INSTALL-500"
-            app.lastInstallFailureReason = "安装流程遇到未预期错误，技术信息已写入脱敏日志。"
+            // ⚠️ 同 `:783`：文案里必须带 `[域 码]`，否则真机失败时根因无处可查。
+            app.lastInstallFailureReason = "安装流程遇到未预期错误。\n[\(nsError.domain) \(nsError.code)]"
             try await persistAppState(app)
             throw error
         }
@@ -1913,8 +1919,11 @@ actor SigningCoordinator {
             } catch let failure as SelfReplacementFailure {
                 throw Self.selfReplacementFailure(failure)
             } catch {
+                // ⚠️ 同 `:783`：这条也属于「未预期错误」，文案里必须带 `[域 码]`，
+                // 否则真机上报 `SEAL-SELF-109` 时根因无处可查。
+                let nsError = error as NSError
                 throw Self.failure(
-                    reason: "Seal 自更新安装遇到未预期错误。",
+                    reason: "Seal 自更新安装遇到未预期错误。\n[\(nsError.domain) \(nsError.code)]",
                     recovery: "重新启动 Seal 后再续签",
                     code: "SEAL-SELF-109"
                 )

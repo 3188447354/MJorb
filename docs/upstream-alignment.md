@@ -130,6 +130,8 @@ Seal 的是**自己的 wrapper**（`struct AnisetteV3Client: AnisetteEnvironment
 
 | **2026-09-26** | 🔴 **「不打开 App 的后台自动续签」（后台保活 ＋ 快捷指令触发）** | 1.3.21 及更早**三层全都没有** ✗：全仓 `Seal/` 下 `BGTaskScheduler` / `AppIntent` / `SiriKit` / `Shortcuts` / `UIBackgroundModes` **零命中**；唯一的「后台保活」是 `UIApplication.beginBackgroundTask`（约 30 秒、一次性，`SigningCoordinator.swift:306-320` / `:1813-1821`），**只在已经在前台发起的续签里兜底**，没有任何东西能让 App 在后台长期活着 ✗ | **SideStore 三层都在**（2026-09-26 逐行核实）：<br>① 保活 `SideStore/Core/BackgroundServices/BackgroundAudioService.swift` —— `setCategory(.playback, options: [.mixWithOthers])`（`:49`）＋ **运行时生成静音 WAV** `generateSilentWAV()`（`:53` / `:120-146`，8000 Hz 单声道 16 bit 1 秒纯 0）＋ `numberOfLoops = -1`（`:55`）＋ **`volume = 0.01` 而不是 0**（`:56`）＋ **中断恢复**（`:79-98`，`interruptionNotification` 的 `.ended` ⇒ `setActive(true)` ＋ `play()`）✓；备选 `BackgroundLocationService`（需「始终允许定位」）✗；`Info.plist` 声明 `audio`/`fetch`/`location`/`remote-notification`（`upstream/SideStore/AltStore/Info.plist:230-235`）✓<br>② 触发 `AppIntent` ＋ `AppShortcutsProvider`（`AppShortcuts.swift:12-36`）＋ 旧式 background fetch（`AppDelegate.swift:408`）✓；后台窗口只有约 30 秒，上游把 deadline 硬编码成 **27 秒**（`RefreshAllAppsIntent.swift:145`），超时就 `requestToContinueInForeground()` ✓<br>③ 网络：`MinimuxerWrapper.swift:196-200` 明写**蜂窝刷新 ＋ WireGuard 不行**（iOS 会在关蜂窝时暂停隧道）✓ | **跟** ✓（2026-09-26 实施，1.3.22）—— 三层照上游做：**① 保活**（`BackgroundKeepAliveService`：运行时生成静音 WAV、无限循环、`volume = 0.01`、中断恢复；`project.yml` 声明 `UIBackgroundModes: [audio]`）＋ **② 触发**（`RefreshAllAppsIntent`，`openAppWhenRun = false` ＋ `SealAppShortcuts`）＋ **③ 网络**沿用现成的 LocalDevVPN（`LocalDevVPNOnDemandActivator.probeTunnel()` 的注释说明「探测顺带拉起 VPN」）。<br>**两处刻意不照抄**：① **不加 `fetch`** —— 上游用旧式 background fetch（`AppDelegate.performFetchWithCompletionHandler`），而 Seal **还没有 AppDelegate** ⇒ 声明了不处理只会让系统白唤醒、并让排查时误以为有这条路径（要加时「声明 ＋ 处理回调」两件事一起做）；② **不用 `ForegroundContinuableIntent`** —— 它**已被 Apple 废弃**（官方改用 `supportedModes` 的 `.foreground(.dynamic)`）。<br>**Seal 侧另有的约束**：`SealAppEnvironment` 只允许**读**容器（第二个 `AppContainer.live()` 会造出第二份 CoreData store 与安装通道实例，绕过 `OperationCoordinator` 的单飞闸门，见 R05）；触发层必须**复用** `AppsViewModel.refreshAll()`，不得另起一套。守卫 **R90**（13 断言 ＋ 13 变异）。<br>⚠️ **上游自己承认做不到 100% 无人值守**（`AppDelegate.swift:419` 通知原文 *"The more you open SideStore, the more chances it's given to refresh apps in the background."*）⇒ **不向用户承诺「装完永远不用碰」**，真实目标是压低「必须手动打开」的频率 ✓ |
 
+| **2026-09-26** | 🔴 **签名 / 续签的「白做功」**（首签 165 秒、续签快路径 44 秒里有多少是纯浪费） | ① 签名器把「量尺寸」与「真签名」都做成**全量**：Pass 1 先造一份和二进制一样大的全零缓冲、再逐页哈希一遍（**结果只用来取长度** ✗）；页哈希**每页复制一份**再算；签名输入**整块读**；证书 `.p12` **每次访问重解**（一个 33 二进制的包约 99 次 PBKDF2 ✗）。<br>② Seal 侧：分块扫描**每块复制 256 KB** 再搜（抖音全树 1.46 GB 白搬 ✗）；打包**一律 deflate**（png / jpg / mp4 / `Assets.car` 再压一遍几乎不变小 ✗）；**profile-only 续签照样做「瘦身 arm64e」与「ESign 布局归一化」**（后者在根目录有 `.framework` 时要**遍历全树**，抖音实测 30–35 秒 ✗ —— 而这条快路径**根本不产出新 IPA** ✗）。<br>③ 同一份「打包」规则有**两份实现**（`SigningWorkspace.package` 与 `SelfAppRegistrar` 各一份 `zipItem` ✗） | **上游也没有这些优化** ✗（2026-09-26 逐处核实）：`CodeSignKit` 的 Pass 1 就是 `Data(count: codeLimit)` ＋ `build()`；`CMSSigner.leafCertificate` 是计算属性、`sign()` 各自 `try PKCS12Parser(...)`；`CodeSigner` 用 `Data(contentsOf:)` 整块读。<br>打包侧：`FileManager+ZIP.swift` 的 `zipItem` 把**同一个** `compressionMethod` 透传给每个条目（上游默认 `.none` ＝ 完全不压 ✗），且 `Archive.addEntry` **没有**「压完更大就退回 store」的回退。<br>续签侧：SideStore 的 `PipelineStepDefinition.refresh` **压根不解包**（`fetchProvisioningProfiles` → `cacheResignedMetadata` → `refreshApp`，见上一行）⇒ **不存在**这一步浪费 | **不跟（上游也没有）⇒ 本仓自研** ✓（2026-09-26 实施，1.3.23）。<br>**改 `Vendor/CodeSignKit` 的 6 处**（逐处清单见 [`docs/upstream/codesignkit-perf-1.3.23.md`](upstream/codesignkit-perf-1.3.23.md)）：Pass 1 只算尺寸（新增 `CodeDirectoryBuilder.size()`，与 `build()` 共用 `layout()`）、页哈希零拷贝、追加 SuperBlob 前 `reserveCapacity`、签名输入 `.mappedIfSafe`、PKCS#12 实例级缓存。<br>**改 Seal 自己那层**：`containsBytes` 零拷贝（`bufferContains`，保留跨块 overlap 与 `memmove`）、打包**逐条目**选压缩方法、`SigningWorkspace.writeIPA` 收成**唯一**打包实现（`SelfAppRegistrar` 复用）、`prepare(purpose: .layoutOnly)` 让 profile-only 续签跳过瘦身与归一化。<br>⚠️ **安全边界一处都不放松**：`layoutOnly` 只跳「不碰 `Info.plist` / entitlements / 扩展集合」的两步（守卫 R91⑨b 钉住开关只许包住这两处）；压缩只对**已压过**的类型改 store，未压过的一律照旧 deflate。<br>⚠️ 这 6 处对上游**向后兼容**（只新增了一个 `public func size()`）⇒ 后续可给上游提 PR ✓。守卫 **R91**（13 断言 + 18 变异） |
+
 > **⚠️ 分清两种「Seal 多出来的东西」**（用户 2026-09-19 指示「比 SideStore 严格就去除」时）：
 >
 > | 类型 | 例子 | 处置 |
@@ -230,11 +232,22 @@ gh api "repos/SideStore/SideStore/contents/<路径>" --jq '.content' | base64 -d
 | `CLI/` ＋ `Package.swift` 的 `sidesign` 产品与 `executableTarget` | 整段建立在已删的门户层上 ⇒ **根本编译不过** ✗ |
 | `Tests/SideSignTests` 里 2 个用例（CSR / DeveloperPortal） | 同上 ✓（其余 3 个：`Device` 模型 ＋ 两个 `Archive` 往返 ⇒ **保留** ✓） |
 
-### 9.4 `Vendor/CodeSignKit` 的改动（**只有 Package.swift** ✓）
+### 9.4 `Vendor/CodeSignKit` 的改动
 
-其余**逐字节原样** ✓（`diff -r -w` 核实 ✓）。`Package.swift` 只改了一处：
-`swift-crypto` 由 `4.3.1` → **`4.5.2`** ✓ —— 不改会与根包冲突，CI 实报
-「gsacryptokit depends on swift-crypto 4.3.1 and root depends on 4.5.2」✗。
+🔴 **2026-09-26 起不再是「只有 `Package.swift`」** —— 本仓在这份上游副本上做了
+**6 处性能改动**（首次签名 / 续签提速，1.3.23）。**改动清单与逐处理由见
+[`docs/upstream/codesignkit-perf-1.3.23.md`](upstream/codesignkit-perf-1.3.23.md)** ✓，
+守卫 **R91** 钉住「不得静默回退」✓。
+
+⚠️ **同步上游之前必须先读那份清单**：本仓不能 `git merge` / `git rebase` 上游
+（历史被重建过、没有共同祖先）⇒ 只能语义对照 ⇒ 一次「照抄上游」就会把这些优化全部回退 ✗。
+
+`Package.swift` 的改动（早先那一处，仍然有效）：`swift-crypto` 由 `4.3.1` → **`4.5.2`** ✓
+—— 不改会与根包冲突，CI 实报「gsacryptokit depends on swift-crypto 4.3.1 and root depends
+on 4.5.2」✗。
+
+除上述之外，其余文件**逐字节原样** ✓（2026-09-26 复核：未改动文件
+`RequirementsBuilder.swift` / `SuperBlobBuilder.swift` / `Constants.swift` 与上游 `diff -q` 全 SAME ✓）。
 
 ### 9.5 🔴 换签名器带来的三个已知风险 → ✅ **真机已验证**（2026-09-20，构建 175）
 

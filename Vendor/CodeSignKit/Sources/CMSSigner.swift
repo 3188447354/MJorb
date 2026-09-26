@@ -86,11 +86,29 @@ public final class CMSSigner {
         self.password = password
     }
 
+    /// 🔴 **PKCS#12 只解析一次**（2026-09-26）。
+    ///
+    /// 原实现里 `leafCertificate` 是**计算属性**、`sign()` 又各自 `try PKCS12Parser(...)`
+    /// ⇒ 在同一个 `CMSSigner` 上每访问一次就**重解一遍**：PBKDF2 迭代循环
+    ///（`PKCS12Parser.swift` 里是纯 Swift 的 `for _ in 2...rounds`，Apple 导出的 P12
+    /// 通常 2048 轮）＋ AES-CBC ＋ DER 解析 ✗。
+    /// 调用点实测：`CodeSigner` 每个 item 一次 ＋ `MachOSigner` Pass 1 / Pass 2 各一次
+    /// ＋ `getLeafCertificateSHA1()` 一次 ⇒ 33 个二进制 ≈ **99 次重复解析** ✗。
+    ///
+    /// ⚠️ 缓存是**实例级**、**无需加锁**，前提是「一个 `CMSSigner` 只被串行使用」：
+    /// `CodeSigner.signItem` 每次调用都 `new` 一个 `CMSSigner`，且它是串行循环 ✓。
+    /// ⇒ **若将来改成共享一个 `CMSSigner` 跨线程使用，必须回来把它换成锁保护的盒子** ✗。
+    ///
+    /// ⚠️ 用 `Result` 而不是 `try?`：原来 `sign()` 走的是 `try`（失败时**抛出解析器的真实错误**），
+    /// 而 `leafCertificate` 走 `try?`（失败时返回 nil）—— 两者错误语义不同，
+    /// 缓存成 `Result` 才能**各自保持原样** ✓（缓存成 `PKCS12Parser?` 会把 `sign()` 的错误
+    /// 换成一句笼统的 `certificateError`，排障时丢掉真因）。
+    private lazy var parsedPKCS12: Result<PKCS12Parser, Error> = Result {
+        try PKCS12Parser(p12Data: p12Data, password: password)
+    }
+
     public var leafCertificate: X509Certificate? {
-        guard let parser = try? PKCS12Parser(p12Data: p12Data, password: password) else {
-            return nil
-        }
-        return parser.leafCertificate
+        (try? parsedPKCS12.get())?.leafCertificate
     }
 
     public func getLeafCertificateSHA1() -> Data? {
@@ -98,7 +116,7 @@ public final class CMSSigner {
     }
 
     public func sign(codeDirectoryData: Data, timestampToken: Data? = nil) throws -> Data {
-        let parser = try PKCS12Parser(p12Data: p12Data, password: password)
+        let parser = try parsedPKCS12.get()
 
         guard let leafCert = parser.leafCertificate,
               let rsaPrivateKey = parser.rsaPrivateKey else {

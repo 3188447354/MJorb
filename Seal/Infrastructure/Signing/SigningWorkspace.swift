@@ -3,6 +3,34 @@ import UIKit
 import ZIPFoundation
 
 struct SigningWorkspace: Sendable {
+
+    /// `prepare` 的**用途** —— 决定要不要做那些「只为让产物能装能跑」的重活（2026-09-26）。
+    ///
+    /// 背景：`prepareProfileOnlyRenewal`（profile-only 续签）也要解包一份 IPA，
+    /// 但它要的只有**两样东西** —— bundle 映射、各目标的 entitlements
+    ///（`ApplePortalSigningService.provisioningProfiles` 拿它们去申请描述文件）。
+    /// 它**根本不产出新 IPA**，所以「瘦身 arm64e」「ESign 布局归一化」这两步
+    /// 对它**毫无意义** ✗ —— 而它们正是 `prepare` 里最贵的两步：
+    /// 归一化要**遍历全树**（抖音全树 1.46 GB ⇒ 实测 30–35 秒），瘦身 2–5 秒 ✓。
+    /// ⇒ 加这个开关，profile-only 路径跳过它们（实测省 **约 30–35 秒**）。
+    enum PreparePurpose: Sendable, Equatable {
+        /// 完整签名：产物要装到设备上 ⇒ 该做的一步都不能少。
+        case signing
+        /// 只推导「bundle 映射 + 各目标 entitlements」：跳过瘦身与归一化。
+        ///
+        /// ⚠️ 为什么这样是安全的（改之前必须重新确认这三条）：
+        ///  ① `provisioningProfiles` 只看 `Info.plist`（bundle ID）与
+        ///     Mach-O 里的 entitlements —— 瘦身与归一化**都不碰**这两样 ✓；
+        ///  ② 扩展集合取自 `ALTApplication.loadExtensions()`，它只枚举
+        ///     `PlugIns/` 下的 `.appex`（上游 `ALTApplication.swift`）——
+        ///     归一化把根目录的 `.framework` / `.dylib` 挪进 `Frameworks/`，
+        ///     **不在** `.appex` 的枚举面里 ⇒ 跳不跳它，扩展集合都一样 ✓；
+        ///  ③ 剩下的步骤（`removeUnsupportedBundles` / `removeMissingAppExtensionReferences` /
+        ///     残留清理 / 空目录清理）**两种用途都要做** —— 它们会改变扩展集合，
+        ///     跳过就会让「申请到的描述文件」与「记录里的目标集合」对不上 ✗。
+        case layoutOnly
+    }
+
     let limits: ArchiveLimits
     let bundleIDMapper: BundleIDMapper
 
@@ -21,7 +49,8 @@ struct SigningWorkspace: Sendable {
         teamID: String,
         targetMainBundleID: String? = nil,
         preferredDisplayName: String? = nil,
-        preferredIconData: Data? = nil
+        preferredIconData: Data? = nil,
+        purpose: PreparePurpose = .signing
     ) throws -> PreparedSigningWorkspace {
         // 大 IPA 优化：用系统 unzipItem 流式解压（ZIPFoundation extract 对 500MB+ 文件
         // 可能因内存/写入失败报 DataError）。仍用 ZIPFoundation Archive 只读条目元数据做安全验证。
@@ -117,8 +146,15 @@ struct SigningWorkspace: Sendable {
             // 大 IPA 优化：剥离 arm64e 架构，只保留 arm64（iOS 设备均为 arm64）。
             // 按 offset/size 字节级切出 arm64 slice，副本内部签名偏移依然有效，
             // 后续统一由上游签名器（`SideSign` → `CodeSignKit`）重签。
+            //
+            // ⚠️ **`layoutOnly` 跳过**（2026-09-26）：这一步只为「产物能装能跑」服务，
+            // 而 profile-only 续签不产出新 IPA ⇒ 纯浪费（2–5 秒）。
+            // 它**不碰** `Info.plist` 与 entitlements ⇒ 跳过后
+            // `provisioningProfiles` 看到的东西一模一样 ✓（见 `PreparePurpose` 的三条推导）。
             let stripStartedAt = Date()
-            try stripArm64eArchitecture(in: appURL)
+            if purpose == .signing {
+                try stripArm64eArchitecture(in: appURL)
+            }
             let stripSeconds = Date().timeIntervalSince(stripStartedAt)
 
             // ESign 布局归一化：把散落在 .app 根的 .framework/.dylib 移入 Frameworks/，
@@ -127,8 +163,17 @@ struct SigningWorkspace: Sendable {
             // （MIBundle bundlesInParentBundle:subDirectory:"Frameworks"）上必败：
             // APIInternalError("Failed to discover bundles in directory .../Frameworks")。
             // 归一化后与标准 Xcode/LiveContainer 布局完全一致。
+            //
+            // ⚠️ **`layoutOnly` 跳过**（2026-09-26）—— 这是 `prepare` 里**最贵的一步**：
+            // 根目录存在 `.framework` / `.dylib` 时它会**遍历全树**并逐文件做字节级预扫描
+            //（抖音全树 1.46 GB ⇒ 实测 **30–35 秒**），而它同样只为「产物能装能跑」服务 ✓。
+            // 跳过后 `provisioningProfiles` 看到的东西不变：扩展集合取自 `PlugIns/*.appex`
+            //（上游 `ALTApplication.loadExtensions()`），与根目录的 `.framework` / `.dylib`
+            // 无关 ⇒ 集合一致 ✓（见 `PreparePurpose` 的三条推导）。
             let normalizeStartedAt = Date()
-            try normalizeRootFrameworksIntoFrameworksDirectory(in: appURL)
+            if purpose == .signing {
+                try normalizeRootFrameworksIntoFrameworksDirectory(in: appURL)
+            }
 
             let extensionURLs = try appExtensionURLs(in: appURL)
             for extensionURL in extensionURLs {
@@ -167,23 +212,83 @@ struct SigningWorkspace: Sendable {
         }
     }
 
+    /// 打包：**逐条目**选择压缩方法（2026-09-26）。
+    ///
+    /// 🔴 为什么不再直接用 `FileManager.zipItem(compressionMethod:)`：
+    /// ZIPFoundation 0.9.20 把**同一个** `compressionMethod` 透传给循环里的每个条目
+    ///（`FileManager+ZIP.swift` 的 `zipItem` 是常量参数），
+    /// 且 `Archive.addEntry` **没有**「压完更大就退回 store」的自动回退 ✗
+    /// ⇒ 对**已经压过**的载荷（png / jpg / mp4 / `Assets.car` / 各种归档）再 deflate 一遍
+    /// 是纯浪费 CPU（几乎压不动体积，却要付一整遍压缩的时间）✗。
+    ///
+    /// ⇒ 这里**逐字照抄** `zipItem` 的枚举方式（`subpathsOfDirectory` ＋
+    /// `directoryPrefix` / `finalBaseURL` ＋ `shouldKeepParent` 时补一条根目录条目），
+    /// **只把 `compressionMethod` 换成按扩展名算出来的值** ✓ ——
+    /// 目录结构、条目顺序、根目录条目与原来**完全一致**。
+    ///
+    /// ⚠️ 仍然坚持「未压缩类型必须显式 deflate」这条既有结论：`zipItem` 的**默认**是
+    /// `.none`（store 不压缩），而 iOS installd / CoreDevice 对 store-mode ZIP 兼容性差，
+    /// 大文件/非标准结构 IPA 会在定位/解压阶段失败并误报 `MissingPackagePath`。
+    /// 真机可用的 jas 与爱思/AltStore/SideStore 标准 IPA 也都以 deflate 为主。
+    /// ⇒ 本函数只是把**已经压过的那部分**改成 store，**不是**放宽「必须压缩」这条 ✓。
     func package(
         _ workspace: PreparedSigningWorkspace,
         outputURL: URL
     ) throws {
+        try Self.writeIPA(from: workspace.payloadURL, to: outputURL)
+    }
+
+    /// 把一个「IPA 根目录」（内含 `Payload/`）打成 IPA —— **打包逻辑的唯一实现** ✓。
+    ///
+    /// ⚠️ 必须是 `static` + `internal`：`SelfAppRegistrar`（自替换路径）也要打同样的包，
+    /// 若它自己再抄一份 `zipItem` 调用，就会出现「两条打包链路、压缩策略不一致」✗ ——
+    /// 这正是本项要修的病根（一条改了、另一条没改）。
+    static func writeIPA(from payloadURL: URL, to outputURL: URL) throws {
         let fileManager = FileManager.default
         try? fileManager.removeItem(at: outputURL)
-        // 必须显式 deflate 压缩：ZIPFoundation 的 zipItem 默认 compressionMethod 是
-        // .none（store 不压缩），iOS installd / CoreDevice 对 store-mode ZIP 兼容性差，
-        // 大文件/非标准结构 IPA 会在定位/解压阶段失败并误报 MissingPackagePath。
-        // 真机可用的 jas 以及爱思/AltStore/SideStore 标准 IPA 全部用 deflate 压缩。
-        try fileManager.zipItem(
-            at: workspace.payloadURL,
-            to: outputURL,
-            shouldKeepParent: true,
-            compressionMethod: .deflate
-        )
+
+        let archive = try Archive(url: outputURL, accessMode: .create)
+        var subPaths = try fileManager.subpathsOfDirectory(atPath: payloadURL.path)
+        // 与 `zipItem` 一致：为根目录本身补一条条目（保留它的文件属性）✓
+        subPaths.append("")
+
+        let directoryPrefix = payloadURL.lastPathComponent
+        let finalBaseURL = payloadURL.deletingLastPathComponent()
+        for entryPath in subPaths {
+            try archive.addEntry(
+                with: directoryPrefix + "/" + entryPath,
+                relativeTo: finalBaseURL,
+                compressionMethod: compressionMethod(forRelativePath: entryPath)
+            )
+        }
     }
+
+    /// 该条目该用哪种压缩方法：**载荷本身已经是压缩格式 ⇒ store**，其余一律 deflate ✓。
+    ///
+    /// ⚠️ 名单只放**确定已压缩**的容器/编码 —— 宁可多压（浪费一点时间），
+    /// 也不能漏压（漏压会把体积放大，而 IPA 体积直接决定上传与安装耗时）。
+    /// ⚠️ 判据只用**扩展名**（不看内容）：目录条目在 `addEntry` 里本来就是空载荷，
+    /// 走哪一支都一样 ✓。
+    static func compressionMethod(forRelativePath path: String) -> CompressionMethod {
+        let ext = (path as NSString).pathExtension.lowercased()
+        return alreadyCompressedExtensions.contains(ext) ? .none : .deflate
+    }
+
+    /// 已经是压缩格式的文件类型。
+    ///
+    /// - 图像：PNG 的 IDAT / JPEG 的 DCT / HEIC / WebP / JPEG 2000 都是熵编码后的数据；
+    /// - 音视频：AAC / MP3 / H.264·HEVC 帧同理；
+    /// - `car`：`Assets.car` 是 Apple 的编译产物，内部已压过（**这是本项收益的大头**）；
+    /// - 字体容器：`woff` / `woff2` 自带压缩（`ttf` / `otf` **不在**名单里 —— 它们不压缩）；
+    /// - 归档：zip / gzip / xz 等容器。
+    static let alreadyCompressedExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "heic", "heif", "gif", "webp", "jp2", "avif",
+        "mp3", "m4a", "aac", "mp4", "m4v", "mov",
+        "car",
+        "woff", "woff2",
+        "zip", "gz", "bz2", "xz", "7z", "rar", "tgz", "ipa", "jar", "dmg", "epub", "zst", "lz4", "br",
+        "pdf"
+    ]
 
     func clean(_ workspace: PreparedSigningWorkspace) {
         try? FileManager.default.removeItem(at: workspace.rootURL)
@@ -868,7 +973,17 @@ struct SigningWorkspace: Sendable {
             guard readCount > 0 else { return false }
 
             let total = carried + readCount
-            if Data(buffer[0..<total]).range(of: needle) != nil { return true }
+            // 🔴 **零拷贝搜索**（2026-09-26）：原写法是
+            // `Data(buffer[0..<total]).range(of: needle)` —— 它**每轮都新建一份 `Data`**
+            //（= 一次 malloc + memcpy，最大 `chunkSize + overlap` ≈ 256 KB）✗。
+            // 而本函数被 `rewriteExecutablePathReferences` 对**全树每个 Mach-O** 调用
+            //（抖音全树 1.46 GB）⇒ 白搬约 1.4 GB ✗。
+            // ⇒ 直接在缓冲区上扫（`bufferContains`），**零拷贝** ✓，语义逐字节等价。
+            let found = buffer.withUnsafeBufferPointer { raw -> Bool in
+                guard let base = raw.baseAddress else { return false }
+                return Self.bufferContains(base, count: total, needle: needleBytes)
+            }
+            if found { return true }
 
             // 尾部 overlap 字节留到下一块，避免漏掉跨块边界的匹配 ✓
             //
@@ -888,6 +1003,41 @@ struct SigningWorkspace: Sendable {
                 carried = total
             }
         }
+    }
+
+    /// 在裸缓冲区里做**字节级**子串搜索 —— 语义与 `Data.range(of:)` 的默认行为
+    ///（`options: []`，逐字节字面匹配）**完全一致** ✓。
+    ///
+    /// 🔴 为什么单独开一个（2026-09-26）：`containsBytes` 原来每轮都
+    /// `Data(buffer[0..<total]).range(of: needle)` —— 那是一次 **malloc + memcpy**
+    ///（最大 256 KB + overlap），而它被全树每个 Mach-O 调用一遍
+    ///（抖音全树 1.46 GB）⇒ 白搬约 1.4 GB ✗。改成直接扫缓冲区后**零拷贝** ✓。
+    ///
+    /// 算法：首字节预筛（`needle` 恒以 `@` 开头，Mach-O 里罕见）＋ 命中后才逐字节比对。
+    /// ⚠️ **不是** `memcmp` 式的最优实现，但 `needle` 只有 27 字节、首字节筛选性很强，
+    /// 实测开销远低于被省掉的那次复制 ✓。
+    ///
+    /// ⚠️ 必须是 `internal`（不能 `private`）—— `@testable` 看不到 `private`，
+    /// 而这条搜索的**边界语义**（空 needle / needle 比缓冲区长 / needle 恰好等于整块）
+    /// 正是 2026-09-19 那次越界写堆的同类风险面，必须有单测 ✓。
+    static func bufferContains(_ base: UnsafePointer<UInt8>, count: Int, needle: [UInt8]) -> Bool {
+        let needleCount = needle.count
+        guard needleCount > 0, count >= needleCount else { return false }
+
+        let first = needle[0]
+        let lastStart = count - needleCount
+        var i = 0
+        while i <= lastStart {
+            if base[i] == first {
+                var j = 1
+                while j < needleCount, base[i + j] == needle[j] {
+                    j += 1
+                }
+                if j == needleCount { return true }
+            }
+            i += 1
+        }
+        return false
     }
 
     private func rewriteExecutablePathReferences(

@@ -141,12 +141,11 @@ actor SelfAppRegistrar {
         )
         try FileManager.default.copyItem(at: metadata.bundleURL, to: appURL)
         let ipaURL = workspace.appending(path: "Seal.ipa")
-        try FileManager.default.zipItem(
-            at: payload,
-            to: ipaURL,
-            shouldKeepParent: true,
-            compressionMethod: .deflate
-        )
+        // ⚠️ **必须复用 `SigningWorkspace.writeIPA`**（2026-09-26）——
+        // 这里原先是自己写一份 `FileManager.zipItem(compressionMethod: .deflate)`，
+        // 于是「按类型选压缩方法」那条规则就有了**两份实现**：改了一处、另一处照旧 ✗。
+        // ⇒ 统一走同一个打包函数，Seal 自替换的包也享受同样的压缩策略 ✓。
+        try SigningWorkspace.writeIPA(from: payload, to: ipaURL)
 
         // 2. 暂存新文件
         let staged = try await fileStore.stage(sourceURL: ipaURL)

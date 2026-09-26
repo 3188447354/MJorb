@@ -1899,9 +1899,17 @@ def violations(load=read):
     # ⚠️ 分块扫描必须排在**整块读之前** ✗ —— 排后面等于没改 ✓。
     # ⚠️ 重叠必须保留 `needle.count - 1` 字节 ✗ —— 漏掉跨块匹配会导致**该改写的没改**
     #    ⇒ 装完闪退 ✗✗（这条最危险，所以也钉住 ✓）。
+    #
+    # ⚠️ **判据里的实现细节在 2026-09-26 换过**（这条断言原本钉的是
+    # `Data(buffer[0..<total]).range(of: needle) != nil`）：那行**每轮都新建一份 `Data`**
+    #（= 一次 malloc + memcpy，最大 256 KB），而本函数对**全树每个 Mach-O** 调用
+    #（抖音全树 1.46 GB）⇒ 白搬约 1.4 GB ✗。现在改成在缓冲区上直接扫
+    #（`Self.bufferContains`，零拷贝 ✓），**语义逐字节不变**。
+    # ⇒ 判据跟着换成新实现的调用点 ✓ —— **R91⑦** 另外钉住「不得退回 `Data(buffer[...])`」
+    #    以及「跨块 overlap 与 `memmove` 必须保留」。
     check("func containsBytes(" in workspace_src
           and "guard containsBytes(rpathNeedle, in: machOURL) else { return }" in workspace_src
-          and "Data(buffer[0..<total]).range(of: needle) != nil" in workspace_src
+          and "return Self.bufferContains(base, count: total, needle: needleBytes)" in workspace_src
           and 0 <= workspace_src.find("guard containsBytes(rpathNeedle, in: machOURL)")
           < workspace_src.find("guard var data = try? Data(contentsOf: machOURL)")
           and "findsNeedleStraddlingAChunkBoundary" in load(
@@ -5388,6 +5396,147 @@ def violations(load=read):
           "R90⑬: 必须有单测覆盖「生成的是合法 WAV」「采样全为 0」「中断结束后才恢复」✗ —— "
           "这三件事错了都不会崩，只会在真机上表现为「保活没生效、后台续签跑一半停了」")
 
+    # ── R91：签名/续签的**性能**改动不得改变产物语义（2026-09-26）──────────────────
+    #
+    # 这一轮全是「省时间」的改动，而它们的共同特征是 —— **改错了也不会崩**：
+    #   · 尺寸算错 ⇒ `LC_CODE_SIGNATURE` 指向错位置 ⇒ iOS 拒绝启动（闪退），`sign()` 不报错；
+    #   · 页哈希算错 ⇒ 签名无效，本地一切正常、设备上才炸；
+    #   · 签名输入改成原地改写 mmap 页 ⇒ 真机 SIGBUS（本仓已经踩过一次）；
+    #   · 压缩策略错 ⇒ IPA 体积或 installd 兼容性受损，本地看不出来；
+    #   · `layoutOnly` 多跳/少跳一步 ⇒ 目标集合与记录对不上 ⇒ 每次续签退化成完整重签。
+    # ⇒ 每条都要「源码结构断言 ＋ 单测清单」两层，缺一层都拦不住上面任何一种。
+    # ⚠️ 本机无 Swift 工具链 ⇒ 这些单测**只能在 CI 的 `signer-tests` / `swift-regression` 里跑**，
+    # 守卫能证明的只是「它们还在、还没被改名/删掉」。
+    r91_cdb = load("Vendor/CodeSignKit/Sources/CodeDirectoryBuilder.swift")
+    r91_cdb_code = strip_comments(r91_cdb)
+    r91_macho = load("Vendor/CodeSignKit/Sources/MachOSigner.swift")
+    r91_macho_code = strip_comments(r91_macho)
+    r91_codesigner_code = strip_comments(load("Vendor/CodeSignKit/Sources/CodeSigner.swift"))
+    r91_cms_code = strip_comments(load("Vendor/CodeSignKit/Sources/CMSSigner.swift"))
+    r91_ws = load("Seal/Infrastructure/Signing/SigningWorkspace.swift")
+    r91_ws_code = strip_comments(r91_ws)
+    r91_self_code = strip_comments(load("Seal/Core/Renewal/SelfAppRegistrar.swift"))
+    r91_portal_code = strip_comments(
+        load("Seal/Infrastructure/Signing/ApplePortalSigningService.swift")
+    )
+    r91_cdb_tests = load("Vendor/CodeSignKit/Tests/CodeDirectoryBuilderTests.swift")
+    r91_macho_tests = load("Vendor/CodeSignKit/Tests/MachOSignerTests.swift")
+    r91_cms_tests = load("Vendor/CodeSignKit/Tests/CMSSignerTests.swift")
+    r91_ws_tests = load("SealTests/Signing/SigningWorkspaceTests.swift")
+    r91_scan_tests = load("SealTests/Signing/SigningWorkspaceChunkedScanTests.swift")
+
+    check("public func size() -> Int { layout().totalSize }" in r91_cdb_code
+          and "private func layout() -> Layout {" in r91_cdb_code
+          and "let layout = layout()" in r91_cdb_code,
+          "R91①: `CodeDirectoryBuilder.size()` 必须存在，且与 `build()` **共用** `layout()` ✗ —— "
+          "`MachOSigner` 的 Pass 1 只调 `size()`（不再 build 一份全零缓冲）；"
+          "尺寸公式写两份的话，日后只改一处就会让 `LC_CODE_SIGNATURE` 的偏移/长度错 "
+          "⇒ iOS 拒绝启动（闪退），而 `sign()` 自己不会报错")
+
+    check("binaryData: Data(),\n            codeLimit: codeLimit," in r91_macho_code
+          and "let dummyCDData = Data(count: dummyCD.size())" in r91_macho_code
+          and "cmsSigner?.sign(codeDirectoryData: dummyCDData)" in r91_macho_code,
+          "R91②: Pass 1 必须**只算尺寸**（`binaryData: Data()` ＋ `dummyCD.size()`），"
+          "但**必须保留** dummy CMS 预签 ✗ —— "
+          "退回 `Data(count: codeLimit)` 会白分配 `codeLimit` 字节零缓冲、再逐页哈希一遍；"
+          "而删掉 dummy CMS 会让 SuperBlob 长度估错 ⇒ 签名损坏")
+
+    check("binaryData.subdata(in: pageStart..<pageEnd)" not in r91_cdb_code
+          and "UnsafeRawBufferPointer(rebasing: raw[pageStart..<pageEnd])" in r91_cdb_code,
+          "R91③: 页哈希必须零拷贝，不得再 `subdata` 复制每一页 ✗ —— "
+          "200 MB 二进制按 16 KB 页算约 1.2 万次 malloc ＋ memcpy，"
+          "而每份副本马上就被哈希器吃掉、没有任何用途")
+
+    check("try Data(contentsOf: executableURL, options: .mappedIfSafe)" in r91_codesigner_code,
+          "R91④: 签名输入必须走 mmap（`.mappedIfSafe`）✗ —— "
+          "它对每个 Mach-O 跑一次，整块读等于把每一份都白搬进内存"
+          "（抖音主二进制上百 MB，内存峰值会被 iOS jetsam 盯上）")
+
+    check("let workingData = sliceData" in r91_macho_code
+          and "var finalBinary = workingData.subdata(in: 0..<min(codeLimit, workingData.count))"
+              in r91_macho_code,
+          "R91④b: `MachOSigner` 对传入的 `binaryData` 必须**全程只读** ✗ —— "
+          "`workingData` 只能是 `sliceData` 的别名（不复制、只读），"
+          "所有原地改写必须落在 `subdata` **复制**出来的 `finalBinary` 上。"
+          "一旦改成在输入上原地改写 ⇒ mmap 出来的只读页被写 ⇒ **真机 SIGBUS**"
+          "（`rewriteExecutablePathReferences` 就是这么崩的，见构建 151 的 `.ips`）")
+
+    check("private lazy var parsedPKCS12: Result<PKCS12Parser, Error> = Result {"
+              in r91_cms_code
+          and "(try? parsedPKCS12.get())?.leafCertificate" in r91_cms_code
+          and "let parser = try parsedPKCS12.get()" in r91_cms_code,
+          "R91⑤: `CMSSigner` 的 PKCS#12 必须**只解析一次**，且 `leafCertificate` 与 `sign()` "
+          "共用同一份结果 ✗ —— 原实现每访问一次就重解一遍"
+          "（PBKDF2 2048 轮 ＋ AES-CBC ＋ DER），33 个二进制约 99 次。"
+          "⚠️ 缓存必须用 `Result` 而不是 `PKCS12Parser?`：后者会把 `sign()` 的**真实解析错误**"
+          "换成一句笼统的 `certificateError`，排障时丢掉真因")
+
+    check("finalBinary.reserveCapacity(codeLimit + realSuperBlobData.count)" in r91_macho_code,
+          "R91⑥: 追加 SuperBlob 前必须 `reserveCapacity` ✗ —— "
+          "`finalBinary` 此时 count == codeLimit，直接 append 会触发「分配新缓冲 ＋ 整份复制」，"
+          "不预留时几何增长还可能在超大二进制上多来一次")
+
+    check("Data(buffer[0..<total]).range(of: needle)" not in r91_ws_code
+          and "return Self.bufferContains(base, count: total, needle: needleBytes)" in r91_ws_code
+          and "memmove(base, base.advanced(by: total - overlap), overlap)" in r91_ws_code,
+          "R91⑦: 分块扫描必须零拷贝（`bufferContains`），且**必须保留**跨块 overlap 与 `memmove` ✗ —— "
+          "改回 `Data(buffer[...])` 会每轮多一次 256 KB 复制（抖音全树 1.46 GB 白搬）；"
+          "而丢掉 overlap ⇒ 跨块匹配被漏掉 ⇒ 该改写的没改 ⇒ **装完闪退**；"
+          "把 `memmove` 换成 `replaceSubrange` ⇒ 缓冲区变短而 `read` 仍按原长度算 "
+          "⇒ **越界写堆**（构建 163 真机崩溃）")
+
+    check("try SigningWorkspace.writeIPA(from: payload, to: ipaURL)" in r91_self_code
+          and "FileManager.default.zipItem(" not in r91_self_code,
+          "R91⑧a: 自替换打包必须**复用** `SigningWorkspace.writeIPA` ✗ —— "
+          "自己再抄一份 `zipItem` 会让「按类型选压缩方法」这条规则出现两份实现"
+          "（改了一处、另一处照旧），这正是本项要修的病根")
+
+    check("try archive.addEntry(" in r91_ws_code
+          and "compressionMethod: compressionMethod(forRelativePath: entryPath)" in r91_ws_code
+          and "static let alreadyCompressedExtensions: Set<String>" in r91_ws_code,
+          "R91⑧b: 打包必须**逐条目**选压缩方法 ✗ —— "
+          "`FileManager.zipItem` 把同一个 `compressionMethod` 透传给每个条目、"
+          "且 `Archive.addEntry` 没有「压完更大就退回 store」的自动回退，"
+          "对已压过的载荷（png / jpg / mp4 / `Assets.car`）再 deflate 一遍是纯浪费 CPU")
+
+    check("if purpose == .signing {\n"
+          "                try stripArm64eArchitecture(in: appURL)\n"
+          "            }" in r91_ws_code
+          and "if purpose == .signing {\n"
+              "                try normalizeRootFrameworksIntoFrameworksDirectory(in: appURL)\n"
+              "            }" in r91_ws_code,
+          "R91⑨a: `PreparePurpose.layoutOnly` 必须**真的**跳过瘦身与归一化 ✗ —— "
+          "这两步只为「产物能装能跑」服务，而 profile-only 续签不产出新 IPA ⇒ 纯浪费"
+          "（归一化在根目录有 `.framework`/`.dylib` 时要遍历全树，抖音实测 30–35 秒）")
+
+    check(r91_ws_code.count("if purpose == .signing {") == 2,
+          "R91⑨b: `purpose` 开关**只允许**包住「瘦身」与「归一化」这两步 ✗ —— "
+          "多包一步（`removeUnsupportedBundles` / `removeMissingAppExtensionReferences` / "
+          "bundle ID 改写 / 扩展映射）就会让两种用途看到**不同的目标集合** ⇒ "
+          "申请到的描述文件与设备记录对不上 ⇒ 每次续签都退化成完整重签（`SEAL-PROFILE-331a`）")
+
+    check("            purpose: .layoutOnly\n" in r91_portal_code
+          and r91_portal_code.count("purpose: .layoutOnly") == 1
+          and r91_portal_code.count("signingWorkspace.prepare(") == 2,
+          "R91⑩: **只有** profile-only 续签那一处 `prepare` 允许传 `.layoutOnly` ✗ —— "
+          "完整签名路径（同一文件里另一处 `prepare`）必须走默认的 `.signing`，"
+          "否则产物不会被瘦身/归一化 ⇒ 真机 installd 的 bundle discovery 失败"
+          "（`APIInternalError(\"Failed to discover bundles in directory .../Frameworks\")`）")
+
+    check("func sizeMatchesBuildLengthForManyShapes()" in r91_cdb_tests
+          and "func codeDirectorySizeIgnoresBinaryContent()" in r91_cdb_tests
+          and "func pageHashesMatchLegacySubdataImplementation()" in r91_cdb_tests
+          and "func codeSignatureLoadCommandMatchesTheAppendedSuperBlob()" in r91_macho_tests
+          and "func signingIsUnaffectedByHowTheInputDataWasLoaded()" in r91_macho_tests
+          and "func repeatedAccessIsStableAndKeepsTheOriginalError()" in r91_cms_tests
+          and "func bufferContainsHandlesBoundaries()" in r91_scan_tests
+          and "func compressionPolicyStoresOnlyAlreadyCompressedPayloads()" in r91_ws_tests
+          and "func layoutOnlyKeepsMappingsAndExtensionSetIdenticalToSigning()" in r91_ws_tests,
+          "R91⑪: 本轮的性能改动必须有单测钉住**语义等价** ✗ —— "
+          "尺寸算错 ⇒ 闪退；页哈希算错 ⇒ 签名无效；mmap 被改成原地改写 ⇒ SIGBUS；"
+          "压缩策略错 ⇒ 体积或 installd 兼容性受损；`layoutOnly` 少跳一步 ⇒ "
+          "目标集合对不上。这些**都不会在本地暴露**，只能靠 CI 里的新单测")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -8224,6 +8373,101 @@ def main():
          "func silentWAVPayloadIsEntirelySilent()",
          "func silentWAVPayloadLegacy()",
          "R90⑬:"),
+
+        # ── R91：签名/续签的**性能**改动不得改变产物语义 ──
+        # ① `size()` 退回「build 一遍再数长度」（Pass 1 的省法被撤销）⇒ R91① 报红。
+        ("Vendor/CodeSignKit/Sources/CodeDirectoryBuilder.swift",
+         "public func size() -> Int { layout().totalSize }",
+         "public func size() -> Int { build().count }",
+         "R91①:"),
+        # ② Pass 1 退回 `build()`（全零缓冲 + 逐页哈希又回来了）⇒ R91② 报红。
+        ("Vendor/CodeSignKit/Sources/MachOSigner.swift",
+         "let dummyCDData = Data(count: dummyCD.size())",
+         "let dummyCDData = dummyCD.build()",
+         "R91②:"),
+        # ③ 页哈希退回 `subdata` 复制 ⇒ R91③ 报红。
+        ("Vendor/CodeSignKit/Sources/CodeDirectoryBuilder.swift",
+         "            let pageHash: Data = binaryData.withUnsafeBytes { raw -> Data in",
+         "            let pageData = binaryData.subdata(in: pageStart..<pageEnd)\n"
+         "            let pageHash: Data = { () -> Data in",
+         "R91③:"),
+        # ④ 签名输入退回整块读（mmap 被撤销）⇒ R91④ 报红。
+        ("Vendor/CodeSignKit/Sources/CodeSigner.swift",
+         "try Data(contentsOf: executableURL, options: .mappedIfSafe)",
+         "try Data(contentsOf: executableURL)",
+         "R91④:"),
+        # ④b 改成直接在输入上原地改写（mmap 页被写 ⇒ 真机 SIGBUS）⇒ R91④b 报红。
+        ("Vendor/CodeSignKit/Sources/MachOSigner.swift",
+         "        var finalBinary = workingData.subdata(in: 0..<min(codeLimit, workingData.count))",
+         "        var finalBinary = workingData",
+         "R91④b:"),
+        # ⑤ PKCS#12 缓存被撤（每访问一次重解一遍）⇒ R91⑤ 报红。
+        ("Vendor/CodeSignKit/Sources/CMSSigner.swift",
+         "private lazy var parsedPKCS12: Result<PKCS12Parser, Error> = Result {",
+         "private var parsedPKCS12Legacy: Result<PKCS12Parser, Error> = Result {",
+         "R91⑤:"),
+        # ⑥ 去掉 reserveCapacity ⇒ R91⑥ 报红。
+        ("Vendor/CodeSignKit/Sources/MachOSigner.swift",
+         "finalBinary.reserveCapacity(codeLimit + realSuperBlobData.count)",
+         "finalBinary.reserveCapacity(0)",
+         "R91⑥:"),
+        # ⑦ 分块扫描退回「每轮新建一份 Data」⇒ R91⑦ 报红。
+        ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
+         "                return Self.bufferContains(base, count: total, needle: needleBytes)",
+         "                return Data(buffer[0..<total]).range(of: needle) != nil",
+         "R91⑦:"),
+        # ⑦b 去掉跨块 overlap 的 memmove（跨块匹配被漏掉 / 越界写堆）⇒ R91⑦ 报红。
+        ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
+         "                    memmove(base, base.advanced(by: total - overlap), overlap)",
+         "                    _ = base",
+         "R91⑦:"),
+        # ⑧a 自替换打包自己再抄一份 zipItem（压缩策略出现两份实现）⇒ R91⑧a 报红。
+        ("Seal/Core/Renewal/SelfAppRegistrar.swift",
+         "        try SigningWorkspace.writeIPA(from: payload, to: ipaURL)",
+         "        try FileManager.default.zipItem(at: payload, to: ipaURL, "
+         "shouldKeepParent: true, compressionMethod: .deflate)",
+         "R91⑧a:"),
+        # ⑧b 逐条目选压缩方法退回「一律 deflate」⇒ R91⑧b 报红。
+        ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
+         "                compressionMethod: compressionMethod(forRelativePath: entryPath)",
+         "                compressionMethod: .deflate",
+         "R91⑧b:"),
+        # ⑨a `layoutOnly` 不再跳过瘦身（开关失效，白花 30–35 秒）⇒ R91⑨a 报红。
+        ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
+         "            if purpose == .signing {\n"
+         "                try stripArm64eArchitecture(in: appURL)\n"
+         "            }",
+         "            if true {\n"
+         "                try stripArm64eArchitecture(in: appURL)\n"
+         "            }",
+         "R91⑨a:"),
+        # ⑨b 把「会改变扩展集合」的步骤也塞进 `purpose` 开关 ⇒ R91⑨b 报红。
+        ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
+         "            try removeUnsupportedBundles(in: appURL)\n",
+         "            if purpose == .signing { try removeUnsupportedBundles(in: appURL) }\n",
+         "R91⑨b:"),
+        # ⑩ profile-only 那处 `prepare` 改回 `.signing` ⇒ R91⑩ 报红。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "            purpose: .layoutOnly\n",
+         "            purpose: .signing\n",
+         "R91⑩:"),
+        # ⑪ 四条关键单测被改名（不变量没人守）⇒ R91⑪ 报红。
+        ("Vendor/CodeSignKit/Tests/CodeDirectoryBuilderTests.swift",
+         "func sizeMatchesBuildLengthForManyShapes()",
+         "func sizeMatchesBuildLengthLegacy()",
+         "R91⑪:"),
+        ("Vendor/CodeSignKit/Tests/MachOSignerTests.swift",
+         "func signingIsUnaffectedByHowTheInputDataWasLoaded()",
+         "func signingLegacy()",
+         "R91⑪:"),
+        ("Vendor/CodeSignKit/Tests/CMSSignerTests.swift",
+         "func repeatedAccessIsStableAndKeepsTheOriginalError()",
+         "func repeatedAccessLegacy()",
+         "R91⑪:"),
+        ("SealTests/Signing/SigningWorkspaceTests.swift",
+         "func layoutOnlyKeepsMappingsAndExtensionSetIdenticalToSigning()",
+         "func layoutOnlyLegacy()",
+         "R91⑪:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

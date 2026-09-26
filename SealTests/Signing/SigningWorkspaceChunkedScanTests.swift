@@ -87,4 +87,30 @@ struct SigningWorkspaceChunkedScanTests {
         let workspace = SigningWorkspace()
         #expect(workspace.containsBytes(Data("N".utf8), in: missing, chunkSize: 8) == false)
     }
+
+    // MARK: - 2026-09-26：`containsBytes` 改成零拷贝搜索后的边界判据
+
+    /// 🔴 `bufferContains` 的**边界**判据。
+    ///
+    /// 2026-09-26 把 `containsBytes` 里的 `Data(buffer[0..<total]).range(of: needle)`
+    /// 换成裸缓冲区上的手写搜索（省掉每轮一次 256 KB 的 malloc + memcpy）✓
+    /// ⇒ 搜索的**边界语义**从「系统实现保证」变成「我们自己保证」，必须自己钉住：
+    ///  ① needle **恰好落在缓冲区最末尾**（`lastStart = count - needleCount` 这个边界）；
+    ///  ② needle **比缓冲区还长** ⇒ 必须 false，**不能越界读**；
+    ///  ③ **空 needle** ⇒ 必须 false，与 `containsBytes` 开头的 `needleBytes.isEmpty` 早退一致 ✓；
+    ///  ④ 首字节命中但后续不匹配 ⇒ 必须 false（保证「预筛 + 逐字节比对」不会假阳性）；
+    ///  ⑤ `count` 只算前 N 字节 ⇒ needle 落在 N 之后时必须 false。
+    @Test
+    func bufferContainsHandlesBoundaries() {
+        let haystack = Array("abcNEEDLE".utf8)
+        haystack.withUnsafeBufferPointer { raw in
+            guard let base = raw.baseAddress else { return }
+            #expect(SigningWorkspace.bufferContains(base, count: raw.count, needle: Array("NEEDLE".utf8)))
+            #expect(SigningWorkspace.bufferContains(base, count: raw.count, needle: Array("abcNEEDLE".utf8)))
+            #expect(SigningWorkspace.bufferContains(base, count: raw.count, needle: Array("abcNEEDLEX".utf8)) == false)
+            #expect(SigningWorkspace.bufferContains(base, count: raw.count, needle: []) == false)
+            #expect(SigningWorkspace.bufferContains(base, count: raw.count, needle: Array("NEEDLX".utf8)) == false)
+            #expect(SigningWorkspace.bufferContains(base, count: 3, needle: Array("NEEDLE".utf8)) == false)
+        }
+    }
 }

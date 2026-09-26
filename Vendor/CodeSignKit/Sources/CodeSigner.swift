@@ -239,7 +239,26 @@ public final class CodeSigner {
 
 
         // Read executable data
-        let binaryData = try Data(contentsOf: executableURL)
+        //
+        // 🔴 **mmap 而不是整块读**（2026-09-26）：签名输入只需要**读**，
+        // 而这一步对每个 Mach-O 都跑一次（抖音全树几十个二进制、主二进制上百 MB）
+        // ⇒ 整块读等于把每一份都白搬进内存 ✗（内存峰值会被 iOS jetsam 盯上）。
+        //
+        // ⚠️ **安全性前提（必须同时成立，改 `MachOSigner` 时不许破坏）**：
+        // `MachOSigner` 对传入的 `binaryData` **全程只读** ——
+        //  · `signThinBinary` 里 `let workingData = sliceData`（不复制）只被读取；
+        //  · 所有原地改写都落在 `var finalBinary` 上，而它是
+        //    `workingData.subdata(in: 0..<min(codeLimit, workingData.count))`
+        //    —— **一份独立复制** ✓；
+        //  · FAT 分支同理（`rawSlice` 是 `subdata` 复制）。
+        // ⇒ **没有任何一次写入落在映射页上** ✓
+        //（反面教材：`SigningWorkspace.rewriteExecutablePathReferences` 会**原地改写**读进来的
+        //  `Data`，那里用 mmap 就是真机 SIGBUS ✗ —— 两者判据不同，别互相套用）。
+        // 守卫 **R91④** 钉住这条不变量。
+        //
+        // ⚠️ 写回用的是 `.atomic`（写临时文件 + rename），映射到的旧 inode 在 `binaryData`
+        //    释放前一直有效 ⇒ 不存在「写完再读映射」的窗口 ✓。
+        let binaryData = try Data(contentsOf: executableURL, options: .mappedIfSafe)
 
         // Sign Mach-O binary
         let machOSigner = MachOSigner(

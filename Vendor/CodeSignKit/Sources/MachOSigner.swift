@@ -260,8 +260,23 @@ public final class MachOSigner {
         }
 
         // Pass 1: Precalculate exact SuperBlob size & update Mach-O headers
+        //
+        // 🔴 **Pass 1 只需要「长度」**（2026-09-26）：
+        //  - 这里原先传的是 `Data(count: codeLimit)` —— 一份 **`codeLimit` 字节的全零缓冲**，
+        //    而 `build()` 会把那一大堆零字节**逐页 SHA-256 一遍** ✗；
+        //  - 那份哈希结果**没有任何地方用到**（`preSuperBlob` 只取长度、
+        //    CMS 的输出长度只取决于 ASN.1 结构与 cdHash 的**固定 32 字节**长度）✗。
+        // ⇒ 页哈希总量 **2 遍 → 1 遍**，且不再分配 `codeLimit` 字节（780 MB 包直接省 780 MB）✓。
+        // 对齐 Apple `cdbuilder.cpp` 的 `Builder::size(version)`
+        //（注释原文 `// Calculate the size we'll need for the CodeDirectory as described so far`）。
+        //
+        // ⚠️ **`binaryData` 传空**（`build()` 不再被调用，只有 `size()`）——
+        // `size()` 是纯算术，不碰 `binaryData` ✓。
+        // ⚠️ **dummy CMS 签名必须保留** —— Apple 自己也要预签一次来估 CMS 长度 ✓。
+        // ⚠️ 尺寸与 `build()` **同源**（共用 `layout()`），否则 `LC_CODE_SIGNATURE` 的
+        //    偏移/长度会错 ⇒ iOS 拒绝启动 ✓。
         let dummyCD = CodeDirectoryBuilder(
-            binaryData: Data(count: codeLimit),
+            binaryData: Data(),
             codeLimit: codeLimit,
             bundleIdentifier: bundleIdentifier,
             teamIdentifier: teamIdentifier,
@@ -278,7 +293,8 @@ public final class MachOSigner {
         if let codeResourcesData { dummyCD.setSpecialSlot(CodeSigningConstants.CSSLOT_RESOURCEDIR, data: codeResourcesData) }
         if let xmlBlob { dummyCD.setSpecialSlot(CodeSigningConstants.CSSLOT_ENTITLEMENTS, data: xmlBlob) }
         if let derBlob { dummyCD.setSpecialSlot(CodeSigningConstants.CSSLOT_DER_ENTITLEMENTS, data: derBlob) }
-        let dummyCDData = dummyCD.build()
+        // 只算长度；内容填零（**内容不参与任何长度计算**，见上面的推导）。
+        let dummyCDData = Data(count: dummyCD.size())
 
 
         let dummySignature = try cmsSigner?.sign(codeDirectoryData: dummyCDData)
@@ -382,6 +398,12 @@ public final class MachOSigner {
             realSuperBlobData.append(Data(repeating: 0, count: pad))
         }
 
+        // 🔴 **预留容量**（2026-09-26）：`finalBinary` 此时 `count == codeLimit`，
+        // 直接 `append` 会触发一次「分配新缓冲 + 整份复制」；不预留时 `Data` 的几何增长
+        // 还可能在超大二进制上多来一次 ✗。这里一次性按最终大小预留 ⇒ **一次分配** ✓。
+        // ⚠️ 上面 `workingData.subdata(...)` 那份复制**必须保留**（后面要原地改写
+        //    `finalBinary` 的 load command），**不要**去「优化」掉它 ✓。
+        finalBinary.reserveCapacity(codeLimit + realSuperBlobData.count)
         finalBinary.append(realSuperBlobData)
         return finalBinary
     }

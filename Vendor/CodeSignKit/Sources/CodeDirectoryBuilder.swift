@@ -66,7 +66,33 @@ public final class CodeDirectoryBuilder {
         specialSlots[slot] = digest
     }
 
-    public func build() -> Data {
+    /// CodeDirectory 的**总字节数** —— 与 `build()` 的返回长度**同源**。
+    ///
+    /// 🔴 为什么单独开一个：`MachOSigner` 的 **Pass 1** 只需要**长度**（它用来算
+    /// `LC_CODE_SIGNATURE` 的偏移与长度），却为此传了一份 `codeLimit` 大小的全零缓冲、
+    /// 让 `build()` 把那一大堆零字节**逐页 SHA-256 一遍** ✗。
+    /// 长度公式只用到 `codeLimit` / `pageSizeShift` / 特殊槽数量 / 标识串长度，
+    /// **与页哈希的值无关** ⇒ 那一整遍哈希可以完全省掉
+    ///（对齐 Apple `cdbuilder.cpp` 的 `Builder::size(version)` —— 那本来就是纯算术）。
+    ///
+    /// ⚠️ 长度必须与 `build()` **完全一致**：算错 ⇒ `LC_CODE_SIGNATURE` 的偏移/长度错
+    /// ⇒ iOS 拒绝启动（闪退）。⇒ 两者**共用 `layout()`**，不给「公式写两份、
+    /// 日后只改一处」留口子；单测 `sizeMatchesBuildLengthForManyShapes` 钉住这一点。
+    public func size() -> Int { layout().totalSize }
+
+    /// 布局计算（尺寸公式的**唯一**出处）。
+    private struct Layout {
+        let numPages: Int
+        let numSpecialSlots: Int
+        let identBytes: Data
+        let teamBytes: Data
+        let identOffset: Int
+        let teamOffset: Int
+        let actualHashOffset: Int
+        let totalSize: Int
+    }
+
+    private func layout() -> Layout {
         let pageSize = 1 << Int(pageSizeShift)
         let numPages = (codeLimit + pageSize - 1) / pageSize
 
@@ -88,6 +114,30 @@ public final class CodeDirectoryBuilder {
         let hashOffset = headerSize + stringsSize
         let actualHashOffset = hashOffset + (numSpecialSlots * hashSize)
         let totalSize = actualHashOffset + (numPages * hashSize)
+
+        return Layout(
+            numPages: numPages,
+            numSpecialSlots: numSpecialSlots,
+            identBytes: identBytes,
+            teamBytes: teamBytes,
+            identOffset: identOffset,
+            teamOffset: teamOffset,
+            actualHashOffset: actualHashOffset,
+            totalSize: totalSize
+        )
+    }
+
+    public func build() -> Data {
+        let layout = layout()
+        let pageSize = 1 << Int(pageSizeShift)
+        let numPages = layout.numPages
+        let numSpecialSlots = layout.numSpecialSlots
+        let identBytes = layout.identBytes
+        let teamBytes = layout.teamBytes
+        let identOffset = layout.identOffset
+        let teamOffset = layout.teamOffset
+        let actualHashOffset = layout.actualHashOffset
+        let totalSize = layout.totalSize
 
         var cdData = Data(count: totalSize)
 
@@ -131,20 +181,37 @@ public final class CodeDirectoryBuilder {
         }
 
         // 8. Hash binary code pages (0..<numPages)
+        //
+        // 🔴 **零拷贝**（2026-09-26）：原写法是 `binaryData.subdata(in: pageStart..<pageEnd)`
+        // ⇒ **每页都新建一份 `Data`**（一次 malloc ＋ memcpy）。200 MB 二进制按 16 KB 页
+        // 算约 **1.2 万次** ✗ —— 而这份副本的每一个字节马上就被哈希器吃掉，没有任何用途 ✗。
+        // ⇒ 改成在 `binaryData` 自己的裸缓冲区上**取切片**直接喂给哈希器 ✓（不复制）。
+        //
+        // 哈希值与原实现**逐字节相同**：同一段字节、同一个哈希函数、同样的页边界算式
+        //（`pageStart` / `pageEnd` / `codeLimit` 一个字没动）✓。
+        // 单测 `pageHashesMatchLegacySubdataImplementation` 逐页比对两者，
+        // `sizeMatchesBuildLengthForManyShapes` 钉住长度与 `size()` 一致。
+        //
+        // ⚠️ 这里用 `update(bufferPointer:)` ＋ `finalize()` 而**不是**
+        // `SHA256.hash(bufferPointer:)` —— 后者在 `HashFunction` 的**内部** extension 里
+        //（`swift-crypto` 的 `HashFunctions.swift` 中它没有 `public`），
+        // 而 `update(bufferPointer:)` 是**协议要求**，两边都保证可见 ✓。
         for i in 0..<numPages {
             let pageStart = i * pageSize
             let pageEnd = min(pageStart + pageSize, codeLimit)
-            let pageData = binaryData.subdata(in: pageStart..<pageEnd)
 
-            let pageHash: Data
-            if hashType == CodeSigningConstants.CS_HASHTYPE_SHA256 {
-                let digest = SHA256.hash(data: pageData)
-                pageHash = Data(digest)
-            } else {
-                let digest = Insecure.SHA1.hash(data: pageData)
-                pageHash = Data(digest)
+            let pageHash: Data = binaryData.withUnsafeBytes { raw -> Data in
+                let page = UnsafeRawBufferPointer(rebasing: raw[pageStart..<pageEnd])
+                if hashType == CodeSigningConstants.CS_HASHTYPE_SHA256 {
+                    var hasher = SHA256()
+                    hasher.update(bufferPointer: page)
+                    return Data(hasher.finalize())
+                } else {
+                    var hasher = Insecure.SHA1()
+                    hasher.update(bufferPointer: page)
+                    return Data(hasher.finalize())
+                }
             }
-
 
             let codeOffset = actualHashOffset + (i * hashSize)
             cdData.replaceSubrange(codeOffset..<codeOffset + hashSize, with: pageHash)

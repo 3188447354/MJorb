@@ -660,6 +660,13 @@ actor ApplePortalSigningService {
         )
 
         await progress(.preparingBundle)
+        // 🔴 **`purpose: .layoutOnly`**（2026-09-26）：本函数要的只有
+        // 「bundle 映射 + 各目标 entitlements」（下面用它比对设备记录、再交给
+        // `provisioningProfiles` 去申请描述文件），**它不产出任何新 IPA** ✗。
+        // 而 `prepare` 默认会做「瘦身 arm64e」与「ESign 布局归一化」——
+        // 归一化在根目录有 `.framework`/`.dylib` 时（抖音正是这种包）
+        // 要**遍历全树**，实测 **30–35 秒**，全部白花 ✗。
+        // ⇒ 跳过这两步（`PreparePurpose.layoutOnly`），只保留解压与 bundle ID 改写。
         let prepared = try signingWorkspace.prepare(
             ipaURL: originalIPAURL,
             workspaceRoot: workspaceRoot,
@@ -667,7 +674,8 @@ actor ApplePortalSigningService {
             teamID: team.identifier,
             targetMainBundleID: targetBundleIdentifier,
             preferredDisplayName: app.preferredDisplayName,
-            preferredIconData: nil
+            preferredIconData: nil,
+            purpose: .layoutOnly
         )
         guard prepared.mappedMainBundleID.caseInsensitiveCompare(targetBundleIdentifier) == .orderedSame else {
             throw Self.failure(

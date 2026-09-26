@@ -343,6 +343,103 @@ struct MachOSignerTests {
         let (appleOk, _) = TestFixtures.verifyWithAppleCodeSign(binaryPath: tempFatPath)
         #expect(appleOk, "Apple codesign tool should accept real signed FAT binary")
     }
+
+    // MARK: - 2026-09-26：Pass 1 只算尺寸 + 签名输入 mmap
+
+    /// 🔴 钉住 Pass 1 的尺寸估计：写进 `LC_CODE_SIGNATURE` 的 `dataoff` / `datasize`
+    /// 必须与**实际追加**的 SuperBlob 完全吻合。
+    ///
+    /// 为什么单独测这条：`MachOSigner` 的 Pass 1 改成只调 `CodeDirectoryBuilder.size()`
+    ///（不再 `build()` 一份全零缓冲）—— 若 `size()` 与 `build()` 长度不一致，
+    /// `LC_CODE_SIGNATURE` 就会指向错误的位置/长度 ⇒ **iOS 拒绝启动（闪退）**，
+    /// 而 `sign()` 自己**不会抛错**、`MachOParser` 也照样能读出 CDHash ✗。
+    /// ⇒ 只有「把 load command 里的数字与文件实际布局对账」才能抓住它 ✓。
+    ///
+    /// 用 ad-hoc（`cmsSigner: nil`）⇒ 不依赖 openssl，任何平台都能跑 ✓。
+    @Test
+    func codeSignatureLoadCommandMatchesTheAppendedSuperBlob() throws {
+        let binary = createDummyMachOBinary()
+        let signed = try MachOSigner(
+            binaryData: binary,
+            bundleIdentifier: "com.example.demo",
+            teamIdentifier: "TEAM123456",
+            entitlementsXML: "<plist><dict><key>get-task-allow</key><true/></dict></plist>",
+            infoPlistData: nil,
+            codeResourcesData: nil,
+            cmsSigner: nil
+        ).sign()
+
+        #expect(signed.count > binary.count)
+
+        let headerSize = 32 // MH_MAGIC_64
+        let ncmds = Int(signed.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 16, as: UInt32.self) })
+        var cursor = headerSize
+        var found = false
+
+        for _ in 0..<ncmds {
+            guard cursor + 8 <= signed.count else { break }
+            let cmd = signed.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cursor, as: UInt32.self) }
+            let cmdsize = Int(signed.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cursor + 4, as: UInt32.self) })
+
+            if cmd == CodeSigningConstants.LC_CODE_SIGNATURE {
+                found = true
+                let dataoff = Int(signed.withUnsafeBytes {
+                    $0.loadUnaligned(fromByteOffset: cursor + 8, as: UInt32.self)
+                })
+                let datasize = Int(signed.withUnsafeBytes {
+                    $0.loadUnaligned(fromByteOffset: cursor + 12, as: UInt32.self)
+                })
+                #expect(dataoff + datasize == signed.count,
+                        "LC_CODE_SIGNATURE 必须正好覆盖文件尾部（dataoff=\(dataoff) datasize=\(datasize) 总长=\(signed.count)）")
+                let magic = signed.withUnsafeBytes {
+                    $0.loadUnaligned(fromByteOffset: dataoff, as: UInt32.self).bigEndian
+                }
+                #expect(magic == CodeSigningConstants.CSMAGIC_EMBEDDED_SIGNATURE)
+                break
+            }
+            guard cmdsize > 0 else { break }
+            cursor += cmdsize
+        }
+
+        #expect(found, "签名后的二进制必须存在 LC_CODE_SIGNATURE")
+    }
+
+    /// 🔴 钉住「签名输入改用 mmap 不改变任何输出字节」。
+    ///
+    /// `CodeSigner` 读可执行文件时改成 `options: .mappedIfSafe` ⇒ 交给 `MachOSigner` 的
+    /// `Data` 是**映射**出来的。安全性前提是 `MachOSigner` 对输入**全程只读**、
+    /// 所有改写都落在它自己 `subdata` 复制出来的 `finalBinary` 上 ✓
+    ///（反面教材：`SigningWorkspace.rewriteExecutablePathReferences` 会**原地改写**读进来的
+    /// `Data`，那里用 mmap 就是真机 SIGBUS ✗ —— 两者判据不同，别互相套用）。
+    ///
+    /// 判据用 **ad-hoc**（`cmsSigner: nil`）：没有 CMS 就没有签名时间 `utcTime`，
+    /// 签名结果因此是**确定性**的，两次调用可以逐字节比对 ✓
+    ///（带 CMS 时签名块里含 `Date()`，做不到确定性比对 ✗）。
+    @Test
+    func signingIsUnaffectedByHowTheInputDataWasLoaded() throws {
+        let binary = createDummyMachOBinary()
+        let fileURL = TestFixtures.tempDir.appendingPathComponent("mmap_input_\(UUID().uuidString)")
+        try binary.write(to: fileURL)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        func sign(_ data: Data) throws -> Data {
+            try MachOSigner(
+                binaryData: data,
+                bundleIdentifier: "com.example.demo",
+                teamIdentifier: "TEAM123456",
+                entitlementsXML: "<plist><dict><key>get-task-allow</key><true/></dict></plist>",
+                infoPlistData: nil,
+                codeResourcesData: nil,
+                cmsSigner: nil
+            ).sign()
+        }
+
+        let copied = try sign(try Data(contentsOf: fileURL))
+        let mapped = try sign(try Data(contentsOf: fileURL, options: .mappedIfSafe))
+
+        #expect(copied == mapped, "mmap 读取的输入必须产出与整块读取完全相同的签名字节")
+        #expect(copied.count > binary.count)
+    }
 }
 
 

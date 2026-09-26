@@ -159,6 +159,49 @@ enum AppSigningPresentationHelpers {
     /// 回主屏转场，让 iOS 用新版替换旧进程。文案提前说清楚，避免界面瞬间消失被误读成闪退。
     static let sealReturningHomeTip = "正在退回主屏幕，iOS 会用新版替换 Seal；替换完成后重新打开即可。"
 
+    /// 「证书序列号」行下面的一句说明：**本机没有该证书的私钥**时，下一次续签会
+    /// **完整重签并安装**，而不是只更新描述文件。
+    ///
+    /// 用户 2026-09-26 明确要求（原话）：
+    /// 「第一次安装手机设备证书没有或者与远端不同时，证书序列号那可以写一句
+    ///  需要重新签名一次获取本机证书，匹配之后后续再走不重装的更新续签模式。」
+    ///
+    /// 措辞刻意分两段，缺一段都会让用户误解：
+    ///   · 前半句说**这一次会发生什么**（需要重新签名一次获取本机证书）——
+    ///     否则用户看到进度条在重传整包会以为「说好的不重装怎么又重装了」；
+    ///   · 后半句说**以后会怎样**（之后续签只更新描述文件、不会重新安装）——
+    ///     否则用户会以为「每次续签都要重装」，而那正是这套快路径要消除的误解。
+    static let localCertificateRebuildNote = "需要重新签名一次获取本机证书"
+
+    /// 完整说明（详情页 / 操作抽屉用，能折行读全）。
+    static let localCertificateRebuildDetail =
+        "本机没有该证书的私钥，需要重新签名一次获取本机证书；"
+        + "完成后证书与本机匹配，之后续签只更新描述文件，不会重新安装。"
+
+    /// 该状态要不要在「证书序列号」行下面加一句说明；不需要时返回 `nil`。
+    ///
+    /// **只有 `.needsFullResign` 才说话**：`.ready` 是正常状态（说了就是噪音），
+    /// `.undetermined`（读不到账号密钥）**不能**替用户下结论 —— 那会把「Keychain 暂时读不到」
+    /// 说成「你没有证书」，把用户送去重签一次本来不需要重签的续签。
+    ///
+    /// ⚠️ 两段文案**各有归属，不要互相替代**（用户要求「文案写精准，位置也不要乱」）：
+    ///   · `localCertificateNote(for:)` → **完整版**，用于详情页 / 操作抽屉（有空间折行读全，
+    ///     用户在这里做「要不要点续签」的决定，需要知道「之后会怎样」）；
+    ///   · `localCertificateCompactNote(for:)` → **紧凑版**，用于签名进度卡片
+    ///     （那一段正在跑、卡片窄，一行说清「这次为什么要重签」即可）。
+    static func localCertificateNote(
+        for availability: ProfileOnlyRenewalPolicy.LocalCertificateAvailability
+    ) -> String? {
+        availability == .needsFullResign ? localCertificateRebuildDetail : nil
+    }
+
+    /// 紧凑版说明（签名进度卡片用）。见上一条的分工说明。
+    static func localCertificateCompactNote(
+        for availability: ProfileOnlyRenewalPolicy.LocalCertificateAvailability
+    ) -> String? {
+        availability == .needsFullResign ? localCertificateRebuildNote : nil
+    }
+
     /// 证书序列号展示值：完整序列号（只留十六进制、转大写、不截断）。
     /// 行标题固定为「证书序列号」，因此这里不再重复「序列号 · 」前缀。
     static func certificateSerialText(serial: String?) -> String {

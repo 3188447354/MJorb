@@ -83,12 +83,6 @@ enum SigningProgressBudget {
     /// 现在格内比例由 `bucketFill` 从「格内已完成阶段数 + 本阶段完成比例」算出。
     static let bucketCount = 5
 
-    /// 「本阶段已用时」的显示门槛（秒）。
-    ///
-    /// 短暂阶段显示计时只会让人以为在拖时间；只有明显偏长的阶段才需要它来安抚
-    /// （`preparingBundle` 在抖音上 112 秒，是这条门槛存在的理由）。
-    static let elapsedDisplayThreshold: TimeInterval = 4
-
     /// 一个阶段的进度预算。
     struct Plan: Equatable, Sendable {
         /// 进入本阶段时已确认到达的进度（0–100）。
@@ -462,14 +456,11 @@ enum SigningProgressBudget {
         return clampUnit((Double(budget.indexInBucket) + fraction) / Double(total))
     }
 
-    /// 是否该由进度卡片自己显示「本阶段已用时」。
-    ///
-    /// `.installing` / `.verifying` 排除在外：那两段由 `InstallWaitNote` 统一报
-    /// 「已等待 m:ss」，两处各报一遍会让同一个数字在同一张卡片上出现两次。
-    static func showsOwnElapsed(stage: SigningStage, elapsed: TimeInterval) -> Bool {
-        if stage == .installing || stage == .verifying { return false }
-        return elapsed >= elapsedDisplayThreshold
-    }
+    // ⚠️ 2026-09-26（构建 48 真机，用户要求）：原 `showsOwnElapsed(stage:elapsed:)`
+    //（进度卡片是否该显示「本阶段已用时」）与它依赖的 `elapsedDisplayThreshold` 已删除 ——
+    // 进度卡片整条不再显示自己的计时，只有设备安装阶段由 `InstallWaitNote` 报
+    // 「设备正在安装… · 已等待 m:ss」。用户原话：「去掉那个阶段上的等待多少时间的文案，
+    // 设备安装阶段的保留。」⇒ 这里不再有「哪几个阶段该显示计时」这个判据。
 
     private static func clampUnit(_ value: Double?) -> Double {
         guard let value else { return 0 }

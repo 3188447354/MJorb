@@ -1995,10 +1995,25 @@ def violations(load=read):
         # ⚠️ 2026-09-19：`isEstimated`（估算态）**不再**被视图使用 ——
         # 扫光与呼吸点都已随「圈圈不要假预估」去掉，它现在没有读者了 ✓。
         # 函数本身**保留**（语义仍是「这个阶段有没有真实进度信号」），只是不再要求视图消费 ✓。
-        ("SigningProgressBudget.showsOwnElapsed(", "长阶段的「本阶段已用时」"),
+        # ⚠️ 2026-09-26（构建 48 真机，用户要求）：`showsOwnElapsed`（进度卡片是否该显示
+        # 「本阶段已用时」）**已整条删除** —— 卡片不再显示自己的计时 ✓。这条正向断言
+        # 随之撤掉，换成下面那对「不许再显示 + 安装阶段必须保留」的反向断言 ✓。
+        ("SigningProgressBudget.confirmedProgress(", "进度环的「已确认」那一段"),
     ):
         check(budget_symbol in budget_view,
               "R36: `SigningProgressView` 必须用 " + budget_symbol + "（" + budget_why + "）")
+    # ⚠️ 2026-09-26（构建 48 真机，用户要求）：进度卡片**不许再显示自己的计时**。
+    # 用户原话：「去掉那个阶段上的等待多少时间的文案，设备安装阶段的保留。」
+    # ⇒ 原 `elapsedClock(_:)`（「本阶段已用时 m:ss」）与 `SigningProgressBudget.showsOwnElapsed`
+    #   / `elapsedDisplayThreshold` 已整条删除；**只有设备安装阶段**保留计时
+    #   （`InstallWaitNote` 的「设备正在安装… · 已等待 m:ss」，单签与批量抽屉共用）。
+    # 两条都钉：① 卡片上不许再出现「本阶段已用时」（注释已 strip，注释里提它是允许的）；
+    #          ② 安装阶段的 `InstallWaitNote` 必须还在（否则连「等了多久」都没了）。
+    check("本阶段已用时" not in budget_view,
+          "R36: 进度卡片不许再显示自己的计时（「本阶段已用时」）—— 只有设备安装阶段由 "
+          "`InstallWaitNote` 报「已等待 m:ss」")
+    check("InstallWaitNote(startedAt: session?.installStartedAt)" in budget_view,
+          "R36: 设备安装阶段（`.installing` / `.verifying`）必须保留 `InstallWaitNote` 的等待说明")
     # ⚠️ 反向断言（2026-09-19）：**估算函数不许回流到界面**。
     # 用户已明确否掉「圈圈跟着假预估爬」，而 `overallProgress` 就是那份估算的唯一出口
     #（它仍被单测与轨道兜底分支使用，所以函数本身留着）。
@@ -2680,10 +2695,15 @@ def violations(load=read):
           "(subject?.isSeal ?? signingSession?.app.isSeal) == true {"
           in apps_view,
           "R10: single signing must trigger the return-home from the state layer, once")
-    # 两条链路（单签 + 批量）都必须把**真实的**日志出口交下去：
+    # 三条链路都必须把**真实的**日志出口交下去：
     # 只声明依赖、调用点传 nil，等于这条链路重新变回静默（下次真机又查不出卡在哪）。
+    #
+    # ⚠️ 2026-09-26 由 2 处变 3 处（见 R86）：`updateSigningStage` 里按阶段主体分叉之后，
+    # 「会话主体」与「证书轮换子流程里的 Seal」各有一条调用 ——
+    # 子流程那条**必须留着**：它的判据是「Seal 被覆盖安装」，与父会话是谁无关
+    #（构建 31 真机就是因为拿会话主体去判，子流程里恒假 ⇒ installd 一直等旧进程让位）。
     check(apps_view.count(
-              "SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore: logStore)") == 2,
+              "SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore: logStore)") == 3,
           "R10: both signing paths must trigger the return-home with a real log outlet")
     # 批量链路的「回主页」也必须带 `.restart` 闸门。`.installing` 会被重复推送
     #（安装通道的 >1.0 哨兵 + 签名侧补发），不设闸门就会排出多个任务 ——
@@ -4837,6 +4857,241 @@ def violations(load=read):
           "候选**不得**为空（它排最后但仍可撤）。源码断言只能证明「结构在」，"
           "证明不了「真的放行」")
 
+    # R85: 本机证书材料状态 —— 「第一次装 Seal 后续签被 334 拦死」的闭环
+    #（2026-09-26 构建 48 真机，用户需求①）。
+    #
+    # 用户原话：「第一次签名 Seal 到手机…第一次没办法自己重新申请证书签名重装一次直接被拦截了，
+    # 可以在第一次安装手机设备证书没有或者与远端不同时，证书序列号那可以写一句
+    # 需要重新签名一次获取本机证书」。
+    #
+    # 现象：Seal 第一次装到设备后，本机没有它正在用的那张证书的私钥
+    #（重装 Seal 会清 Keychain；免费账号只有一个活动槽位，覆盖安装后必然丢本机私钥）。
+    # 于是点续签 ⇒ 准入宣布「仅更新描述文件」⇒ 执行侧 `existingProfileOnlyCertificate`
+    # 抛 `SEAL-PROFILE-334` ⇒ **用户被拦死**，而界面一个字都没解释
+    #（构建 48 日志里 334 出现 4 次，批量续签因此被记成失败 1）。
+    #
+    # 修法分两半，缺一半都不成立：
+    # ① 准入提前判定「本机有没有这张证书的私钥」，没有就**回落完整重签**
+    #   （重签会拿到一张本机有私钥的证书并写回记录 ⇒ 下一次准入自然又走 profile-only）；
+    # ② 界面上「证书序列号」那一行下面写清**为什么这一次要重签**。
+    #
+    # ⚠️ 判据必须**同源**：界面与准入都用 `localCertificateMaterialBlock`
+    #   （它内部是 `SigningCertificateMaterialPolicy.availableCertificate` ＋
+    #   `reuseStatus == .reusable`，正是执行侧 `certificateReusable(_:)` 那条），
+    #   否则会出现「界面说没事、一点却抛 334」。
+    # ⚠️ 必须是**三态**：读不到账号密钥时不能替用户断言「缺证书」——
+    #   那会把「Keychain 暂时读不到」说成「证书没了」，把用户送去重签一次本来不需要重签的续签。
+    r85_policy = load("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift")
+    r85_coord = load("Seal/Core/Signing/SigningCoordinator.swift")
+    r85_present = load("Seal/Features/Apps/AppPresentation.swift")
+    r85_vm = load("Seal/Features/Apps/AppsViewModel.swift")
+    r85_progress = load("Seal/Features/Apps/SigningProgressView.swift")
+    r85_detail = load("Seal/Features/Apps/AppDetailView.swift")
+    r85_sheet = load("Seal/Features/Apps/InstalledAppActionSheet.swift")
+    r85_policy_tests = load("SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift")
+    r85_present_tests = load("SealTests/Apps/AppPresentationTests.swift")
+    r85_index = load("docs/qa/log-code-index.md")
+
+    check("enum LocalCertificateAvailability" in r85_policy
+          and "case undetermined" in r85_policy
+          and "case ready" in r85_policy
+          and "case needsFullResign" in r85_policy,
+          "R85①: 本机证书状态必须是**三态**（`undetermined` / `ready` / `needsFullResign`）✗ —— "
+          "折成 Bool 时「读不到账号密钥」会被说成「证书没了」，"
+          "把用户送去重签一次本来不需要重签的续签")
+
+    r85_availability = section_or_empty(
+        r85_policy,
+        "    static func localCertificateAvailability(",
+        "\n    /// 把「账号密钥表」"
+    )
+    check("guard let secret, nonBlank(certificateSerialNumber) != nil else { return .undetermined }"
+          in squash(strip_comments(r85_availability))
+          and "localCertificateMaterialBlock(" in r85_availability,
+          "R85②: 界面状态必须与准入**同源**（都走 `localCertificateMaterialBlock`），"
+          "且密钥 / 序列号读不到时一律 `.undetermined` ✗ —— "
+          "另写一套判据必然漂移成「界面说没事、一点却抛 SEAL-PROFILE-334」")
+
+    check("for app in apps where app.belongsInInstalledList {" in r85_policy
+          and "certificateSerialNumber: app.certificateSerialNumber" in r85_policy,
+          "R85③: 只算**已安装**应用（未安装的还没走到续签，提示只会让列表变吵），"
+          "且必须用 `app.certificateSerialNumber` ✗ —— 执行侧 `renewProfilesOnly` 用的就是它，"
+          "换成带兜底的 `effectiveCertificateSerialNumber` 会变成「准入查 A、执行用 B」")
+
+    check('static let localCertificateRebuildNote = "需要重新签名一次获取本机证书"' in r85_present
+          and "static let localCertificateRebuildDetail" in r85_present,
+          "R85④: 「证书序列号」那一行的说明文案必须只有一份真源"
+          "（`AppSigningPresentationHelpers`）✗ —— 三个界面各写一份必然漂移成三种说法")
+
+    r85_note_fn = section_or_empty(
+        r85_present,
+        "    static func localCertificateNote(",
+        "\n    /// 证书序列号展示值"
+    )
+    check(r85_note_fn.count("availability == .needsFullResign ?") == 2,
+          "R85⑤: 两个 helper（完整版 / 紧凑版）都必须**只在 `.needsFullResign` 时说话** ✗ —— "
+          "`.ready` 是正常状态（说了就是噪音），`.undetermined` 更不能替用户下结论")
+
+    check("AppSigningPresentationHelpers.localCertificateCompactNote(" in r85_progress
+          and "AppSigningPresentationHelpers.localCertificateNote(" in r85_detail
+          and "AppSigningPresentationHelpers.localCertificateNote(" in r85_sheet,
+          "R85⑥: **三处**落点都要接上（进度卡片用紧凑版、详情页与操作抽屉用完整版）✗ —— "
+          "漏一处就是「同一个状态在一个界面说、另一个界面不说」")
+
+    r85_gate = section_or_empty(
+        r85_coord,
+        "    private func shouldUseProfileOnlyRenewal(",
+        "\n    private func renewProfilesOnly("
+    )
+    check("SEAL-PROFILE-364" in r85_gate
+          and "ProfileOnlyRenewalPolicy.localCertificateMaterialBlock(" in r85_gate
+          and "certificateSerialNumber: app.certificateSerialNumber" in r85_gate
+          and "return false" in r85_gate,
+          "R85⑦: 准入必须**提前**判定本机有没有这张证书的私钥，没有就 `return false`"
+          "（回落完整重签）并留痕 `SEAL-PROFILE-364` ✗ —— "
+          "否则执行侧会抛 `SEAL-PROFILE-334`，而准入已经宣布「仅更新描述文件」")
+
+    check("effectiveCertificateSerialNumber(" in r85_gate
+          and r85_gate.index("effectiveCertificateSerialNumber(")
+              < r85_gate.index("localCertificateMaterialBlock("),
+          "R85⑦b: 私钥判据必须排在**最后**（前几条判据都放行之后）✗ —— "
+          "顺序反了会把「被别的判据拦下的」归因成「本机缺私钥」，"
+          "而代码看起来仍然有这条判据（`in` 判不出顺序，必须比下标）")
+
+    check("SEAL-PROFILE-364" in r85_index,
+          "R85⑧: 新日志码必须登记进 `docs/qa/log-code-index.md` 的**主表** ✗ —— "
+          "用户发来日志时第一件事就是查码表；不登记等于这条降级在日志里没有解释")
+
+    check("func missingLocalPrivateKeyIsReportedAsNeedingAFullResign()" in r85_policy_tests
+          and "func unreadableSecretOrMissingSerialIsNeverReportedAsMissingPrivateKey()"
+              in r85_policy_tests
+          and "func availabilityIsComputedOnlyForInstalledAppsAndByTheirOwnAccount()"
+              in r85_policy_tests,
+          "R85⑨: 必须有三个方向的单测 —— ① 缺私钥 ⇒ `.needsFullResign`；"
+          "② 密钥 / 序列号读不到 ⇒ `.undetermined`（**不得**报缺私钥）；"
+          "③ 只算已安装应用、且按应用自己的账号取密钥。"
+          "源码断言只能证明「结构在」，证明不了「判对了」")
+    check("func localCertificateNoteOnlySpeaksWhenTheDeviceIsReallyMissingTheKey()"
+          in r85_present_tests,
+          "R85⑩: 文案 helper 必须有单测 —— `.ready` / `.undetermined` 都必须返回 `nil`"
+          "（「只在真的缺私钥时才说话」这件事只在界面上可见）")
+
+    # R86: 子流程的阶段**不得覆盖父会话**（2026-09-26 构建 48 真机，用户需求②）。
+    #
+    # 用户原话：「签名新 ipa 容易出现到安装步骤后又重签一次」。
+    #
+    # 真机日志逐行印证：父会话是 Guoguo 的续签，10:07:44 已经进入 `verifying`（安装已返回），
+    # 紧接着 10:07:44-10:07:47 被**子流程**（证书轮换事务里重签 Seal）推来的
+    # `waitingForChannel` / `preparingAccount` / `preparingBundle` / `preparingCertificate`
+    # 覆盖 ⇒ 抽屉在装完之后跳回签名阶段 ⇒ 用户看到「又重签一次」。
+    #
+    # 根因：`updateSigningStage` 收到阶段后**无条件**写 `signingSession?.status`
+    #（R66 让信号带上了主体，但状态层没有按主体分叉）。
+    #
+    # ⚠️ 修的时候**不能顺手把 Seal 自替换的「回主屏」也关掉**（那是 R66 的正向契约）：
+    #   它的判据是「**Seal** 被覆盖安装」，与父会话是谁无关 ——
+    #   构建 31 真机就是因为拿会话主体去判，子流程里恒假，installd 一直等旧进程让位。
+    # ⚠️ 子流程的「首次进入安装阶段」闸门必须落在**子流程自己的**簿记上：
+    #   父会话的 `InstallStageTimeline` 收不到子流程的阶段（这正是本次的修复），
+    #   拿它当闸门等于没有闸门。
+    r86_vm = load("Seal/Features/Apps/AppsViewModel.swift")
+    r86_update = load("Seal/Core/Signing/SigningStageUpdate.swift")
+    r86_tests = load("SealTests/Signing/SigningStageAttributionTests.swift")
+
+    check("enum SigningStageAttribution" in r86_update
+          and "static func target(for subject: SigningStageSubject?, sessionAppID: UUID?) -> Target"
+              in r86_update
+          and "case otherApp(SigningStageSubject)" in r86_update
+          and "static func isFirstInstallEntry(entering stage: SigningStage, previous: SigningStage?) -> Bool"
+              in r86_update,
+          "R86①: 阶段归属必须抽成**纯判据**（`SigningStageAttribution`）✗ —— "
+          "它的错法只在真机上表现为「抽屉显示了别人的阶段」，不崩、不编译失败，只能靠单测钉住")
+
+    r86_session_branch = section_or_empty(
+        r86_vm,
+        "        case .session:\n",
+        "        case .otherApp(let other):"
+    )
+    r86_other_branch = section_or_empty(
+        r86_vm,
+        "        case .otherApp(let other):",
+        "\n    }\n"
+    )
+    check("signingSession?.status = .running(stage)" in r86_session_branch
+          and "signingSession?.status =" not in r86_other_branch
+          and "signingSession?.installStartedAt =" not in r86_other_branch
+          and "signingSession?.stageStartedAt =" not in r86_other_branch,
+          "R86②: **只有属于会话主体**的阶段才写父会话的显示状态 ✗ —— "
+          "子流程（证书轮换里重签的另一个 App）写进去就是用户看到的"
+          "「签名到安装步骤后又重签一次」（构建 48 真机 10:07:44-10:07:47）")
+
+    check("SelfInstallAutoBackground.returnToHomeAfterSealUpload(" in r86_other_branch,
+          "R86③: 子流程里 **Seal 自替换的「回主屏」必须保留** ✗ —— "
+          "这条判据是「Seal 被覆盖安装」，与父会话是谁无关；"
+          "构建 31 真机就是因为拿会话主体去判，子流程里恒假，installd 一直等旧进程让位"
+          "（`waitForSelfReplacement` 的 894 秒上限）")
+
+    check("SigningStageAttribution.isFirstInstallEntry(" in r86_other_branch
+          and "rotationSubflowStage" in r86_other_branch,
+          "R86④: 子流程的「首次进入安装阶段」闸门必须落在**子流程自己的簿记**上 ✗ —— "
+          "父会话的 `InstallStageTimeline` 收不到子流程的阶段，拿它当闸门等于没有闸门，"
+          "`.installing` 被重复推送时会排出多个「回主屏」任务")
+
+    check(r86_vm.count("rotationSubflowStage = nil") == 2,
+          "R86⑤: 开新会话（`startSigning`）与重试（`restartSigning`）都**必须**清空子流程簿记 ✗ —— "
+          "上一轮留下的「上次停在 .installing」会让本轮 Seal 自替换的「回主屏」判据拿不到 "
+          "`.restart`（静默不触发）")
+
+    check("func stageFromAnotherAppNeverBelongsToTheSession()" in r86_tests
+          and "func missingSubjectMeansTheSessionItself()" in r86_tests
+          and "func installEntryGateFiresOnlyOncePerSubflow()" in r86_tests
+          and "func sealSelfReplacementIsStillRecognisedFromTheSubflow()" in r86_tests,
+          "R86⑥: 必须有四个方向的单测 —— ① 别人的阶段 ⇒ `.otherApp`；"
+          "② 不传 subject ⇒ 等价于会话主体（旧调用点全靠它）；"
+          "③ 闸门只触发一次；④ 子流程里 Seal 的阶段**仍**被认出来（R66 的反向契约）。"
+          "源码断言只能证明「分支在」，证明不了「归属判对了」")
+
+    # R87: 阶段文案必须与**真实发生的操作**对应（2026-09-26 构建 48 真机，用户需求④：
+    # 原话「将签名链路和续签和安装实际的真实操作对应的文案写精准，没有做的事不写」）。
+    #
+    # 两处具体错法（都属「宣称一件没发生的事」）：
+    #   · `.preparingCertificate` 写「正在申请证书」，而这一阶段做的是
+    #     「读远端列表 → 查本机私钥 → 决定复用 / 撤销重建」，**绝大多数时候是复用**
+    #     （真机日志紧随其后的是「证书决策：复用 Apple 生效列表中的本机证书 …976EFE08」）；
+    #   · `.preparingAppID` 写「正在注册 Bundle ID」，而这一阶段先读账号已有的 App ID，
+    #     只对缺失的发注册请求（真机日志：「本次需 1 个…需新注册 0 个」）。
+    #
+    # ⚠️ 同类错法历史上把用户推进过死循环：`.preparingBundle` 曾被算进「正在验证 Apple ID」，
+    #   用户盯着那行等了 2 分钟，跑去重新验证 Apple ID，然后被限流。
+    r87_stage = load("Seal/Core/Signing/SigningStage.swift")
+    r87_copy_tests = load("SealTests/Signing/SigningStageCopyTests.swift")
+    r87_stage_code = strip_comments(r87_stage)
+
+    check("正在申请证书" not in r87_stage_code,
+          "R87①: 证书阶段不得再写「正在申请证书」✗ —— 这一阶段绝大多数时候是**复用**证书，"
+          "「申请」宣称了一件没发生的事（用户会以为每轮都在建新证书）")
+
+    check("正在注册 Bundle ID" not in r87_stage_code,
+          "R87②: App ID 阶段不得再写「正在注册 Bundle ID」✗ —— 它先读账号已有列表，"
+          "只对缺失的发注册请求；复用那一轮一个都不注册（真机「需新注册 0 个」）")
+
+    check("已注册" not in r87_stage_code
+          and 'return "已准备 ' in r87_stage_code,
+          "R87③: App ID 阶段的计数行必须报「**已准备**」而不是「已注册」✗ —— "
+          "`ApplePortalSigningService` 是在 App ID **解析完成**（复用的 + 新建的都算）之后"
+          "才上报计数（那里的注释原文：「用**已就绪的个数**而不是循环下标」）")
+
+    check('return "正在准备证书"' in r87_stage_code
+          and 'return "正在核对 App ID"' in r87_stage_code,
+          "R87④: 两条文案的**新写法**必须在位 ✗ —— 只断言旧文案不在，"
+          "把整段删空也能通过（那是「绿着坏掉」）")
+
+    check("func certificateStageNeverClaimsItIsApplyingForACertificate()" in r87_copy_tests
+          and "func appIDStageNeverClaimsItIsRegisteringWhenItOnlyChecks()" in r87_copy_tests
+          and "func appIDWorkUnitsCountWhatIsReadyNotWhatWasRegistered()" in r87_copy_tests,
+          "R87⑤: 必须有三个方向的单测 —— ① 证书阶段不说「申请」；② App ID 阶段不说「注册」；"
+          "③ 计数行报的是「已准备」。文案类不变量只有单测能钉住「说的是不是真的」")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -5919,8 +6174,11 @@ def main():
          "        let confirmed = SigningProgressBudget.overallProgress(",
          "R36: 界面上的百分比只能来自 `confirmedProgress`"),
         # 界面里重新写死一个进度常数（死代码也一样算）：这是「跳着走」的原样重演。
+        # ⚠️ 2026-09-26：原锚点是 `stageElapsed(...)`，它已随「进度卡片不再显示计时」删除
+        # ⇒ 锚点改到同一文件里稳定的 `spinPhase` 函数签名上（**意图不变**：往视图里塞一个
+        #   写死的进度常数，证明那条 `not in budget_view` 断言真的会红）。
         ("Seal/Features/Apps/SigningProgressView.swift",
-         "    private func stageElapsed(at now: Date, startedAt: Date?) -> TimeInterval {",
+         "    private func spinPhase(_ now: Date) -> Double {",
          "    private func legacyHardcodedProgress(for stage: SigningStage) -> Double {\n"
          "        switch stage {\n"
          "        case .installing: return 0.93\n"
@@ -5928,8 +6186,15 @@ def main():
          "        }\n"
          "    }\n"
          "\n"
-         "    private func stageElapsed(at now: Date, startedAt: Date?) -> TimeInterval {",
+         "    private func spinPhase(_ now: Date) -> Double {",
          "R36: `SigningProgressView` 不许再写死进度"),
+        # 把「卡片不再显示计时」改回去（重新在视图里显示「本阶段已用时」）：
+        # 这条是上面那条反向断言的自检 —— 它必须报红。
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         "                InstallWaitNote(startedAt: session?.installStartedAt)",
+         "                Text(\"本阶段已用时 0:20\")\n"
+         "                InstallWaitNote(startedAt: session?.installStartedAt)",
+         "R36: 进度卡片不许再显示自己的计时"),
         # 把单测改宽：只断言「涨了」而不锁住「明显爬升」，约束就没了。
         ("SealTests/Signing/SigningProgressBudgetTests.swift",
          "        #expect(bundle > 30)",
@@ -6413,8 +6678,8 @@ def main():
          "R10: repeated .installing pushes must not reset the install clock"),
         # 让单签的「回主页」永不触发：Seal 的替换静默失败（旧版本继续跑）。
         ("Seal/Features/Apps/AppsViewModel.swift",
-         "        if stage == .installing,\n           tick == .restart,\n           (subject?.isSeal ?? signingSession?.app.isSeal) == true {",
-         "        if stage == .installing,\n           tick == .restart,\n           (subject?.isSeal ?? signingSession?.app.isSeal) == false {",
+         "            if stage == .installing,\n               tick == .restart,\n               (subject?.isSeal ?? signingSession?.app.isSeal) == true {",
+         "            if stage == .installing,\n               tick == .restart,\n               (subject?.isSeal ?? signingSession?.app.isSeal) == false {",
          "R10: single signing must trigger the return-home from the state layer"),
         # 界面又自己触发一次 = 双重「回主页」（两个转场 + 两个 exit(0) 兜底）。
         ("Seal/Features/Apps/SigningProgressView.swift",
@@ -7353,6 +7618,138 @@ def main():
          "        let ordered = ordinaryCandidates + runningSealCandidates\n",
          "        let ordered = ordinaryCandidates\n",
          "Takeover: decision policy must cover"),
+
+        # ── R85：本机证书材料状态（2026-09-26 构建 48 真机，用户需求①）──
+        # ① 把三态里的 `.ready` 改名 ⇒ R85① 报红（枚举少了一态）。
+        ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
+         "        case ready\n        /// 本机没有该证书的私钥",
+         "        case usable\n        /// 本机没有该证书的私钥",
+         "R85①: 本机证书状态必须是**三态**"),
+        # ② 把「读不到密钥」也判成缺私钥 ⇒ R85② 报红。**这正是最毒的一种退化**：
+        #    它把「Keychain 暂时读不到」说成「证书没了」，把用户送去重签一次不需要重签的续签。
+        ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
+         "        guard let secret, nonBlank(certificateSerialNumber) != nil else { return .undetermined }\n",
+         "        guard let secret, nonBlank(certificateSerialNumber) != nil else { return .needsFullResign }\n",
+         "R85②: 界面状态必须与准入**同源**"),
+        # ③ 把「只算已安装应用」去掉 ⇒ R85③ 报红（未安装的也会被提示，列表变吵）。
+        ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
+         "        for app in apps where app.belongsInInstalledList {\n",
+         "        for app in apps {\n",
+         "R85③: 只算**已安装**应用"),
+        # ④ 让完整版 helper 在「读不到」时也说话 ⇒ R85⑤ 报红。
+        ("Seal/Features/Apps/AppPresentation.swift",
+         "        availability == .needsFullResign ? localCertificateRebuildDetail : nil",
+         "        availability == .undetermined ? localCertificateRebuildDetail : nil",
+         "R85⑤: 两个 helper"),
+        # ⑤ 把进度卡片那处换成完整版 helper ⇒ R85⑥ 报红（紧凑版没人用）。
+        ("Seal/Features/Apps/SigningProgressView.swift",
+         "            if let note = AppSigningPresentationHelpers.localCertificateCompactNote(\n",
+         "            if let note = AppSigningPresentationHelpers.localCertificateNote(\n",
+         "R85⑥: **三处**落点都要接上"),
+        # ⑥ 把 364 的码改成 363 ⇒ R85⑦ 报红（这条降级在日志里就没法归因了）。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         '                code: "SEAL-PROFILE-364"',
+         '                code: "SEAL-PROFILE-363"',
+         "R85⑦: 准入必须**提前**判定"),
+        # ⑦ 把私钥判据用的序列号换成带兜底的 `storedSerial` ⇒ R85⑦ 报红
+        #    （「准入查 A、执行用 B」= `SEAL-PROFILE-361` 那个洞的同一种错法）。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "            certificateSerialNumber: app.certificateSerialNumber\n",
+         "            certificateSerialNumber: storedSerial\n",
+         "R85⑦: 准入必须**提前**判定"),
+        # ⑧ 把私钥判据**挪到最前面** ⇒ R85⑦b 报红。这正是「顺序就是安全本身」那条：
+        #    排到前面时「被别的判据拦下的」会被归因成「本机缺私钥」，
+        #    而代码看起来仍然有这条判据。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "        guard forceResign,\n              installAfterSigning,\n",
+         "        if ProfileOnlyRenewalPolicy.localCertificateMaterialBlock(\n"
+         "            secret: secret,\n"
+         "            certificateSerialNumber: app.certificateSerialNumber\n"
+         "        ) != nil { return false }\n"
+         "        guard forceResign,\n              installAfterSigning,\n",
+         "R85⑦b: 私钥判据必须排在**最后**"),
+        # ⑨ 把索引里的 364 改名 ⇒ R85⑧ 报红（用户查码表查不到）。
+        ("docs/qa/log-code-index.md",
+         "| `SEAL-PROFILE-364` |",
+         "| `SEAL-PROFILE-365` |",
+         "R85⑧: 新日志码必须登记进"),
+        # ⑩ 把「缺私钥 ⇒ needsFullResign」那条单测改名 ⇒ R85⑨ 报红。
+        ("SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift",
+         "func missingLocalPrivateKeyIsReportedAsNeedingAFullResign()",
+         "func legacyMissingKeyTest()",
+         "R85⑨: 必须有三个方向的单测"),
+        # ⑪ 把文案 helper 的单测改名 ⇒ R85⑩ 报红。
+        ("SealTests/Apps/AppPresentationTests.swift",
+         "func localCertificateNoteOnlySpeaksWhenTheDeviceIsReallyMissingTheKey()",
+         "func legacyNoteTest()",
+         "R85⑩: 文案 helper 必须有单测"),
+
+        # ── R86：子流程的阶段不得覆盖父会话（2026-09-26 构建 48 真机，用户需求②）──
+        # ① 把纯判据的入口改名 ⇒ R86① 报红。
+        ("Seal/Core/Signing/SigningStageUpdate.swift",
+         "    static func target(for subject: SigningStageSubject?, sessionAppID: UUID?) -> Target {\n",
+         "    static func targetLegacy(for subject: SigningStageSubject?, sessionAppID: UUID?) -> Target {\n",
+         "R86①: 阶段归属必须抽成**纯判据**"),
+        # ② 让子流程也写父会话的显示状态 ⇒ R86② 报红。**这正是本轮修的真问题**：
+        #    用户看到抽屉在装完之后跳回签名阶段，读成「又重签一次」。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "            rotationSubflowStage = (other.appID, stage)\n",
+         "            signingSession?.status = .running(stage)\n"
+         "            rotationSubflowStage = (other.appID, stage)\n",
+         "R86②: **只有属于会话主体**的阶段才写父会话的显示状态"),
+        # ③ 把子流程里的「回主屏」删掉 ⇒ R86③ 报红（构建 31 那次死锁会回归）。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "                SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore: logStore)\n"
+         "            }\n"
+         "            rotationSubflowStage = (other.appID, stage)\n",
+         "                _ = other.isSeal\n"
+         "            }\n"
+         "            rotationSubflowStage = (other.appID, stage)\n",
+         "R86③: 子流程里 **Seal 自替换的「回主屏」必须保留**"),
+        # ④ 把子流程的闸门换回父会话的 `tick` 形态 ⇒ R86④ 报红
+        #    （父会话的 `InstallStageTimeline` 收不到子流程的阶段 = 没有闸门）。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "            if SigningStageAttribution.isFirstInstallEntry(entering: stage, previous: previous),\n",
+         "            if stage == .installing,\n",
+         "R86④: 子流程的「首次进入安装阶段」闸门"),
+        # ⑤ 去掉一处子流程簿记的清空 ⇒ R86⑤ 报红（上一轮的残留会让本轮「回主屏」静默不触发）。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "        rotationSubflowStage = nil\n",
+         "",
+         "R86⑤: 开新会话"),
+        # ⑥ 把「别人的阶段」那条单测改名 ⇒ R86⑥ 报红。
+        ("SealTests/Signing/SigningStageAttributionTests.swift",
+         "func stageFromAnotherAppNeverBelongsToTheSession()",
+         "func legacyAttributionTest()",
+         "R86⑥: 必须有四个方向的单测"),
+
+        # ── R87：阶段文案必须与真实操作对应（2026-09-26 构建 48 真机，用户需求④）──
+        # ① 把「正在申请证书」写回去 ⇒ R87① 报红。
+        ("Seal/Core/Signing/SigningStage.swift",
+         '            return "正在准备证书"\n',
+         '            return "正在申请证书"\n',
+         "R87①: 证书阶段不得再写「正在申请证书」"),
+        # ② 把「正在注册 Bundle ID」写回去 ⇒ R87② 报红。
+        ("Seal/Core/Signing/SigningStage.swift",
+         '            return "正在核对 App ID"\n',
+         '            return "正在注册 Bundle ID"\n',
+         "R87②: App ID 阶段不得再写「正在注册 Bundle ID」"),
+        # ③ 把计数行写回「已注册」⇒ R87③ 报红（复用的那一轮一个都没注册）。
+        ("Seal/Core/Signing/SigningStage.swift",
+         '            return "已准备 ',
+         '            return "已注册 ',
+         "R87③: App ID 阶段的计数行必须报"),
+        # ④ 把 App ID 阶段的新写法换成第三种说法 ⇒ R87④ 报红
+        #    （只断言旧文案不在的话，把整段删空也能通过 —— 那是「绿着坏掉」）。
+        ("Seal/Core/Signing/SigningStage.swift",
+         '            return "正在核对 App ID"\n',
+         '            return "正在准备 App ID"\n',
+         "R87④: 两条文案的**新写法**必须在位"),
+        # ⑤ 把文案单测改名 ⇒ R87⑤ 报红。
+        ("SealTests/Signing/SigningStageCopyTests.swift",
+         "func certificateStageNeverClaimsItIsApplyingForACertificate()",
+         "func legacyCopyTest()",
+         "R87⑤: 必须有三个方向的单测"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

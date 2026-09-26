@@ -33,7 +33,9 @@ struct InstallWaitNote: View {
         }
     }
 
-    private func message(at now: Date) -> String {
+    /// 安装阶段的等待文案。**internal 而非 private**：它是「安装阶段必须保留计时」
+    /// 这条契约的载体，必须能被单测直接断言（2026-09-26）。
+    func message(at now: Date) -> String {
         guard let startedAt else {
             return "设备正在安装，此阶段没有进度回报，请保持 Seal 在前台"
         }

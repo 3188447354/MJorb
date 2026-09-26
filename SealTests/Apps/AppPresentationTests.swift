@@ -121,6 +121,38 @@ struct AppPresentationTests {
         #expect(AppImportTimeFormatter.string(from: yesterday, now: reference, calendar: calendar) == "昨天 18:42")
     }
 
+    // MARK: - 「证书序列号」行下面那句说明（2026-09-26 构建 48 真机）
+
+    /// 用户 2026-09-26 要求：本机没有该证书私钥时，在「证书序列号」那里写一句
+    /// 「需要重新签名一次获取本机证书」。
+    ///
+    /// 这里钉住**「什么时候说话」**这条规则（纯函数，能测）；「文案出现在哪个界面」
+    /// 由守卫按源码文本钉 —— 三个界面（进度卡片 / 详情页 / 操作抽屉）共用同一份真源。
+    @Test
+    func localCertificateNoteOnlySpeaksWhenTheDeviceIsReallyMissingTheKey() {
+        // 缺私钥 ⇒ 说完整版（说清「这一次会重签」＋「之后不会」）。
+        #expect(
+            AppSigningPresentationHelpers.localCertificateNote(for: .needsFullResign)
+                == AppSigningPresentationHelpers.localCertificateRebuildDetail
+        )
+        #expect(
+            AppSigningPresentationHelpers.localCertificateCompactNote(for: .needsFullResign)
+                == AppSigningPresentationHelpers.localCertificateRebuildNote
+        )
+        // 正常状态（本机有可复用私钥）与**读不到账号密钥**都不说话 ——
+        // 后者尤其重要：把「读不到」说成「你没有证书」，会把用户送去重签一次
+        // 本来不需要重签的续签。
+        #expect(AppSigningPresentationHelpers.localCertificateNote(for: .ready) == nil)
+        #expect(AppSigningPresentationHelpers.localCertificateNote(for: .undetermined) == nil)
+        #expect(AppSigningPresentationHelpers.localCertificateCompactNote(for: .ready) == nil)
+        #expect(AppSigningPresentationHelpers.localCertificateCompactNote(for: .undetermined) == nil)
+        // 文案必须同时说清「这一次要重签」与「之后不再重装」——
+        // 缺后半句，用户会以为「每次续签都要重装」，而那正是这套快路径要消除的误解。
+        #expect(
+            AppSigningPresentationHelpers.localCertificateRebuildDetail.contains("只更新描述文件")
+        )
+    }
+
     private func makeApp(state: AppState, expiryDate: Date?) -> AppRecord {
         AppRecord(
             originalBundleIdentifier: "com.seal.example",

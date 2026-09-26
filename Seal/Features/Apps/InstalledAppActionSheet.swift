@@ -53,6 +53,12 @@ struct InstalledAppActionSheet: View {
             accountPickerRow
             Divider().padding(.leading, 14)
             metadataValueRow("证书序列号", certificateSerialSummary)
+            if let note = AppSigningPresentationHelpers.localCertificateNote(
+                for: viewModel.localCertificateAvailability(for: app)
+            ) {
+                Divider().padding(.leading, 14)
+                certificateRebuildNoteRow(note)
+            }
             Divider().padding(.leading, 14)
             metadataValueRow("描述文件", AppSigningPresentationHelpers.profileUUIDText(for: app))
             Divider().padding(.leading, 14)
@@ -82,6 +88,24 @@ struct InstalledAppActionSheet: View {
                 .truncationMode(.middle)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .padding(.vertical, 12)
+    }
+
+    /// 「证书序列号」行下面的说明：本机没有该证书私钥 ⇒ 下一次续签会**完整重签并安装**。
+    /// 与详情页同一份文案真源（`AppSigningPresentationHelpers.localCertificateRebuildDetail`），
+    /// 两处各写一句迟早会漂移成「一个说重签、一个说只更新描述文件」。
+    private func certificateRebuildNoteRow(_ note: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.sealWarning)
+                .padding(.top, 1)
+            Text(note)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.sealTextSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 12)
     }

@@ -81,6 +81,12 @@ struct AppDetailView: View {
             detailRow("签名账户", accountName(app))
             Divider()
             serialDetailRow("证书序列号", certificateName(app))
+            if let note = AppSigningPresentationHelpers.localCertificateNote(
+                for: viewModel.localCertificateAvailability(for: app)
+            ) {
+                Divider()
+                certificateRebuildNoteRow(note)
+            }
             Divider()
             detailRow("Team ID", app.signingTeamID ?? "未记录")
             Divider()
@@ -178,6 +184,26 @@ struct AppDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.vertical, 15)
+    }
+
+    /// 「证书序列号」行下面的说明：本机没有该证书私钥 ⇒ 下一次续签会**完整重签并安装**。
+    ///
+    /// 与 `serialDetailRow` 分开画的原因：序列号是**等宽长串**（中间省略、可选中），
+    /// 而说明是一句需要**折行读全**的中文 —— 挤在同一行会让两者都读不清。
+    /// 文案真源在 `AppSigningPresentationHelpers.localCertificateRebuildDetail`。
+    private func certificateRebuildNoteRow(_ note: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.sealWarning)
+                .padding(.top, 1)
+            Text(note)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.sealTextSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 12)
     }
 
     /// 描述文件行：标题左、UUID 右，同一行展示，超长中间省略。

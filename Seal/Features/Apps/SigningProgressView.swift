@@ -108,7 +108,6 @@ struct SigningProgressView: View {
                             .foregroundStyle(Color.sealAccent)
                             .monospacedDigit()
                     }
-                    elapsedClock(stage)
                 }
                 Spacer()
             }
@@ -175,12 +174,6 @@ struct SigningProgressView: View {
         }
     }
 
-    /// 进入当前阶段到现在过了多少秒（转调 `SigningStageTrack.elapsed` —— 轨道格内爬动与
-    /// 「本阶段已用时」必须用同一个起点，各算一份就会出现两者对不上）。
-    private func stageElapsed(at now: Date, startedAt: Date?) -> TimeInterval {
-        SigningStageTrack.elapsed(at: now, startedAt: startedAt)
-    }
-
     /// 转弧相位（0–1）。周期固定 1.1 秒：比呼吸快一点，才像「在跑」而不是「在喘」。
     ///
     /// 用 `now` 直接算，而不是叠 `repeatForever` / `.animation(_:value:)` —— 叶子视图
@@ -192,27 +185,17 @@ struct SigningProgressView: View {
         return remainder / period
     }
 
-    /// 「本阶段已用时」—— 单独一个 **1Hz** 时钟：这两行都是整秒粒度的信息，跟着 30Hz 的环
-    /// 逐帧重算是纯浪费（2026-09-19 性能收敛 —— 逐帧只留在真正需要帧的叶子上）。
-    ///
-    /// ⚠️ 这里**不再有**「预期说明」那一行（2026-09-21 用户决定：整条去掉）。
-    /// 当时留它的理由是「`.preparingBundle` 被写成『正在验证 Apple ID』，害用户去重登」——
-    /// 而那个根因已经由**阶段名本身**修掉了（现在写「正在准备应用文件」）。
-    /// 用一句解释去补一个已经正确的标题，只是把抽屉堆得更满。
-    private func elapsedClock(_ stage: SigningStage) -> some View {
-        let startedAt = session?.stageStartedAt
-        return TimelineView(.periodic(from: .now, by: 1)) { context in
-            let elapsed = stageElapsed(at: context.date, startedAt: startedAt)
-            // `.installing` / `.verifying` 由 `InstallWaitNote` 统一报「已等待 m:ss」，
-            // 门槛与排除规则都收在 `showsOwnElapsed` 里，界面不再各写一遍。
-            if SigningProgressBudget.showsOwnElapsed(stage: stage, elapsed: elapsed) {
-                Text("本阶段已用时 \(InstallWaitNote.elapsedText(Int(elapsed)))")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Color.sealTextSecondary)
-                    .monospacedDigit()
-            }
-        }
-    }
+    // ⚠️ 2026-09-26（构建 48 真机，用户要求）：进度卡片**不再显示自己的计时** ——
+    // 原 `elapsedClock(_:)`（「本阶段已用时 m:ss」，1Hz 时钟）已整条移除。
+    // 用户原话：「去掉那个阶段上的等待多少时间的文案，设备安装阶段的保留。」
+    // ⇒ 设备安装阶段（`.installing` / `.verifying`）仍由 `InstallWaitNote` 报
+    //   「设备正在安装… · 已等待 m:ss」（见 `body` 里那一处，批量抽屉共用同一视图）；
+    //   其余阶段不再报时间 —— 它们有阶段名 + 五格轨道 + 转弧表达「在动」，
+    //   再叠一个秒数只是把抽屉堆满，而那个数字本来也只说明「已经等了多久」，
+    //   说明不了「还要等多久」。
+    // 连带删除：`SigningProgressBudget.showsOwnElapsed` / `elapsedDisplayThreshold`
+    //（门槛的语义已随这个视图消失），以及本文件里转调 `SigningStageTrack.elapsed` 的
+    // `stageElapsed` 包装 —— 轨道格内爬动仍直接用 `SigningStageTrack.elapsed`，不受影响。
 
     /// 进度环：两种笔触，且**只有**这两种。
     ///
@@ -349,6 +332,17 @@ struct SigningProgressView: View {
             runtimeRow("签名账户", viewModel.fullEmail(for: session.account))
             Divider().padding(.leading, 14)
             runtimeSerialRow("证书序列号", certificateDisplayName(session))
+            // 本机没有该证书私钥 ⇒ 这次续签会**完整重签并安装**（而不是只更新描述文件）。
+            // 放在这里是为了让「为什么进度条在重传整包」当场有答案 ——
+            // 用户 2026-09-26 的要求：文案必须与真实操作对齐，没做的事不写。
+            // 用**紧凑版**文案：这一段正在跑、卡片窄，一行说清「这次为什么要重签」就够
+            //（完整版留给详情页 / 操作抽屉，见 `AppSigningPresentationHelpers` 的分工说明）。
+            if let note = AppSigningPresentationHelpers.localCertificateCompactNote(
+                for: viewModel.localCertificateAvailability(for: session.app)
+            ) {
+                Divider().padding(.leading, 14)
+                certificateRebuildNoteRow(note)
+            }
             Divider().padding(.leading, 14)
             runtimeRow("Bundle ID", runtimeBundleIdentifier(session))
         }
@@ -400,6 +394,24 @@ struct SigningProgressView: View {
         }
         .frame(minHeight: 42)
         .padding(.vertical, 4)
+    }
+
+    /// 「证书序列号」行下面的说明：本机没有该证书私钥 ⇒ 这一次续签会**完整重签并安装**。
+    /// 与详情页 / 操作抽屉共用同一份文案真源
+    ///（`AppSigningPresentationHelpers.localCertificateRebuildDetail`）。
+    private func certificateRebuildNoteRow(_ note: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.sealWarning)
+                .padding(.top, 1)
+            Text(note)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.sealTextSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 10)
     }
 
     /// 续签提示：Seal 自续签与普通 App 同文案；进入安装阶段后换成「正在退回主屏幕」，
@@ -728,7 +740,7 @@ private struct StageSegmentCell: View {
             if isCurrent {
                 // ⚠️ 不加白色扫光：它已在 2026-09-18 被用户实测否掉
                 //（「横杠的煽动效果不好看」「圆点走前面中间都灰白了」——白扫过蓝，中段读成灰白）。
-                // 「还在动」这件事现在由环的转弧与 `elapsedClock` 的秒数承担。
+                // 「还在动」这件事现在由环的转弧承担（卡片上的秒数已在 2026-09-26 移除）。
                 CurrentSegmentFill(fraction: CGFloat(fill))
                     // 写全 `Animation.easeOut` 而不是 `.easeOut`：三元的另一支是 `nil`，
                     // 上下文类型是 `Animation?` —— 本仓已因「可选上下文里的隐式成员」红过一次 CI。
@@ -800,8 +812,9 @@ private struct CurrentSegmentFill: View {
                     // 「横杠的煽动效果不好看」「**圆点走前面中间都灰白了**」——
                     // 白色扫过蓝色，**中段就被读成灰白** ✗。
                     //
-                    // 「还在动」这个信号现在由 **`本阶段已用时 0:20` 的秒数跳动**承担
-                    //（`SigningProgressBudget.showsOwnElapsed`，守卫 R36 钉着它必须存在），
+                    // 「还在动」这个信号现在由**环的转弧**承担（卡片上那行
+                    // `本阶段已用时 0:20` 已在 2026-09-26 按用户要求整条移除 ——
+                    // 安装阶段仍由 `InstallWaitNote` 报「已等待 m:ss」），
                     // 不再需要用视觉噪点表达。
                     .clipShape(Capsule())
             }

@@ -46,6 +46,26 @@ enum ProfileOnlyRenewalPolicy {
         case missingInstalledArtifact
         case incompleteSigningIdentity
         case missingTargetRecord
+        /// 🔴 **本机没有「该应用当前使用的那张证书」的私钥**（2026-09-26，构建 48 真机）。
+        ///
+        /// 记录里的 `certificateSerialNumber` 可以指向一张**只有 Apple 门户上还在、本机
+        /// Keychain 里已经没有私钥**的证书。三种成因都真实存在：
+        ///   · 首次把 Seal 装到手机上 —— `SelfAppRegistrar` 从**运行包**的描述文件回填序列号，
+        ///     而重装 Seal 会清空 Keychain（构建 48 日志：`本机有私钥 0 张`）；
+        ///   · 删掉 Apple ID 后重新添加；
+        ///   · 证书轮换刚发生 —— 旧证书被撤销、新证书刚建好，而记录还指着旧的那个。
+        ///
+        /// 此时 `prepareProfileOnlyRenewal` 会在 `existingProfileOnlyCertificate` 处抛
+        /// `SEAL-PROFILE-334`，**而准入已经宣布「仅更新描述文件」** ⇒ 用户看到的是
+        /// 「说好不重装，结果失败」。构建 48 日志里这一条出现 **4 次**，其中一次是
+        /// 批量续签的第 3/3 项（Seal 自己），整批因此被记成「失败 1」。
+        ///
+        /// ⇒ 把这条判据**提前到准入**：本机证书不可用就回落完整重签。完整重签会申请/复用
+        ///   一张**本机有私钥**的证书并把序列号写回记录，下一次准入自然又走 profile-only
+        ///   —— 这正是用户要的「匹配之后后续再走不重装的更新续签模式」。
+        ///   （同一份日志已证明这条路通：撤销 `…E9DA0CD9` 后新建 `…976EFE08`，
+        ///   随后 LiveContainer / Guoguo 的完整重签都复用了它。）
+        case missingLocalCertificateMaterial
     }
 
     enum PortalAppIDDecision: Equatable, Sendable {
@@ -58,6 +78,104 @@ enum ProfileOnlyRenewalPolicy {
     /// operation as a no-install renewal.
     static func portalAppIDDecision(isPresent: Bool) -> PortalAppIDDecision {
         isPresent ? .reuse : .requiresFullResign
+    }
+
+    /// profile-only 的**执行前提**：本机必须持有「该应用当前使用的那张证书」的私钥，
+    /// 且它仍能覆盖一份完整 7 天描述文件寿命。
+    ///
+    /// 返回 `nil` = 前提成立（可以走快路径）；非 `nil` = **必须回落完整重签**的理由。
+    ///
+    /// - Parameter certificateSerialNumber: **必须传执行侧真正会用的那个序列号** ——
+    ///   `SigningCoordinator.renewProfilesOnly` 用的是 `app.certificateSerialNumber`，
+    ///   而**不是**带实时身份兜底的 `effectiveCertificateSerialNumber`。
+    ///   两者不同时会出现「准入检查了 A、执行用的是 B」，正是本项目反复踩的
+    ///   「上游放行、下游又拦」（`SEAL-PROFILE-361` 就是那个洞）。
+    ///
+    /// 判据与执行侧**同源**：都用 `SigningCertificateMaterialPolicy.availableCertificate`
+    /// ＋ `reuseStatus == .reusable` —— 与 `ApplePortalSigningService.certificateReusable(_:)`
+    /// 是同一个口径，所以这里判「不可用」时，执行侧**一定**也会判不可用（不会误拦）。
+    ///
+    /// ⚠️ 与 `evaluate(app:)` 的分工：那一条判「记录是否完整到足以只换描述文件」，
+    /// 这一条判「**本机**是否真的能执行」—— 记录可以完全正确，而本机没有私钥。
+    static func localCertificateMaterialBlock(
+        secret: AccountSecret,
+        certificateSerialNumber: String?
+    ) -> FullResignReason? {
+        guard let serialNumber = nonBlank(certificateSerialNumber),
+              let certificate = SigningCertificateMaterialPolicy.availableCertificate(
+                  secret: secret,
+                  serialNumber: serialNumber
+              ),
+              SigningCertificateMaterialPolicy.reuseStatus(certificate) == .reusable else {
+            return .missingLocalCertificateMaterial
+        }
+        return nil
+    }
+
+    /// `FullResignReason` 的**可读说明**（只用于日志）。
+    ///
+    /// 界面文案**不**用这里：界面只认 `missingLocalCertificateMaterial` 一个 case
+    ///（见 `AppSigningPresentationHelpers.localCertificateRebuildNote`），
+    /// 因为只有它对应「用户下一次点续签会发生什么」。
+    static func describe(_ reason: FullResignReason) -> String {
+        switch reason {
+        case .missingInstalledArtifact: "记录里缺少已安装产物"
+        case .incompleteSigningIdentity: "记录里的签名身份不完整"
+        case .missingTargetRecord: "记录里缺少签名目标"
+        case .missingLocalCertificateMaterial: "本机没有该证书的私钥"
+        }
+    }
+
+    /// 「本机是否持有该应用当前证书的私钥」——**界面**用（日志用 `describe(_:)`）。
+    ///
+    /// **三态而不是 `Bool`**：读不到账号密钥 与「确认没有私钥」的下一步动作完全不同 ——
+    /// 前者（Keychain 暂时读不到 / 账号已删）**不能**凭空断言「缺私钥」，只能什么都不说；
+    /// 后者才是真的「下一次续签必然完整重签」。
+    ///
+    /// 用户 2026-09-26 明确要求：首次把 Seal 装到手机上时，本机没有该证书的私钥，
+    /// 要在「证书序列号」那里写一句「需要重新签名一次获取本机证书」，
+    /// 并让**匹配之后**的续签回到「只更新描述文件、不重装」。
+    /// 这条状态就是那句文案的唯一判据（见 `AppSigningPresentationHelpers.localCertificateNote(for:)`）。
+    enum LocalCertificateAvailability: Equatable, Sendable {
+        /// 没有记录序列号、或读不到该账号的密钥 ⇒ **不显示任何话**（不能凭空断言缺私钥）。
+        case undetermined
+        /// 本机有该证书的私钥，且剩余寿命足以覆盖一份完整 7 天描述文件。
+        case ready
+        /// 本机没有该证书的私钥（或私钥在、但证书寿命已不足 7 天）⇒ 下一次续签会完整重签并安装。
+        case needsFullResign
+    }
+
+    /// 单个应用的「本机证书状态」。**与 `localCertificateMaterialBlock` 同源** ——
+    /// 前者是它的界面三态化，不会出现「界面说没事、执行时却抛 334」。
+    static func localCertificateAvailability(
+        secret: AccountSecret?,
+        certificateSerialNumber: String?
+    ) -> LocalCertificateAvailability {
+        guard let secret, nonBlank(certificateSerialNumber) != nil else { return .undetermined }
+        return localCertificateMaterialBlock(
+            secret: secret,
+            certificateSerialNumber: certificateSerialNumber
+        ) == nil ? .ready : .needsFullResign
+    }
+
+    /// 把「账号密钥表」映射成「每个**已安装**应用的本机证书状态」。
+    ///
+    /// 抽成纯函数（不碰 Keychain、不碰网络）才能单测 —— 它的错法只在真机上表现为
+    /// 「本该提示却没有提示 / 不该提示却提示」，不会崩、不会编译失败。
+    ///
+    /// ⚠️ 只算**已安装**的应用：未安装的应用还没走到续签，提示它只会让列表变吵。
+    static func availabilityByAppID(
+        apps: [AppRecord],
+        secretsByAccount: [UUID: AccountSecret]
+    ) -> [UUID: LocalCertificateAvailability] {
+        var values: [UUID: LocalCertificateAvailability] = [:]
+        for app in apps where app.belongsInInstalledList {
+            values[app.id] = localCertificateAvailability(
+                secret: app.accountID.flatMap { secretsByAccount[$0] },
+                certificateSerialNumber: app.certificateSerialNumber
+            )
+        }
+        return values
     }
 
     /// 判定「这条记录是否完整到足以只换描述文件」。

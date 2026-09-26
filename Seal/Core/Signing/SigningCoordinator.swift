@@ -371,10 +371,13 @@ actor SigningCoordinator {
             // 上游 SideStore 的 `refresh` 准入是**已安装产物的签名证书**，不看记录；
             // 本仓对自身的等价物就是 `SelfAppMetadata.current()`（读运行包的 CMS 身份）。
             let liveProfileOnlyIdentity = await liveProfileOnlyIdentity(for: app)
-            var useProfileOnlyRenewal = shouldUseProfileOnlyRenewal(
+            // ⚠️ 传 `secret`：准入的最后一条是「**本机**是否真的持有记录里那张证书的私钥」，
+            // 只看记录答不了这个问题（见 `shouldUseProfileOnlyRenewal` 的注释）。
+            var useProfileOnlyRenewal = await shouldUseProfileOnlyRenewal(
                 app: app,
                 liveIdentity: liveProfileOnlyIdentity,
                 accountID: accountID,
+                secret: secret,
                 deviceIdentifier: deviceIdentifier,
                 targetBundleIdentifier: targetBundleIdentifier,
                 selectedCertificateSerialNumber: selectedCertificateSerialNumber,
@@ -816,12 +819,13 @@ actor SigningCoordinator {
         app: AppRecord,
         liveIdentity: LiveProfileOnlyIdentity?,
         accountID: UUID,
+        secret: AccountSecret,
         deviceIdentifier: String,
         targetBundleIdentifier: String,
         selectedCertificateSerialNumber: String?,
         forceResign: Bool,
         installAfterSigning: Bool
-    ) -> Bool {
+    ) async -> Bool {
         guard forceResign,
               installAfterSigning,
               app.accountID == accountID,
@@ -841,9 +845,44 @@ actor SigningCoordinator {
               ) else {
             return false
         }
-        guard let selectedCertificateSerialNumber else { return true }
-        return SigningCertificateSelectionPolicy.normalizedSerialNumber(selectedCertificateSerialNumber)
-            == SigningCertificateSelectionPolicy.normalizedSerialNumber(storedSerial)
+        if let selectedCertificateSerialNumber,
+           SigningCertificateSelectionPolicy.normalizedSerialNumber(selectedCertificateSerialNumber)
+               != SigningCertificateSelectionPolicy.normalizedSerialNumber(storedSerial) {
+            return false
+        }
+        // 🔴 **最后一道闸门：本机必须持有记录里那张证书的私钥**（2026-09-26，构建 48 真机）。
+        //
+        // 前几条判据只回答「记录是否完整」，**回答不了「本机能不能执行」**：
+        // 记录里的序列号可以指向一张本机早已没有私钥的证书（重装 Seal 会清 Keychain、
+        // 删过 Apple ID、或证书轮换刚发生）。此时 `renewProfilesOnly` 会把序列号交给
+        // `prepareProfileOnlyRenewal`，在 `existingProfileOnlyCertificate` 处抛
+        // `SEAL-PROFILE-334` —— 而**准入已经宣布「仅更新描述文件」**，用户看到的是
+        // 「说好不重装，结果失败」。构建 48 日志里这一条出现 4 次，批量续签因此被记成失败 1。
+        //
+        // ⇒ 提前到准入：不可用就回落完整重签（重签会拿到一张本机有私钥的证书并写回记录，
+        //   下一次准入自然又走 profile-only）。
+        //
+        // ⚠️ 判据传的是 `app.certificateSerialNumber`（= 执行侧 `renewProfilesOnly` 真正用的
+        // 那个值），**不是** `storedSerial`（带实时身份兜底）—— 两者不同时会出现
+        // 「准入检查了 A、执行用的是 B」，那是 `SEAL-PROFILE-361` 那个洞的同一种错法。
+        //
+        // ⚠️ 放在**最后**：走到这里说明前面每条判据都放行了 ⇒ 这条日志的归因是**精确**的
+        //（不会把「别的判据拦下的」说成「本机缺私钥」）。
+        if let blockReason = ProfileOnlyRenewalPolicy.localCertificateMaterialBlock(
+            secret: secret,
+            certificateSerialNumber: app.certificateSerialNumber
+        ) {
+            try? await logStore?.append(
+                category: .renewal,
+                level: .warning,
+                message: "profile-only 快路径不可用（\(ProfileOnlyRenewalPolicy.describe(blockReason))）："
+                    + "本机没有该应用当前证书的私钥，本次改为完整重签并安装；"
+                    + "重签后证书与本机匹配，后续续签会回到「只更新描述文件」：\(app.name)",
+                code: "SEAL-PROFILE-364"
+            )
+            return false
+        }
+        return true
     }
 
     private func renewProfilesOnly(

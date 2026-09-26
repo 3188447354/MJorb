@@ -20,6 +20,10 @@ final class AppsViewModel: ObservableObject {
     @Published private(set) var apps: [AppRecord]
     @Published private(set) var accounts: [AppleAccountRecord]
     @Published private(set) var fullAccountEmails: [UUID: String] = [:]
+    /// 每个**已安装**应用的「本机是否持有当前证书私钥」（界面在「证书序列号」行下面用）。
+    /// 与 `fullAccountEmails` 在**同一批** Keychain 读取里算出（见 `load()`），不额外读一次钥匙串。
+    @Published private(set) var localCertificateAvailabilityByAppID:
+        [UUID: ProfileOnlyRenewalPolicy.LocalCertificateAvailability] = [:]
     @Published private(set) var activeAccountID: UUID?
     @Published private(set) var iconData: [UUID: Data]
     @Published private(set) var phase: Phase
@@ -71,6 +75,15 @@ final class AppsViewModel: ObservableObject {
     /// 「撤销并继续签名」（SEAL-CERT-204e）确认后，因证书被撤而失效、待自动重签的已装 App。
     /// 仅本次签名重试成功后才会消费；重试失败时清空并提示手动续签。
     private var certificateSacrificeResignQueue: [UUID] = []
+    /// 证书轮换**子流程**自己的阶段簿记 —— 它**不写进父会话**（判据见
+    /// `SigningStageAttribution`），所以父会话的 `InstallStageTimeline` 不能给它当闸门。
+    ///
+    /// 子流程重签的是**另一个** App（通常是 Seal 自己），它的阶段只用于两件事：
+    /// ① 留痕（`SEAL-STAGE-001`）；② 触发 Seal 自替换的「回主屏」。
+    /// 后者必须在 `.installing` 上**只触发一次**，而同一个阶段会被重复推送
+    /// ⇒ 这里单独记「同一个子流程 App 上一次推进到哪个阶段」。
+    /// 每次 `startSigning` / `restartSigning` 开新会话时清空。
+    private var rotationSubflowStage: (appID: UUID, stage: SigningStage)?
     private var pendingVPNAction: PendingVPNAction?
     private var hasLoaded = false
     private var loadGeneration = 0
@@ -405,9 +418,18 @@ final class AppsViewModel: ObservableObject {
             Task.detached(priority: .userInitiated) { [weak self] in
                 guard let self else { return }
 
-                let emails = await self.loadFullAccountEmails(for: fetchedAccounts)
+                // ⚠️ **一次** Keychain 读取同时喂两个用途（邮箱 + 本机证书状态）：
+                // 拆成两次读会把 N 个账号的钥匙串访问翻倍，而它们本来就要一起用。
+                let secrets = await self.loadAccountSecrets(for: fetchedAccounts)
                 guard await self.isCurrentLoad(generation) else { return }
-                await MainActor.run { self.fullAccountEmails = emails }
+                let availability = ProfileOnlyRenewalPolicy.availabilityByAppID(
+                    apps: fetched,
+                    secretsByAccount: secrets
+                )
+                await MainActor.run {
+                    self.fullAccountEmails = secrets.mapValues { $0.email }
+                    self.localCertificateAvailabilityByAppID = availability
+                }
 
                 var icons: [UUID: Data] = [:]
                 if let fileStore = self.fileStore {
@@ -525,14 +547,26 @@ final class AppsViewModel: ObservableObject {
         fullAccountEmails[account.id] ?? "未记录"
     }
 
-    private func loadFullAccountEmails(
+    /// 该应用「本机是否持有当前证书私钥」——界面在「证书序列号」行下面据此给一句说明。
+    /// 读不到时返回 `.undetermined`（**不显示任何话** —— 不能凭空断言缺私钥）。
+    func localCertificateAvailability(
+        for app: AppRecord
+    ) -> ProfileOnlyRenewalPolicy.LocalCertificateAvailability {
+        localCertificateAvailabilityByAppID[app.id] ?? .undetermined
+    }
+
+    /// 一次读完所有账号的密钥 —— 邮箱显示与「本机证书状态」都从这里派生。
+    ///
+    /// 两者共用一次读取是**刻意的**：它们本来就要一起用，分两次读会把 N 个账号的
+    /// 钥匙串访问翻倍（旧实现只为邮箱读一次，本轮的证书状态就是搭这趟车）。
+    private func loadAccountSecrets(
         for accounts: [AppleAccountRecord]
-    ) async -> [UUID: String] {
+    ) async -> [UUID: AccountSecret] {
         guard let keychain else { return [:] }
-        var values: [UUID: String] = [:]
+        var values: [UUID: AccountSecret] = [:]
         for account in accounts {
             guard let secret = try? await keychain.load(accountID: account.id) else { continue }
-            values[account.id] = secret.email
+            values[account.id] = secret
         }
         return values
     }
@@ -2146,6 +2180,9 @@ final class AppsViewModel: ObservableObject {
             allowsDroppingExtensions: resolvedAllowDroppingExtensions,
             status: .running(.waitingForChannel)
         )
+        // 新会话 ⇒ 子流程的簿记也要清空，否则上一轮留下的「上次停在 .installing」
+        // 会让本轮 Seal 自替换的「回主屏」判据拿不到 `.restart`（静默不触发）。
+        rotationSubflowStage = nil
         let targetBundleIdentifier = (try? BundleIDPolicy.targetBundleIdentifier(
             for: app,
             requestedBundleIdentifier: requestedBundleIdentifier
@@ -2185,6 +2222,8 @@ final class AppsViewModel: ObservableObject {
               signingCoordinator != nil else { return }
         signingSession?.allowsDroppingExtensions = allowDroppingExtensions
         signingSession?.renewalExecutionPath = nil
+        // 重试 = 又要跑一遍 `signAndInstall` ⇒ 子流程簿记同样清空（理由见 `startSigning`）。
+        rotationSubflowStage = nil
         // 同上：阶段推进统一走 `updateSigningStage`，让「本阶段起点」与阶段一起落。
         updateSigningStage(.waitingForChannel)
         signingTask = Task { [weak self] in
@@ -2393,41 +2432,70 @@ final class AppsViewModel: ObservableObject {
             }
         }
 
-        guard signingSession != nil else { return }
-        signingSession?.installStartedAt = InstallStageTimeline.applied(
-            tick,
-            startedAt: signingSession?.installStartedAt
-        )
-        // 当前阶段的起点：进度不再只随阶段跳变，阶段内部要按「已过时间」估算
-        // （见 `SigningProgressBudget`），所以每个阶段都要有一个起点。
-        // 规则同样抽在 `InstallStageTimeline` 里，理由与上面那条一样：
-        // 「起点该不该重置」只许有一处答案。
-        signingSession?.stageStartedAt = InstallStageTimeline.stageStart(
-            entering: stage,
-            currentStage: currentStage,
-            previous: signingSession?.stageStartedAt
-        )
-        signingSession?.status = .running(stage)
-        // Seal 自续签 = 覆盖安装运行中的自己：iOS 只有在旧进程让出前台后才完成替换，
-        // 所以必须由 Seal 主动「回主页」。
+        guard let sessionAppID = signingSession?.app.id else { return }
+        // 🔴 阶段属于谁 —— 只有「属于**会话主体**」才写父会话的显示状态。
         //
-        // 触发点刻意放在**状态层**，而不是 SigningProgressView 的 `.onChange`：
-        // 抽屉现在有「取消」按钮（软取消：立即关界面，已下发的安装由 installd 跑完），
-        // 用户一旦在 Seal 安装期间点取消，界面就没了 —— 挂在界面上的触发点收不到
-        // 后续阶段推进，「回主页」永远不会发生，Seal 的替换会**静默失败**
-        //（旧版本继续跑，用户以为更新没生效）。批量续签那条链路本来就是在状态层触发的
-        //（见 consumeBatchEvent），这里与它对齐。
-        //
-        // `.restart` 保证只在**首次**进入安装阶段触发一次：同一阶段会被重复推送
-        //（安装通道的 >1.0 哨兵 + 签名侧补发），不设闸门会排出多个「回主页」任务。
-        // 主体判据必须用**信号自带的主体**，不能用会话主体：证书轮换子流程里重新
-        // 签名安装的是 Seal 自己，而会话主体是用户那个 App ⇒ 判据恒假 ⇒
-        // 自替换拿不到「该回主屏了」，installd 一直等旧进程让位（构建 31 真机）。
-        // 省略 subject 时等价于会话主体，与旧行为一致。
-        if stage == .installing,
-           tick == .restart,
-           (subject?.isSeal ?? signingSession?.app.isSeal) == true {
-            SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore: logStore)
+        // 证书轮换子流程推进的是**另一个** App（通常是 Seal 自己），它写进去会让抽屉在
+        // 父会话已经装完、正在验证之后又跳回签名阶段（2026-09-26 构建 48 真机：
+        // 10:07:44 父会话 `verifying（Guoguo）`，紧接着 10:07:44-10:07:47 被子流程的
+        // `waitingForChannel` / `preparingAccount` / `preparingBundle` / `preparingCertificate（Seal）`
+        // 覆盖 ⇒ 用户看到的就是「**签名到安装步骤后又重签一次**」）。判据见 `SigningStageAttribution`。
+        switch SigningStageAttribution.target(for: subject, sessionAppID: sessionAppID) {
+        case .session:
+            signingSession?.installStartedAt = InstallStageTimeline.applied(
+                tick,
+                startedAt: signingSession?.installStartedAt
+            )
+            // 当前阶段的起点：进度不再只随阶段跳变，阶段内部要按「已过时间」估算
+            // （见 `SigningProgressBudget`），所以每个阶段都要有一个起点。
+            // 规则同样抽在 `InstallStageTimeline` 里，理由与上面那条一样：
+            // 「起点该不该重置」只许有一处答案。
+            signingSession?.stageStartedAt = InstallStageTimeline.stageStart(
+                entering: stage,
+                currentStage: currentStage,
+                previous: signingSession?.stageStartedAt
+            )
+            signingSession?.status = .running(stage)
+            // Seal 自续签 = 覆盖安装运行中的自己：iOS 只有在旧进程让出前台后才完成替换，
+            // 所以必须由 Seal 主动「回主页」。
+            //
+            // 触发点刻意放在**状态层**，而不是 SigningProgressView 的 `.onChange`：
+            // 抽屉现在有「取消」按钮（软取消：立即关界面，已下发的安装由 installd 跑完），
+            // 用户一旦在 Seal 安装期间点取消，界面就没了 —— 挂在界面上的触发点收不到
+            // 后续阶段推进，「回主页」永远不会发生，Seal 的替换会**静默失败**
+            //（旧版本继续跑，用户以为更新没生效）。批量续签那条链路本来就是在状态层触发的
+            //（见 consumeBatchEvent），这里与它对齐。
+            //
+            // `.restart` 保证只在**首次**进入安装阶段触发一次：同一阶段会被重复推送
+            //（安装通道的 >1.0 哨兵 + 签名侧补发），不设闸门会排出多个「回主页」任务。
+            // 主体判据必须用**信号自带的主体**，不能用会话主体：证书轮换子流程里重新
+            // 签名安装的是 Seal 自己，而会话主体是用户那个 App ⇒ 判据恒假 ⇒
+            // 自替换拿不到「该回主屏了」，installd 一直等旧进程让位（构建 31 真机）。
+            // 省略 subject 时等价于会话主体，与旧行为一致。
+            if stage == .installing,
+               tick == .restart,
+               (subject?.isSeal ?? signingSession?.app.isSeal) == true {
+                SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore: logStore)
+            }
+        case .otherApp(let other):
+            // 子流程阶段：**只留痕**（上面的 `SEAL-STAGE-001` 已经写过）＋ 评估 Seal
+            // 自替换的「回主屏」，**不碰父会话的任何显示状态**（阶段文案 / 进度环 / 计时起点）。
+            //
+            // ⚠️ 回主屏不能跟着父会话走：它的判据是「**Seal** 被覆盖安装」，与父会话是谁
+            // 无关 —— 构建 31 真机就是因为拿会话主体去判，子流程里恒假 ⇒ installd 一直等
+            // 旧进程让位，直到 `waitForSelfReplacement` 的 894 秒上限（R66）。
+            //
+            // ⚠️ 闸门必须改用**子流程自己的**簿记：父会话的 `InstallStageTimeline` 收不到
+            // 子流程的阶段（这正是本次的修复），拿它当闸门等于没有闸门 ——
+            // `.installing` 会被重复推送，会排出多个「回主页」任务。
+            let previous = rotationSubflowStage?.appID == other.appID
+                ? rotationSubflowStage?.stage
+                : nil
+            if SigningStageAttribution.isFirstInstallEntry(entering: stage, previous: previous),
+               other.isSeal {
+                SelfInstallAutoBackground.returnToHomeAfterSealUpload(logStore: logStore)
+            }
+            rotationSubflowStage = (other.appID, stage)
         }
     }
 

@@ -225,14 +225,21 @@ struct SigningProgressBudgetTests {
 
     @Test
     func installWaitNoteOwnsTheElapsedTextForInstallStages() {
-        // `.installing` / `.verifying` 的等待文案由 `InstallWaitNote` 统一给出，
-        // 卡片自己再报一遍会让同一个数字在同一张卡片上出现两次（看起来像故障）。
-        #expect(SigningProgressBudget.showsOwnElapsed(stage: .installing, elapsed: 600) == false)
-        #expect(SigningProgressBudget.showsOwnElapsed(stage: .verifying, elapsed: 600) == false)
-        // 短暂阶段不显示计时：显示只会让人以为在拖时间。
-        #expect(SigningProgressBudget.showsOwnElapsed(stage: .signing, elapsed: 1) == false)
-        // 长阶段必须显示 —— `preparingBundle` 的 112 秒就是这条门槛存在的理由。
-        #expect(SigningProgressBudget.showsOwnElapsed(stage: .preparingBundle, elapsed: 112))
+        // ⚠️ 2026-09-26（构建 48 真机，用户要求）：进度卡片**不再**显示自己的计时
+        //（原 `SigningProgressBudget.showsOwnElapsed` 已随 `elapsedClock` 整条删除），
+        // 但**设备安装阶段必须保留**「已等待 m:ss」—— 那一段 installd 通过
+        // installation_proxy 安装时**不回报任何进度**，秒数在动是「进程还活着」的
+        // 唯一可见证据。用户原话：「去掉那个阶段上的等待多少时间的文案，设备安装阶段的保留。」
+        let note = InstallWaitNote(startedAt: Date(timeIntervalSince1970: 1_000))
+        let message = note.message(at: Date(timeIntervalSince1970: 1_075))
+        #expect(message.contains("设备正在安装"))
+        #expect(message.contains("已等待 1:15"))
+        // 起点缺失（回看历史会话 / 起点丢失）时只给说明、不给计时 ——
+        // 没有起点就没有「等了多久」这个事实，编一个数字比不显示更糟。
+        let withoutStart = InstallWaitNote(startedAt: nil)
+            .message(at: Date(timeIntervalSince1970: 1_075))
+        #expect(withoutStart.contains("设备正在安装"))
+        #expect(withoutStart.contains("已等待") == false)
     }
 
     @Test

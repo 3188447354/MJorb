@@ -5,6 +5,70 @@
 
 ---
 
+## 2026-09-26 界面说人话：首次安装的证书缺私钥要能看懂、子流程不再抢走抽屉、阶段文案对齐真实动作
+
+- **背景**（用户原话，四项一次提）：
+  「1、第一次签名 Seal 到手机，手机打开 Seal，Seal 第一次没办法自己重新申请证书签名重装一次
+  直接被拦截了，可以在第一次安装手机设备证书没有或者与远端不同时 证书序列号那可以写一句
+  需要重新签名一次获取本机证书 文案具体你来设计，匹配之后后续再走不重装的更新续签模式。
+  2、签名新 ipa 容易出现到安装步骤后又重签一次。3、去掉那个阶段上的等待多少时间的文案，
+  设备安装阶段的保留。4、将签名链路和续签和安装实际的真实操作对应的文案写精准，
+  没有做的事不写，位置也不要乱」。
+- **现象与根因（四条各自独立）**：
+  1. **首次安装签不了**：重装 Seal 会清空钥匙串 ⇒「本机没有该证书的私钥」，而 profile-only
+     准入没有这条判据 ⇒ 宣布「仅更新描述文件」，执行侧才抛 `SEAL-PROFILE-334`。
+     用户看到的是拦截，看不出真正原因。
+  2. **「装完后又重签一次」**：`SigningCoordinator` 在父会话里跑**证书轮换事务**时，
+     会在**同一条会话**里重新签名安装**另一个** App（通常是 Seal），并把子流程阶段
+     **原样透传**给父会话 `progress`；`AppsViewModel.updateSigningStage` **无条件**写
+     `signingSession?.status` ⇒ 抽屉在父会话装完、正在 `verifying` 时被覆盖回签名阶段。
+     ⚠️ **重签本身是必要的**（旧证书已被撤销，不重签那些 App 会立刻打不开）——
+     错的是**显示层**（见「常犯坑位」第一条）。
+  3. **多余的等待文案**：进度卡片整条自带计时，而它只对**设备安装阶段**有意义
+     （installd 安装期间不回报任何进度，计时是唯一能证明进程还活着的信号）。
+  4. **阶段文案与真实动作不符**：「正在申请证书」（实际绝大多数是**复用**）、
+     「正在注册 Bundle ID」（实际先读已有列表，只对缺失的发注册请求）、
+     「已注册 N / N 个 Bundle ID」（那个数是**已就绪**的个数，不是本次新注册数）。
+- **修复**：
+  1. `ProfileOnlyRenewalPolicy.localCertificateMaterialBlock(...)`（纯函数，三态
+     `.ready` / `.needsFullResign` / `.undetermined`）＋ 准入**提前**判定（`return false`
+     回落完整重签）＋ 留痕 `SEAL-PROFILE-364`（**警告级，不是失败**）；
+     `AppSigningPresentationHelpers.localCertificateRebuildNote`（紧凑版）/
+     `localCertificateRebuildDetail`（完整版）在**证书序列号那一行**说明，三处落点
+     （详情页 / 操作抽屉 / 进度卡片）。⚠️ 判据必须用 `app.certificateSerialNumber`
+     （= 执行侧真正用的那个值），**不是**带实时兜底的 `effectiveCertificateSerialNumber`
+     ——「准入查 A、执行用 B」是 `SEAL-PROFILE-361` 那个洞的同一种错法。
+  2. 新增纯判据 `SigningStageAttribution`（`target(for:sessionAppID:)` /
+     `isFirstInstallEntry(entering:previous:)`）＋ `AppsViewModel.rotationSubflowStage` 簿记；
+     `updateSigningStage` 按主体分叉 —— `.session` 写显示状态，`.otherApp` 只留痕
+     ＋ 评估 Seal 自替换的「回主屏」。
+  3. `SigningProgressView` / `BatchRefreshView` 的进度卡片不再显示自己的计时；
+     `InstallWaitNote`（设备安装阶段）保留「设备正在安装，此阶段没有进度回报 · 已等待 m:ss」。
+  4. `SigningStage.stageTitle`：「正在申请证书」→「**正在准备证书**」、
+     「正在注册 Bundle ID」→「**正在核对 App ID**」；`unitsText` →「已**准备** N / N 个 App ID」。
+- **涉及文件**：`Seal/Core/Signing/SigningStage.swift`、`SigningStageUpdate.swift`、
+  `SigningCoordinator.swift`、`Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift`、
+  `Seal/Features/Apps/AppsViewModel.swift`、`AppPresentation.swift`、`AppDetailView.swift`、
+  `InstalledAppActionSheet.swift`、`SigningProgressView.swift`、
+  `Seal/DesignSystem/InstallWaitNote.swift`、`Seal/Core/Signing/SigningProgressBudget.swift`、
+  `docs/qa/log-code-index.md`（登记 `SEAL-PROFILE-364`）。
+  新增单测：`SealTests/Signing/SigningStageAttributionTests.swift`（6）、
+  `SealTests/Signing/SigningStageCopyTests.swift`（4）。
+- **守卫**：**R85**（本机证书材料状态：三态 / 同源判据 / 只算已安装 / 文案真源 /
+  两个 helper 只在 `.needsFullResign` 说话 / 三处落点 / `SEAL-PROFILE-364` 闸门 /
+  私钥判据排最后 / 索引登记 / 三方向单测 / 文案 helper 单测）、
+  **R86**（阶段归属纯判据 / 只有会话主体写状态 / 子流程保留回主屏 / 闸门落子流程簿记 /
+  两处清空 / 四方向单测）、
+  **R87**（证书阶段不说「申请」/ App ID 阶段不说「注册」/ 计数行「已准备」/
+  新写法必须在位 / 三方向单测）。⚠️ R10 的断言由 `count == 2` 改为 `== 3`
+  （`updateSigningStage` 按主体分叉后多了一条调用，子流程那条**必须留着**）。
+- **验证状态**：⚠️ **待真机**。判据见 `RELEASE_NOTES.md` 1.3.19 的【验证】段
+  （① 重装 Seal 后首次签名应成功且出现 `SEAL-PROFILE-364`，再续签应回到「仅更新描述文件」；
+  ② 装完后抽屉**不应**跳回签名阶段；③ 进度卡片不应再显示「已等待 m:ss」，
+  设备安装阶段应保留；④ 界面上不应再出现「正在申请证书」「正在注册 Bundle ID」）。
+
+---
+
 ## 2026-09-26 恢复证书自动轮换：1.3.17 的「绝不撤销运行中 Seal 的证书」把免费账号锁死了
 
 - **背景**（用户原话）：「你这不自动给我撤销证书，我下载 seal 啥也干不了，全被拦截了」。
@@ -1087,6 +1151,40 @@
 ---
 
 ## 常犯坑位
+
+- 🔴 **「子流程的阶段」不是「本会话的显示状态」——让它写父会话，用户就看到一段没发生在本 App 上的流程**（2026-09-26）。
+  用户原话：「签名新 ipa 容易出现到安装步骤后又重签一次」。真机日志（构建 48）逐行印证：
+  父会话是 Guoguo 的续签，`10:07:44` 已经进入 `verifying`（安装已返回），紧接着
+  `10:07:44 waitingForChannel（Seal）` → `10:07:46 preparingBundle（Seal）` →
+  `10:07:47 preparingCertificate（Seal）` → `10:07:47 签名并安装成功`。
+  ⚠️ **真相不是「多签了一次」**：装完之后确实又签了一次，但签的是**另一个 App（Seal）**，
+  而且那是**必要**的 —— 本轮发生了证书轮换（`revokedSerials` 非空），用旧证书签过的
+  已安装 App 不重签就会因证书被撤销而**立刻打不开**（`resignAppsAffectedByCertificateRotation`）。
+  ⇒ 出问题的是**显示层**：`updateSigningStage` 收到子流程阶段后**无条件**写
+  `signingSession?.status` ⇒ 抽屉在父会话装完、正在验证时被覆盖回签名阶段。
+  ⚠️ 这个形态最难的地方是**症状与根因不同层**：用户报的是「又重签一次」（听起来像签名次数的问题），
+  实际是「另一个 App 的阶段被当成当前 App 的阶段显示」✗。
+  ⇒ **判据：阶段信号必须自带主体**（`SigningStageUpdate.subject` = 谁在走这个阶段），
+  状态层**按主体分叉** —— 只有属于**会话主体**的阶段才写父会话的显示状态；
+  子流程只在自己内部记账（`rotationSubflowStage`）✓。
+  ⇒ **同一个陷阱的另一半**：给「属于会话主体」加判据时，**不能顺手把子流程里
+  Seal 自替换的「回主屏」也关掉** —— 那条判据是「**Seal** 被覆盖安装」，与父会话是谁无关
+  （构建 31 真机：拿会话主体去判 ⇒ 子流程里恒假 ⇒ installd 一直等旧进程让位到 894 秒上限）✓。
+  守卫 **R86**（6 断言 + 6 变异）。
+
+- 🔴 **阶段文案宣称一件「绝大多数时候没发生」的事 ⇒ 用户会去做没用的事**（2026-09-26）。
+  `.preparingCertificate` 原文案「**正在申请证书**」，而这一阶段实际做的是
+  「读远端证书列表 → 查本机有没有对应私钥 → 决定**复用**还是撤销重建」——
+  真机日志里紧随其后的是「证书决策：**复用** Apple 生效列表中的本机证书 …976EFE08」，
+  即**绝大多数时候根本没有申请**；`.preparingAppID` 的「正在注册 Bundle ID」同理
+  （先读已有列表，只对缺失的发注册请求，真机常见「需新注册 0 个」）。
+  ⚠️ 同类错法历史上把用户推进过死循环：`.preparingBundle` 曾被算进「正在验证 Apple ID」，
+  用户盯着「正在验证 Apple ID 16%」等了两分钟，跑去**重新验证 Apple ID** 然后被限流 ✗。
+  ⇒ **判据：写阶段文案时，去日志里找「紧随这一阶段的那一行」** ——
+  那一行说的才是这一步真正做的事；文案与它不一致就是错 ✗。
+  ⇒ 顺带一条计数口径：`unitsText` 的数字来自「**已就绪**的个数」（复用的 + 新建的都算），
+  所以是「已**准备**」而不是「已注册」（`ApplePortalSigningService` 的注释原文：
+  「用**已就绪的个数**而不是循环下标」）✓。守卫 **R87**（5 断言 + 5 变异）。
 
 - 🔴 **「为了安全而关掉一条链路」= 把可用性彻底交出去，而它看起来像「更保守」**（2026-09-26）。
   构建 46 的真机症状（「撤销运行中 Seal 的证书 → 自替换失败 → Seal 变砖」）被我判断成

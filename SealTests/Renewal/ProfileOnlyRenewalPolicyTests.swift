@@ -250,6 +250,119 @@ struct ProfileOnlyRenewalPolicyTests {
         )
     }
 
+    // MARK: - 本机证书材料状态（R85，2026-09-26 构建 48 真机）
+
+    /// 用户 2026-09-26 的真机诉求：首次把 Seal 装到手机上时本机没有该证书的私钥，
+    /// 要在「证书序列号」那里写一句「需要重新签名一次获取本机证书」，
+    /// 并让**匹配之后**的续签回到「只更新描述文件、不重装」。
+    ///
+    /// 这条钉住「什么时候该说这句话」的判据 —— 与准入的最后一道闸门
+    ///（`SigningCoordinator.shouldUseProfileOnlyRenewal` 里的 `localCertificateMaterialBlock`）
+    /// **同源**，所以不会出现「界面说没事、执行时却抛 `SEAL-PROFILE-334`」。
+    @Test
+    func missingLocalPrivateKeyIsReportedAsNeedingAFullResign() {
+        // 记录里有序列号、账号密钥也能读到，但**本机没有这张证书的私钥**
+        // —— 正是构建 48 日志里 `本机有私钥 0 张` 的形态（重装 Seal 会清空 Keychain）。
+        let secret = AccountSecret(
+            email: "test@example.invalid",
+            accountIdentifier: "test",
+            dsid: "test",
+            authToken: "test",
+            password: nil
+        )
+        #expect(
+            ProfileOnlyRenewalPolicy.localCertificateAvailability(
+                secret: secret,
+                certificateSerialNumber: "00AABB"
+            ) == .needsFullResign
+        )
+        // 私钥材料**存在但解析不出来**（旧账号遗留 / 数据损坏）同样按「没有私钥」处理 ——
+        // 与 `SigningCertificateMaterialPolicy.availableCertificate` 同口径。
+        // ⚠️ 反向的 `.ready`（真有可复用私钥）需要一份**真实 PKCS#12 夹具**，
+        //    本仓没有这种夹具（`ALTCertificate(p12Data:)` 解析不了合成数据）⇒ 那一支
+        //    只能由真机验证覆盖；这里至少钉死「坏材料绝不被当成可用私钥」。
+        var corrupt = secret
+        corrupt.storeCertificateMaterial(
+            p12: Data([0, 1, 2]),
+            serialNumber: "00AABB",
+            machineIdentifier: nil
+        )
+        #expect(
+            ProfileOnlyRenewalPolicy.localCertificateAvailability(
+                secret: corrupt,
+                certificateSerialNumber: "00AABB"
+            ) == .needsFullResign
+        )
+    }
+
+    @Test
+    func unreadableSecretOrMissingSerialIsNeverReportedAsMissingPrivateKey() {
+        // 三态的意义：读不到账号密钥 / 记录里没有序列号时，**不能**替用户断言「你没有证书」——
+        // 那会把「Keychain 暂时读不到」说成「证书没了」，把用户送去重签一次本来不需要重签的续签。
+        let secret = AccountSecret(
+            email: "test@example.invalid",
+            accountIdentifier: "test",
+            dsid: "test",
+            authToken: "test",
+            password: nil
+        )
+        #expect(
+            ProfileOnlyRenewalPolicy.localCertificateAvailability(
+                secret: nil,
+                certificateSerialNumber: "00AABB"
+            ) == .undetermined
+        )
+        #expect(
+            ProfileOnlyRenewalPolicy.localCertificateAvailability(
+                secret: secret,
+                certificateSerialNumber: nil
+            ) == .undetermined
+        )
+        #expect(
+            ProfileOnlyRenewalPolicy.localCertificateAvailability(
+                secret: secret,
+                certificateSerialNumber: "   "
+            ) == .undetermined
+        )
+    }
+
+    @Test
+    func availabilityIsComputedOnlyForInstalledAppsAndByTheirOwnAccount() {
+        // 两条约束：
+        //   ① 只算**已安装**的应用 —— 未安装的还没走到续签，提示它只会让列表变吵；
+        //   ② 账号必须按**该应用自己**的 `accountID` 查 —— 用「第一个可用账号」会在
+        //      多账号设备上给出错误提示（本项目「悬空引用」那一族坑的同一种错法）。
+        let accountA = UUID()
+        var installed = makeEligibleApp()
+        installed.accountID = accountA
+        // 未安装：`belongsInInstalledList` 的四个来源全部为假。
+        var signed = makeEligibleApp()
+        signed.state = .signed
+        signed.signedArtifactStatus = nil
+        signed.lastInstalledAt = nil
+        signed.accountID = accountA
+        // 记录里的账号在账号库里**不存在**（删过 Apple ID）⇒ 读不到密钥。
+        var danglingAccount = makeEligibleApp()
+        danglingAccount.accountID = UUID()
+
+        let values = ProfileOnlyRenewalPolicy.availabilityByAppID(
+            apps: [installed, signed, danglingAccount],
+            secretsByAccount: [
+                accountA: AccountSecret(
+                    email: "a@example.invalid",
+                    accountIdentifier: "a",
+                    dsid: "a",
+                    authToken: "a",
+                    password: nil
+                )
+            ]
+        )
+
+        #expect(values[installed.id] == .needsFullResign)
+        #expect(values[signed.id] == nil)
+        #expect(values[danglingAccount.id] == .undetermined)
+    }
+
     // MARK: - Fixtures
 
     /// 造一条**完全按 `SelfAppRegistrar.atomicallyUpdateSealRecord` 写出来**的 Seal 记录：

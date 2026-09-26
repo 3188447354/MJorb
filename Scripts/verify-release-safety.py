@@ -5273,6 +5273,121 @@ def violations(load=read):
           "R89⑩: 文案 helper 必须有单测 —— 版本一致 / 第三方应用 / 运行版本读不到"
           "都必须返回 `nil`（「只在真的有待安装更新时才说话」这件事只在界面上可见）")
 
+    # ── R90：「不打开 App 的后台自动续签」必须真的能在后台跑完 ─────────────────────
+    #
+    # 需求原话（2026-09-26）：「做到不打开 seal，自己设置好快捷指令包括所需网络条件后，
+    # 后台自动续签」。这条链路是**三层拼装**：① 保活（静音音频无限循环）
+    # ② 触发（App Intent ＋ 快捷指令，只负责点火）③ 网络（LocalDevVPN）。
+    #
+    # 🔴 本项目**原有**的「后台保活」只有 `UIApplication.beginBackgroundTask`
+    # （约 30 秒、一次性，见 `SigningCoordinator.swift:306-320` / `:1813-1821`）
+    # —— 只在**已经在前台发起**的续签里兜底，**没有任何东西能让 App 在后台长期活着**。
+    # 所以这一轮补的是第 ① 与第 ② 层，而两层**缺一层整条链路就不成立**：
+    #   · 只有触发、没有保活 ⇒ 点火后进程被挂起，大包续签半途而废；
+    #   · 只有保活、没有触发 ⇒ 用户还是得手动打开 App。
+    # ⚠️ 这一整块在真机上是**静默**的（后台没有界面、用户看不见）⇒ 判据只能落在
+    # 源码 ＋ 日志码 ＋ 单测上，不能靠「用户会看到」。
+    r90_project = load("project.yml")
+    r90_service = load("Seal/Infrastructure/Background/BackgroundKeepAliveService.swift")
+    r90_app = load("Seal/App/SealApp.swift")
+    r90_env = load("Seal/Application/SealAppEnvironment.swift")
+    r90_intent = load("Seal/Features/Intents/SealRenewalIntent.swift")
+    r90_view_model = load("Seal/Features/Apps/AppsViewModel.swift")
+    r90_tests = load("SealTests/Background/BackgroundKeepAliveTests.swift")
+    r90_index = load("docs/qa/log-code-index.md")
+
+    # ⚠️ `project.yml` 里 `#` 注释不会被 `strip_comments` 剥掉（它只认 Swift 的 `//`），
+    # 而本轮的注释里**正好写了** `UIBackgroundModes` 这个词 ⇒ 判据必须带上缩进与列表项，
+    # 否则「注释里的那个词」会把变异满足掉（skill 规则 1 的同族坑）。
+    check("\n        UIBackgroundModes:\n          - audio\n" in r90_project,
+          "R90①: `UIBackgroundModes` 必须声明 `audio` ✗ —— "
+          "静音音频只有在声明了 audio 后台模式时才能让进程在后台不被挂起；"
+          "少了它，`AVAudioSession` 配得再对也只在**前台**有效")
+
+    r90_service_code = strip_comments(r90_service)
+    check("try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])"
+          in r90_service_code
+          and "try session.setActive(true)" in r90_service_code,
+          "R90②: 保活必须用 `.playback` ＋ `.mixWithOthers` 并激活会话 ✗ —— "
+          "类别不是 playback 时后台不生效；不带 `mixWithOthers` 会抢占用户正在听的音频"
+          "（保活把用户的音乐掐掉是不可接受的副作用）")
+
+    check("player.numberOfLoops = -1" in r90_service_code,
+          "R90③: 静音音频必须无限循环（`numberOfLoops = -1`）✗ —— "
+          "只播一遍的话 1 秒之后保活就结束了，而日志里仍然是「已启动」（最难查的那种）")
+
+    check("player.volume = 0.01" in r90_service_code,
+          "R90④: 音量必须是 `0.01`，**不能是 0** ✗ —— "
+          "完全静音时系统可能判定为「没有在播放」而不予保活；"
+          "上游 SideStore 用的正是 0.01（`BackgroundAudioService.swift:56`）")
+
+    r90_interruption = strip_comments(section_or_empty(
+        r90_service,
+        "    private func handleInterruption(rawType: UInt?) {",
+        "\n    private func append("
+    ))
+    check("BackgroundKeepAlivePolicy.shouldResume(afterInterruption: type)" in r90_interruption
+          and "try AVAudioSession.sharedInstance().setActive(true)" in r90_interruption
+          and "player?.play()" in r90_interruption,
+          "R90⑤: 音频中断结束后必须重新激活会话并继续播放 ✗ —— "
+          "不恢复的话，**一次来电或闹钟就能把保活永久打断**，而日志里一行异常都没有")
+
+    check("BackgroundKeepAliveAssets.silentWAVData()" in r90_service_code
+          and "static func silentWAVData() -> Data" in r90_service,
+          "R90⑥: 静音音频必须**运行时生成**（调用 `silentWAVData()`）、不打包音频资源 ✗ —— "
+          "上游 SideStore 就是这么做的：不用往仓库塞二进制，也不会被第三方签名工具"
+          "当成资源漏签（本项目刚被 `PlugIns` 类漏签坑过）")
+
+    check("static let openAppWhenRun: Bool = false" in strip_comments(r90_intent),
+          "R90⑦: App Intent 必须 `openAppWhenRun = false` ✗ —— "
+          "改成 true 会让快捷指令自动化每次把 Seal 界面弹到前台，"
+          "「不打开 App」这条需求本身就不成立了")
+
+    r90_phrases = section_or_empty(r90_intent, "phrases: [", "],")
+    r90_phrase_lines = [
+        line.strip() for line in r90_phrases.splitlines() if line.strip().startswith('"')
+    ]
+    check(len(r90_phrase_lines) >= 1
+          and all(".applicationName" in line for line in r90_phrase_lines),
+          "R90⑧: 快捷指令的**每一条** phrase 都必须带 `\\(.applicationName)` ✗ —— "
+          "Apple 的硬要求：漏了它这条 App Shortcut **不会注册**，"
+          "编译不报错、运行不报错，只是界面上永远不出现（排查起来极贵）")
+
+    r90_trigger = section_or_empty(
+        r90_view_model,
+        "    func refreshAllFromBackgroundTrigger() {",
+        "\n    /// 「重试失败项」"
+    )
+    check("refreshAll()" in r90_trigger
+          and "container.appsViewModel.refreshAllFromBackgroundTrigger()" in r90_intent,
+          "R90⑨: 后台触发必须**复用**现成的续签链路（`refreshAll()`），不得自己拼一套 ✗ —— "
+          "另起一套会绕过 `batchRefreshTask` / `signingTask` 的单飞判据，"
+          "造出第二次 installd 命令（历史事故，见 R05）")
+
+    check('code: "SEAL-BACKGROUND-006"' in r90_view_model
+          and "SEAL-BACKGROUND-006" in r90_index,
+          "R90⑩: 后台触发必须留痕（「是谁触发的续签」），并登记进 "
+          "`docs/qa/log-code-index.md` ✗ —— 这条链路在后台跑、界面上什么都没有，"
+          "日志是唯一的证据；用户发来日志时第一件事就是查码表")
+
+    check("container.backgroundKeepAlive.start()" in r90_app
+          and "SealAppEnvironment.install(container)" in r90_app
+          and "container.backgroundKeepAlive.start()" in r90_intent,
+          "R90⑪: 保活必须在 `SealApp.init()` **与** App Intent 里都启动 ✗ —— "
+          "快捷指令在后台唤起 Seal 时界面还没装配；而只靠 Intent 里那一次，"
+          "用户手动发起的续签切后台后照样被挂起")
+
+    check("AppContainer.live" not in strip_comments(r90_env),
+          "R90⑫: `SealAppEnvironment` 只允许**读**容器，不得自己新建 ✗ —— "
+          "第二个 `AppContainer.live()` 会造出第二份 CoreData store 与安装通道实例，"
+          "绕过 `OperationCoordinator` 的单飞闸门")
+
+    check("func silentWAVDataIsARecognizableOneSecondMonoPCMFile()" in r90_tests
+          and "func silentWAVPayloadIsEntirelySilent()" in r90_tests
+          and "func keepAliveResumesOnlyAfterTheInterruptionEnds()" in r90_tests,
+          "R90⑬: 必须有单测覆盖「生成的是合法 WAV」「采样全为 0」「中断结束后才恢复」✗ —— "
+          "这三件事错了都不会崩，只会在真机上表现为「保活没生效、后台续签跑一半停了」")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -8039,6 +8154,76 @@ def main():
          "func pendingUpdateNoteOnlySpeaksWhenTheRecordDescribesSomethingNotInstalledYet()",
          "func pendingUpdateNoteLegacy()",
          "R89⑩: 文案 helper 必须有单测"),
+
+        # ── R90：「不打开 App 的后台自动续签」必须真的能在后台跑完 ──
+        # ① 不声明 audio 后台模式（静音音频只在前台有效）⇒ R90① 报红。
+        ("project.yml",
+         "\n        UIBackgroundModes:\n          - audio\n",
+         "\n        UIBackgroundModes:\n          - fetch\n",
+         "R90①:"),
+        # ② 会话类别不是 playback ⇒ R90② 报红。
+        ("Seal/Infrastructure/Background/BackgroundKeepAliveService.swift",
+         "try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])",
+         "try session.setCategory(.ambient, mode: .default, options: [.mixWithOthers])",
+         "R90②:"),
+        # ③ 只播一遍（1 秒后保活就结束，日志却仍写「已启动」）⇒ R90③ 报红。
+        ("Seal/Infrastructure/Background/BackgroundKeepAliveService.swift",
+         "player.numberOfLoops = -1",
+         "player.numberOfLoops = 0",
+         "R90③:"),
+        # ④ 音量改成 0（系统可能判定「没有在播放」）⇒ R90④ 报红。
+        ("Seal/Infrastructure/Background/BackgroundKeepAliveService.swift",
+         "player.volume = 0.01",
+         "player.volume = 0",
+         "R90④:"),
+        # ⑤ 中断结束后不再激活会话（一次来电就永久打断保活）⇒ R90⑤ 报红。
+        ("Seal/Infrastructure/Background/BackgroundKeepAliveService.swift",
+         "            try AVAudioSession.sharedInstance().setActive(true)\n",
+         "            try AVAudioSession.sharedInstance().setActive(false)\n",
+         "R90⑤:"),
+        # ⑥ 不再调用运行时生成（静音音频来源被换掉）⇒ R90⑥ 报红。
+        ("Seal/Infrastructure/Background/BackgroundKeepAliveService.swift",
+         "        try BackgroundKeepAliveAssets.silentWAVData().write(to: url, options: .atomic)\n",
+         "        try Data().write(to: url, options: .atomic)\n",
+         "R90⑥:"),
+        # ⑦ 让快捷指令把 Seal 弹到前台（「不打开 App」不成立）⇒ R90⑦ 报红。
+        ("Seal/Features/Intents/SealRenewalIntent.swift",
+         "static let openAppWhenRun: Bool = false",
+         "static let openAppWhenRun: Bool = true",
+         "R90⑦:"),
+        # ⑧ 让一条 phrase 丢掉 `.applicationName`（App Shortcut 静默不注册）⇒ R90⑧ 报红。
+        #    ⚠️ 锚点里那个反斜杠用 `chr(92)` 拼，不写 `\\(` ——
+        #    Swift 插值写进 Python 字符串时层数写错**不会报错**，只会让断言与锚点一个过一个不过
+        #    （skill 规则 5d）。
+        ("Seal/Features/Intents/SealRenewalIntent.swift",
+         "                \"用 " + chr(92) + "(.applicationName) 续签全部应用\",\n",
+         "                \"用 Seal 续签全部应用\",\n",
+         "R90⑧:"),
+        # ⑨ 后台触发绕开 `refreshAll()`、直接进 `startBatchRefresh()`（单飞判据被绕过）⇒ R90⑨ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "        refreshAll()\n    }\n\n    /// 「重试失败项」",
+         "        startBatchRefresh()\n    }\n\n    /// 「重试失败项」",
+         "R90⑨:"),
+        # ⑩ 后台触发的留痕码改名（又变回静默触发）⇒ R90⑩ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         'code: "SEAL-BACKGROUND-006"',
+         'code: "SEAL-BACKGROUND-007"',
+         "R90⑩:"),
+        # ⑪ `SealApp.init()` 里不再启动保活 ⇒ R90⑪ 报红。
+        ("Seal/App/SealApp.swift",
+         "        container.backgroundKeepAlive.start()\n",
+         "",
+         "R90⑪:"),
+        # ⑫ 让环境持有者自己新建容器（第二份 store / 通道实例）⇒ R90⑫ 报红。
+        ("Seal/Application/SealAppEnvironment.swift",
+         "        installedContainer = container\n",
+         "        installedContainer = AppContainer.live()\n",
+         "R90⑫:"),
+        # ⑬ 把「采样全为 0」那条单测改名（不变量没人守）⇒ R90⑬ 报红。
+        ("SealTests/Background/BackgroundKeepAliveTests.swift",
+         "func silentWAVPayloadIsEntirelySilent()",
+         "func silentWAVPayloadLegacy()",
+         "R90⑬:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

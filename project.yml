@@ -86,6 +86,17 @@ targets:
               - public.data
         LSSupportsOpeningDocumentsInPlace: true
         UIFileSharingEnabled: true
+        # 后台保活（「不打开 App 的后台自动续签」三层里的第 ① 层）。
+        # 🔴 只有 `audio`：靠 `BackgroundKeepAliveService` 的静音音频无限循环让 Seal
+        #    在后台**不被挂起**，否则 iOS 只给约 30 秒，大包续签（抖音 658 MB）必然半途而废。
+        # ⚠️ **刻意不加 `fetch`** —— 那是「系统自己找机会刷」那条路（需要
+        #    `UIApplicationDelegate.performFetchWithCompletionHandler`），本项目**还没有**
+        #    AppDelegate；声明了却不处理只会让系统白唤醒、并让排查时误以为有这条路径。
+        #    要加时**两件事一起做**（声明 ＋ 处理回调）。
+        # ⚠️ `UIBackgroundModes` 是 **Info.plist 键、不是 entitlement** ⇒ 侧载签名拿得到
+        #    （上游 SideStore 自己就是侧载 App，一直用它）。
+        UIBackgroundModes:
+          - audio
         UTImportedTypeDeclarations:
           - UTTypeIdentifier: com.apple.itunes.ipa
             UTTypeDescription: iOS App Archive
@@ -109,7 +120,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.mjorb.seal
         PRODUCT_NAME: Seal
         TARGETED_DEVICE_FAMILY: "1,2"
-        MARKETING_VERSION: 1.3.21
+        MARKETING_VERSION: 1.3.22
         CURRENT_PROJECT_VERSION: 3
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_STYLE: Automatic

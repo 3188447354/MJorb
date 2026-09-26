@@ -5,6 +5,12 @@ struct AppContainer {
     let appsViewModel: AppsViewModel
     let settingsViewModel: SettingsViewModel
     let certificateExportHandler: CertificateExportHandler
+    /// 后台保活（静音音频无限循环）。由 `SealApp.init()` 启动 —— 快捷指令在后台唤起 Seal
+    /// 时走的也是那条路径（`SealAppEnvironment` ⇒ `RefreshAllAppsIntent`）。
+    ///
+    /// ⚠️ UI 测试与「存储初始化失败」两条分支传的是**不带日志**的实例：前者不该在测试里
+    /// 真的放音频，后者连日志文件都没建起来。保活失败不影响续签本身（见该类的 `start()`）。
+    let backgroundKeepAlive: BackgroundKeepAliveService
 
     static func live(
         arguments: [String] = ProcessInfo.processInfo.arguments
@@ -16,7 +22,8 @@ struct AppContainer {
                 certificateExportHandler: CertificateExportHandler(
                     keychain: KeychainVault(),
                     signingPreferenceStore: SigningPreferenceStore()
-                )
+                ),
+                backgroundKeepAlive: BackgroundKeepAliveService(logStore: nil)
             )
         }
 
@@ -226,7 +233,8 @@ struct AppContainer {
                     operationCoordinator: operationCoordinator,
                     selfReplacementStore: transactionStore
                 ),
-                certificateExportHandler: certificateExportHandler
+                certificateExportHandler: certificateExportHandler,
+                backgroundKeepAlive: BackgroundKeepAliveService(logStore: logStore)
             )
         } catch {
             let failure = ImportFailure(
@@ -241,7 +249,8 @@ struct AppContainer {
                 certificateExportHandler: CertificateExportHandler(
                     keychain: KeychainVault(),
                     signingPreferenceStore: SigningPreferenceStore()
-                )
+                ),
+                backgroundKeepAlive: BackgroundKeepAliveService(logStore: nil)
             )
         }
     }

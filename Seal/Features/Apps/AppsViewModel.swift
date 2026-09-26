@@ -1676,6 +1676,26 @@ final class AppsViewModel: ObservableObject {
         startBatchRefresh()
     }
 
+    /// 「不打开 App」的续签入口：App Intent（快捷指令）走这里。
+    ///
+    /// 与界面上的「全部续签」**复用同一条链路**（`refreshAll` ⇒ `startBatchRefresh`）——
+    /// 「Seal 最后」排序、队列持久化、中断恢复、单飞闸门（`batchRefreshTask` / `signingTask`）
+    /// 全部一致。**不要**在这里另起一套：那会绕过单飞判据，造出第二次 installd 命令
+    /// （历史事故，见守卫 R05）。
+    ///
+    /// ⚠️ 必须留痕「是谁触发的」：真机排查的第一个问题永远是「用户当时是不是自己点的」，
+    /// 而这条链路在后台跑、界面上什么都没有 —— 日志是唯一的证据。
+    func refreshAllFromBackgroundTrigger() {
+        Task { [weak self] in
+            try? await self?.logStore?.append(
+                category: .renewal,
+                message: "快捷指令在后台触发「续签全部应用」（未打开 App）",
+                code: "SEAL-BACKGROUND-006"
+            )
+        }
+        refreshAll()
+    }
+
     /// 「重试失败项」：只重试上一轮失败的 App，避免对已成功应用重复签名/上传/安装。
     func refreshFailedItems() {
         let failedIDs = batchRefreshSession?.items

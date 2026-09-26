@@ -5,6 +5,63 @@
 
 ---
 
+## 2026-09-26 构建 49 真机日志复盘：保活文案自相矛盾、自身记录同步失败说不出原因、已安装页对账缺阳性对照
+
+- **背景**：用户发来构建 49（1.3.19）真机日志（12:05 导出，248 条）要求复查。上一轮四项
+  需求在真机上**都按设计工作**（① `SEAL-PROFILE-364` 警告 + 回落完整重签 + 之后回到
+  profile-only；② 无「装完又重签一次」；③「已等待 m:ss」只在设备安装阶段出现；
+  ④ 新文案在位）。复查中另发现**三处**问题（前两处是文案/日志，第三处是真实缺口）。
+- **现象与根因（三条各自独立）**：
+  1. **保活日志自相矛盾**：`SigningCoordinator` 的「Seal 自续签事务：后台保活已启动，
+     **覆盖证书、描述文件、签名和安装**」写在**续签路径判定之前**（`shouldUseProfileOnlyRenewal`
+     在下方才定，profile-only 分支还会在 `renewProfilesOnly` 直接 `return`），条件只有
+     `app.isSeal && installAfterSigning` ⇒ 走 profile-only 时**照样打印**。真机 `11:57:02`
+     两行紧邻：「保活已启动，覆盖证书、描述文件、签名和安装」＋「续签路径已确认：仅更新
+     描述文件；不会重新签名、打包或安装 IPA。」⇒ 自相矛盾。这是用户需求④「没有做的事不写」的残留。
+  2. **`SEAL-SELF-REG-001` 说不出下一步**：文案只有「Seal 自身记录同步失败」一句，
+     **不带底层原因**。真机 `11:49:55` / `11:49:57` 连报两次（每次紧邻
+     「中断于 skipped-no-managed-bundle-ids」⇒ 记录库当时是空的，属「刚装完 Seal、
+     还没加 Apple ID、还没导入配对」的启动窗口）。同族 `SEAL-SELF-115` 一直带 `\(error)`。
+     判据：**拿着这条日志能不能直接说出下一步**。
+  3. **已安装页对账缺阳性对照（真实缺口）**：`AppsViewModel.reconcileInstalledAppsWithDevice`
+     用设备查询结果**决定删不删本地记录**，下游 `delete` 会连带 `fileStore.removeApp`
+     **删掉本地文件** —— 但这条路径**没有**「先问一个确定装着的 App」这道网。
+     姊妹路径**都有**：`DeviceInstalledAppScanner.confirmedInstalledBundleIdentifiers`
+     （注释原文「阳性对照 ＋ 逐条设备核验，**先问完再动手**」）、`DeviceProfileCleaner`
+     （「阳性对照：Seal 自己**一定**装着」）、`AppRecordRecovery`、`MinimuxerInstallChannel`。
+     根因：`Vendor/Minimuxer/Sources/Minimuxer.swift` 的 `isAppInstalled` 实现是
+     `inst.lookup(appId:) != nil`，Rust 侧把 RPC 失败与「没查到」返回成**同一个空指针**
+     ⇒ 通道半坏时对**每一个** Bundle ID **静默答「没装」**（不抛错、只答否）；
+     而 `InstalledAppDeviceVerifier` 只能抓**抛错**的失败（404 / 超时 / 冷却）
+     ⇒ 「通道说假话」与「App 真的没装」在代码里完全同形。
+     真机先例就写在 `DeviceProfileCleaner` 注释里（「com.mjorb.seal.<TEAM_ID> 被答成未安装」）——
+     同一个 API、同一台设备。
+- **修复**：
+  1. 文案改为「Seal 自续签事务：后台保活已启动，**避免续签过程中被锁屏或切后台挂起**」
+     （只陈述保活的目的，不宣称覆盖了哪几步）；同步修 `SigningProgressView` 里**引用旧文案**
+     的注释（不改就会留下一条 grep 不到真源的注释）。
+  2. `SEAL-SELF-REG-001` 补 `\(error)`。
+  3. 在 `reconcileInstalledAppsWithDevice` 的 `do` 块**最前面**插入**阳性对照**：
+     拿 `Bundle.main.bundleIdentifier`（= 正在运行的 Seal）**真发一次设备查询**；
+     拿不到 Bundle ID 或对照未通过 ⇒ 写 `SEAL-INSTALL-739`（**警告级**）＋ `return false`
+     （整轮一条记录都不删）。⚠️ 码必须**新**：`SEAL-INSTALL-709` 已被
+     `MinimuxerInstallChannel` 的「与设备的安全握手未完成」占用 —— 复用会让用户查码表
+     时得到错误解释。
+     ⚠️ 与既有的「先问完、再动手」是**互补**的两条网：那条防「问一半通道坏了」，
+     这条防「通道从头到尾都在说假话」（那种情况下每条查询都成功返回 `false`）。
+- **涉及文件**：`Seal/Core/Signing/SigningCoordinator.swift`、
+  `Seal/Core/Maintenance/AppMaintenanceJob.swift`、`Seal/Features/Apps/AppsViewModel.swift`、
+  `Seal/Features/Apps/SigningProgressView.swift`（注释）、
+  `docs/qa/log-code-index.md`（登记 `SEAL-INSTALL-739`，并补上一直漏登记的 707 / 708）。
+- **守卫**：**R88**（① 必须拿**运行中的 Seal 自己**做对照；② 必须**真发一次**设备查询；
+  ③ 顺序「对照 ⇒ 收集缺失 ⇒ 删除」；④ 对照未通过必须**整轮中止**；
+  ⑤ 两条中止路径都留痕、且码是**新**的；⑥ 拿不到对照 Bundle ID 也 fail closed）
+  ＋ 6 条变异项。守卫 **688 checks / 435 mutations 两遍全绿**。
+- **验证状态**：静态守卫通过（两遍）。**待** CI 编译 + 真机回归
+  （真机判据见 `RELEASE_NOTES.md` 1.3.20）。
+
+---
+
 ## 2026-09-26 界面说人话：首次安装的证书缺私钥要能看懂、子流程不再抢走抽屉、阶段文案对齐真实动作
 
 - **背景**（用户原话，四项一次提）：
@@ -1151,6 +1208,36 @@
 ---
 
 ## 常犯坑位
+
+- 🔴 **共享查询 API 的「答否」可能不是「没有」，而是「通道坏了」——没有阳性对照的删除路径会把记录和文件一起删掉**（2026-09-26）。
+  `Minimuxer.isAppInstalled`（Lockdown 路径）的实现是 `inst.lookup(appId:) != nil`，
+  而 Rust 侧把 **RPC 失败**与**「没查到」**返回成**同一个空指针** ⇒ 通道半坏时它对
+  **每一个** Bundle ID 都**静默答「没装」**（不抛错、只答否）；而
+  `InstalledAppDeviceVerifier` 只能抓**抛错**的失败（404 / 超时 / 冷却）
+  ⇒ 「通道说假话」与「App 真的没装」在代码里**完全同形** ✗。
+  ⚠️ 危险的是**下游动作**：`reconcileInstalledAppsWithDevice` 拿这个「否」去 `delete`，
+  而 `delete` 会连带 `fileStore.removeApp` **删掉本地文件** —— 一次通道抖动就白删一批记录。
+  ⇒ **判据：任何「按设备查询结果做删除」的路径，都必须先拿一个「一定装着」的 App
+  （Seal 自己：`Bundle.main.bundleIdentifier`）**问一次**做阳性对照**；
+  对照没通过 ⇒ **整轮一条都不删**（fail closed），并留痕。姊妹路径早就这么做
+  （`DeviceInstalledAppScanner` / `DeviceProfileCleaner` / `AppRecordRecovery` /
+  `MinimuxerInstallChannel`），**漏的是这一条** ✓。守卫 **R88**。
+  ⇒ 附带一条：**新码不要顺手复用旧码** —— 本次差点把 `SEAL-INSTALL-709` 用在
+  「已安装页核验中止」上，而 709 已经是「与设备的安全握手未完成」
+  （同一个码说两件事 ⇒ 用户查码表得到**错误解释**）✗。守卫 R88⑤ 现在同时钉住「码是新的」。
+
+- 🔴 **写在「分支判定之前」的日志，会把两条互斥路径都描述成同一条**（2026-09-26）。
+  `SigningCoordinator` 在 `shouldUseProfileOnlyRenewal` **之上**就打「Seal 自续签事务：
+  后台保活已启动，覆盖证书、描述文件、签名和安装」，而 profile-only 分支
+  （`renewProfilesOnly`）**根本不重签、不打包、不安装**。真机 `11:57:02` 两行紧邻：
+  「…覆盖证书、描述文件、签名和安装」＋「续签路径已确认：**仅更新描述文件**；
+  不会重新签名、打包或安装 IPA。」⇒ 同一秒里自相矛盾 ✗。
+  ⚠️ 条件只有 `app.isSeal && installAfterSigning`，与「走哪条路」**无关** ——
+  所以它不是「偶发」，是**必然**在每次 profile-only 续签时发生。
+  ⇒ **判据：日志文案只在它描述的那件事已经确定发生时写**；做不到就只陈述**目的**
+  （「避免续签过程中被锁屏或切后台挂起」）而不是**步骤清单** ✓。
+  ⇒ 顺手一条：改文案后要 grep 一遍**引用了旧文案的注释**（`SigningProgressView` 里就有一处），
+  否则会留下一条 grep 不到真源的注释（下一次复盘会被它误导）。
 
 - 🔴 **「子流程的阶段」不是「本会话的显示状态」——让它写父会话，用户就看到一段没发生在本 App 上的流程**（2026-09-26）。
   用户原话：「签名新 ipa 容易出现到安装步骤后又重签一次」。真机日志（构建 48）逐行印证：

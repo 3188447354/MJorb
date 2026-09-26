@@ -5092,6 +5092,58 @@ def violations(load=read):
           "R87⑤: 必须有三个方向的单测 —— ① 证书阶段不说「申请」；② App ID 阶段不说「注册」；"
           "③ 计数行报的是「已准备」。文案类不变量只有单测能钉住「说的是不是真的」")
 
+    # ── R88：已安装页对账必须做**阳性对照**（2026-09-26 构建 49 真机复盘）──────────
+    #
+    # `reconcileInstalledAppsWithDevice` 用设备查询结果**决定删不删本地记录**，而它的下游
+    # `delete` 会连带 `fileStore.removeApp` 删掉本地文件。姊妹路径
+    #（`DeviceInstalledAppScanner.confirmedInstalledBundleIdentifiers`、`DeviceProfileCleaner`）
+    # 都有「拿确定装着的 Seal 自己先问一次」这道网，唯独这里漏了 —— 而它们调的是**同一个**
+    # `Minimuxer.isAppInstalled`：Lockdown 路径下它的实现是 `inst.lookup(appId:) != nil`，
+    # 而 Rust 侧把 RPC 失败与「没查到」返回成**同一个空指针** ⇒ 通道半坏时它对**每一个**
+    # Bundle ID 静默答「没装」（不抛错、只答否），而 `InstalledAppDeviceVerifier` 只能抓到
+    # **抛错**的失败（404 / 超时 / 冷却）⇒ 没有这一步，「通道说假话」与「App 真的没装」
+    # 在代码里完全同形。真机先例：`DeviceProfileCleaner` 的注释里就留着
+    # 「阳性对照未通过（com.mjorb.seal.<TEAM_ID> 被答成未安装）」—— 同一个 API、同一台设备。
+    r88_vm = load("Seal/Features/Apps/AppsViewModel.swift")
+    r88_body = section_or_empty(
+        r88_vm,
+        "private func reconcileInstalledAppsWithDevice(",
+        "private func installedBundleIdentifier(for app: AppRecord) -> String? {"
+    )
+    r88_code = strip_comments(r88_body)
+    r88_flat = squash(r88_code)
+
+    check("controlBundleID = Bundle.main.bundleIdentifier" in r88_flat,
+          "R88①: 已安装页对账必须拿**正在运行的 Seal 自己**做阳性对照 ✗ —— "
+          "姊妹路径都有这一步，而这里的下游是 `delete`（连带删本地文件）")
+
+    check("InstalledAppDeviceVerifier.isInstalled(bundleIdentifier: controlBundleID)" in r88_flat,
+          "R88②: 阳性对照必须真的发一次设备查询 ✗ —— 只取到 Bundle ID 不算对照")
+
+    r88_control_at = r88_flat.find("guard controlInstalled else")
+    r88_collect_at = r88_flat.find("var missingOnDevice")
+    r88_delete_at = r88_flat.find("mutations.append(await delete(app")
+    check(r88_control_at >= 0 and r88_collect_at >= 0 and r88_delete_at >= 0
+          and r88_control_at < r88_collect_at < r88_delete_at,
+          "R88③: 阳性对照必须排在「收集缺失」与删除**之前** ✗ —— "
+          "排到后面时代码看起来仍然有对照，但删除已经发生了（顺序就是安全本身）")
+
+    check("return false" in squash(section_or_empty(
+              r88_code, "guard controlInstalled else", "var missingOnDevice")),
+          "R88④: 对照未通过必须**整轮中止**（`return false`）✗ —— "
+          "「继续问剩下的」只会让更多记录被一条不可信的通道判定")
+
+    check(r88_code.count("SEAL-INSTALL-739") == 2
+          and r88_code.count("本轮一条记录都不删") == 2,
+          "R88⑤: 阳性对照的两条中止路径都要留痕（`SEAL-INSTALL-739` ×2 ＋ "
+          "「本轮一条记录都不删」×2）✗ —— 「本轮一条都没删」只有日志能证明；"
+          "⚠️ 码必须是**新**的（709 已是 `MinimuxerInstallChannel` 的「安全握手未完成」）")
+
+    check("return false" in squash(section_or_empty(
+              r88_code, "guard let controlBundleID", "guard controlInstalled")),
+          "R88⑥: 拿不到对照 Bundle ID 也必须 fail closed（`return false`）✗ —— "
+          "对照缺失时「当作通过」等于把整道网拆掉")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -7750,6 +7802,42 @@ def main():
          "func certificateStageNeverClaimsItIsApplyingForACertificate()",
          "func legacyCopyTest()",
          "R87⑤: 必须有三个方向的单测"),
+
+        # ── R88：已安装页对账必须做阳性对照（2026-09-26 构建 49 真机复盘）──
+        # ① 换一种方式取 Bundle ID ⇒ R88① 报红
+        #    （只断言「有个变量叫 controlBundleID」证明不了问的是 Seal 自己）。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         '            guard let controlBundleID = Bundle.main.bundleIdentifier,',
+         '            guard let controlBundleID = Bundle.main.infoDictionary?["CFBundleIdentifier"] as? String,',
+         "R88①: 已安装页对账必须拿"),
+        # ② 取了 Bundle ID 却不照原样问设备 ⇒ R88② 报红（对照必须真的问一次）。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "InstalledAppDeviceVerifier.isInstalled(bundleIdentifier: controlBundleID)",
+         "InstalledAppDeviceVerifier.isInstalled(bundleIdentifier: controlBundleID.lowercased())",
+         "R88②: 阳性对照必须真的发一次设备查询"),
+        # ③ 把「收集缺失」与删除挪到对照**之前** ⇒ R88③ 报红
+        #    （代码看起来仍然有对照，但删除已经发生了 —— 顺序就是安全本身）。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         '            guard let controlBundleID = Bundle.main.bundleIdentifier,',
+         '            var missingOnDevice: [AppRecord] = []\n            for app in installedRecords { mutations.append(await delete(app, refreshAfterDeletion: false)) }\n            guard let controlBundleID = Bundle.main.bundleIdentifier,',
+         "R88③: 阳性对照必须排在"),
+        # ④ 对照未通过却继续往下走 ⇒ R88④ 报红
+        #    （「继续问剩下的」= 让一条不可信的通道去判更多记录）。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         '被答成未安装）⇒ 通道此刻不可信，本轮一条记录都不删。",\n                    code: "SEAL-INSTALL-739"\n                )\n                return false',
+         '被答成未安装）⇒ 通道此刻不可信，本轮一条记录都不删。",\n                    code: "SEAL-INSTALL-739"\n                )\n                return true',
+         "R88④: 对照未通过必须"),
+        # ⑤ 只留一条留痕（第二条中止路径悄悄退出）⇒ R88⑤ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         '                    code: "SEAL-INSTALL-739"',
+         '                    code: "SEAL-INSTALL-740"',
+         "R88⑤: 阳性对照的两条中止路径都要留痕"),
+        # ⑥ 拿不到对照 Bundle ID 时「当作通过」⇒ R88⑥ 报红
+        #    （对照缺失还往下走 = 把整道网拆掉）。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         '拿不到阳性对照的 Bundle ID ⇒ 本轮一条记录都不删。",\n                    code: "SEAL-INSTALL-739"\n                )\n                return false',
+         '拿不到阳性对照的 Bundle ID ⇒ 本轮一条记录都不删。",\n                    code: "SEAL-INSTALL-739"\n                )\n                return true',
+         "R88⑥: 拿不到对照 Bundle ID 也必须 fail closed"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

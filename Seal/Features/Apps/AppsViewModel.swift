@@ -621,6 +621,46 @@ final class AppsViewModel: ObservableObject {
         var mutations = [await removeDuplicateInstalledRecords(installedRecords)]
 
         do {
+            // 🔴 **阳性对照**（2026-09-26，构建 49 真机复盘）。拿正在运行的 Seal 自己先问一次，
+            // 答不出来就整轮不删。姊妹路径（`DeviceInstalledAppScanner`、`DeviceProfileCleaner`）
+            // 都有这一步，唯独这里漏了 —— 而它们调的是**同一个** `Minimuxer.isAppInstalled`。
+            //
+            // 为什么必须有：Lockdown 路径下 `isAppInstalled` 的实现是 `inst.lookup(appId:) != nil`，
+            // 而 Rust 侧把 RPC 失败与「没查到」返回成**同一个空指针** ⇒ 通道半坏时它对**每一个**
+            // Bundle ID 都**静默答「没装」**（不抛错、只答否）。而 `InstalledAppDeviceVerifier`
+            // 只能抓到**抛错**的失败（404 / 超时 / 冷却），抓不到这种 ⇒ 没有这一步，
+            // 「通道说假话」与「App 真的没装」在代码里完全同形，而下游是 `delete`
+            //（连带 `fileStore.removeApp` 删掉本地文件）。
+            // 真机先例：本仓 `DeviceProfileCleaner` 的注释里就留着「阳性对照未通过
+            //（com.mjorb.seal.<TEAM_ID> 被答成未安装）」—— 同一个 API、同一台设备。
+            //
+            // 与「先问完、再动手」是两条**互补**的网：那条防「问一半通道坏了」，
+            // 这条防「通道从头到尾都在说假话」（那种情况下每条查询都成功返回 `false`）。
+            //
+            // 码用 `SEAL-INSTALL-739`（与同功能的 707「未完成」、708「跳过」同族）——
+            // ⚠️ **不能**复用 709：709 已经是 `MinimuxerInstallChannel` 的「安全握手未完成」，
+            // 同一个码说两件事会让用户查码表时得到错误解释。
+            guard let controlBundleID = Bundle.main.bundleIdentifier,
+                  controlBundleID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+                try? await logStore?.append(
+                    category: .system,
+                    level: .warning,
+                    message: "已安装页设备核验中止：拿不到阳性对照的 Bundle ID ⇒ 本轮一条记录都不删。",
+                    code: "SEAL-INSTALL-739"
+                )
+                return false
+            }
+            let controlInstalled = try await InstalledAppDeviceVerifier.isInstalled(bundleIdentifier: controlBundleID)
+            guard controlInstalled else {
+                try? await logStore?.append(
+                    category: .system,
+                    level: .warning,
+                    message: "已安装页设备核验中止：阳性对照未通过（\(controlBundleID) 被答成未安装）⇒ 通道此刻不可信，本轮一条记录都不删。",
+                    code: "SEAL-INSTALL-739"
+                )
+                return false
+            }
+
             // 🔴 **先问完、再动手**（2026-09-25 改）。旧实现是「边问边删」：只要循环中途
             // 通道变坏（第 1 条已判「设备上没有」并被删掉、第 2 条才抛错），就会**删一半**。
             // 现在先把「设备上确认不存在」的记录**全部收集完**，任何一条查询失败都**整轮中止、

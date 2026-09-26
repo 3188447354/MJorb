@@ -103,10 +103,18 @@ final class AppMaintenanceJob {
             } catch {
                 // 自注册失败不阻断后续清理（清理是安全的：它只删 DB 里没有引用的目录），
                 // 但必须留痕，不能静默吞掉。
+                //
+                // ⚠️ **必须带底层原因**（2026-09-26，构建 49 真机复盘）：旧文案只有
+                // 「Seal 自身记录同步失败」一句，而这条路径会在「刚装完 Seal、还没加 Apple ID、
+                // 还没导入配对」的启动窗口里连续报两次（真机 11:49:55 / 11:49:57，每次紧邻
+                // 「中断于 skipped-no-managed-bundle-ids」⇒ 记录库当时是空的）——
+                // 拿这条日志**说不出下一步该做什么**，也分不出是「打包自身 IPA 失败」
+                // 还是「写库失败」。判据：「拿着这条日志，能不能直接说出下一步该做什么」。
+                // 同族先例：`SEAL-SELF-115` 一直带着 `\(error)`。
                 try? await logStore?.append(
                     category: .system,
                     level: .warning,
-                    message: "Seal 自身记录同步失败",
+                    message: "Seal 自身记录同步失败：\(error)",
                     code: "SEAL-SELF-REG-001"
                 )
             }

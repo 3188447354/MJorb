@@ -296,13 +296,20 @@ actor SigningCoordinator {
         let certificateRotationState = CertificateRotationTransactionState()
         // 自续签从证书轮换开始就不能被锁屏/切后台挂起。安装阶段原有保活只覆盖最后一步，
         // 无法保护撤证后到新包安装前的关键窗口，因此 Seal 自身持有贯穿整条链路的后台任务。
+        //
+        // ⚠️ 下面那条日志**只陈述保活的目的，不宣称覆盖了哪些步骤**（2026-09-26，构建 49 真机）。
+        // 它写在**续签路径判定之前**（profile-only 会在 `renewProfilesOnly` 直接 return），
+        // 条件只有 `app.isSeal && installAfterSigning` ⇒ 走 profile-only 时照样打印。
+        // 旧文案「覆盖证书、描述文件、签名和安装」因此与同一秒的「续签路径已确认：仅更新
+        // 描述文件；不会重新签名、打包或安装 IPA。」自相矛盾（真机 11:57:02 两行紧邻）——
+        // 用户要求「没有做的事不写」，所以改成陈述这个后台任务干什么，两条路径上都成立。
         let selfRenewalBackgroundTask = await MainActor.run {
             app.isSeal && installAfterSigning
                 ? UIApplication.shared.beginBackgroundTask(withName: "Seal Self Renewal")
                 : UIBackgroundTaskIdentifier.invalid
         }
         if selfRenewalBackgroundTask != .invalid {
-            try? await logStore?.append(category: .renewal, message: "Seal 自续签事务：后台保活已启动，覆盖证书、描述文件、签名和安装")
+            try? await logStore?.append(category: .renewal, message: "Seal 自续签事务：后台保活已启动，避免续签过程中被锁屏或切后台挂起")
         }
         defer {
             if selfRenewalBackgroundTask != .invalid {

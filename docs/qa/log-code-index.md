@@ -44,6 +44,9 @@
 | `SEAL-INSTALL-701` | 本地隧道未就绪，无法连接设备（确认 Wi-Fi + LocalDevVPN 已连接） | `MinimuxerInstallChannel.swift` |
 | `SEAL-INSTALL-702l` | iOS 拒绝了安装：**免费账号已装 3 个自签应用**或签名校验失败 | `MinimuxerInstallChannel.swift` |
 | `SEAL-INSTALL-702s` | 设备**空间不足**（解压复制阶段） | `MinimuxerInstallChannel.swift` |
+| `SEAL-INSTALL-707` | 已安装页设备核验**未完成**（设备查询失败/超时），已保留当前列表、本轮未删除任何记录 | `AppsViewModel.swift` |
+| `SEAL-INSTALL-708` | 已安装页设备核验**跳过**：有前台操作正在进行（避免抢占同一条设备会话） | `AppsViewModel.swift` |
+| `SEAL-INSTALL-739` | 已安装页设备核验**中止**：阳性对照未通过（通道不可信），本轮一条记录都不删 | `AppsViewModel.swift` |
 | `SEAL-VPN-001` | 签名完成后仍无法连接设备完成安装 | `SigningCoordinator.swift` |
 
 ## 描述文件清理 / 维护

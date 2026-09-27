@@ -41,6 +41,14 @@
 - **教训**：**「判定等价」不等于「信息等价」** —— 把 `Bool` 换成「带原因的 Result」时，
   只要原因全部来自原本就要算的量，就**既不多一次探测、也不改变任何行为**，却能立刻让失败可行动。
   另一条：`reset()` 这类「拆会话」的操作必须**连上层缓存一起作废**，否则上层会在窗口内把死会话再还回来。
+- **CI 实测补记（2026-09-27，提交 `5b5a561`）**：`swift-regression` 报
+  `MinimuxerInstallChannel.swift:580:38: error: cannot find type 'MinimuxerReadyVerdict' in scope` ✗ ——
+  `MinimuxerReadyVerdict` / `MinimuxerReadyIssue` 都**嵌套**在 vendor 的 `public struct Minimuxer` 里，
+  Seal 侧必须写**限定名** `Minimuxer.MinimuxerReadyVerdict`，裸名编译不过。
+  **为什么静态守卫没拦住**：守卫只做文本比对、不做类型解析，看不到「嵌套」这层语义
+  ⇒ 已补守卫 **R94①c**（断言 `-> Minimuxer.MinimuxerReadyVerdict?` 存在）＋ 变异自检（把限定名改回裸名必须报红）。
+  **教训**：**跨模块引用 vendor 的嵌套类型时，限定名是硬约束**；这类错本机（Windows 不能编译）只能靠 CI 兜，
+  所以凡是「新增跨模块类型引用」都要顺手想一句「它是嵌套的吗」，并让守卫把限定名钉住。
 
 ## 2026-09-27 隧道通、就是连不上：RemotePairing 端口被硬编码成 49152
 

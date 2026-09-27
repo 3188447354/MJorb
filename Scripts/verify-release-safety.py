@@ -5892,12 +5892,16 @@ def violations(load=read):
           # ⚠️ `ready()` 是单表达式函数（隐式返回），源码里**没有** `return` ——
           #    锚点按代码写（AGENTS.md：冲突时以代码为准）。
           and "readyVerdict().isReady" in r94_vendor
+          # ⚠️ 两个类型都**嵌套**在 `public struct Minimuxer` 里 ⇒ Seal 侧必须写限定名。
+          #    2026-09-27 CI 实测：裸名 `MinimuxerReadyVerdict` 直接
+          #    `cannot find type in scope`，`swift-regression` 整档红。
+          and "-> Minimuxer.MinimuxerReadyVerdict?" in r94_channel
           and all(("case " + raw) in r94_vendor for raw in r94_issue_raws)
           and all(('"' + raw + '"') in r94_readiness for raw in r94_issue_raws),
           "R94①: vendor 的 `MinimuxerReadyIssue` 与 Seal 侧 `ChannelReadinessPolicy` "
-          "必须一一对应 ✗ —— `rawValue` 是跨模块契约（测试 target 看不到 Minimuxer，"
-          "只能吃字符串）：改 vendor 的 case 名而不同步映射 ⇒ 该原因静默落进 `unknown`，"
-          "用户拿到的又是那句笼统的「超时 / 网络不可达 / 无设备」")
+          "必须一一对应、且嵌套类型必须写限定名 ✗ —— `rawValue` 是跨模块契约"
+          "（测试 target 看不到 Minimuxer，只能吃字符串）：改 vendor 的 case 名而不同步映射 ⇒ "
+          "该原因静默落进 `unknown`；写裸名 `MinimuxerReadyVerdict` ⇒ 编译不过")
 
     check("func requireReady() async throws" in r94_channel
           and "try await requireReady()" in r94_channel
@@ -9176,6 +9180,12 @@ def main():
         ("Seal/Core/Renewal/ChannelReadinessPolicy.swift",
          '        case "noVPNInterface":\n',
          '',
+         "R94①:"),
+        # ①c 嵌套类型写成裸名（`cannot find type in scope`，整档 swift-regression 红）⇒ R94① 报红。
+        #     2026-09-27 CI 实测踩到过这一条 —— 静态守卫钉住，别等编译器。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "-> Minimuxer.MinimuxerReadyVerdict?",
+         "-> MinimuxerReadyVerdict?",
          "R94①:"),
         # ② 安装入口退回裸 `isReady()`（失败原因丢失）⇒ R94② 报红。
         ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",

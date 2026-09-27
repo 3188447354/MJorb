@@ -68,7 +68,10 @@ enum RemotePairingPortDiscovery {
         parameters.includePeerToPeer = true
         let browser = NWBrowser(for: .bonjour(type: serviceType, domain: nil), using: parameters)
 
-        let endpoint: NWEndpoint? = await withCheckedContinuation { continuation in
+        // ⚠️ 必须用 `withCheckedThrowingContinuation`：`ContinuationBox` 只收
+        //    `CheckedContinuation<Value, any Error>`，非 throwing 的 `Never` 版编译不过。
+        //    这里从不 `resume(throwing:)`，所以 `try?` 只为满足类型，不会吞掉任何错误。
+        let endpoint: NWEndpoint? = try? await withCheckedThrowingContinuation { continuation in
             let box = ContinuationBox<NWEndpoint?>(continuation)
             browser.browseResultsChangedHandler = { results, _ in
                 // 优先 loopback：设备自身的 RemotePairing 守护进程经 lo0 广播
@@ -111,7 +114,8 @@ enum RemotePairingPortDiscovery {
         let connection = NWConnection(to: endpoint, using: parameters)
         let holder = ConnectionHolder(connection)
 
-        let port: UInt16? = await withCheckedContinuation { continuation in
+        // 同 `browseFirstEndpoint`：`ContinuationBox` 要求 throwing 版 continuation。
+        let port: UInt16? = try? await withCheckedThrowingContinuation { continuation in
             let box = ContinuationBox<UInt16?>(continuation)
             connection.stateUpdateHandler = { state in
                 switch state {

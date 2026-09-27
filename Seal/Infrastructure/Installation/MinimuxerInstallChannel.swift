@@ -577,7 +577,11 @@ actor MinimuxerInstallChannel: InstallChannel {
     /// 判定与 `isReady()` **完全等价**（`readyVerdict().isReady == ready()`），
     /// 区别只在失败时能给出具体原因，供 `ChannelReadinessPolicy` 分类。
     /// 返回 `nil` = 探测本身超时（同步 FFI 卡住）⇒ 原因未知，调用方退回通用失败。
-    func readinessVerdict() async -> MinimuxerReadyVerdict? {
+    /// ⚠️ 类型是**嵌套**的（`public struct Minimuxer` 里）⇒ 必须写限定名
+    /// `Minimuxer.MinimuxerReadyVerdict`，裸名 `MinimuxerReadyVerdict` 编译不过
+    /// （2026-09-27 CI `swift-regression` 实测：`cannot find type in scope`）。
+    /// 守卫 R94① 已把「必须限定」钉住。
+    func readinessVerdict() async -> Minimuxer.MinimuxerReadyVerdict? {
         #if targetEnvironment(simulator)
         return .ready
         #else

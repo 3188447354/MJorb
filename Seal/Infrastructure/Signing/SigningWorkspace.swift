@@ -1140,10 +1140,111 @@ struct SigningWorkspace: Sendable {
         }
     }
 
+    /// `stripArm64eArchitecture` 第一遍的分类结果。
+    private enum Arm64eStripScan {
+        /// 不是 Mach-O，或与 arm64 / arm64e 无关（例如只有 x86_64）：不参与瘦身，也不阻断。
+        case irrelevant
+        /// 已经是 thin 普通 arm64：无需处理。
+        case alreadyPlainArm64
+        /// fat 且含普通 arm64 slice：可瘦成 thin arm64。
+        case fatThinnable(offset: UInt64, size: UInt64)
+        /// thin arm64e，或 fat 里只有 arm64e：瘦了就与 arm64e 主二进制架构混装 ⇒ 整棵不动。
+        case blocksStripping
+    }
+
+    /// 这份文件能不能被瘦成 thin 普通 arm64 —— **只读文件头，不改文件**。
+    /// 与第二遍的切法共用同一份 cputype / cpusubtype 判据，避免「判定」与「执行」两套规则漂移。
+    private func machOStripScan(of url: URL) -> Arm64eStripScan {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return .irrelevant }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: 8), head.count >= 8 else { return .irrelevant }
+        let magic = head.withUnsafeBytes { $0.load(as: UInt32.self) }
+
+        // thin Mach-O 64（小端 0xFEEDFACF）：cputype 在偏移 4、cpusubtype 在偏移 8。
+        if magic == 0xFEEDFACF {
+            try? handle.seek(toOffset: 4)
+            guard let arch = try? handle.read(upToCount: 8), arch.count >= 8 else { return .irrelevant }
+            let cputype = arch.withUnsafeBytes { $0.load(fromByteOffset: 0, as: UInt32.self) }
+            let cpusubtype = arch.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt32.self) }
+            guard cputype == 0x0100000C else { return .irrelevant }
+            // cpusubtype 低24位是 subtype(0=ALL,1=V8,2=arm64e)，高8位是 capability bits
+            return (cpusubtype & 0x00FFFFFF) == 2 ? .blocksStripping : .alreadyPlainArm64
+        }
+
+        // 本地小端读取：大端 fat32(CA FE BA BE)->0xBEBAFECA, 大端 fat64(CA FE BA BF)->0xBFBAFECA
+        let isFat64 = (magic == 0xBFBAFECA)
+        guard magic == 0xBEBAFECA || isFat64 else { return .irrelevant }
+
+        // FAT 头全是大端，nfatArch 在偏移4
+        let nfatArch = head.withUnsafeBytes {
+            $0.load(fromByteOffset: 4, as: UInt32.self)
+        }.bigEndian
+        guard nfatArch >= 1 else { return .irrelevant }
+
+        // fat32 arch record=20字节, fat64=32字节
+        let archRecordSize = isFat64 ? 32 : 20
+        let archTableSize = Int(nfatArch) * archRecordSize
+        try? handle.seek(toOffset: 8)
+        guard let archData = try? handle.read(upToCount: archTableSize),
+              archData.count >= archTableSize else { return .irrelevant }
+
+        // 遍历架构列表，找普通 arm64（排除 arm64e）
+        var sawArm64e = false
+        for i in 0..<Int(nfatArch) {
+            let base = i * archRecordSize
+            let cputype = archData.withUnsafeBytes {
+                $0.load(fromByteOffset: base, as: UInt32.self)
+            }.bigEndian
+            let cpusubtype = archData.withUnsafeBytes {
+                $0.load(fromByteOffset: base + 4, as: UInt32.self)
+            }.bigEndian
+            guard cputype == 0x0100000C else { continue }
+            if (cpusubtype & 0x00FFFFFF) == 2 {
+                sawArm64e = true
+                continue
+            }
+
+            let offset: UInt64
+            let size: UInt64
+            if isFat64 {
+                // fat64: offset 在 base+8 (8字节), size 在 base+16 (8字节)
+                offset = archData.withUnsafeBytes {
+                    $0.load(fromByteOffset: base + 8, as: UInt64.self)
+                }.bigEndian
+                size = archData.withUnsafeBytes {
+                    $0.load(fromByteOffset: base + 16, as: UInt64.self)
+                }.bigEndian
+            } else {
+                // fat32: offset 在 base+8 (4字节), size 在 base+12 (4字节)
+                offset = UInt64(archData.withUnsafeBytes {
+                    $0.load(fromByteOffset: base + 8, as: UInt32.self)
+                }.bigEndian)
+                size = UInt64(archData.withUnsafeBytes {
+                    $0.load(fromByteOffset: base + 12, as: UInt32.self)
+                }.bigEndian)
+            }
+            guard size > 0 else { return .blocksStripping }
+            return .fatThinnable(offset: offset, size: size)
+        }
+        // fat 里只有 arm64e、没有普通 arm64：瘦不了 ⇒ 瘦别的文件就会造出架构混装。
+        return sawArm64e ? .blocksStripping : .irrelevant
+    }
+
     /// 大 IPA 优化：剥离 FAT 二进制里的 arm64e 等多余 slice，只保留 arm64 以瘦身。
     /// 仅处理 fat32/fat64（magic 0xBEBAFECA/0xBFBAFECA）；thin 二进制（含 thin arm64e）
     /// 无多余 slice 可剥离，原样保留交由上游签名器重签——这是预期行为，不要按
     /// 「剥离 thin arm64e」去改（thin arm64e 没有普通 arm64 slice，剥了就没有可运行代码）。
+    ///
+    /// 🔴 **必须「全树都能瘦」才瘦**（2026-09-27 真机：`Lara` / `Eagle` 签名安装后一打开就闪退）。
+    /// 瘦身是**逐文件**做的，但 dyld 要求**同一 bundle 内主二进制与它加载的每个 dylib 架构一致**：
+    /// `Eagle.app/Eagle` 是 **thin arm64e**（越狱工具，没有普通 arm64 slice）⇒ 按上面那条规则
+    /// 原样保留 arm64e，而 `Eagle.app/Frameworks/libgrabkernel2.dylib` 是 **fat(arm64 + arm64e)**
+    /// ⇒ 被瘦成 arm64 ⇒ dyld 启动时直接 halt：
+    /// `Library not loaded: @rpath/libgrabkernel2.dylib` +
+    /// `incompatible architecture (have 'arm64', need 'arm64e')` ⇒ SIGABRT，连 `main` 都进不去。
+    /// ⇒ 判据：树里只要有**任何一个** Mach-O 瘦不到普通 arm64（thin arm64e，或 fat 里只有 arm64e
+    /// 没有普通 arm64），就**整棵一个字节都不动** —— 「全 arm64e 一致」比「瘦一半」安全 ✓。
+    /// ⇒ 所以第一遍只分类、第二遍才改文件（半途改到一半才发现不能瘦，就已经把架构搞混装了）。
     private func stripArm64eArchitecture(in appURL: URL) throws {
         let fileManager = FileManager.default
         guard let enumerator = fileManager.enumerator(
@@ -1152,68 +1253,26 @@ struct SigningWorkspace: Sendable {
             options: [.skipsHiddenFiles]
         ) else { return }
 
+        // 第一遍：只分类，一个字节都不改。
+        var thinnable: [(url: URL, offset: UInt64, size: UInt64)] = []
         for case let url as URL in enumerator {
+            switch machOStripScan(of: url) {
+            case .irrelevant, .alreadyPlainArm64:
+                continue
+            case .fatThinnable(let offset, let size):
+                thinnable.append((url, offset, size))
+            case .blocksStripping:
+                return
+            }
+        }
+
+        // 第二遍：确认全树都能瘦，才逐个替换成 thin arm64。
+        for item in thinnable {
+            let url = item.url
             let handle = try? FileHandle(forReadingFrom: url)
             defer { try? handle?.close() }
-            guard let headerData = try? handle?.read(upToCount: 8),
-                  headerData.count >= 8 else { continue }
-
-            // 本地小端读取：大端 fat32(CA FE BA BE)->0xBEBAFECA, 大端 fat64(CA FE BA BF)->0xBFBAFECA
-            let magic = headerData.withUnsafeBytes { $0.load(as: UInt32.self) }
-            let isFat64 = (magic == 0xBFBAFECA)
-            guard magic == 0xBEBAFECA || isFat64 else { continue }
-
-            // FAT 头全是大端，nfatArch 在偏移4
-            let nfatArch = headerData.withUnsafeBytes {
-                $0.load(fromByteOffset: 4, as: UInt32.self)
-            }.bigEndian
-            guard nfatArch >= 1 else { continue }
-
-            // fat32 arch record=20字节, fat64=32字节
-            let archRecordSize = isFat64 ? 32 : 20
-            let archTableSize = Int(nfatArch) * archRecordSize
-            guard let archData = try? handle?.read(upToCount: archTableSize),
-                  archData.count >= archTableSize else { continue }
-
-            // 遍历架构列表，找普通 arm64（排除 arm64e）
-            var arm64Offset: UInt64 = 0
-            var arm64Size: UInt64 = 0
-            var found = false
-
-            for i in 0..<Int(nfatArch) {
-                let base = i * archRecordSize
-                let cputype = archData.withUnsafeBytes {
-                    $0.load(fromByteOffset: base, as: UInt32.self)
-                }.bigEndian
-                let cpusubtype = archData.withUnsafeBytes {
-                    $0.load(fromByteOffset: base + 4, as: UInt32.self)
-                }.bigEndian
-
-                // cpusubtype 低24位是 subtype(0=ALL,1=V8,2=arm64e)，高8位是 capability bits
-                guard cputype == 0x0100000C, (cpusubtype & 0x00FFFFFF) != 2 else { continue }
-
-                if isFat64 {
-                    // fat64: offset 在 base+8 (8字节), size 在 base+16 (8字节)
-                    arm64Offset = archData.withUnsafeBytes {
-                        $0.load(fromByteOffset: base + 8, as: UInt64.self)
-                    }.bigEndian
-                    arm64Size = archData.withUnsafeBytes {
-                        $0.load(fromByteOffset: base + 16, as: UInt64.self)
-                    }.bigEndian
-                } else {
-                    // fat32: offset 在 base+8 (4字节), size 在 base+12 (4字节)
-                    arm64Offset = UInt64(archData.withUnsafeBytes {
-                        $0.load(fromByteOffset: base + 8, as: UInt32.self)
-                    }.bigEndian)
-                    arm64Size = UInt64(archData.withUnsafeBytes {
-                        $0.load(fromByteOffset: base + 12, as: UInt32.self)
-                    }.bigEndian)
-                }
-                found = true
-                break
-            }
-
-            guard found, arm64Size > 0 else { continue }
+            let arm64Offset = item.offset
+            let arm64Size = item.size
 
             // 分块流式写入 arm64 slice
             let tempURL = url.deletingLastPathComponent()

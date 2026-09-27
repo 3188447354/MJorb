@@ -5,6 +5,85 @@
 
 ---
 
+## 2026-09-27 `Lara`（`Eagle.app`）签名安装后一打开就闪退：瘦身把 arm64e / arm64 搞成混装
+
+- **现象**：`Lara` 能签名、能安装，一点图标就闪退；崩溃报告 `bug_type 309`，
+  `termination.namespace = DYLD` / `indicator = Library missing`。
+- **证据（崩溃报告原文）**：
+  `Library not loaded: @rpath/libgrabkernel2.dylib`；
+  `Referenced from: <97DDAF4A…> /Volumes/VOLUME/*/Eagle.app/Eagle`；
+  `…/Eagle.app/Frameworks/libgrabkernel2.dylib (mach-o file, but is an incompatible architecture (have 'arm64', need 'arm64e'))`；
+  `usedImages[0]` 里 `Eagle` 的 `arch = arm64e`。
+- **根因**（**Seal 侧 bug，不是 IPA 的问题**）：`SigningWorkspace.stripArm64eArchitecture(in:)`
+  是**逐文件**做的 —— 每个文件各自「能瘦成 arm64 就瘦」。而 dyld 要求**同一 bundle 内主二进制
+  与它加载的每个 dylib 架构一致**：`Lara` 的主程序是 **thin arm64e**（越狱工具，没有普通 arm64 slice）
+  ⇒ 按「thin 原样保留」的规则留着 arm64e；`Frameworks/libgrabkernel2.dylib` 是 **fat(arm64 + arm64e)**
+  ⇒ 被瘦成 arm64 ⇒ arm64e 的主二进制去加载 arm64 的 dylib ⇒ dyld 在 `main` 之前就 `abort_with_payload`。
+- **修复**：`stripArm64eArchitecture` 改为**两遍 + 全树一致**：第一遍只分类
+  （新增 `machOStripScan(of:)` + `Arm64eStripScan`，**只读文件头、一个字节都不改**），
+  只要遇到**任何一个**瘦不到普通 arm64 的 Mach-O（thin arm64e，或 fat 里只有 arm64e）
+  就**直接 `return`、整棵不动**；确认全树都能瘦，第二遍才逐个切 arm64 slice。
+  ⇒ 判据与执行共用同一份 cpusubtype 解析（避免「判定」「执行」两套规则漂移）。
+- **涉及文件**：`Seal/Infrastructure/Signing/SigningWorkspace.swift`（重写 `stripArm64eArchitecture`
+  + 新增 `machOStripScan(of:)` / `Arm64eStripScan`）、`Scripts/verify-release-safety.py`
+  （新增 R91⑨c 断言 + 变异自检）、`RELEASE_NOTES.md`、`project.yml`（`1.3.26`）。
+- **验证状态**：⚠️ **待真机回归**（Windows 本机不能编译，一切以云 CI + 真机为准）。回归点：
+  ① `Lara` 重新签名安装后能正常打开；② 普通 App 产物体积与 1.3.25 一致（瘦身没被整体关掉）。
+- **教训**：**「逐文件」的优化遇到「跨文件一致性」约束时，必须先全树判定、再动手** ——
+  改到一半才发现不能改，架构就已经混装了；而且这类错**只在真机 dyld 上暴露**，
+  本机既不能编译也不能跑，必须靠真机崩溃报告定位。
+
+## 2026-09-27 profile-only 续签「一次超时毒掉后续全部」：污染标记是永久闸门、没有解除路径
+
+- **背景**（用户原话）：「续签有问题」—— 1.3.25 真机上某一项「只换描述文件」的续签失败后，
+  之后**每一项**都失败。
+- **现象**（真机日志顺序）：以 `SEAL-PROFILE-363`（设备端描述文件枚举不可用）开场 →
+  `Minimuxer.installProvisioningProfile` 超过 30 秒未返回（`SEAL-PROFILE-352`）→ 置「污染」标记 →
+  之后**每一项** profile-only 续签都在入口被 `SEAL-PROFILE-350` 挡下 ⇒ 成片失败。
+- **根因**（**Seal 侧 bug**）：`ProfileOnlyProvisioningProfileInstaller` 的 `isTainted` 是
+  **永久**闸门 —— 它表达的是「上一次同步 FFI 没有取消机制、可能仍在后台跑，直接再注入就是并发注入」，
+  但**没有任何解除路径**。而 1.3.25 起后台保活让进程**跨轮存活**（保活正是为此而设）
+  ⇒ 一次通道抖动 = 本进程后续**全部** profile-only 续签被挡，直到用户重启 Seal。
+  1.3.25 修的是「死会话复用」（`SEAL-PROFILE-363` 的成因），**没修这个永久闸门** ⇒ 用户仍报「续签有问题」。
+- **修复**：
+  1. 污染标记抽成**纯状态机** `ProfileOnlyTaintGate`（`private(set) var isTainted` +
+     `markTainted()` + `consume()`）—— 抽成值类型是因为 `SealTests` target 看不到 Minimuxer，
+     判定留在 actor 私有 `Bool` 里就**永远测不到**。
+  2. `consume()` 是**「读取 + 清除」一个原子操作**：写成 `if isTainted { reset(); isTainted = false }`
+     会让两个并发调用都看到 `true`、各自重置一次通道。
+  3. `SigningCoordinator.renewProfilesOnly` 在注入**之前** `consumeTaintIfAny()`，
+     为真时 `await installChannel.reset()` **再 `await installChannel.start()`**，然后才注入，
+     并留痕 `SEAL-PROFILE-355`（警告级）。
+     ⚠️ 重置必须走 `installChannel.reset()`（连 Swift 侧 `cachedDeviceIdentifier` 等一起清），
+     **不能**裸 `Minimuxer.reset()`（只拆 Rust 会话，下一次 `start()` 仍还回已作废的 UDID）。
+     🔴 **`reset()` 之后必须重新 `start()`**（2026-09-27 读 Minimuxer 源码才发现）：
+     `Minimuxer.reset()` 不只是拆 Rust 会话 —— 它先读 `Muxer.isrppairing` 再 `Muxer.reset()`
+     （`teardownLocked()` 把 `_isrppairing` 归零、清配对缓存），并 `Provision.resetProvider()`
+     清掉描述文件 provider；而 `Provision.getProvider()` 是**按 `Muxer.isrppairing` 现场选传输**的
+     ⇒ 归零后会选 `LockDownProvision`（`Device.getFirstDevice()` 走 usbmuxd），
+     而本环境是 RemotePairing（LocalDevVPN）⇒ 注入会在 15 秒轮询后抛 `NoDevice`
+     ⇒ **自愈反而造出一次「重置后第一次操作必失败」**（只靠外层重试兜回来，白多一轮 + 15 秒）。
+     重新 `start()` 会走到 `Minimuxer.start(pairingFile:logPath:)`（`_isrppairing` 复位、
+     `RustIdevice.setRpPairingFile` 重设）⇒ 传输恢复。**reset 之后必 start** 也是设置页
+     导入配对文件 / 恢复连接的既有模式。守卫 R93② 现在同时钉住 `reset()` 与随后的 `start()`。
+  4. `DeviceChannelTransientPolicy` 新增 `profileOperationTimeoutCodes`
+     （`SEAL-PROFILE-352` / `-353`），与「安装提交前」那批 `transientChannelFailureCodes`
+     **刻意分开**：那批重试前**不需要**动传输，这两个**必须**先重置（正是 R05「超时 ≠ 失败」的落点）。
+     `isTransientChannelFailure(_ failure:)` 同时认两表 ⇒ 同一项被纳入续签重试、自己就能自愈。
+- **涉及文件**：`Seal/Infrastructure/Renewal/ProfileOnlyProvisioningProfileInstaller.swift`
+  （新增 `ProfileOnlyTaintGate` + `consumeTaintIfAny()`）、`Seal/Core/Signing/SigningCoordinator.swift`
+  （`renewProfilesOnly` 消费污染 + 重置通道 + `SEAL-PROFILE-355`）、
+  `Seal/Core/Renewal/DeviceChannelTransientPolicy.swift`（`profileOperationTimeoutCodes`）、
+  `SealTests/Renewal/ProfileOnlyTaintGateTests.swift`（新增）、`Scripts/verify-release-safety.py`
+  （新增 R93①–⑤ 断言）、`docs/qa/log-code-index.md`、`RELEASE_NOTES.md`、`project.yml`（`1.3.26`）。
+- **验证状态**：⚠️ **待真机回归**（Windows 本机不能编译；一切以云 CI + 真机为准）。回归点：
+  ① 正常续签全部成功；② 若中途出现一次 `-352` / `-353`，日志应紧跟 `SEAL-PROFILE-355`
+     而**不是**之后每项都 `SEAL-PROFILE-350`。
+- **教训**：**「标记一个『可能有后台任务在跑』的状态时，必须同时设计它的解除路径」** ——
+  永久闸门遇到「进程跨轮存活」（保活 / 批量）就是「一次抖动毒掉后续全部」；
+  而这类错在单进程一次性的旧模型里根本不会暴露。另外：**消费语义要「读取即清除」一个原子操作**，
+  否则并发调用会各自重置一次通道。
+
 ## 2026-09-27 快捷指令后台续签「续不上」：死会话复用、保活不自愈、手动/后台互撞、通道码没进重试词表
 
 - **背景**（用户原话）：「快捷指令那边的自动续签不会续签不成功，锁屏、看电视、听歌各种情况下

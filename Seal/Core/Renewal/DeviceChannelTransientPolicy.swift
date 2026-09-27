@@ -76,7 +76,24 @@ enum DeviceChannelTransientPolicy {
 
     static func isTransientChannelFailure(_ failure: ImportFailure) -> Bool {
         transientChannelFailureCodes.contains(failure.code)
+            || profileOperationTimeoutCodes.contains(failure.code)
     }
+
+    /// 「设备端描述文件操作**卡住**」的码（2026-09-27）。
+    ///
+    /// 与 `transientChannelFailureCodes` **刻意分开**：那批是「安装提交之前」的通道失败，
+    /// 重试前**不需要**动传输；而这两个是「注入 / 回读**超时**」⇒ 底下那次同步 FFI
+    /// 没有取消机制、**可能仍在跑**，重试前**必须**先重置设备通道
+    /// （`ProfileOnlyProvisioningProfileInstaller` 的污染标记就是干这个的，
+    /// 由 `SigningCoordinator.renewProfilesOnly` 消费）。混进上表会让
+    /// 「重试前要不要重置传输」这条区别丢失 —— 那正是 R05「超时 ≠ 失败」的落点。
+    ///
+    /// ⚠️ 这两个码**只**在 `installAndVerify` 里抛出，都在「描述文件注入」这一步：
+    /// 注入是幂等的（同一 UUID 覆盖安装）⇒ 重置通道后重试不会造成设备端重复安装。
+    static let profileOperationTimeoutCodes: Set<String> = [
+        "SEAL-PROFILE-352",   // 注入描述文件超过 30 秒未返回
+        "SEAL-PROFILE-353"    // 设备端读回描述文件超过 30 秒未完成
+    ]
 
     /// `Error` 重载：把任意错误归一成上面两条判据之一。
     ///

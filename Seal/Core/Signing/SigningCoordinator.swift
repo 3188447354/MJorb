@@ -963,6 +963,43 @@ actor SigningCoordinator {
             onWorkUnits: onWorkUnits
         )
         await onCertificateResolved(result.certificateSerialNumber)
+        // 🔴 上一次 profile 注入 / 回读超时留下的**污染**必须先解除（2026-09-27 真机）。
+        //
+        // 超时的那次同步 FFI 没有取消机制、可能仍在后台跑，直接再注入就是**并发注入**
+        // 同一条进程级传输；但把它做成**永久**闸门，会让一次通道抖动毒掉本进程后续
+        // **全部** profile-only 续签（批量 / 保活下进程跨轮存活 ⇒ 成片 `SEAL-PROFILE-350`）。
+        //
+        // 解除动作 = **先拆掉设备通道**：`Minimuxer.reset()` 会把那次可能仍在跑的调用
+        // 所依赖的传输作废，之后在**新**传输上注入才是安全的。
+        // ⚠️ 必须走 `installChannel.reset()`，不能直接 `Minimuxer.reset()` ——
+        // 后者只拆 Rust 会话、留着通道的 Swift 缓存（`cachedDeviceIdentifier` 等），
+        // 下一次 `start()` 仍会还回那个已作废的 UDID（见 `MinimuxerInstallChannel.reset()`）。
+        if await ProfileOnlyProvisioningProfileInstaller.shared.consumeTaintIfAny() {
+            await installChannel.reset()
+            // 🔴 `reset()` 之后**必须重新 `start()`**（2026-09-27，读 Minimuxer 源码发现）。
+            //
+            // `Minimuxer.reset()` 不只是拆 Rust 会话：它内部先读 `Muxer.isrppairing` 再
+            // `Muxer.reset()`（`teardownLocked()` 把 `_isrppairing` 归零、清配对缓存），
+            // 并 `Provision.resetProvider()` 清掉描述文件 provider 缓存。
+            // 而 `Provision.getProvider()` 是**按 `Muxer.isrppairing` 现场选传输**的：
+            // 归零后它会选 `LockDownProvision`（`Device.getFirstDevice()` 走 usbmuxd），
+            // 而本环境是 **RemotePairing（LocalDevVPN）** ⇒ 下面那次
+            // `Minimuxer.installProvisioningProfile` 会在 15 秒轮询后抛 `NoDevice`
+            // ⇒ **自愈反而造出一次「重置后第一次操作必失败」**（只靠外层重试兜回来）。
+            // 重新 `start()` 会走到 `Minimuxer.start(pairingFile:logPath:)`
+            // （`_isrppairing` 复位、`RustIdevice.setRpPairingFile` 重设）⇒ 传输恢复。
+            // ⚠️ 这与设置页导入配对文件 / 恢复连接的既有模式一致：**reset 之后必 start**。
+            // 缓存已在 `reset()` 里清空 ⇒ 这里必然真跑一遍诊断（只在「上一次超时」这条
+            // 罕见路径上付这个代价，换的是**一次就能自愈**而不是再白失败一轮）。
+            _ = try await installChannel.start()
+            try? await logStore?.append(
+                category: .renewal,
+                level: .warning,
+                message: "profile-only 续签：上一次描述文件设备操作超时留下的传输可能仍被占用，"
+                    + "已重置并重新建立设备通道后继续（避免一次抖动毒掉后续全部续签）",
+                code: "SEAL-PROFILE-355"
+            )
+        }
         try await ProfileOnlyProvisioningProfileInstaller.shared.installAndVerify(
             result.materials,
             certificateSerialNumber: result.certificateSerialNumber

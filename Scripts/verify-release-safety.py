@@ -5567,6 +5567,21 @@ def violations(load=read):
           "bundle ID 改写 / 扩展映射）就会让两种用途看到**不同的目标集合** ⇒ "
           "申请到的描述文件与设备记录对不上 ⇒ 每次续签都退化成完整重签（`SEAL-PROFILE-331a`）")
 
+    check("private func machOStripScan(of url: URL) -> Arm64eStripScan {" in r91_ws_code
+          and "return (cpusubtype & 0x00FFFFFF) == 2 ? .blocksStripping : .alreadyPlainArm64"
+              in r91_ws_code
+          and "return sawArm64e ? .blocksStripping : .irrelevant" in r91_ws_code
+          and "case .blocksStripping:\n                return" in r91_ws_code
+          and "var thinnable: [(url: URL, offset: UInt64, size: UInt64)] = []" in r91_ws_code
+          and "for item in thinnable {" in r91_ws_code,
+          "R91⑨c: 「剥离 arm64e」必须**全树都能瘦才瘦**（第一遍只分类、第二遍才改文件）✗ —— "
+          "瘦身是**逐文件**做的，而 dyld 要求**同一 bundle 内主二进制与它加载的每个 dylib "
+          "架构一致**：主二进制是 thin arm64e（越狱工具，没有普通 arm64 slice）时若把 "
+          "fat(arm64 + arm64e) 的 `Frameworks/*.dylib` 瘦成 arm64，dyld 启动即 halt —— "
+          "`Library not loaded: @rpath/libgrabkernel2.dylib` + "
+          "`incompatible architecture (have 'arm64', need 'arm64e')` ⇒ 一打开就 SIGABRT "
+          "（2026-09-27 真机 `Lara` / `Eagle`）")
+
     check("            purpose: .layoutOnly\n" in r91_portal_code
           and r91_portal_code.count("purpose: .layoutOnly") == 1
           and r91_portal_code.count("signingWorkspace.prepare(") == 2,
@@ -5769,6 +5784,85 @@ def violations(load=read):
           and "func installationStageAndTerminalCodesAreNotTransient()" in r92_policy_tests,
           "R92⑩d: `ImportFailure` 通道码判据必须有单测（该重试的收全、不该重试的别收）✗ —— "
           "它的错法只在真机上表现为「本该重试却没有重试 / 白等一轮又失败」")
+
+    # ── R93：profile-only 续签的「超时污染」必须能自愈（2026-09-27 真机）──────────
+    #
+    # 现象：`SEAL-PROFILE-363` 开场 → `installProvisioningProfile` 超时（`-352`）
+    #   → 置「污染」标记 → 之后**每一项** profile-only 续签都被 `-350` 挡下 ⇒ 成片失败。
+    # 根因：标记是**永久**闸门、没有解除路径；而保活让进程**跨轮存活** ⇒ 一次通道抖动
+    #   毒掉本进程后续全部续签，直到用户重启 Seal（正是用户报的「续签有问题」）。
+    # 判据：① 污染标记必须是**可一次性消费**的纯状态机（actor 私有 `Bool` 测不到）；
+    #   ② 调用点必须在注入**之前**消费，为真时**重置设备通道**（且不是裸 `Minimuxer.reset()`）；
+    #   ③ 两个超时码必须纳入续签重试（同一项才能自愈），并与「安装提交前」那批**分开**。
+    r93_installer = strip_comments(load(
+        "Seal/Infrastructure/Renewal/ProfileOnlyProvisioningProfileInstaller.swift"))
+    r93_gate = section_or_empty(
+        r93_installer,
+        "struct ProfileOnlyTaintGate {",
+        "actor ProfileOnlyProvisioningProfileInstaller {"
+    )
+    r93_profile = section_or_empty(
+        r92_signing,
+        "        await onCertificateResolved(result.certificateSerialNumber)\n",
+        "        try await ProfileOnlyProvisioningProfileInstaller.shared.installAndVerify("
+    )
+    r93_policy_set = section_or_empty(
+        r92_policy,
+        "static let profileOperationTimeoutCodes: Set<String> = [",
+        "static func isTransientChannelFailure(_ error: Error) -> Bool {"
+    )
+    r93_consume_call = "if await ProfileOnlyProvisioningProfileInstaller.shared.consumeTaintIfAny() {"
+    r93_install_call = "try await ProfileOnlyProvisioningProfileInstaller.shared.installAndVerify("
+    r93_gate_tests = load("SealTests/Renewal/ProfileOnlyTaintGateTests.swift")
+
+    check("private(set) var isTainted = false" in r93_gate
+          and "mutating func markTainted() {" in r93_gate
+          and "mutating func consume() -> Bool {" in r93_gate
+          and "let wasTainted = isTainted" in r93_gate
+          and "isTainted = false" in r93_gate
+          and "return wasTainted" in r93_gate,
+          "R93①: 污染标记必须是**可一次性消费**的纯状态机（`consume()` 要「读取 + 清除」）✗ —— "
+          "它原来是 actor 的私有 `Bool`：测试 target 看不到 Minimuxer ⇒ 判定测不到；"
+          "而「没清标记」的错法不崩、不报错，只让**每一项**续签都白重置一次设备通道")
+
+    check(r93_consume_call in r92_signing
+          and r92_signing.index(r93_consume_call) < r92_signing.index(r93_install_call)
+          and "await installChannel.reset()" in r93_profile
+          and "await installChannel.start()" in r93_profile
+          and r93_profile.index("await installChannel.reset()")
+              < r93_profile.index("await installChannel.start()")
+          and "Minimuxer.reset()" not in r93_profile,
+          "R93②: 调用点必须在注入**之前**消费污染标记，为真时**重置 + 重新 start 设备通道** ✗ —— "
+          "消费漏了 ⇒ 一次超时毒掉后续全部续签（`-350` 成片）；"
+          "重置漏了 ⇒ 在「传输可能仍被占用」时并发注入；"
+          "而重置若写成裸 `Minimuxer.reset()` ⇒ 只拆 Rust 会话、留着通道的 Swift 缓存，"
+          "下一次 `start()` 仍会还回那个已作废的 UDID（见 `MinimuxerInstallChannel.reset()`）；"
+          "**reset 之后漏了 `start()`** ⇒ `Muxer.isrppairing` 已被归零、`Provision.resetProvider()` "
+          "已清 provider ⇒ 下一次注入会选 **Lockdown** 传输（`Device.getFirstDevice()` 走 usbmuxd），"
+          "而本环境是 RemotePairing（LocalDevVPN）⇒ 自愈反而造出一次「重置后第一次操作必失败」"
+          "（只靠外层重试兜回来）—— 设置页导入配对文件 / 恢复连接的既有模式同样是 **reset 后必 start**")
+
+    r93_codes = re.findall(r'"(SEAL-[A-Za-z0-9\-]+)"', r93_policy_set)
+    check(r93_codes == ["SEAL-PROFILE-352", "SEAL-PROFILE-353"]
+          and "transientChannelFailureCodes.contains(failure.code)\n"
+              "            || profileOperationTimeoutCodes.contains(failure.code)" in r92_policy,
+          "R93③: 两个描述文件超时码必须纳入续签重试、且与「安装提交前」那批**分开** ✗ —— "
+          "不纳入 ⇒ 同一项不会自愈（只靠下一项救场）；"
+          "混进 `transientChannelFailureCodes` ⇒ 丢掉「重试前要不要先重置传输」这条区别"
+          "（那批不需要重置，这两个**必须**重置）—— 那正是 R05「超时 ≠ 失败」的落点")
+
+    check('code: "SEAL-PROFILE-355"' in r93_profile
+          and "`SEAL-PROFILE-355`" in r92_index,
+          "R93④: 自愈动作必须留痕 `SEAL-PROFILE-355` 并登记进 "
+          "`docs/qa/log-code-index.md` ✗ —— 这条链路在批量 / 后台跑，"
+          "没有它时「一次超时毒掉后续全部续签」在日志上完全看不出来")
+
+    check("struct ProfileOnlyTaintGateTests" in r93_gate_tests
+          and "func consumeIsOneShot()" in r93_gate_tests
+          and "func profileTimeoutCodesAreRetryable()" in r93_gate_tests,
+          "R93⑤: 污染标记与两个超时码必须有单测 ✗ —— "
+          "它们的错法只在真机上表现为「白重置一次通道」或「本该自愈却没有」，"
+          "不崩、不报错、日志里也看不出来")
 
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
@@ -8696,6 +8790,11 @@ def main():
          "                try stripArm64eArchitecture(in: appURL)\n"
          "            }",
          "R91⑨a:"),
+        # ⑨c fat 里只有 arm64e 时不再阻断（照样把 fat(arm64+arm64e) 的 dylib 瘦成 arm64）⇒ R91⑨c 报红。
+        ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
+         "        return sawArm64e ? .blocksStripping : .irrelevant",
+         "        return .irrelevant",
+         "R91⑨c:"),
         # ⑨b 把「会改变扩展集合」的步骤也塞进 `purpose` 开关 ⇒ R91⑨b 报红。
         ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
          "            try removeUnsupportedBundles(in: appURL)\n",
@@ -8851,6 +8950,23 @@ def main():
          "`SEAL-OP-002`",
          "`SEAL-OP-902`",
          "R92⑪:"),
+
+        # ── R93：profile-only 续签的「超时污染」必须能自愈 ──
+        # ① `consume()` 不再回读原值（恒返回 true ⇒ 每项续签都白重置一次通道）⇒ R93① 报红。
+        ("Seal/Infrastructure/Renewal/ProfileOnlyProvisioningProfileInstaller.swift",
+         "        let wasTainted = isTainted",
+         "        let wasTainted = true",
+         "R93①:"),
+        # ②a 调用点不再消费污染标记（一次超时毒掉后续全部续签）⇒ R93② 报红。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "        if await ProfileOnlyProvisioningProfileInstaller.shared.consumeTaintIfAny() {",
+         "        if false {",
+         "R93②:"),
+        # ②b `reset()` 之后不再重新 `start()`（传输退回 Lockdown、自愈后第一次注入必失败）⇒ R93② 报红。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "            _ = try await installChannel.start()\n",
+         "",
+         "R93②:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

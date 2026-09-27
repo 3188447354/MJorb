@@ -39,7 +39,7 @@ import Foundation
 /// ## 为什么以 Team 为准
 ///
 /// Seal 签出的 Bundle ID 形如 `<bundle>.<TEAM>`（例如
-/// `com.kdt.livecontainer.seal.CT8QZ7352B`）。**同 Team 才是安全回退**：签名身份一致、
+/// `com.kdt.livecontainer.seal.TEAM000010`）。**同 Team 才是安全回退**：签名身份一致、
 /// Keychain 访问组与 App Group 不变。换 Team 会让这些前缀失配
 ///（Seal 自己在 `beginSigning` 里就有「更新将重置本地数据」的拦截，理由相同）。
 /// 所以第 4 步只认同 Team，第 5 步宁可拒绝也不静默换 Team。

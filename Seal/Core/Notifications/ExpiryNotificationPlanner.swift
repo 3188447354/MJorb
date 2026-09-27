@@ -19,7 +19,8 @@ struct ExpiryNotificationPlanner: Sendable {
                   app.belongsInInstalledList,
                   let expiryDate = app.expiryDate,
                   expiryDate > now else { return nil }
-            let requestedFireDate = expiryDate.addingTimeInterval(-24 * 3_600)
+            // 用传入的 `leadHours`：此前硬编码 24 ⇒ 参数是**死的**，调用方传别的值会被静默忽略。
+            let requestedFireDate = expiryDate.addingTimeInterval(TimeInterval(-leadHours * 3_600))
             guard requestedFireDate > now else { return nil }
             return ExpiryNotificationPlan(
                 appID: app.id,

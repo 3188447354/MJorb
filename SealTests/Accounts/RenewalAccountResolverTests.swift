@@ -17,7 +17,7 @@ struct RenewalAccountResolverTests {
 
     private let recordedUUID = UUID(uuidString: "AAAAAAAA-0000-0000-0000-000000000001")!
     private let otherUUID = UUID(uuidString: "BBBBBBBB-0000-0000-0000-000000000002")!
-    private let team = "CT8QZ7352B"
+    private let team = "TEAM000010"
 
     private func account(
         id: UUID,
@@ -111,7 +111,7 @@ struct RenewalAccountResolverTests {
 
     @Test
     func teamComparisonIgnoresCaseAndSurroundingWhitespace() {
-        let fresh = account(id: otherUUID, teamID: "ct8qz7352b")
+        let fresh = account(id: otherUUID, teamID: "team000010")
         let resolution = RenewalAccountResolver.resolve(
             recordedAccountID: recordedUUID,
             recordedTeamID: "  \(team)  ",

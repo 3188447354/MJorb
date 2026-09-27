@@ -178,11 +178,11 @@ enum IPAArchiveFixture {
             <key>ExpirationDate</key>
             <date>2027-01-01T00:00:00Z</date>
             <key>TeamIdentifier</key>
-            <array><string>T3432ZHJUF9</string></array>
+            <array><string>TTEAM000001</string></array>
             <key>Entitlements</key>
             <dict>
                 <key>application-identifier</key>
-                <string>T3432ZHJUF9.\(bundleIdentifier)</string>
+                <string>TTEAM000001.\(bundleIdentifier)</string>
             </dict>
             <key>DeveloperCertificates</key>
             <array>\(certificateEntries)</array>

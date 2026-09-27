@@ -196,6 +196,15 @@ struct UpdateNoticeView: View {
             .shadow(color: .black.opacity(0.25), radius: 30, x: 0, y: 12)
             .transition(.scale(scale: 0.9).combined(with: .opacity))
         }
+        // 🔴 视图消失（点「取消」/ 被父视图移除）必须**取消下载**（2026-09-28）：
+        // 「取消」按钮走 `onDismiss`，它只把父视图的 `updateNotice` 置空 —— 视图没了，
+        // 但 `downloadTask` 仍持着闭包继续跑，下载完成后照样回调 `onInstall` ⇒
+        // **用户明明点了取消，更新还是被装上**。`UpdateIPADownloader` 用
+        // `URLSession.download(for:)`，取消会传导到传输任务并删掉半成品文件。
+        .onDisappear {
+            downloadTask?.cancel()
+            downloadTask = nil
+        }
     }
 
     private var isDownloading: Bool {

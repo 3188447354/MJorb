@@ -24,9 +24,9 @@ struct ProvisioningProfileReaderTests {
         let plist = try PropertyListSerialization.data(
             fromPropertyList: [
                 "ExpirationDate": expiration,
-                "TeamIdentifier": ["T3432ZHJUF9"],
+                "TeamIdentifier": ["TTEAM000001"],
                 "Entitlements": [
-                    "application-identifier": "T3432ZHJUF9.com.mjorb.seal.t3432zhjuf9"
+                    "application-identifier": "TTEAM000001.com.mjorb.seal.tteam000001"
                 ]
             ],
             format: .xml,
@@ -38,10 +38,10 @@ struct ProvisioningProfileReaderTests {
 
         let summary = try ProvisioningProfileReader().summary(from: profile)
         #expect(summary.expirationDate == expiration)
-        #expect(summary.teamIdentifier == "T3432ZHJUF9")
+        #expect(summary.teamIdentifier == "TTEAM000001")
         #expect(
             summary.applicationIdentifier
-                == "T3432ZHJUF9.com.mjorb.seal.t3432zhjuf9"
+                == "TTEAM000001.com.mjorb.seal.tteam000001"
         )
     }
 

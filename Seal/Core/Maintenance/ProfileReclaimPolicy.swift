@@ -37,8 +37,8 @@ enum ProfileReclaimPolicy {
     /// Seal 生成过的 Bundle ID 的标志：`.seal` 中缀。
     ///
     /// 两种形态都会命中：
-    /// - 普通 App：`com.kdt.livecontainer.seal.3432ZHJUF9`
-    /// - Seal 自己：`com.mjorb.seal.TB95F327DS`
+    /// - 普通 App：`com.kdt.livecontainer.seal.TEAM000001`
+    /// - Seal 自己：`com.mjorb.seal.TEAM000008`
     ///
     /// ⚠️ 还有**第三种**形态不含这个中缀：Seal 早期用过的裸 ID `com.mjorb.seal`。
     /// 它由 `isReclaimableOrphan` 里单独一条**精确相等**判断处理（见那里的说明）——

@@ -73,8 +73,12 @@ actor SealLogStore {
             : nil
         // 构建标识显式传下去（而不是靠默认参数）：这条依赖是「日志能不能定版」的关键，
         // 要能被守卫的源码断言看见 —— 删掉它守卫就该红。
+        // 🔴 导出（= 镜像到 Documents 的 `Seal-log.txt`）**也必须过脱敏**（AGENTS.md §4）：
+        // `append` 只保证**新写入**的那份已脱敏；升级前遗留的未脱敏 JSON 会被原样读进
+        // `buffer`，这里若直接交给格式化器就会把它们原样导出（公开仓库即泄露开发者账号）。
+        // `entries()` 早就做了这层重脱敏，导出与它同源。
         return SealLogTextFormatter.exportText(
-            buffer.reversed(),
+            buffer.map(Self.redacted).reversed(),
             capacity: maximumEntries,
             notice: notice,
             buildLabel: SealLogTextFormatter.currentBuildLabel

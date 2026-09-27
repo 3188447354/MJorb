@@ -13,7 +13,7 @@
 09:05:06  准备签名：微信
 09:05:19  证书轮换：候选只剩 Seal 正在使用的证书 ⇒ 不自动撤销
 09:05:22  [SEAL-CERT-204b] …code=3022
-09:05:36  开始续签：Seal …ID：com.mjorb.seal.CT8QZ7352B
+09:05:36  开始续签：Seal …ID：com.mjorb.seal.TEAM000010
 09:05:39  [SEAL-PROFILE-334] 当前证书不可续签：profile-only 只能复用…本机证书
 ```
 

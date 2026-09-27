@@ -105,14 +105,14 @@ struct DeviceProfileCleanerTests {
         summary.reclaimed = 7
         summary.reclaimKeptInstalled = 9
         summary.reclaimUnverified = 1
-        summary.reclaimSample = ["com.kdt.livecontainer.seal.3432ZHJUF9"]
+        summary.reclaimSample = ["com.kdt.livecontainer.seal.TEAM000001"]
 
         let message = summary.logMessage
 
         #expect(message.contains("；旧 Team 变体：候选 18，回收 7"))
         #expect(message.contains("，已装保留 9"))
         #expect(message.contains("，未能核验 1"))
-        #expect(message.contains("，示例 com.kdt.livecontainer.seal.3432ZHJUF9"))
+        #expect(message.contains("，示例 com.kdt.livecontainer.seal.TEAM000001"))
     }
 
     /// 候选多于样本上限时要带「等」，否则会让人以为候选总共就这几个。
@@ -172,7 +172,7 @@ struct DeviceProfileCleanerTests {
     func reclaimAbortIsVisibleWithoutClaimingTheWholeRunFailed() {
         var summary = ProfileCleanupSummary(scanned: 30, matched: 12, removed: 2)
         summary.reclaimCandidates = 17
-        summary.reclaimAborted = "阳性对照未通过（com.mjorb.seal.TB95F327DS 被答成未安装）"
+        summary.reclaimAborted = "阳性对照未通过（com.mjorb.seal.TEAM000008 被答成未安装）"
 
         let message = summary.logMessage
 

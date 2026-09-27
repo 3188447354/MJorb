@@ -45,14 +45,25 @@ struct AppOperationPresentation: Equatable, Sendable {
             return
         }
 
-        let days = max(1, Int(interval / 86_400))
-        kind = days <= 3 ? .urgentRenewal : .renewal
+        // 剩余天数**四舍五入**（2026-09-28 用户反馈）：免费账号 profile 恰好 7 天，
+        // 刚签名完读到的剩余是 6.99 天 ⇒ 向下取整会显示「6天」，让人误以为寿命只有 6 天。
+        // 四舍五入后刚签完即显示「7天」。
+        // ⚠️ 刻意**不用**向上取整：`ceil` 会让「1天」只在恰好 24 小时那一瞬出现
+        //（25 小时显示「2天」、23 小时走「小时」分支），把一天的刻度抹掉；
+        // 四舍五入能同时保住「刚签完 = 7 天」与「1 天 = 0.5–1.5 天」两个刻度。
+        let days = max(1, Int((interval / 86_400).rounded()))
+        // 紧急阈值与**显示的天数**同源（`days <= 3`）：数字与颜色必须说同一件事。
+        // ⚠️ 若按真实剩余时间判（`interval < 4 * 86_400`），会出现「显示 4 天却是橙色告警」
+        // 的半天窗口（剩余 3.5–4.0 天）—— 用户看到的是自相矛盾的一行。
+        // 这与改动前的 `floor(...) <= 3` 是**同一种**「数字决定颜色」的形态，只是刻度换成四舍五入。
+        let isUrgent = days <= 3
+        kind = isUrgent ? .urgentRenewal : .renewal
         validity = AppValidityPresentation(
             text: "\(days)天",
             detailText: "\(days)天",
-            // 充裕期（>3天）用中性陈述，不使用 success 绿色：剩余可续签天数不是一种“成功”，
+            // 充裕期（≥4天）用中性陈述，不使用 success 绿色：剩余可续签天数不是一种“成功”，
             // success 语义保留给证书校验可用（CertificateValidationStatus.available）。
-            tone: days <= 3 ? .warning : .neutral
+            tone: isUrgent ? .warning : .neutral
         )
     }
 

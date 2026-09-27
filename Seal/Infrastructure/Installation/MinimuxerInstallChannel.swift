@@ -810,8 +810,14 @@ actor MinimuxerInstallChannel: InstallChannel {
     /// `CustomStringConvertible`，桥接成 `NSError` 后关联值里的
     /// `ApplicationVerificationFailed` / `No space left` 会全部丢失，于是
     /// `isTerminalInstallError` 恒判「可重试」⇒ 500MB 整包被空推 3 轮。
-    /// `installationFailure` 用的也是 `diagnostic`，两者同源才不会「一张表认得、
-    /// 另一张表喂错文本」。
+    /// `isTerminalInstallError`（经本函数取词）与 `installationFailure` **都**走这里，
+    /// 两者同源才不会「一张表认得、另一张表喂错文本」。
+    ///
+    /// ⚠️ 2026-09-28 修正：`installationFailure` 原先用 `diagnostic`，而
+    /// `diagnostic` 对 `ImportFailure` 只会经 `NSError` 桥接拿到 `title`
+    ///（如「安装失败」），原始设备错误其实在 `reason` 里 ⇒ 两个判据对**同一个**
+    /// `ImportFailure` 会看到不同文本，终端拒绝（`No space left` 等）会被归入泛化
+    /// `SEAL-INSTALL-702`。现在两处统一走本函数。
     static func errorDetail(_ error: Error) -> String {
         if let failure = error as? ImportFailure {
             return failure.reason
@@ -884,6 +890,25 @@ actor MinimuxerInstallChannel: InstallChannel {
         return false
     }
 
+    /// 自替换等待结束时，是否必须**保持单飞闸门置位**。
+    ///
+    /// 与「超时」同义的失败模式有**两种**，都不是「安装已经结束」：
+    /// - `HardTimeout.TimeoutError` / `installTimeoutFailure`：超时，见上；
+    /// - `CancellationError`（2026-09-28 补）：父任务被取消时由
+    ///   `HardTimeout.RaceState.cancelByParent` 抛出，**只代表上层不再等待**。
+    ///   承载安装的是 `Task.detached`（不继承父任务的取消），
+    ///   `Minimuxer.stageAndInstall` 又是同步 FFI ⇒ 底下那笔安装很可能仍在设备端执行。
+    ///
+    /// 两种情况下解锁，下一笔安装就会在同一个 Bundle ID 上并发提交 ——
+    /// 正是 R05 / R10 要防的「第二次安装」（`ApplicationVerificationFailed`、白图标、
+    /// 装到一半的应用）。只有安装真的返回、或真的抛错（非这两种）才解锁。
+    ///
+    /// 放在 `#if !targetEnvironment(simulator)` **之外**：与 `isTimeoutInstallError`
+    /// 同理 —— 模拟器切片要能编译，且这条判据必须有单测（守卫 R10 钉住）。
+    static func mustKeepSelfReplacementGateLocked(_ error: Error) -> Bool {
+        isTimeoutInstallError(error) || error is CancellationError
+    }
+
     /// 自替换被「上一笔仍在进行中」拒绝（见 `SelfReplacementInstallGate`）。
     ///
     /// 与超时一样按终态处理：重试只会被同一个闸门再拒一次，而两条重试路径里的
@@ -926,7 +951,13 @@ actor MinimuxerInstallChannel: InstallChannel {
                 installation: installation
             )
         } catch {
-            selfReplacementGate.release(timedOut: Self.isTimeoutInstallError(error))
+            // 🔴 取消（`CancellationError`）与超时**同义**，都必须保持闸门置位
+            //（2026-09-28）：取消只代表上层不再等待，`Task.detached` 不继承取消、
+            // 同步 FFI 取消不掉 ⇒ 底下那笔安装很可能仍在跑。旧写法只判超时
+            // ⇒ 用户一取消（或上层 Task 被取消）就解锁，下一笔安装立刻在同一
+            // Bundle ID 上并发提交，正是闸门要防的形态。判据见
+            // `mustKeepSelfReplacementGateLocked(_:)`。
+            selfReplacementGate.release(timedOut: Self.mustKeepSelfReplacementGateLocked(error))
             throw error
         }
         selfReplacementGate.release(timedOut: false)
@@ -1439,7 +1470,10 @@ actor MinimuxerInstallChannel: InstallChannel {
     }
 
     private static func installationFailure(_ error: Error) -> ImportFailure {
-        let detail = diagnostic(error)
+        // 与 `isTerminalInstallError` **同源**取词（`errorDetail` 对 `ImportFailure`
+        // 取 `reason`、其余走 `diagnostic`）—— 用 `diagnostic` 会在 `ImportFailure`
+        // 上只拿到 `title`，两张表对同一错误看到不同文本。
+        let detail = errorDetail(error)
         let lower = detail.lowercased()
 
         // 确定性失败优先于连接类判断；错误文本里往往同时含 "device"（如

@@ -399,11 +399,22 @@ struct DeviceProfileCleaner: Sendable {
         summary.dumpAttempts = dump.attempts
 
         let dumpURL = URL(fileURLWithPath: dump.path)
-        let profileURLs = (try? fileManager.contentsOfDirectory(
-            at: dumpURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )) ?? []
+        let profileURLs: [URL]
+        do {
+            profileURLs = try fileManager.contentsOfDirectory(
+                at: dumpURL,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            // 🔴 列目录失败必须与「设备上确实没有 profile」**区分开**（AGENTS.md §4）。
+            // 旧写法 `(try? ...) ?? []` 会把失败退化成空清单：清理静默不生效、
+            // profile 继续在设备上堆积，而日志里看不出任何原因（与「本来就没有」同形）。
+            // fail closed：拿不到清单就整轮不回收，并把真实原因置进 summary 供对账。
+            summary.stage = "enumerate"
+            summary.firstError = "枚举 dump 目录失败: \(String(describing: error))"
+            return summary
+        }
 
         // ── 阶段 A：本地判定（不需要问设备）────────────────────────────────
         // 路径 1 只用本地知识（keep-map）就能决定去留；路径 2 只**收集候选**，

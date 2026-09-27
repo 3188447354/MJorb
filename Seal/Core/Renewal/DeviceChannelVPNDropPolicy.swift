@@ -50,8 +50,14 @@ enum DeviceChannelVPNDropPolicy {
         if let failure = error as? ImportFailure {
             return isVPNDrop(detail: failure.reason) || isVPNDrop(detail: failure.title)
         }
+        // 非 `ImportFailure` 必须走 `MinimuxerInstallChannel.errorDetail`（**取词同源**）：
+        // 生产安装路径抛的是 `MinimuxerError.InstallApp(deviceError)`，桥接成 `NSError` 后
+        // `localizedDescription` 只剩「The operation couldn't be completed…」，
+        // 关联值里的 `Broken pipe` / `connection reset` **全部丢失** ⇒ 掉线判定恒为 false、
+        // 死会话不被作废（正是「重试三次都撞同一个死会话」的形态）。
+        // `errorDetail` 对 `MinimuxerError` 走 `Minimuxer.describeError` ⇒ `InstallApp(msg)` 保留。
         let nsError = error as NSError
-        return isVPNDrop(detail: nsError.localizedDescription)
+        return isVPNDrop(detail: MinimuxerInstallChannel.errorDetail(error))
             || isVPNDrop(detail: "\(nsError.domain) \(nsError.code)")
     }
 }

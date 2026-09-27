@@ -48,8 +48,8 @@ struct SelfReplacementPolicyTests {
                 SignedTargetIdentity(
                     kind: .appExtension,
                     bundleIdentifier: "com.example.seal.share",
-                    teamIdentifier: "T3432ZHJUF9",
-                    applicationIdentifier: "T3432ZHJUF9.com.example.seal.share",
+                    teamIdentifier: "TTEAM000001",
+                    applicationIdentifier: "TTEAM000001.com.example.seal.share",
                     profileUUID: "profile-uuid",
                     profileExpirationDate: .distantFuture,
                     signerSerialNumber: "DIFFERENT",
@@ -193,8 +193,8 @@ private extension SignedTargetIdentity {
     static let mainFixture = SignedTargetIdentity(
         kind: .mainApp,
         bundleIdentifier: "com.example.seal",
-        teamIdentifier: "T3432ZHJUF9",
-        applicationIdentifier: "T3432ZHJUF9.com.example.seal",
+        teamIdentifier: "TTEAM000001",
+        applicationIdentifier: "TTEAM000001.com.example.seal",
         profileUUID: "profile-uuid",
         profileExpirationDate: .distantFuture,
         signerSerialNumber: "ABC123",
@@ -205,8 +205,8 @@ private extension SignedTargetIdentity {
     static let extensionFixture = SignedTargetIdentity(
         kind: .appExtension,
         bundleIdentifier: "com.example.seal.share",
-        teamIdentifier: "T3432ZHJUF9",
-        applicationIdentifier: "T3432ZHJUF9.com.example.seal.share",
+        teamIdentifier: "TTEAM000001",
+        applicationIdentifier: "TTEAM000001.com.example.seal.share",
         profileUUID: "profile-uuid",
         profileExpirationDate: .distantFuture,
         signerSerialNumber: "ABC123",

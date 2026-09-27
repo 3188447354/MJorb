@@ -371,7 +371,7 @@ struct AppMaintenanceJobTests {
         // ⇒ Seal 当场打不开、「VPN 与设备管理」里的描述文件消失（真机构建 38）。
         let seal = makeRecord(
             appID: UUID(),
-            mappedBundleIdentifier: "com.mjorb.seal.T3432ZHJUF9",
+            mappedBundleIdentifier: "com.mjorb.seal.TTEAM000001",
             provisioningProfileUUID: "OPTIMISTIC-NEW-UUID",
             signedArtifactStatus: .installed,
             isSeal: true
@@ -382,7 +382,7 @@ struct AppMaintenanceJobTests {
             records: [seal],
             sealProfileUUID: "RUNNING-OLD-UUID"
         )
-        #expect(withRunning["com.mjorb.seal.T3432ZHJUF9"] == "RUNNING-OLD-UUID",
+        #expect(withRunning["com.mjorb.seal.TTEAM000001"] == "RUNNING-OLD-UUID",
                 "Seal 的保留项必须用运行时读到的真实 profile")
 
         // ② 读不到运行时身份 ⇒ 整条摘出保留集合（宁缺勿滥），
@@ -391,7 +391,7 @@ struct AppMaintenanceJobTests {
             records: [seal],
             sealProfileUUID: nil
         )
-        #expect(withoutRunning["com.mjorb.seal.T3432ZHJUF9"] == nil,
+        #expect(withoutRunning["com.mjorb.seal.TTEAM000001"] == nil,
                 "读不到运行时身份时不得回退到记录值")
 
         // ③ 空白值同样不得回退。
@@ -399,7 +399,7 @@ struct AppMaintenanceJobTests {
             records: [seal],
             sealProfileUUID: "   "
         )
-        #expect(blankRunning["com.mjorb.seal.T3432ZHJUF9"] == nil,
+        #expect(blankRunning["com.mjorb.seal.TTEAM000001"] == nil,
                 "空白运行时值不得回退到记录值")
     }
 

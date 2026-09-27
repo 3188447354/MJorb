@@ -212,34 +212,60 @@ struct SigningProgressView: View {
         let centerLabel: String? = (confirmed == nil && stage == .installing && sealRenewal)
             ? "替换中"
             : nil
+        // 2026-09-28 用户反馈「圆环过大、动效朴素」⇒ 直径 50→38、线宽 5→3.5，
+        // 描边改为**渐变色**，不确定态用**两段反向旋转的弧**（比单段更像「在推进」）。
+        let ringSize: CGFloat = 38
+        let ringWidth: CGFloat = 3.5
         return TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: confirmed != nil)) { context in
             ZStack {
                 Circle()
-                    .stroke(Color.sealTextSecondary.opacity(0.18), lineWidth: 5)
+                    .stroke(Color.sealTextSecondary.opacity(0.16), lineWidth: ringWidth)
                 if let confirmed {
                     Circle()
-                        .trim(from: 0, to: max(0.03, confirmed / 100))
-                        .stroke(Color.sealAccent, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                        .trim(from: 0, to: max(0.02, confirmed / 100))
+                        .stroke(
+                            AngularGradient(
+                                gradient: Gradient(colors: [
+                                    Color.sealAccent.opacity(0.45),
+                                    Color.sealAccent
+                                ]),
+                                center: .center,
+                                startAngle: .degrees(0),
+                                endAngle: .degrees(360)
+                            ),
+                            style: StrokeStyle(lineWidth: ringWidth, lineCap: .round)
+                        )
                         .rotationEffect(.degrees(-90))
+                        // 值由状态变化驱动（时钟已 `paused`）⇒ 补一层隐式动画让弧线**平滑推进**，
+                        // 而不是一格一格跳。这不与逐帧时钟打架（转弧那支才受时钟驱动）。
+                        .animation(.easeOut(duration: 0.28), value: confirmed)
                     Text("\(Int(confirmed))%")
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.sealAccent)
                         .monospacedDigit()
                 } else {
+                    // 不确定态：主弧正转、副弧（更淡）反转，形成持续「推进」的观感。
                     Circle()
-                        .trim(from: 0, to: 0.72)
-                        .stroke(Color.sealAccent, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                        .trim(from: 0, to: 0.3)
+                        .stroke(Color.sealAccent, style: StrokeStyle(lineWidth: ringWidth, lineCap: .round))
                         .rotationEffect(.degrees(spinPhase(context.date) * 360))
+                    Circle()
+                        .trim(from: 0.5, to: 0.72)
+                        .stroke(
+                            Color.sealAccent.opacity(0.32),
+                            style: StrokeStyle(lineWidth: ringWidth, lineCap: .round)
+                        )
+                        .rotationEffect(.degrees(-spinPhase(context.date) * 360 * 0.55))
                     if let centerLabel {
                         Text(centerLabel)
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .font(.system(size: 9, weight: .semibold, design: .rounded))
                             .foregroundStyle(Color.sealAccent)
                     }
                 }
             }
-            .frame(width: 50, height: 50)
+            .frame(width: ringSize, height: ringSize)
         }
-        .frame(width: 50, height: 50)
+        .frame(width: ringSize, height: ringSize)
     }
 
     private func successContent(_ installed: AppRecord) -> some View {

@@ -224,7 +224,10 @@ struct SigningHistoryRecord: Codable, Equatable, Identifiable, Sendable {
         if interval < 86_400 {
             return "\(max(1, Int(interval / 3_600)))小时"
         }
-        return "\(max(1, Int(interval / 86_400)))天"
+        // 天数**四舍五入**：与已安装列表（`AppOperationPresentation`）同源 —— 免费 profile
+        // 恰好 7 天，刚签完读到的是 6.99 天，向下取整会显示「6天」（2026-09-28 用户反馈）。
+        // 刻意不用 `ceil`：那会让「1天」只在恰好 24 小时那一瞬出现（见 `AppPresentation`）。
+        return "\(max(1, Int((interval / 86_400).rounded())))天"
     }
 }
 

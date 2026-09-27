@@ -391,10 +391,34 @@ actor RenewalCoordinator {
                         // 通道类失败用**更长**的退避：隧道恢复是秒级到十几秒级的事，
                         // 2 秒退避几乎必然撞在还没恢复的窗口里，重试等于白跑
                         //（见 `DeviceChannelTransientPolicy.channelRetryDelayNanoseconds`）。
-                        let base = DeviceChannelTransientPolicy.isTransientChannelFailure(error)
+                        let isChannelFailure = DeviceChannelTransientPolicy.isTransientChannelFailure(error)
+                        let base = isChannelFailure
                             ? DeviceChannelTransientPolicy.channelRetryDelayNanoseconds
                             : baseRetryDelay
                         let delay = base * UInt64(attempt)
+                        // 🔴 重试前必须先把设备通道恢复成「可重新建会话」的状态（2026-09-28）。
+                        //
+                        // 旧行为只 `Task.sleep` 后 `continue`：重试仍撞在**同一个**死会话上 ——
+                        // `MinimuxerInstallChannel.start()` 的 900 秒成功缓存会把已被隧道抖动顶掉的
+                        // 会话原样还回来，于是「重试三次全失败、用户以为续签坏了」。
+                        // 恢复动作与单签（`AppsViewModel.signWithChannelRetry`）**同源**，
+                        // 都走 `SigningCoordinator.prepareInstallChannelForRetry(after:)`。
+                        // 只在**通道类**失败时动通道：Apple 网络错误的通道本来是好的，
+                        // 清熔断只会白跑一轮 75 秒诊断。
+                        if isChannelFailure {
+                            await signingCoordinator.prepareInstallChannelForRetry(after: error)
+                        }
+                        // 留痕：没有这一条时，批量的重试在日志上完全看不出来（这正是本次难定位的原因）。
+                        try? await logStore?.append(
+                            category: .renewal,
+                            level: .warning,
+                            message: "批量续签：第 \(offset + 1)/\(queue.count) 项"
+                                + (isChannelFailure ? "设备通道瞬时失败" : "临时错误")
+                                + "（第 \(attempt)/\(maxAttempts) 次尝试），"
+                                + "\(Int(delay / 1_000_000_000)) 秒后重试："
+                                + DeviceChannelTransientPolicy.diagnostic(error),
+                            code: "SEAL-RENEW-503"
+                        )
                         try? await Task.sleep(nanoseconds: delay)
                         continue
                     }

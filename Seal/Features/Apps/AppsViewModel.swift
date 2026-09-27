@@ -2619,11 +2619,10 @@ final class AppsViewModel: ObservableObject {
                 // 与失败熔断一起清（否则下一次 `start()` 会在 900 秒窗口内把同一个死会话
                 // 原样还回来）。描述文件**超时**类交给 `renewProfilesOnly` 的污染闸门
                 // 自己 reset + start，这里只清熔断，避免重复拆多付一轮诊断。
-                if DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(error) {
-                    await installChannel?.reset()
-                } else {
-                    await installChannel?.clearFailureCooldown()
-                }
+                // ⚠️ 恢复动作与批量（`RenewalCoordinator.process`）**同源**，都走
+                // `SigningCoordinator.prepareInstallChannelForRetry(after:)` ——
+                // 两条链路各写一份必然漂移（本仓反复踩过的「两张表同源」坑）。
+                await signingCoordinator.prepareInstallChannelForRetry(after: error)
                 let delay = DeviceChannelTransientPolicy.retryDelayNanoseconds(forAttempt: attempt)
                 // 留痕：没有这一条时，重试在日志上完全看不出来（这正是本次难定位的原因）。
                 try? await logStore?.append(

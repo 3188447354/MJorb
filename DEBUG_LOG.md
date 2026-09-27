@@ -5,6 +5,73 @@
 
 ---
 
+## 2026-09-28 公开仓库泄露开发者账号：日志 / 文档 / 测试夹具里的真实 Apple ID 与 Team ID
+
+- **现象**（AGENTS.md §4 早先记为「已知违反」，一直没清）：`DEBUG_LOG.md`、`docs/qa/`、
+  若干**源码注释**与**测试夹具**里直接抄着真机日志里的**真实** Apple ID 邮箱与 **11 个真实
+  Team ID**。公开仓库里这等于把开发者账号（以及若干第三方 App 的 Team）一起公开。
+- **根因**：排障时为了「可对账」把真机日志原文抄进文档与夹具，没有任何脱敏环节；
+  而 `LogPrivacyRedactor` 只管**运行时**日志，管不到**仓库里的文本**。
+- **修复**：全仓（跳过 `upstream/` 与 `Vendor/`）按**固定映射**改写为**等长合成占位符**
+  `TEAM000001`…`TEAM000011`（10 位大写字母数字，与仓内既有的 `TEAM123456` / `ABCDE12345`
+  同形）；邮箱改写为 `sun***n1@gmail.com`（`AppleAccountClient.maskEmail` 的形态）。
+  - **等长**是刻意的：Team 后缀会被 `hasSuffix(".seal.\(teamID)")`、`count == 10` 这类
+    判据碰到，缩短成 8 位（`343***F9` 那种掩码）会改变测试夹具的行为。
+  - **固定映射**是刻意的：`docs/qa/2026-09-16-profile-pileup-and-ui-row-layout.md` 的结论是
+    「18 个 base × 13 个不同 Team 后缀」，映射若不固定，这条结论就散了。
+  - 写回时**读、写都用 `newline=""`**，绝不让 Python 翻译行尾（本仓有 CRLF 文件，
+    行尾被改写会让 `sha256sum -c` 类校验静默失败 —— 已踩过一次）。
+- **涉及文件**：`DEBUG_LOG.md`、`docs/qa/2026-09-16-profile-pileup-and-ui-row-layout.md`、
+  `docs/qa/2026-09-26-cert-rotation-gate-deadlock.md`、`AGENTS.md`（§4 改写为「已清干净」
+  并给出占位符约定）、`Scripts/verify-release-safety.py`（注释）、
+  `Seal/Core/Accounts/RenewalAccountResolver.swift`、`Seal/Core/Maintenance/ProfileReclaimPolicy.swift`、
+  `Seal/Infrastructure/Signing/ApplePortalSigningService.swift` 及 12 个 `SealTests/**` 文件，
+  共 18 个文件 / 109 处。**改后全仓已搜不到任何真值**（残留的 `sunuannian1` 只以仓库地址形态出现）。
+- **验证状态**：静态守卫 773 checks / 540 mutations **PASS**；改动全是**字面量**替换
+  （源码里 4 处命中全在注释、其余全在测试夹具与文档），两侧同步改写 ⇒ 断言仍自洽。
+  ⏳ 待 CI `swift-regression` 复验测试夹具。
+
+---
+
+## 2026-09-28 快捷指令 / 手动续签整轮全失败：批量重试不恢复通道（复用死会话）+ 四处同批修复
+
+- **现象**：快捷指令后台触发与手动续签**整轮全失败**；日志里同一项重试多次仍撞
+  `[Minimuxer.MinimuxerError 1]`（`NoConnection`）。用户对照 SideStore 问「为什么它那么稳」。
+- **根因**（批量路径）：
+  1. `RenewalCoordinator.process` 的重试循环只 `Task.sleep` 后 `continue`，
+     **不恢复设备通道** ⇒ `MinimuxerInstallChannel.start()` 的 900 秒成功缓存把已被
+     隧道抖动顶掉的**同一个**死会话原样还回来 ⇒ 三次重试全撞同一个死会话。
+  2. 单签路径（2026-09-27 刚补 `reset()`）与批量**各写一份**恢复动作 ⇒ 必然漂移
+     （本仓反复踩过的「两张表同源」坑）。
+- **修复**：
+  1. 新增 `SigningCoordinator.prepareInstallChannelForRetry(after:)` 作为**唯一**恢复动作
+     （判据仍是纯函数 `DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry`：
+     通道类 ⇒ `reset()`；描述文件超时类 ⇒ 只清熔断）。
+     单签 `AppsViewModel.signWithChannelRetry` 与批量 `RenewalCoordinator.process`
+     **都调它**；批量只在**通道类**失败时动通道，并留痕 `SEAL-RENEW-503`。
+  2. 同批另修四处：R98 `MinimuxerInstallChannel.installationFailure` 改用 `errorDetail`
+     取词（与 `isTerminalInstallError` 同源；否则 `ImportFailure` 只经 `NSError` 桥接拿到
+     `title`，`No space left` / `ApplicationVerificationFailed` 等设备原文全丢）；
+     R99 `DeviceProfileCleaner` 的 dump 目录枚举失败 fail closed（不得 `(try? …) ?? []`
+     退化成空清单、与「设备上确实没有」同形）；R100 `SealLogStore.exportText()`
+     （= 镜像到 Documents 的 `Seal-log.txt`）也过脱敏；R101 已安装列表 / 签名历史的
+     剩余天数改**四舍五入**（免费 profile 恰好 7 天，刚签完读到的 6.99 天向下取整显示「6天」），
+     且天数颜色与显示数字**同源**（`days <= 3`，避免「显示 4 天却橙色」）。
+- **涉及文件**：`Seal/Core/Signing/SigningCoordinator.swift`、
+  `Seal/Core/Renewal/RenewalCoordinator.swift`、`Seal/Features/Apps/AppsViewModel.swift`、
+  `Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`、
+  `Seal/Infrastructure/Installation/DeviceProfileCleaner.swift`、
+  `Seal/Infrastructure/Diagnostics/SealLogStore.swift`、
+  `Seal/Features/Apps/AppPresentation.swift`、`Seal/Core/SigningHistory/SigningHistoryRecord.swift`、
+  `docs/qa/log-code-index.md`、`SealTests/Apps/AppPresentationTests.swift`、
+  `Scripts/verify-release-safety.py`（守卫 R97–R101，含变异自检）。
+- **验证状态**：静态守卫 R97–R101（含变异自检）；新增单测 `freshlySignedProfileShowsSevenDays`
+  / `justUnderFourDaysShowsFourNeutralDays`（由 CI `swift-regression` 跑）；**真机待回归**：
+  通道抖动时应看到 `SEAL-RENEW-503`（批量）/ `SEAL-SIGN-503`（单签）后自愈；
+  已安装列表刚签完应显示「7天」。
+
+---
+
 ## 2026-09-27 自替换后自动续签 Seal 硬失败 `SEAL-SIGN-500`：单应用路径没接通道重试、通道失败没归类
 
 - **现象**（用户导出的 1.3.27 真机日志，`Seal-log(6)(3).txt`）：
@@ -979,7 +1046,7 @@
 
 ## 2026-09-25 删除 Apple ID 后第三方应用仍无法续签：悬空引用的**第三处**（构建 37 真机）
 
-- **现象**（用户复验报告 ＋ 截图）：删 `sunuannian1@gmail.com` → 重新添加后，3 个应用抽屉都显示了 id，
+- **现象**（用户复验报告 ＋ 截图）：删 `sun***n1@gmail.com` → 重新添加后，3 个应用抽屉都显示了 id，
   但**只有 Seal 自己能续签**；Guoguo / LiveContainer 点「立即续签」报「Apple ID 不匹配」，
   按钮是「重新验证 Apple ID」（而账号明明已验证过）。
 - **日志**（`Seal-log(18)(1).txt`，`构建 1.3.8 (37)`）：
@@ -2890,7 +2957,7 @@ public protocol AnisetteDataProvider: Sendable {
 **现象**（`Seal-log(18).txt`，构建 138，2026-09-18 21:35–21:37）：
 抖音签名在「读取证书列表」撞限流，1.5/4/8 秒三轮退避**全部耗尽**后死于
 `SEAL-AUTH-102c`；同日志里 Seal 自签的 features 诊断恒报
-`远端 ["APG3427HIY"] vs 本次 []`（本次能力集永远是空的）。
+`远端 ["TEAM000011"] vs 本次 []`（本次能力集永远是空的）。
 
 **根因**（三条，前两条直接来自日志）：
 
@@ -3833,7 +3900,7 @@ verifyInstalled()  验证前重置连接，避免用死连接查询
 #### 🔴 一、普通安装卡住 9 分多钟，而日志里**一行都没有**
 
 ```
-14:54:02  安装  开始安装：com.kdt.livecontainer.seal.3432ZHJUF9，包 4.9 MB，第 1/3 次，等待上限 804 秒
+14:54:02  安装  开始安装：com.kdt.livecontainer.seal.TEAM000001，包 4.9 MB，第 1/3 次，等待上限 804 秒
 （之后 9 分钟无任何日志，直到用户导出）
 ```
 
@@ -3862,7 +3929,7 @@ R10 的心跳断言改为指向共用实现。
 ```
 14:47:05 [SEAL-PROFILE-320] 扫描 8，匹配 1，删除 0，dump 尝试 2 次；
          旧 Team 变体：候选 4，回收 3，已装保留 1，未能核验 0，
-         示例 …3432ZHJUF9.ShareExtension、…3432ZHJUF9、…3432ZHJUF9.LiveProcess、…3432ZHJUF9.LaunchAppExtension
+         示例 …TEAM000001.ShareExtension、…TEAM000001、…TEAM000001.LiveProcess、…TEAM000001.LaunchAppExtension
 ```
 
 主 App 被设备端核验救下（`已装保留 1`），**三个扩展全删**（`回收 3`）——
@@ -4042,7 +4109,7 @@ Apple 发来的六位数字；若始终收不到验证码，先到系统「设�
 
 ```
 13:27:59 [SEAL-PROFILE-322] 自替换结算清理：… 候选 4，回收 3，已装保留 1，
-         示例 …3432ZHJUF9.ShareExtension、…LaunchAppExtension、…LiveProcess、…3432ZHJUF9
+         示例 …TEAM000001.ShareExtension、…LaunchAppExtension、…LiveProcess、…TEAM000001
 ```
 
 LiveContainer **装着**（13:24:30 刚装完，记录 `.installed`）。主 App 被正确保留
@@ -4232,7 +4299,7 @@ static func decision(probe: InstallProbe, positiveControlPassed: Bool) -> Decisi
 **CI 当场抓到一个漏洞（run#93 `swift-regression` 红，`build-package` 绿）**：
 
 `currentBundleIdentifierIsNeverACandidate` 挂了 —— 那条单测传了**混合大小写**的
-keep-map key（`com.kdt.livecontainer.seal.KYRJV2U7WS`），而 `isReclaimableOrphan`
+keep-map key（`com.kdt.livecontainer.seal.TEAM000009`），而 `isReclaimableOrphan`
 只做精确查表 `keepingByBundleID[lowered]` ⇒ 没命中 ⇒ 把「正在用的那个」
 判成了**可回收**。失败方向正是删掉活着的 profile。
 
@@ -4510,7 +4577,7 @@ static var currentBuildLabel: String {
 - **现象（用户报 6 条，第 6 条被截断）**：①续签到安装卡在 93% 无反应；②续签抽屉卡在「传输」无反应；③证书序列号要左右一行、超长中间省略；④描述文件 UUID 同样左右一行；⑤描述文件每次申请旧新并存，Seal 已有 16 个 UUID 对应的文件；⑥「签名、续签」（未写完）。
 - **证据来源**：用户随后发的两张截图是 **StikDebug** 的「App Expiry」页（不是 Seal 界面 —— Seal 只有 Apps / Settings 两个 Tab，截图里是三个；`App Expiry`/`Other Profiles` 等字符串在 Seal 代码里搜不到）。但它经 misagent 读的是设备真实 profile 库，数据可信：
 - `com.example.seal.<TEAM_ID>` → **17 份**（1 最新 + 16 旧，界面写「Show 16 older profiles」）
-  - `com.kdt.livecontainer.seal.3432ZHJUF9` → 3 份
+  - `com.kdt.livecontainer.seal.TEAM000001` → 3 份
   - `com.kdt.livecontainer.seal666.ShareExtension` → ≥6 份，到期日全在 `2026-09-17`（有效期 7 天 ⇒ **创建于同一天 09-10，一天内重签 6 次以上**）
 - **根因（两条独立泄漏路径，清理代码本来就存在，但触发条件与匹配范围都有缺口）**：
   1. **只按主 Bundle ID 匹配**：`SignedArtifactProfileReader` 只认恰好三段的 `Payload/<App>.app/embedded.mobileprovision`，而一次安装会为**每个扩展**各装一份 profile ⇒ 扩展的 profile 从来没被清理过。

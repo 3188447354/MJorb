@@ -51,7 +51,7 @@ struct SelfAppRegistrarTests {
                 id: expectedID,
                 maskedEmail: "te***@example.com",
                 accountIdentifier: "current",
-                teamID: "T3432ZHJUF9",
+                teamID: "TTEAM000001",
                 teamName: "Current",
                 lastVerifiedAt: .now
             )
@@ -59,7 +59,7 @@ struct SelfAppRegistrarTests {
 
         #expect(
             SelfAppAccountBinding.matchedAccountID(
-                teamIdentifier: "t3432zhjuf9",
+                teamIdentifier: "tteam000001",
                 accounts: accounts
             ) == expectedID
         )
@@ -111,7 +111,7 @@ struct SelfAppRegistrarTests {
         #expect(
             SelfAppRecordSelection.preferredExistingSealRecord(
                 in: [stale],
-                currentBundleIdentifier: "com.mjorb.seal.t3432zhjuf9"
+                currentBundleIdentifier: "com.mjorb.seal.tteam000001"
             ) == nil
         )
     }
@@ -145,7 +145,7 @@ struct SelfAppRegistrarTests {
     func reusesTheRecordThatMatchesTheCurrentInstalledBundleIdentifier() {
         let matching = AppRecord(
             originalBundleIdentifier: "com.mjorb.seal",
-            mappedBundleIdentifier: "com.mjorb.seal.t3432zhjuf9",
+            mappedBundleIdentifier: "com.mjorb.seal.tteam000001",
             name: "Seal",
             version: "1.0",
             buildNumber: "1",
@@ -153,7 +153,7 @@ struct SelfAppRegistrarTests {
             state: .installed,
             accountID: UUID(),
             ipaRelativePath: "Apps/current.ipa",
-            preferredBundleIdentifier: "com.mjorb.seal.t3432zhjuf9",
+            preferredBundleIdentifier: "com.mjorb.seal.tteam000001",
             isSeal: true,
             importedAt: .now
         )
@@ -161,7 +161,7 @@ struct SelfAppRegistrarTests {
         #expect(
             SelfAppRecordSelection.preferredExistingSealRecord(
                 in: [matching],
-                currentBundleIdentifier: "com.mjorb.seal.t3432zhjuf9"
+                currentBundleIdentifier: "com.mjorb.seal.tteam000001"
             )?.id == matching.id
         )
     }
@@ -188,7 +188,7 @@ struct SelfAppRegistrarTests {
         let pendingUpdate = AppRecord(
             id: sealID,
             originalBundleIdentifier: "com.mjorb.seal",
-            mappedBundleIdentifier: "com.mjorb.seal.3432ZHJUF9",
+            mappedBundleIdentifier: "com.mjorb.seal.TEAM000001",
             name: "Seal",
             version: "2.0",
             buildNumber: "82",
@@ -196,7 +196,7 @@ struct SelfAppRegistrarTests {
             state: .installed,
             accountID: UUID(),
             ipaRelativePath: importedPath,
-            preferredBundleIdentifier: "com.mjorb.seal.3432ZHJUF9",
+            preferredBundleIdentifier: "com.mjorb.seal.TEAM000001",
             hasPendingSelfUpdateSource: true,
             isSeal: true,
             isPinned: true,
@@ -208,7 +208,7 @@ struct SelfAppRegistrarTests {
         let registrar = SelfAppRegistrar(
             metadata: SelfAppMetadata(
                 bundleURL: currentBundle,
-                bundleIdentifier: "com.mjorb.seal.3432ZHJUF9",
+                bundleIdentifier: "com.mjorb.seal.TEAM000001",
                 originalBundleIdentifier: "com.mjorb.seal",
                 name: "Seal",
                 version: "1.0",

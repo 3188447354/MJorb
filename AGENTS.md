@@ -211,8 +211,13 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
 - **写入与读取都要脱敏**：`append` 过 `LogPrivacyRedactor`，`entries()` 再过一层；
   `exportText()`（= 镜像到 Documents 的那份）也必须过，否则升级前遗留的未脱敏 JSON 会被原样导出。
 - 日志导出/上报**不携带** keychain 凭据、Apple ID 明文。
-  ⚠️ 已知违反：`DEBUG_LOG.md` 与 `docs/qa/` 若干文件里写有真实 Apple ID 邮箱与 Team ID，
-  需按 `maskedEmail` 改写（公开仓库即泄露开发者账号）。
+  ✅ **2026-09-28 已清干净**：`DEBUG_LOG.md`、`docs/qa/`、源码注释与测试夹具里遗留的
+  真实 Apple ID 邮箱（1 处）与真实 Team ID（11 个、共 109 处）已全部改写成
+  **等长合成占位符**（`TEAM000001`…`TEAM000011`，10 位大写字母数字，与仓内既有的
+  `TEAM123456` / `ABCDE12345` 同形）—— 等长是为了不破坏任何「长度 / 格式」假设，
+  每个真实值映射到**固定**的占位符是为了保住文档里「有几个不同 Team」这类结论。
+  ⇒ **新增文档 / 测试夹具 / 注释一律用占位符**，不要再抄真机日志里的真值；
+  `sunuannian1` 只允许以**仓库地址**（`sunuannian1/Trae-seal`）形态出现。
 - `NSLog`（`AnisetteDataProvider.debugLog`、`MinimuxerInstallChannel` 设备标识失败）绕过脱敏与环形缓冲，
   只准打服务器地址/字节数这类无凭据内容；新增 `NSLog` 前先想清楚它会不会带出敏感值。
 

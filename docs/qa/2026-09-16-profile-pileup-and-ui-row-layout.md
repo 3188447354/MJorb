@@ -17,7 +17,7 @@
 
 | 分组 | Bundle ID | 设备端 profile 数 |
 |---|---|---|
-| LiveContainer | `com.kdt.livecontainer.seal.3432ZHJUF9` | 3（1 最新 + 2 旧） |
+| LiveContainer | `com.kdt.livecontainer.seal.TEAM000001` | 3（1 最新 + 2 旧） |
 | **Seal** | `com.example.seal.<TEAM_ID>` | **17（1 最新 + 16 旧）** |
 | Other Profiles | `com.kdt.livecontainer.seal666.ShareExtension` | ≥ 6（同一天 01:21–12:58） |
 
@@ -213,7 +213,7 @@ HStack(alignment: .firstTextBaseline, spacing: 14) {
 
 | 时间 | 日志 | 链路 |
 |---|---|---|
-| 09-14 20:43:32 | `安装后旧描述文件清理（com.sollinplayer.leguan.seal.Q88QMP4DLM）：扫描 30，匹配 2，删除 1` | 安装后 |
+| 09-14 20:43:32 | `安装后旧描述文件清理（com.sollinplayer.leguan.seal.TEAM000007）：扫描 30，匹配 2，删除 1` | 安装后 |
 | 09-14 20:43:52 | `自更新安装前清理：扫描 29，匹配 3，删除 3` | 旧构建（该文案现已不在源码里） |
 | 09-14 20:45:14 | `自更新安装前清理：扫描 28，匹配 1，删除 1` | 旧构建 |
 | 09-15 11:46:02 | `安装后旧描述文件清理（com.kdt.livecontainer…）：扫描 325，匹配 1，删除 0` | 安装后 |
@@ -351,7 +351,7 @@ var dumpAttempts = 1
 线索是日志文案与源码对不上：日志里是
 
 ```
-安装后旧描述文件清理（com.kdt.livecontainer.seal.3432ZHJUF9）：描述文件清理：…
+安装后旧描述文件清理（com.kdt.livecontainer.seal.TEAM000001）：描述文件清理：…
 ```
 
 而当前源码（`SigningCoordinator.swift`）是
@@ -440,24 +440,24 @@ CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER:-${SEAL_BUILD_NUMBER:-1}}"
 
 | base | Team 后缀数 | 后缀 |
 |---|---|---|
-| `com.ss.iphone.ugc.Aweme` | **6** | `32746RUBTT` `49778Q7UWQ` `6T43967CCT` `JHW8PJBRJ2` `Q88QMP4DLM` `douyin` |
+| `com.ss.iphone.ugc.Aweme` | **6** | `TEAM000005` `TEAM000004` `TEAM000003` `TEAM000006` `TEAM000007` `douyin` |
 | `com.example`（Seal 自己） | **5** | `[已脱敏 Team ID]` |
-| `com.sollinplayer.leguan` | 4 | `3432ZHJUF9` `6T43967CCT` `JHW8PJBRJ2` `Q88QMP4DLM` |
-| `com.kdt.livecontainer` | 3 | `3432ZHJUF9` `KYRJV2U7WS` `TB95F327DS` |
-| `com.dao.lara` | 3 | `3432ZHJUF9` `9DNHBHSQDU` `JHW8PJBRJ2` |
+| `com.sollinplayer.leguan` | 4 | `TEAM000001` `TEAM000003` `TEAM000006` `TEAM000007` |
+| `com.kdt.livecontainer` | 3 | `TEAM000001` `TEAM000009` `TEAM000008` |
+| `com.dao.lara` | 3 | `TEAM000001` `TEAM000002` `TEAM000006` |
 | （其余 13 个 base） | 1–2 | … |
 
 **合计：18 个真实 base × 13 个不同 Team 后缀 = 36 个 Seal 生成过的 Bundle ID。**
 
 （统计时需剔除 6 条假 base —— iOS 在 `SEAL-INSTALL-702l` 报错里用
 `<TeamID>.<BundleID>` 的格式罗列已装应用，例如
-`9DNHBHSQDU.com.javdb6.com.seal.9DNHBHSQDU` 里的 `9DNHBHSQDU.com.javdb6.com`
-是 iOS 加的前缀，不是套娃。真实 ID 是 `com.javdb6.com.seal.9DNHBHSQDU`。
+`TEAM000002.com.javdb6.com.seal.TEAM000002` 里的 `TEAM000002.com.javdb6.com`
+是 iOS 加的前缀，不是套娃。真实 ID 是 `com.javdb6.com.seal.TEAM000002`。
 **注意别把它误判成「Team 后缀套娃」这个不存在的 bug。**）
 
 **为什么会换这么多 Team**：同一份日志的 `SEAL-INSTALL-702l` 写着
 `This device has reached the maximum number of installed apps using a free developer profile`，
-并列出 3 个同属 team `9DNHBHSQDU` 的应用 ⇒ 用户在用**多个 Apple ID 轮换**来突破
+并列出 3 个同属 team `TEAM000002` 的应用 ⇒ 用户在用**多个 Apple ID 轮换**来突破
 免费账号「3 个自签应用」上限。每换一个账号（= 换 team），Seal 就会给每个 App 生成一个
 **新的 Bundle ID**（`BundleIDMapper` 强制附加当前 team 后缀）。
 
@@ -487,8 +487,8 @@ else { continue }` —— **不在 key 集合里的一律跳过**。所以历史
 
 | 场景 | Bundle ID | 中缀规则 | 与记录比对 |
 | --- | --- | --- | --- |
-| 普通 App | `com.kdt.livecontainer.seal.3432ZHJUF9` | ✅ | ✅ |
-| **Seal 自己** | `com.mjorb.seal.TB95F327DS` | ✅（`morb.seal.<team>`） | 要开特例 |
+| 普通 App | `com.kdt.livecontainer.seal.TEAM000001` | ✅ | ✅ |
+| **Seal 自己** | `com.mjorb.seal.TEAM000008` | ✅（`morb.seal.<team>`） | 要开特例 |
 | **已从 Seal 列表删掉的 App** | `<原始>.seal.<旧team>` | ✅ | ❌ 记录里没有 base 了 |
 | 其它工具（AltStore / SideStore） | `com.example.other.ABC1234567` | ❌ 不碰 | ❌ 不碰 |
 
@@ -580,7 +580,7 @@ installd 命令）。缓存连接失效的代价已经由阳性对照兜住 —�
 
 ```
 13:27:59 [SEAL-PROFILE-322] 自替换结算清理：… 候选 4，回收 3，已装保留 1，
-         示例 …3432ZHJUF9.ShareExtension、…LaunchAppExtension、…LiveProcess、…3432ZHJUF9
+         示例 …TEAM000001.ShareExtension、…LaunchAppExtension、…LiveProcess、…TEAM000001
 ```
 
 LiveContainer 装着（13:24:30 刚装完）。主 App 保住了（`已装保留 1`），

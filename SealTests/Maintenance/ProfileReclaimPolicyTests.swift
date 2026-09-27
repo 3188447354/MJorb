@@ -20,8 +20,8 @@ struct ProfileReclaimPolicyTests {
     func recognizesNormalAppVariant() {
         #expect(
             ProfileReclaimPolicy.isReclaimableOrphan(
-                bundleID: "com.kdt.livecontainer.seal.3432ZHJUF9",
-                keepingByBundleID: ["com.kdt.livecontainer.seal.KYRJV2U7WS": "LIVE-UUID"],
+                bundleID: "com.kdt.livecontainer.seal.TEAM000001",
+                keepingByBundleID: ["com.kdt.livecontainer.seal.TEAM000009": "LIVE-UUID"],
                 protectedBundleIDs: []
             )
         )
@@ -34,8 +34,8 @@ struct ProfileReclaimPolicyTests {
     func recognizesSealItselfWithoutSpecialCasing() {
         #expect(
             ProfileReclaimPolicy.isReclaimableOrphan(
-                bundleID: "com.mjorb.seal.TB95F327DS",
-                keepingByBundleID: ["com.mjorb.seal.KYRJV2U7WS": "LIVE-UUID"],
+                bundleID: "com.mjorb.seal.TEAM000008",
+                keepingByBundleID: ["com.mjorb.seal.TEAM000009": "LIVE-UUID"],
                 protectedBundleIDs: []
             )
         )
@@ -51,7 +51,7 @@ struct ProfileReclaimPolicyTests {
         #expect(
             ProfileReclaimPolicy.isReclaimableOrphan(
                 bundleID: "com.mjorb.seal",
-                keepingByBundleID: ["com.mjorb.seal.KYRJV2U7WS": "LIVE-UUID"],
+                keepingByBundleID: ["com.mjorb.seal.TEAM000009": "LIVE-UUID"],
                 protectedBundleIDs: []
             )
         )
@@ -98,10 +98,10 @@ struct ProfileReclaimPolicyTests {
     /// 当前在用的那一份绝不能是候选 —— 删了 Seal 自己（或任何 App）就起不来了。
     @Test
     func currentBundleIdentifierIsNeverACandidate() {
-        let keep = ["com.kdt.livecontainer.seal.KYRJV2U7WS": "LIVE-UUID"]
+        let keep = ["com.kdt.livecontainer.seal.TEAM000009": "LIVE-UUID"]
         #expect(
             ProfileReclaimPolicy.isReclaimableOrphan(
-                bundleID: "com.kdt.livecontainer.seal.KYRJV2U7WS",
+                bundleID: "com.kdt.livecontainer.seal.TEAM000009",
                 keepingByBundleID: keep,
                 protectedBundleIDs: []
             ) == false
@@ -111,17 +111,17 @@ struct ProfileReclaimPolicyTests {
     /// 大小写不敏感：设备端返回的大小写不保证与记录一致。
     @Test
     func matchingIsCaseInsensitive() {
-        let keep = ["com.kdt.livecontainer.seal.kyrjv2u7ws": "LIVE-UUID"]
+        let keep = ["com.kdt.livecontainer.seal.team000009": "LIVE-UUID"]
         #expect(
             ProfileReclaimPolicy.isReclaimableOrphan(
-                bundleID: "com.KDT.LiveContainer.Seal.KYRJV2U7WS",
+                bundleID: "com.KDT.LiveContainer.Seal.TEAM000009",
                 keepingByBundleID: keep,
                 protectedBundleIDs: []
             ) == false
         )
         #expect(
             ProfileReclaimPolicy.isReclaimableOrphan(
-                bundleID: "com.KDT.LiveContainer.Seal.3432ZHJUF9",
+                bundleID: "com.KDT.LiveContainer.Seal.TEAM000001",
                 keepingByBundleID: keep,
                 protectedBundleIDs: []
             )
@@ -184,7 +184,7 @@ struct ProfileReclaimPolicyTests {
     /// 集合为空时，规则必须与从前完全一致（该认出来的仍然认出来）。
     @Test
     func emptyProtectedSetDoesNotWidenTheCandidateRule() {
-        let orphan = "com.kdt.livecontainer.seal.3432ZHJUF9"
+        let orphan = "com.kdt.livecontainer.seal.TEAM000001"
         let withEmptySet = ProfileReclaimPolicy.isReclaimableOrphan(
             bundleID: orphan,
             keepingByBundleID: [:],
@@ -250,7 +250,7 @@ struct ProfileReclaimPolicyTests {
     func surroundingWhitespaceIsTrimmed() {
         #expect(
             ProfileReclaimPolicy.isReclaimableOrphan(
-                bundleID: "  com.kdt.livecontainer.seal.3432ZHJUF9\n",
+                bundleID: "  com.kdt.livecontainer.seal.TEAM000001\n",
                 keepingByBundleID: [:],
                 protectedBundleIDs: []
             )
@@ -505,29 +505,29 @@ struct ProfileReclaimDecisionTests {
 /// 所以「父 App 已确认安装」⇒「这份扩展 profile 是随它一起装上去的」⇒ 必须保留。
 @Suite("扩展随父 App 保留：前缀判据")
 struct ProfileReclaimExtensionTests {
-    private let installedParent: Set<String> = ["com.kdt.livecontainer.seal.3432ZHJUF9"]
+    private let installedParent: Set<String> = ["com.kdt.livecontainer.seal.TEAM000001"]
 
     @Test
     func extensionOfAnInstalledCandidateIsRecognised() {
         let shareExtension = ProfileReclaimPolicy.isExtensionBundleID(
-            "com.kdt.livecontainer.seal.3432ZHJUF9.ShareExtension",
+            "com.kdt.livecontainer.seal.TEAM000001.ShareExtension",
             ofAnyOf: installedParent
         )
         #expect(shareExtension)
 
         let liveProcess = ProfileReclaimPolicy.isExtensionBundleID(
-            "com.kdt.livecontainer.seal.3432ZHJUF9.LiveProcess",
+            "com.kdt.livecontainer.seal.TEAM000001.LiveProcess",
             ofAnyOf: installedParent
         )
         #expect(liveProcess)
     }
 
-    /// 前缀必须在**点**边界上：`...3432ZHJUF9` 不是 `...3432ZHJUF99` 的父。
+    /// 前缀必须在**点**边界上：`...TEAM000001` 不是 `...TEAM0000019` 的父。
     /// 少了这一条，同一个 Team 下的兄弟变体会互相「保护」，回收功能就废了。
     @Test
     func prefixMustEndOnADotBoundary() {
         let sibling = ProfileReclaimPolicy.isExtensionBundleID(
-            "com.kdt.livecontainer.seal.3432ZHJUF99",
+            "com.kdt.livecontainer.seal.TEAM0000019",
             ofAnyOf: installedParent
         )
         #expect(sibling == false)
@@ -548,7 +548,7 @@ struct ProfileReclaimExtensionTests {
     @Test
     func matchingIsCaseInsensitive() {
         let mixedCase = ProfileReclaimPolicy.isExtensionBundleID(
-            "COM.KDT.LiveContainer.Seal.3432zhjuf9.ShareExtension",
+            "COM.KDT.LiveContainer.Seal.team000001.ShareExtension",
             ofAnyOf: installedParent
         )
         #expect(mixedCase)
@@ -559,7 +559,7 @@ struct ProfileReclaimExtensionTests {
     @Test
     func emptyInstalledSetProtectsNothing() {
         let nothingProtected = ProfileReclaimPolicy.isExtensionBundleID(
-            "com.kdt.livecontainer.seal.3432ZHJUF9.ShareExtension",
+            "com.kdt.livecontainer.seal.TEAM000001.ShareExtension",
             ofAnyOf: []
         )
         #expect(nothingProtected == false)
@@ -569,7 +569,7 @@ struct ProfileReclaimExtensionTests {
     @Test
     func aBundleIdentifierIsNotItsOwnExtension() {
         let itself = ProfileReclaimPolicy.isExtensionBundleID(
-            "com.kdt.livecontainer.seal.3432ZHJUF9",
+            "com.kdt.livecontainer.seal.TEAM000001",
             ofAnyOf: installedParent
         )
         #expect(itself == false)
@@ -582,7 +582,7 @@ struct ProfileReclaimExtensionTests {
         #expect(blankCandidate == false)
 
         let blankParent = ProfileReclaimPolicy.isExtensionBundleID(
-            "com.kdt.livecontainer.seal.3432ZHJUF9.ShareExtension",
+            "com.kdt.livecontainer.seal.TEAM000001.ShareExtension",
             ofAnyOf: ["  "]
         )
         #expect(blankParent == false)

@@ -27,6 +27,38 @@ struct AppPresentationTests {
         #expect(presentation.validity?.tone == .neutral)
     }
 
+    /// 2026-09-28 用户反馈：免费账号 profile 恰好 7 天，刚签完读到的剩余是 **6.99 天**，
+    /// 旧实现 `Int(interval / 86_400)` 向下取整 ⇒ 列表显示「6天」，用户以为签名只有 6 天。
+    /// 判据改为**四舍五入** ⇒ 刚签完即显示「7天」。
+    @Test
+    func freshlySignedProfileShowsSevenDays() {
+        let app = makeApp(
+            state: .installed,
+            expiryDate: now.addingTimeInterval(7 * 86_400 - 30)
+        )
+        let presentation = AppOperationPresentation(app: app, now: now)
+
+        #expect(presentation.kind == .renewal)
+        #expect(presentation.validity?.text == "7天")
+        #expect(presentation.validity?.detailText == "7天")
+        #expect(presentation.validity?.tone == .neutral)
+    }
+
+    /// 数字与颜色必须说同一件事：剩余 3.9 天四舍五入显示「4天」⇒ 不能是橙色告警。
+    /// 若紧急阈值按真实剩余时间（`< 4 天`）判，这里会显示「4天」却着橙色 —— 自相矛盾的一行。
+    @Test
+    func justUnderFourDaysShowsFourNeutralDays() {
+        let app = makeApp(
+            state: .installed,
+            expiryDate: now.addingTimeInterval(Int(3.9 * 86_400))
+        )
+        let presentation = AppOperationPresentation(app: app, now: now)
+
+        #expect(presentation.kind == .renewal)
+        #expect(presentation.validity?.text == "4天")
+        #expect(presentation.validity?.tone == .neutral)
+    }
+
     @Test
     func oneDayRemainingIsUrgentAndOrange() {
         let app = makeApp(

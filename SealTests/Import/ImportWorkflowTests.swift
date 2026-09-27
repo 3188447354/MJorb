@@ -222,7 +222,7 @@ struct ImportWorkflowTests {
         let installedSeal = AppRecord(
             id: sealID,
             originalBundleIdentifier: "com.mjorb.seal",
-            mappedBundleIdentifier: "com.mjorb.seal.3432ZHJUF9",
+            mappedBundleIdentifier: "com.mjorb.seal.TEAM000001",
             name: "Seal",
             version: "1.0",
             buildNumber: "1",
@@ -230,7 +230,7 @@ struct ImportWorkflowTests {
             state: .installed,
             expiryDate: Date(timeIntervalSince1970: 1_800_000_000),
             accountID: accountID,
-            signingTeamID: "3432ZHJUF9",
+            signingTeamID: "TEAM000001",
             certificateSerialNumber: "SERIAL",
             signedDeviceIdentifier: "DEVICE",
             provisioningProfileExpirationDate: Date(timeIntervalSince1970: 1_800_000_000),
@@ -240,7 +240,7 @@ struct ImportWorkflowTests {
             signedIPARelativePath: "Apps/\(sealID.uuidString)/Signed.ipa",
             signedIPASHA256: "old-sha",
             signedArtifactStatus: .installed,
-            preferredBundleIdentifier: "com.mjorb.seal.3432ZHJUF9",
+            preferredBundleIdentifier: "com.mjorb.seal.TEAM000001",
             isSeal: true,
             isPinned: true,
             importedAt: Date(timeIntervalSince1970: 100)
@@ -279,7 +279,7 @@ struct ImportWorkflowTests {
         #expect(imported.version == "2.0")
         #expect(imported.buildNumber == "82")
         #expect(imported.accountID == accountID)
-        #expect(imported.signingTeamID == "3432ZHJUF9")
+        #expect(imported.signingTeamID == "TEAM000001")
         #expect(imported.certificateSerialNumber == "SERIAL")
         #expect(imported.signedDeviceIdentifier == "DEVICE")
         #expect(imported.lastInstalledAt == installedSeal.lastInstalledAt)
@@ -400,7 +400,7 @@ extension ImportWorkflowTests {
         let installed = AppRecord(
             id: installedID,
             originalBundleIdentifier: "com.example.demo",
-            mappedBundleIdentifier: "com.example.demo.3432ZHJUF9",
+            mappedBundleIdentifier: "com.example.demo.TEAM000001",
             name: "Demo",
             version: "1.0",
             buildNumber: "1",
@@ -408,7 +408,7 @@ extension ImportWorkflowTests {
             state: .installed,
             expiryDate: Date(timeIntervalSince1970: 1_800_000_000),
             accountID: accountID,
-            signingTeamID: "3432ZHJUF9",
+            signingTeamID: "TEAM000001",
             certificateSerialNumber: "SERIAL",
             signedDeviceIdentifier: "DEVICE",
             provisioningProfileExpirationDate: Date(timeIntervalSince1970: 1_800_000_000),
@@ -418,7 +418,7 @@ extension ImportWorkflowTests {
             signedIPARelativePath: "Apps/\(installedID.uuidString)/Signed.ipa",
             signedIPASHA256: "old-sha",
             signedArtifactStatus: .installed,
-            preferredBundleIdentifier: "com.example.demo.3432ZHJUF9",
+            preferredBundleIdentifier: "com.example.demo.TEAM000001",
             importedAt: Date(timeIntervalSince1970: 100)
         )
         let oldIPA = environment.documents.appending(path: originalPath)
@@ -446,9 +446,9 @@ extension ImportWorkflowTests {
         #expect(updated.state == .installed)
         #expect(updated.belongsInInstalledList)
         // 签名身份必须保留：换了身份 installd 就会并存第二个 App
-        #expect(updated.mappedBundleIdentifier == "com.example.demo.3432ZHJUF9")
+        #expect(updated.mappedBundleIdentifier == "com.example.demo.TEAM000001")
         #expect(updated.accountID == accountID)
-        #expect(updated.signingTeamID == "3432ZHJUF9")
+        #expect(updated.signingTeamID == "TEAM000001")
         #expect(updated.certificateSerialNumber == "SERIAL")
         #expect(updated.signedDeviceIdentifier == "DEVICE")
         #expect(updated.lastInstalledAt == installed.lastInstalledAt)
@@ -549,7 +549,7 @@ extension ImportWorkflowTests {
         let installed = AppRecord(
             id: installedID,
             originalBundleIdentifier: "com.example.demo",
-            mappedBundleIdentifier: "com.example.demo.3432ZHJUF9",
+            mappedBundleIdentifier: "com.example.demo.TEAM000001",
             name: "Demo",
             version: "1.0",
             buildNumber: "1",

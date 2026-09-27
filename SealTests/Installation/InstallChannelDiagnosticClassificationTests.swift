@@ -256,4 +256,29 @@ struct InstallChannelDiagnosticClassificationTests {
     func definitiveFailureStillReinstalls() {
         #expect(InstallFailureActionPolicy.action(for: "SEAL-INSTALL-707a") == .reinstall)
     }
+
+    // MARK: - 自替换单飞闸门：取消与超时同义（2026-09-28）
+
+    /// 取消**不是**「安装已经结束」：承载安装的是 `Task.detached`（不继承父任务的取消），
+    /// `Minimuxer.stageAndInstall` 又是同步 FFI ⇒ 上层取消后底下那笔安装很可能仍在跑。
+    /// 若此时解锁闸门，下一笔安装立刻在同一个 Bundle ID 上并发提交 ——
+    /// `ApplicationVerificationFailed` / 白图标 / 装到一半的应用（R05 / R10 要防的形态）。
+    @Test
+    func cancellationKeepsTheSelfReplacementGateClosed() {
+        #expect(Channel.mustKeepSelfReplacementGateLocked(CancellationError()))
+        #expect(Channel.mustKeepSelfReplacementGateLocked(HardTimeout.TimeoutError(seconds: 60)))
+    }
+
+    /// 反向对照：真正的失败（非超时、非取消）说明安装**确实结束了**，必须解锁 ——
+    /// 否则一次普通失败就把闸门永久焊死，之后再也签不了自己。
+    @Test
+    func ordinaryFailureReopensTheSelfReplacementGate() {
+        let failure = ImportFailure(
+            title: "安装失败",
+            reason: "设备返回 ApplicationVerificationFailed",
+            recovery: "重新签名后重试",
+            code: "SEAL-INSTALL-702"
+        )
+        #expect(Channel.mustKeepSelfReplacementGateLocked(failure) == false)
+    }
 }

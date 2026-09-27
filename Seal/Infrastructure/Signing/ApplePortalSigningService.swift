@@ -2125,7 +2125,7 @@ actor ApplePortalSigningService {
         // CFBundleIdentifier 改写成 mapped ID）解析出来的 ⇒ 键是 **mapped**；
         // 而这里的历史写法用 **original** ID 去查 ⇒ 永远落空 ⇒
         // ① `requestedEntitlements` 恒空（签出的包不带任何能力）；
-        // ② features 诊断恒报「本次 []」（远端 ["APG3427HIY"] vs 本次 [] 就是它）；
+        // ② features 诊断恒报「本次 []」（远端 ["TEAM000011"] vs 本次 [] 就是它）；
         // ③ 「跳过冗余 updateFeatures」优化永远不可能命中。
         func desiredFeatureKeys(mapped: String) -> Set<String> {
             guard let application = applications[mapped] else { return [] }

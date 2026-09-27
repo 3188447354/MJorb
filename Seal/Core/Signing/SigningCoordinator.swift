@@ -150,6 +150,27 @@ actor SigningCoordinator {
         self.selfReplacement = selfReplacement
     }
 
+    /// 设备通道**瞬时失败**后、下一次尝试之前，把通道恢复成「可以重新建会话」的状态。
+    ///
+    /// 🔴 单签（`AppsViewModel.signWithChannelRetry`）与批量（`RenewalCoordinator.process`）
+    /// 必须走**同一个**恢复动作（2026-09-28）。此前只有单签做了 `reset()`，批量的重试
+    /// 循环只 `Task.sleep` 后 `continue` ⇒ 重试仍撞在**同一个**死会话上：
+    /// `MinimuxerInstallChannel.start()` 的成功缓存窗口（900 秒）会把那个已被隧道抖动顶掉的
+    /// 会话原样还回来，于是「重试三次全失败、用户以为续签坏了」。
+    /// 判据本体在 `DeviceChannelTransientPolicy`（纯函数，可单测）；这里只负责「怎么恢复」，
+    /// 避免两条链路各写一份而漂移（本仓反复踩过的「两张表同源」坑）。
+    ///
+    /// - 通道类失败 ⇒ `reset()`：连同 Swift 侧会话缓存与失败熔断一起清；
+    /// - 描述文件**超时**类 ⇒ 只清熔断：`renewProfilesOnly` 的污染闸门会在下一次调用里
+    ///   自己 `reset()` + `start()`，这里重复拆只会多付一轮诊断。
+    func prepareInstallChannelForRetry(after error: Error) async {
+        if DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(error) {
+            await installChannel.reset()
+        } else {
+            await installChannel.clearFailureCooldown()
+        }
+    }
+
     func signAndInstall(
         appID: UUID,
         accountID: UUID,

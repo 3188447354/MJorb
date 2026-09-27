@@ -635,7 +635,7 @@ def violations(load=read):
         "func currentBundleIdentifierIsNeverACandidate()",
         "func matchingIsCaseInsensitive()"
     )
-    check('"com.kdt.livecontainer.seal.KYRJV2U7WS": "LIVE-UUID"' in case_test,
+    check('"com.kdt.livecontainer.seal.TEAM000009": "LIVE-UUID"' in case_test,
           "R11: the keep-map case-insensitivity needs a real unit test with a mixed-case key")
     check("func reclaimAbortIsVisibleWithoutClaimingTheWholeRunFailed()" in profile_cleaner_tests,
           "R11: the reclaim summary needs a real unit test")
@@ -1314,7 +1314,7 @@ def violations(load=read):
     # 字典从 `prepared.appURL`（SigningWorkspace 已把 Info.plist 的 CFBundleIdentifier
     # 改写成 mapped ID）解析建键 ⇒ 键是 mapped；历史 bug 用 original ID 查 ⇒ 恒 nil ⇒
     # ① `requestedEntitlements` 恒空（签出的包不带任何能力，付费账号不分配 App Group）；
-    # ② features 诊断恒报「本次 []」（build 138 日志「远端 ["APG3427HIY"] vs 本次 []」）；
+    # ② features 诊断恒报「本次 []」（build 138 日志「远端 ["TEAM000011"] vs 本次 []」）；
     # ③ 「跳过冗余 updateFeatures」优化永远不可能命中。
     # 注意：mapped 与 original 未必不同（无冲突时不加后缀），所以这条断言只能防**回退**，
     # 不能证明键一定对 —— 真正的判据是真机日志里「本次 []」变成真实能力集。
@@ -2776,9 +2776,24 @@ def violations(load=read):
     # 3) 自替换必须单飞：真机日志里 91 秒内提交了两笔，而第一笔从未返回。
     check("guard selfReplacementGate.acquire() else {" in self_replace,
           "R10: a second concurrent self-replacement install must be refused")
-    check("selfReplacementGate.release(timedOut: Self.isTimeoutInstallError(error))"
+    check("selfReplacementGate.release(timedOut: Self.mustKeepSelfReplacementGateLocked(error))"
           in self_replace,
           "R10: a timeout must keep the self-replacement gate closed (the FFI is still running)")
+    # 3b) **取消与超时同义**（2026-09-28）。父任务被取消时
+    #     `HardTimeout.RaceState.cancelByParent` 抛 `CancellationError`，它只代表
+    #     「上层不再等待」：承载安装的是 `Task.detached`（**不继承**父任务的取消），
+    #     `Minimuxer.stageAndInstall` 又是同步 FFI ⇒ 底下那笔安装很可能仍在跑。
+    #     旧写法只判超时 ⇒ 用户一取消就解锁闸门，下一笔安装立刻在同一个 Bundle ID 上
+    #     并发提交（R05 / R10 要防的「第二次安装」）。
+    check("static func mustKeepSelfReplacementGateLocked(_ error: Error) -> Bool" in self_replace
+          and "isTimeoutInstallError(error) || error is CancellationError" in self_replace,
+          "R10: a cancellation must keep the self-replacement gate closed too ✗ —— "
+          "取消不是「安装已经结束」：`Task.detached` 不继承取消、同步 FFI 取消不掉，"
+          "解锁就等于放行第二笔并发安装（`ApplicationVerificationFailed` / 白图标 / "
+          "装到一半的应用）")
+    check("func cancellationKeepsTheSelfReplacementGateClosed()"
+          in load("SealTests/Installation/InstallChannelDiagnosticClassificationTests.swift"),
+          "R10: 'a cancellation must keep the gate closed' needs a real unit test")
     # 4) 安装链路必须留下日志：卡住时「一片空白」本身就是最大的障碍。
     check("logStore: SealLogStore?" in self_replace
           and "await logStore.append(" in self_replace,
@@ -6106,19 +6121,39 @@ def violations(load=read):
 
     # ⚠️ 用 `find()`（返回 -1）而不是 `index()`（抛 ValueError）：变异会删掉某个锚点，
     #    而变异循环只捕 `AssertionError` ⇒ 用 `index()` 会让守卫自己崩、报不出失败。
-    r96_reset_at = r96_retry.find("await installChannel?.reset()")
+    #
+    # 🔴 2026-09-28：恢复动作**收敛到一处** —— 单签（本函数）与批量
+    #    （`RenewalCoordinator.process`）都必须调 `SigningCoordinator
+    #    .prepareInstallChannelForRetry(after:)`。此前两条链路各写一份：单签 `reset()`、
+    #    批量什么都不做 ⇒ 批量重试三次全撞在同一个死会话上（见 R97）。
+    r96_recover_call = "await signingCoordinator.prepareInstallChannelForRetry(after: error)"
+    r96_recover_at = r96_retry.find(r96_recover_call)
     r96_sleep_at = r96_retry.find("Task.sleep(nanoseconds: delay)")
-    check("DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(error)" in r96_retry
-          and r96_reset_at >= 0
+    check(r96_recover_at >= 0
           and r96_sleep_at >= 0
-          and r96_reset_at < r96_sleep_at
-          and "await installChannel?.clearFailureCooldown()" in r96_retry
+          and r96_recover_at < r96_sleep_at
           and "static func requiresChannelResetBeforeRetry(_ error: Error) -> Bool" in r96_policy,
-          "R96②: 重试前必须**先拆掉可能已死的会话**、再退避等待 ✗ —— "
+          "R96②: 重试前必须**先恢复设备通道**、再退避等待 ✗ —— "
           "通道类失败要 `reset()`（连 Swift 侧会话缓存一起清，否则 `start()` 的 900 秒缓存"
           "会把同一个死会话原样还回来 —— 「重试三次都撞同一个死会话」）；"
           "描述文件超时类只清熔断（`renewProfilesOnly` 的污染闸门会自己 reset + start）；"
-          "把 `reset()` 放到 `Task.sleep` **之后** ⇒ 那一轮仍撞死会话，等于白等")
+          "把恢复动作放到 `Task.sleep` **之后** ⇒ 那一轮仍撞死会话，等于白等")
+
+    # 🔴 恢复动作**本体**只有一份（`SigningCoordinator.prepareInstallChannelForRetry`）：
+    #    单签与批量都调它 ⇒ 「两张表同源」。判据本体仍是 `DeviceChannelTransientPolicy`
+    #    的纯函数 `requiresChannelResetBeforeRetry`（可单测），这里只钉「怎么恢复」。
+    r96_recover = section_or_empty(
+        r92_signing,
+        "    func prepareInstallChannelForRetry(after error: Error) async {",
+        "\n    func signAndInstall("
+    )
+    check("DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(error)" in r96_recover
+          and "await installChannel.reset()" in r96_recover
+          and "await installChannel.clearFailureCooldown()" in r96_recover,
+          "R96②b: 通道恢复动作本体必须「通道类 ⇒ `reset()`、描述文件超时类 ⇒ 只清熔断」✗ —— "
+          "通道类不 `reset()` ⇒ 重试仍撞死会话；"
+          "描述文件超时类也 `reset()` ⇒ 与 `renewProfilesOnly` 的污染闸门重复拆，白付一轮诊断；"
+          "这个函数是**单签与批量共用的唯一一份**，改它等于同时改两条链路")
 
     check('code: "SEAL-SIGN-504"' in r96_vm
           and 'code: "SEAL-SIGN-503"' in r96_vm
@@ -6141,6 +6176,129 @@ def violations(load=read):
           "R96④: 单签重试与失败归类的判据必须是**纯函数**（`nonisolated`，测试 target 可调）"
           "且必须有单测 ✗ —— 它的错法只在真机上表现为「本该重试却没有重试」或"
           "「通道失败被说成未预期错误」，不崩、不报错、日志里也看不出来")
+
+    # ── R97：**批量**续签重试必须走与单签**同源**的通道恢复（2026-09-28 真机）────────
+    #
+    # 现象：后台 / 批量续签整轮失败（用户报「快捷指令和手动续签全失败」），而单签在同一
+    #   通道抖动下却能自愈。
+    # 根因：批量重试循环原来只 `Task.sleep` 后 `continue`，**没有**恢复设备通道 ⇒
+    #   `MinimuxerInstallChannel.start()` 的 900 秒成功缓存把已被隧道抖动顶掉的会话
+    #   原样还回来，三次重试都撞在**同一个**死会话上。
+    # 判据：① 批量重试前必须调用**同一个**恢复函数（与单签同源）；
+    #   ② 只在**通道类**失败时动通道（Apple 网络错误的通道本来是好的，清熔断白跑一轮诊断）；
+    #   ③ 必须留痕（`SEAL-RENEW-503`）并登记码表 —— 这条链路在后台跑，日志是唯一证据。
+    r97_recover_call = "await signingCoordinator.prepareInstallChannelForRetry(after: error)"
+    r97_recover_at = r92_renewal.find(r97_recover_call)
+    r97_sleep_at = r92_renewal.find("try? await Task.sleep(nanoseconds: delay)")
+    check(r97_recover_at >= 0
+          and r97_sleep_at >= 0
+          and r97_recover_at < r97_sleep_at
+          and "if isChannelFailure {" in r92_renewal,
+          "R97①: 批量续签重试前必须**恢复设备通道**、且只在通道类失败时动它 ✗ —— "
+          "不恢复 ⇒ 重试仍撞在同一个死会话上（`start()` 的 900 秒缓存原样还回，"
+          "「重试三次全失败」）；对 Apple 网络错误也动通道 ⇒ 白付一轮 75 秒诊断"
+          "（通道本来是好的，只需要它继续可用）")
+
+    check(r96_recover_call in r96_retry and r97_recover_call in r92_renewal,
+          "R97②: 单签与批量的通道恢复必须走**同一个**函数（同源）✗ —— "
+          "两条链路各写一份必然漂移（本仓反复踩过的「两张表同源」坑）："
+          "历史上先是「批量能自愈 / 单签白做」，补单签时又各写了一份 ⇒ "
+          "轮到批量白做。恢复动作现在只有 `SigningCoordinator.prepareInstallChannelForRetry` 一份")
+
+    check('code: "SEAL-RENEW-503"' in r92_renewal
+          and "`SEAL-RENEW-503`" in r92_index,
+          "R97③: 批量重试必须留痕 `SEAL-RENEW-503` 并登记进 "
+          "`docs/qa/log-code-index.md` ✗ —— 这条链路在后台跑、界面上什么都没有，"
+          "没有它时「重试了没有 / 重试了几次」在日志上完全看不出来（正是本次难定位的原因）")
+
+    # ── R98：安装失败的**取词**必须与终端判定同源（2026-09-28）────────────────────
+    #
+    # 现象：设备端确定性拒绝（`No space left` 等）被归类成泛化的 `SEAL-INSTALL-702`
+    #   「安装失败」，而 `isTerminalInstallError` 明明认得它 ⇒ 两张表对**同一个**
+    #   `ImportFailure` 看到不同文本。
+    # 根因：`installationFailure` 用 `diagnostic` 取词，而 `diagnostic` 对 `ImportFailure`
+    #   只会经 `NSError` 桥接拿到 `title`（如「安装失败」），原始设备错误其实在 `reason` 里。
+    # 判据：两处**都**走 `errorDetail`（`ImportFailure` ⇒ `reason`、其余 ⇒ `diagnostic`）。
+    r98_raw = load("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift")
+    r98_failure = squash(strip_comments(section_or_empty(
+        r98_raw,
+        "    private static func installationFailure(_ error: Error) -> ImportFailure {",
+        "\n    #endif"
+    )))
+    r98_error_detail = squash(strip_comments(section_or_empty(
+        r98_raw,
+        "    static func errorDetail(_ error: Error) -> String {",
+        "\n    /// 确定性安装拒绝"
+    )))
+    check("let detail = errorDetail(error)" in r98_failure
+          and "let detail = diagnostic(error)" not in r98_failure
+          and "if let failure = error as? ImportFailure { return failure.reason }" in r98_error_detail,
+          "R98①: `installationFailure` 必须与 `isTerminalInstallError` **同源取词**"
+          "（`errorDetail`）✗ —— 用 `diagnostic` 时对 `ImportFailure` 只拿到 `title`，"
+          "终端拒绝（`No space left` / `ApplicationVerificationFailed`）会被归入泛化 `702`，"
+          "用户看到的是「安装失败」而不是「设备存储空间不足」这类**可操作**的原因")
+
+    # ── R99：清理的 dump 目录枚举失败必须 fail closed、不得退化成空清单（2026-09-28）──
+    #
+    # 现象（AGENTS.md §4 明文）：列目录失败被 `(try? ...) ?? []` 退化成空清单 ⇒
+    #   「设备上确实没有 profile」与「枚举失败」同形：清理静默不生效、profile 继续堆积，
+    #   而日志里看不出任何原因。
+    r99_raw = load("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift")
+    r99_enumerate = squash(strip_comments(section_or_empty(
+        r99_raw,
+        "        let dumpURL = URL(fileURLWithPath: dump.path)",
+        "        // ── 阶段 A：本地判定"
+    )))
+    check("try fileManager.contentsOfDirectory(" in r99_enumerate
+          and "catch {" in r99_enumerate
+          and 'summary.stage = "enumerate"' in r99_enumerate
+          and "summary.firstError" in r99_enumerate
+          and "(try? fileManager.contentsOfDirectory(" not in r99_enumerate,
+          "R99①: dump 目录枚举失败必须**与「设备上确实没有 profile」区分开** ✗ —— "
+          "退化成空清单（`(try? ...) ?? []`）⇒ 清理静默不生效、profile 继续在设备上堆积，"
+          "而摘要里与「本来就没有」一模一样；fail closed 才是对的：拿不到清单就整轮不回收，"
+          "并把真实原因置进 `stage` / `firstError` 供对账")
+
+    # ── R100：日志**导出**也必须过脱敏（2026-09-28）───────────────────────────────
+    #
+    # 现象（AGENTS.md §4 明文）：`exportText()` = 镜像到 Documents 的 `Seal-log.txt`，
+    #   升级前遗留的未脱敏 JSON 会被原样读进 `buffer` 后**原样导出**（公开仓库即泄露开发者账号）。
+    r100_log = squash(strip_comments(load("Seal/Infrastructure/Diagnostics/SealLogStore.swift")))
+    check("buffer.map(Self.redacted).reversed()" in r100_log
+          and "buffer.reversed()" not in r100_log,
+          "R100①: `exportText()`（= 镜像到 Documents 的 `Seal-log.txt`）也必须过脱敏 ✗ —— "
+          "`append` 只保证**新写入**的那份已脱敏；升级前遗留的未脱敏 JSON 会被原样读进 "
+          "`buffer`，导出时若直接交给格式化器就会把它们原样导出（公开仓库即泄露开发者账号）；"
+          "`entries()` 早就做了这层重脱敏，导出必须与它同源")
+
+    # ── R101：剩余天数必须**四舍五入**（刚签完显示 7 天，2026-09-28 用户反馈）────────
+    #
+    # 现象：免费账号 profile 恰好 7 天，刚签完读到的剩余是 6.99 天，旧实现
+    #   `Int(interval / 86_400)` 向下取整 ⇒ 列表显示「6天」，用户以为签名只有 6 天。
+    # 判据：两处（已安装列表 / 签名历史）**同源**四舍五入。
+    #   ⚠️ 刻意不用 `ceil`：那会让「1天」只在恰好 24 小时那一瞬出现（25 小时 → 「2天」、
+    #   23 小时 → 走「小时」分支），把一天的刻度抹掉。
+    r101_app = strip_comments(load("Seal/Features/Apps/AppPresentation.swift"))
+    r101_history = strip_comments(load("Seal/Core/SigningHistory/SigningHistoryRecord.swift"))
+    check("Int((interval / 86_400).rounded())" in r101_app
+          and "Int((interval / 86_400).rounded())" in r101_history
+          and "Int(interval / 86_400)" not in r101_app
+          and "Int(interval / 86_400)" not in r101_history
+          and "func freshlySignedProfileShowsSevenDays()"
+              in load("SealTests/Apps/AppPresentationTests.swift"),
+          "R101①: 剩余天数必须**四舍五入**（已安装列表与签名历史同源），且有单测 ✗ —— "
+          "向下取整 ⇒ 刚签完（6.99 天）显示「6天」，用户以为签名只有 6 天；"
+          "两处不同源 ⇒ 同一个 App 在列表与历史里显示不同的天数")
+
+    # ② 颜色必须与**显示的数字**同源：`days <= 3` 而不是「真实剩余时间 < 4 天」。
+    #   后者会在剩余 3.5–4.0 天造出「显示 4 天却着橙色告警」的半天窗口 —— 自相矛盾的一行。
+    check("let isUrgent = days <= 3" in r101_app
+          and "interval < 4 * 86_400" not in r101_app
+          and "func justUnderFourDaysShowsFourNeutralDays()"
+              in load("SealTests/Apps/AppPresentationTests.swift"),
+          "R101②: 剩余天数的**颜色**必须与**显示的数字**同源（`days <= 3`）✗ —— "
+          "按真实剩余时间判会造出「显示 4 天却着橙色告警」的半天窗口（3.5–4.0 天），"
+          "数字与颜色自相矛盾；这一条与「数字取整」是两件事，各自要有单测钉住")
 
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
@@ -6627,7 +6785,7 @@ def main():
         # 仍然全绿，但测试已经守不住这个行为了。
         ("SealTests/Maintenance/ProfileReclaimPolicyTests.swift",
          "    func currentBundleIdentifierIsNeverACandidate() {\n"
-         '        let keep = ["com.kdt.livecontainer.seal.KYRJV2U7WS": "LIVE-UUID"]',
+         '        let keep = ["com.kdt.livecontainer.seal.TEAM000009": "LIVE-UUID"]',
          "    func currentBundleIdentifierIsNeverACandidate() {\n"
          '        let keep = ["com.kdt.livecontainer.seal.kyrjv2u7ws": "LIVE-UUID"]',
          "R11: the keep-map case-insensitivity needs a real unit test with a mixed-case key"),
@@ -7032,7 +7190,7 @@ def main():
          "                        )",
          "R24: 更新应用能力（updateFeatures）"),
         # 把 Phase 1 的 applications 查询退回 original ID：键错位会让 entitlements 恒空、
-        # 签出的包不带任何能力（2026-09-18 真机日志「远端 ["APG3427HIY"] vs 本次 []」实锤）。
+        # 签出的包不带任何能力（2026-09-18 真机日志「远端 ["TEAM000011"] vs 本次 []」实锤）。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
          "                if let application = applications[mappedBundleID] {",
          "                if let application = applications[originalBundleID] {",
@@ -7759,9 +7917,15 @@ def main():
          "R10: a second concurrent self-replacement install must be refused"),
         # 超时也解锁闸门：底层同步 FFI 很可能还在跑，第二笔就成了并发安装。
         ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
-         "            selfReplacementGate.release(timedOut: Self.isTimeoutInstallError(error))",
+         "            selfReplacementGate.release(timedOut: Self.mustKeepSelfReplacementGateLocked(error))",
          "            selfReplacementGate.release(timedOut: false)",
          "R10: a timeout must keep the self-replacement gate closed (the FFI is still running)"),
+        # 取消不再算「必须保持置位」（退回只判超时）：用户一取消就解锁闸门，
+        # 下一笔安装在同一 Bundle ID 上并发提交。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "        isTimeoutInstallError(error) || error is CancellationError",
+         "        isTimeoutInstallError(error)",
+         "R10: a cancellation must keep the self-replacement gate closed too"),
         # 去掉共用心跳里的日志：两条路径同时重新变成「卡住时一片空白」，
         # 无法区分在装和死了。
         ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
@@ -9356,27 +9520,16 @@ def main():
          "DeviceChannelTransientPolicy.shouldRetry(",
          "DeviceChannelTransientPolicy.shouldRetryDisabled(",
          "R96①:"),
-        # ② 重试前不再拆死会话（复用缓存 ⇒ 重试撞同一个死会话）⇒ R96② 报红。
+        # ② 重试前不再恢复设备通道（复用缓存 ⇒ 重试撞同一个死会话）⇒ R96② 报红。
         ("Seal/Features/Apps/AppsViewModel.swift",
+         "                await signingCoordinator.prepareInstallChannelForRetry(after: error)\n",
+         "",
+         "R96②:"),
+        # ②b 恢复动作本体被改成「一律清熔断」（通道类不再 reset ⇒ 重试仍撞死会话）⇒ R96②b 报红。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
          "if DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(error) {",
-         "if DeviceChannelTransientPolicy.isTransientChannelFailure(error) {",
-         "R96②:"),
-        # ②b `reset()` 挪到退避**之后**（那一轮仍撞死会话，等于白等）⇒ R96② 报红。
-        ("Seal/Features/Apps/AppsViewModel.swift",
-         "                if DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(error) {\n"
-         "                    await installChannel?.reset()\n"
-         "                } else {\n"
-         "                    await installChannel?.clearFailureCooldown()\n"
-         "                }\n"
-         "                let delay = DeviceChannelTransientPolicy.retryDelayNanoseconds(forAttempt: attempt)\n",
-         "                let delay = DeviceChannelTransientPolicy.retryDelayNanoseconds(forAttempt: attempt)\n"
-         "                try? await Task.sleep(nanoseconds: delay)\n"
-         "                if DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(error) {\n"
-         "                    await installChannel?.reset()\n"
-         "                } else {\n"
-         "                    await installChannel?.clearFailureCooldown()\n"
-         "                }\n",
-         "R96②:"),
+         "if false {",
+         "R96②b:"),
         # ③ 通道失败退回笼统的 `SEAL-SIGN-500`（用户看不到「去开 LocalDevVPN」）⇒ R96③ 报红。
         ("Seal/Features/Apps/AppsViewModel.swift",
          'code: "SEAL-SIGN-504"',
@@ -9402,6 +9555,46 @@ def main():
          "func shouldRetryRespectsBudgetAndChannelJudgement()",
          "func shouldRetryIgnoresBudget()",
          "R96④:"),
+        # ── R97：批量的通道恢复（与单签同源）──
+        # ① 批量重试前不再恢复设备通道（重试撞同一个死会话）⇒ R97① 报红。
+        ("Seal/Core/Renewal/RenewalCoordinator.swift",
+         "                            await signingCoordinator.prepareInstallChannelForRetry(after: error)\n",
+         "",
+         "R97①:"),
+        # ③ `SEAL-RENEW-503` 不再登记进码索引 ⇒ R97③ 报红。
+        ("docs/qa/log-code-index.md",
+         "`SEAL-RENEW-503`",
+         "`SEAL-RENEW-903`",
+         "R97③:"),
+        # ── R98：安装失败取词与终端判定同源 ──
+        # ① `installationFailure` 退回 `diagnostic` 取词（对 ImportFailure 只拿到 title）⇒ R98① 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "        let detail = errorDetail(error)\n",
+         "        let detail = diagnostic(error)\n",
+         "R98①:"),
+        # ── R99：dump 目录枚举失败必须 fail closed ──
+        # ① 退回 `(try? ...) ?? []`（失败退化成空清单）⇒ R99① 报红。
+        ("Seal/Infrastructure/Installation/DeviceProfileCleaner.swift",
+         "        do {\n            profileURLs = try fileManager.contentsOfDirectory(",
+         "        do {\n            profileURLs = (try? fileManager.contentsOfDirectory(",
+         "R99①:"),
+        # ── R100：日志导出也必须过脱敏 ──
+        # ① 导出退回未脱敏的 `buffer.reversed()` ⇒ R100① 报红。
+        ("Seal/Infrastructure/Diagnostics/SealLogStore.swift",
+         "        return SealLogTextFormatter.exportText(\n            buffer.map(Self.redacted).reversed(),",
+         "        return SealLogTextFormatter.exportText(\n            buffer.reversed(),",
+         "R100①:"),
+        # ── R101：剩余天数四舍五入 ──
+        # ① 退回向下取整（刚签完显示 6 天）⇒ R101① 报红。
+        ("Seal/Features/Apps/AppPresentation.swift",
+         "Int((interval / 86_400).rounded())",
+         "Int(interval / 86_400)",
+         "R101①:"),
+        # ② 紧急阈值退回按真实剩余时间（「显示 4 天却橙色」）⇒ R101② 报红。
+        ("Seal/Features/Apps/AppPresentation.swift",
+         "let isUrgent = days <= 3",
+         "let isUrgent = interval < 4 * 86_400",
+         "R101②:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

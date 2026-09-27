@@ -98,7 +98,13 @@ final class CertificateExportHandler {
             return
         }
 
-        let password = secret.password ?? ""
+        // 🔴 不能把 `secret.password`（= **Apple ID 密码**，见 `AccountSecret.password` 注释）
+        // 当成证书密码导出（2026-09-28）：它会被拼进 URL 交给外部应用（LiveContainer 等），
+        // 既把账号口令泄露给第三方，又解不开包 —— Seal 的 P12 由 AltSign/OpenSSL 生成、
+        // **本身没有密码**（全仓解析处一律 `ALTCertificate(p12Data:password:nil)`，
+        // 见 `ApplePortalSigningService`）。上游 SideStore 传的是**证书自己的**密码
+        // （`CertificateManager.getPassword(for:)` = 序列号）；Seal 没有这一层封装 ⇒ 传空串。
+        let password = ""
 
         // 4. 校验 callback_template 包含占位符
         guard callbackTemplate.contains("$(BASE64_CERT)") else {
@@ -106,14 +112,21 @@ final class CertificateExportHandler {
             return
         }
 
-        // 5. Base64 编码 P12
+        // 5. Base64 编码 P12，并按 URL query 规则转义。
+        // ⚠️ 必须转义：base64 里的 `+` 在 query 里会被解成**空格**，`/`、`=` 也会被
+        // 目标应用的解析器误读 ⇒ 传过去的是**损坏的证书**（表现为「导入失败」而非报错）。
+        // 字符集与上游 `CertificateManager.activeSigningCertificateBase64Encoded` 同源。
         let base64Cert = p12Data.base64EncodedString()
+        guard let encodedCert = Self.urlQueryEncoded(base64Cert),
+              let encodedPassword = Self.urlQueryEncoded(password) else {
+            showToast("证书编码失败，请重试", in: viewController)
+            return
+        }
 
         // 6. 替换占位符
-        var urlStr = callbackTemplate
-            .replacingOccurrences(of: "$(BASE64_CERT)", with: base64Cert, options: .literal)
-        urlStr = urlStr
-            .replacingOccurrences(of: "$(PASSWORD)", with: password, options: .literal)
+        let urlStr = callbackTemplate
+            .replacingOccurrences(of: "$(BASE64_CERT)", with: encodedCert, options: .literal)
+            .replacingOccurrences(of: "$(PASSWORD)", with: encodedPassword, options: .literal)
 
         // 7. 直接跳转 callback URL，把证书回传给外部应用
         guard let callbackURL = URL(string: urlStr) else {
@@ -122,6 +135,14 @@ final class CertificateExportHandler {
         }
 
         await UIApplication.shared.open(callbackURL)
+    }
+
+    /// 与上游 `CertificateManager.activeSigningCertificateBase64Encoded` 同一套字符集：
+    /// 从 `urlQueryAllowed` 里再剔掉 query 分隔符，避免 base64 的 `+ / = ; ,` 破坏 URL。
+    private static func urlQueryEncoded(_ value: String) -> String? {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: ";/?:@&=+$, ")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed)
     }
 
     private func showToast(_ message: String, in viewController: UIViewController) {

@@ -34,6 +34,8 @@
 |---|---|---|
 | `SEAL-CERT-204b` | 无法生成有效证书请求，或 Apple 拒绝了请求（**不代表名额已满**） | `CertificateRequestFailurePolicy.swift` |
 | `SEAL-SIGN-501` | Apple 暂时拒绝了请求（App ID 阶段撞限流；**先等几分钟重试**） | `ApplePortalSigningService.swift` |
+| `SEAL-SIGN-503` | 单应用签名 / 续签撞上**设备通道瞬时失败**，已按批量同源策略退避重试（8 秒 × 第几次）—— **警告级**。看到它说明这一轮通道抖过；没有它时「本该重试却没有重试」在日志上完全看不出来 | `AppsViewModel.swift` |
+| `SEAL-SIGN-504` | 单应用续签时**设备通道不可用**，自动重试后仍未恢复（底层多为 `Minimuxer.MinimuxerError 1` 的 `NoConnection`）。失败弹窗的「恢复」按钮据此跳 LocalDevVPN 设置页 | `AppsViewModel.swift` |
 | `SEAL-APPID-303` | App ID 创建失败（Apple 未创建；常见原因见同行的 `Apple 返回：`） | `ApplePortalSigningService.swift` |
 | `SEAL-EXT-401` | **扩展**无法创建 App ID（多扩展 App 会走到这条） | `ApplePortalSigningService.swift` |
 

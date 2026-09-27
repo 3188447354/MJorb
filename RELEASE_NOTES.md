@@ -1,3 +1,36 @@
+# 1.3.28 单应用续签也走通道重试（不再「一次抖动整轮白做」）
+
+这一版只补**一处不对称**：批量 / 后台续签早就会对「设备通道瞬时失败」自动退避重试，
+而**单应用续签**（含自替换后新进程自动续签 Seal 那条路径）**没有** —— 同一个通道抖动，
+批量能自愈、单签整轮白做。不改签名、不改描述文件、不改安装包，判据与行为都不放松。
+
+## 一、单应用续签接入「通道瞬时失败」重试（与批量同源）
+
+- **现象**（用户 1.3.27 真机日志，`20:16` 自替换后自动续签 Seal）：
+  自替换 `exit(0)` → 新进程起保活 → 自动续签 Seal → 先报 `SEAL-PROFILE-363`（设备端描述文件枚举不可用）
+  → 约 30 秒后硬失败 `[SEAL-SIGN-500] 签名流程遇到未预期错误。[Minimuxer.MinimuxerError 1]`（`NoConnection`）。
+- **根因**（两条，互相放大）：
+  1. **单应用路径没有通道重试**。批量 / 后台续签走 `RenewalCoordinator` + `DeviceChannelTransientPolicy`
+     （同一份词表 + 8 秒退避），通道抖动能自愈；而单应用走 `AppsViewModel.startSigning → runSigning`，
+     **直接把 `signAndInstall` 的异常抛给用户** ⇒ 同一个抖动，批量能自愈、单签整轮白做。
+  2. **通道失败没归类**。底层是裸 `MinimuxerError`，落到 `unexpectedSigningFailure` 一律包成
+     `SEAL-SIGN-500`「未预期错误」—— **既没有下一步动作，也看不出这是通道问题**。
+- **修复**：
+  - `DeviceChannelTransientPolicy` 新增单签预算与**纯函数**判据：`singleAppMaxAttempts`（= 3，
+    与批量 `maxAttempts` 一致）、`shouldRetry(afterAttempt:maxAttempts:error:)`、
+    `retryDelayNanoseconds(forAttempt:)`（8 秒 × 尝试序号）、`requiresChannelResetBeforeRetry(_:)`、`diagnostic(_:)`。
+  - `AppsViewModel.runSigning` 的 `signAndInstall` 抽进 `signWithChannelRetry(...)`：**同一份词表**
+    判可重试、**重试前先拆死会话**（通道类 `installChannel?.reset()`；描述文件超时类只清熔断，
+    交给 `renewProfilesOnly` 的污染闸门自己 reset + start）、8 秒退避、留痕 `SEAL-SIGN-503`（**警告级**）。
+  - 失败归类 `AppsViewModel.signingFailure(for:)`（`nonisolated`，可单测）：通道类给**带码可引导**的
+    `SEAL-SIGN-504`（recovery 引导去检查 LocalDevVPN），其余才是 `SEAL-SIGN-500`；
+    `SEAL-SIGN-504` 登记进 `InstallFailureSettingsRoute.localDevVPNCodes` + 码表。
+
+【验证】自替换后新进程自动续签 Seal ⇒ 若通道抖过，日志里应出现 `SEAL-SIGN-503` 且本轮**重试后成功**；
+真连不上时提示应是「无法连接设备」（按钮跳 LocalDevVPN 设置页），而不是「未预期错误」。
+
+---
+
 # 1.3.27 通道失败能说清原因 + 隧道掉线自动重建 + RemotePairing 端口自愈
 
 这一版只动**设备通道**这一层：让「续不上」时能看到**具体**原因，让隧道掉线**自己恢复**，

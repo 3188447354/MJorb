@@ -5,6 +5,41 @@
 
 ---
 
+## 2026-09-27 自替换后自动续签 Seal 硬失败 `SEAL-SIGN-500`：单应用路径没接通道重试、通道失败没归类
+
+- **现象**（用户导出的 1.3.27 真机日志，`Seal-log(6)(3).txt`）：
+  `20:16:13` Seal 自替换 `exit(0)` → `20:16:24` 新进程起保活 → `20:16:27` 自动续签 Seal
+  → `20:16:33` `SEAL-PROFILE-363`（设备端描述文件枚举不可用）→ `20:16:57`
+  `[SEAL-SIGN-500] 签名流程遇到未预期错误。[Minimuxer.MinimuxerError 1]`（`NoConnection`）。
+  即：**刚重启的通道还在抖**，续签在通道没站稳时硬失败，用户看到一句无动作可做的笼统话。
+- **根因**（两条，互相放大）：
+  1. **单应用路径没有通道重试**。批量 / 后台续签走 `RenewalCoordinator` +
+     `DeviceChannelTransientPolicy`（同源词表 + 8 秒退避），通道抖动能自愈；
+     而单应用走 `AppsViewModel.startSigning → runSigning`，**直接把 `signAndInstall` 的
+     异常抛给用户** ⇒ 同一个抖动，批量能自愈、单签整轮白做。
+  2. **通道失败没归类**。底层是裸 `MinimuxerError`，落到 `unexpectedSigningFailure`
+     一律包成 `SEAL-SIGN-500`「未预期错误」——**既没有下一步动作，也看不出这是通道问题**。
+- **修复**：
+  1. `DeviceChannelTransientPolicy` 新增单签预算与**纯函数**判据：
+     `singleAppMaxAttempts`（= 3，与批量 `maxAttempts` 一致）、
+     `shouldRetry(afterAttempt:maxAttempts:error:)`、
+     `retryDelayNanoseconds(forAttempt:)`（8 秒 × 尝试序号）、
+     `requiresChannelResetBeforeRetry(_:)`、`diagnostic(_:)`。
+  2. `AppsViewModel.runSigning` 的 `signAndInstall` 抽进 `signWithChannelRetry(...)`：
+     同一份词表判可重试、**重试前先拆死会话**（通道类 `installChannel?.reset()`；
+     描述文件超时类只清熔断，交给 `renewProfilesOnly` 的污染闸门自己 reset + start）、
+     8 秒退避、留痕 `SEAL-SIGN-503`。
+  3. 失败归类 `AppsViewModel.signingFailure(for:)`（`nonisolated`，可单测）：通道类给
+     **带码可引导**的 `SEAL-SIGN-504`（recovery 引导去检查 LocalDevVPN），其余才是 `SEAL-SIGN-500`；
+     `SEAL-SIGN-504` 登记进 `InstallFailureSettingsRoute.localDevVPNCodes` + 码表。
+- **涉及文件**：`Seal/Core/Renewal/DeviceChannelTransientPolicy.swift`、
+  `Seal/Features/Apps/AppsViewModel.swift`、`Seal/Features/Settings/InstallFailureSettingsRoute.swift`、
+  `docs/qa/log-code-index.md`、`SealTests/Renewal/DeviceChannelTransientPolicyTests.swift`、
+  `Scripts/verify-release-safety.py`（守卫 R96，含变异自检）、`project.yml`（1.3.28）。
+- **验证状态**：静态守卫 R96（含 9 条变异自检）+ 单测（`DeviceChannelTransientPolicyTests` 新增 6 例）
+  本机跑绿；**真机待回归**：自替换后自动续签 Seal 若再撞通道抖动，日志应出现 `SEAL-SIGN-503`
+  并在 8 秒后重试；兜不住时应是 `SEAL-SIGN-504` 且「恢复」按钮跳 LocalDevVPN 页。
+
 ## 2026-09-27 通道失败只剩一句笼统话 + 隧道掉线后重试撞死会话：就绪判据丢原因、掉线不被识别
 
 - **现象**：① 续签 / 安装失败时提示永远是同一句「设备连接失败（超时、网络不可达或无设备）」——

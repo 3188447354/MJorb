@@ -6066,6 +6066,82 @@ def violations(load=read):
           "错法只在真机上表现为「隧道通、就是连不上」或「每次失败白跑一轮浏览」，"
           "不崩、不报错、编译也过")
 
+    # ── R96：单应用续签必须接入**通道瞬时重试**（2026-09-27 真机）──────────────
+    #
+    # 现象：Seal 自替换后 3 秒自动续签自己，`SEAL-PROFILE-363`（设备端描述文件枚举
+    #   不可用）开场，约 24 秒后以 `Minimuxer.MinimuxerError 1`（`NoConnection`）
+    #   硬失败成 `SEAL-SIGN-500`（用户导出日志实证）。
+    # 根因：**批量 / 后台**续签早就通过 `RenewalCoordinator` + `DeviceChannelTransientPolicy`
+    #   对通道瞬时失败退避重试；而**单应用**路径（`AppsViewModel.startSigning`
+    #   → `runSigning`）没有重试 ⇒ 同一个通道抖动，批量能自愈、单签整轮白做。
+    # 判据：① 单签路径必须接同一条策略（同一份词表 / 同一个退避基数 / 同样的尝试次数）；
+    #   ② 重试前必须拆掉可能已死的会话（通道类 `reset()`；描述文件超时类交给污染闸门）；
+    #   ③ 兜不住时必须给**带码、可引导**的 `SEAL-SIGN-504`（而不是笼统的 `SEAL-SIGN-500`），
+    #      并登记码表 + 路由到 LocalDevVPN 页；
+    #   ④ 判据必须是**纯函数**（`nonisolated`）且必须有单测。
+    r96_vm = strip_comments(load("Seal/Features/Apps/AppsViewModel.swift"))
+    r96_policy = strip_comments(load("Seal/Core/Renewal/DeviceChannelTransientPolicy.swift"))
+    r96_route = strip_comments(load("Seal/Features/Settings/InstallFailureSettingsRoute.swift"))
+    r96_index = load("docs/qa/log-code-index.md")
+    r96_tests = load("SealTests/Renewal/DeviceChannelTransientPolicyTests.swift")
+    r96_retry = section_or_empty(
+        load("Seal/Features/Apps/AppsViewModel.swift"),
+        "    private func signWithChannelRetry(",
+        "\n    private func latestStoredApp(for fallback: AppRecord) async -> AppRecord {"
+    )
+    r96_retry = strip_comments(r96_retry)
+
+    check("static let singleAppMaxAttempts = 3" in r96_policy
+          and "static func shouldRetry(afterAttempt attempt: Int, maxAttempts: Int, error: Error) -> Bool"
+              in r96_policy
+          and "DeviceChannelTransientPolicy.singleAppMaxAttempts" in r96_retry
+          and "DeviceChannelTransientPolicy.shouldRetry(" in r96_retry
+          and "DeviceChannelTransientPolicy.retryDelayNanoseconds(forAttempt: attempt)" in r96_retry
+          and "signWithChannelRetry(" in r96_vm,
+          "R96①: 单应用续签必须接入**与批量同源**的通道瞬时重试 ✗ —— "
+          "同一份词表（`isTransientChannelFailure`）、同一个退避基数"
+          "（`channelRetryDelayNanoseconds` × 尝试序号）、同样的尝试次数"
+          "（`singleAppMaxAttempts` = 批量 `maxAttempts` = 3）。"
+          "不接 ⇒ 自替换后自动续签 Seal 撞上通道抖动时整轮白做（真机实证）")
+
+    # ⚠️ 用 `find()`（返回 -1）而不是 `index()`（抛 ValueError）：变异会删掉某个锚点，
+    #    而变异循环只捕 `AssertionError` ⇒ 用 `index()` 会让守卫自己崩、报不出失败。
+    r96_reset_at = r96_retry.find("await installChannel?.reset()")
+    r96_sleep_at = r96_retry.find("Task.sleep(nanoseconds: delay)")
+    check("DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(error)" in r96_retry
+          and r96_reset_at >= 0
+          and r96_sleep_at >= 0
+          and r96_reset_at < r96_sleep_at
+          and "await installChannel?.clearFailureCooldown()" in r96_retry
+          and "static func requiresChannelResetBeforeRetry(_ error: Error) -> Bool" in r96_policy,
+          "R96②: 重试前必须**先拆掉可能已死的会话**、再退避等待 ✗ —— "
+          "通道类失败要 `reset()`（连 Swift 侧会话缓存一起清，否则 `start()` 的 900 秒缓存"
+          "会把同一个死会话原样还回来 —— 「重试三次都撞同一个死会话」）；"
+          "描述文件超时类只清熔断（`renewProfilesOnly` 的污染闸门会自己 reset + start）；"
+          "把 `reset()` 放到 `Task.sleep` **之后** ⇒ 那一轮仍撞死会话，等于白等")
+
+    check('code: "SEAL-SIGN-504"' in r96_vm
+          and 'code: "SEAL-SIGN-503"' in r96_vm
+          and "`SEAL-SIGN-504`" in r96_index
+          and "`SEAL-SIGN-503`" in r96_index
+          and '"SEAL-SIGN-504"' in r96_route
+          and "LocalDevVPN" in r96_vm,
+          "R96③: 通道失败必须归一成**带码、可引导**的 `SEAL-SIGN-504`（重试留痕 `-503`），"
+          "并登记码表 + 路由到 LocalDevVPN 页 ✗ —— "
+          "一律 `SEAL-SIGN-500`「签名流程遇到未预期错误」既没有下一步动作、"
+          "也看不出这是通道问题（用户导出日志实证）；不登记码表 ⇒ 用户发来日志也判读不出")
+
+    check("nonisolated static func signingFailure(for error: Error) -> ImportFailure" in r96_vm
+          and "struct DeviceChannelTransientPolicyTests" in r96_tests
+          and "func singleAppRetryBudgetMatchesBatch()" in r96_tests
+          and "func shouldRetryRespectsBudgetAndChannelJudgement()" in r96_tests
+          and "func shouldRetryNeverRetriesCancellation()" in r96_tests
+          and "func requiresChannelResetOnlyForChannelFailures()" in r96_tests
+          and "func singleAppFailureClassificationRoutesChannelFailures()" in r96_tests,
+          "R96④: 单签重试与失败归类的判据必须是**纯函数**（`nonisolated`，测试 target 可调）"
+          "且必须有单测 ✗ —— 它的错法只在真机上表现为「本该重试却没有重试」或"
+          "「通道失败被说成未预期错误」，不崩、不报错、日志里也看不出来")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -8458,13 +8534,13 @@ def main():
          "R83①: `AppsViewModel.settingsRoute` 必须委派给"),
         # ② 往通道码集合里塞一个与隧道无关的码（设备存储不足）⇒ R83③ 报红。
         ("Seal/Features/Settings/InstallFailureSettingsRoute.swift",
-         '        "SEAL-INSTALL-710"    // 无法经本地隧道连到设备\n',
+         '        "SEAL-INSTALL-710",   // 无法经本地隧道连到设备\n',
          '        "SEAL-INSTALL-710",   // 无法经本地隧道连到设备\n'
          '        "SEAL-INSTALL-702s"   // 设备存储不足（与隧道无关）\n',
          "R83③: 通道码集合必须**恰好 8 条**"),
         # ③ 把配对码塞进通道码集合 ⇒ R83④ 报红（同一个码两条路由判据打架）。
         ("Seal/Features/Settings/InstallFailureSettingsRoute.swift",
-         '        "SEAL-INSTALL-710"    // 无法经本地隧道连到设备\n',
+         '        "SEAL-INSTALL-710",   // 无法经本地隧道连到设备\n',
          '        "SEAL-INSTALL-710",   // 无法经本地隧道连到设备\n'
          '        "SEAL-INSTALL-703"    // 配对（错放）\n',
          "R83④: 通道码集合里**不得**出现配对码"),
@@ -9268,6 +9344,64 @@ def main():
          "func siblingCodesDoNotTriggerReprobe()",
          "func siblingCodesDoTriggerReprobe()",
          "R95⑥:"),
+        # ── R96：单应用续签的通道瞬时重试 ──
+        # ① 单签重试预算被调回 1（等于把重试关掉）⇒ R96① 报红。
+        ("Seal/Core/Renewal/DeviceChannelTransientPolicy.swift",
+         "static let singleAppMaxAttempts = 3",
+         "static let singleAppMaxAttempts = 1",
+         "R96①:"),
+        # ①b 单签不再用共享词表（本地另判）⇒ R96① 报红。
+        # ⚠️ 新名不含原名作为子串（`shouldRetryDisabled(` 后紧跟的不是 `(` ⇒ 锚点不匹配）。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "DeviceChannelTransientPolicy.shouldRetry(",
+         "DeviceChannelTransientPolicy.shouldRetryDisabled(",
+         "R96①:"),
+        # ② 重试前不再拆死会话（复用缓存 ⇒ 重试撞同一个死会话）⇒ R96② 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "if DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(error) {",
+         "if DeviceChannelTransientPolicy.isTransientChannelFailure(error) {",
+         "R96②:"),
+        # ②b `reset()` 挪到退避**之后**（那一轮仍撞死会话，等于白等）⇒ R96② 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "                if DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(error) {\n"
+         "                    await installChannel?.reset()\n"
+         "                } else {\n"
+         "                    await installChannel?.clearFailureCooldown()\n"
+         "                }\n"
+         "                let delay = DeviceChannelTransientPolicy.retryDelayNanoseconds(forAttempt: attempt)\n",
+         "                let delay = DeviceChannelTransientPolicy.retryDelayNanoseconds(forAttempt: attempt)\n"
+         "                try? await Task.sleep(nanoseconds: delay)\n"
+         "                if DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(error) {\n"
+         "                    await installChannel?.reset()\n"
+         "                } else {\n"
+         "                    await installChannel?.clearFailureCooldown()\n"
+         "                }\n",
+         "R96②:"),
+        # ③ 通道失败退回笼统的 `SEAL-SIGN-500`（用户看不到「去开 LocalDevVPN」）⇒ R96③ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         'code: "SEAL-SIGN-504"',
+         'code: "SEAL-SIGN-500"',
+         "R96③:"),
+        # ③b `SEAL-SIGN-504` 不再登记进码索引 ⇒ R96③ 报红。
+        ("docs/qa/log-code-index.md",
+         "`SEAL-SIGN-504`",
+         "`SEAL-SIGN-904`",
+         "R96③:"),
+        # ③c `SEAL-SIGN-504` 不再路由到 LocalDevVPN 页（「恢复」按钮无处可去）⇒ R96③ 报红。
+        ("Seal/Features/Settings/InstallFailureSettingsRoute.swift",
+         '"SEAL-SIGN-504"',
+         '"SEAL-SIGN-904"',
+         "R96③:"),
+        # ④ 归类函数不再是 `nonisolated`（测试 target 调不到，判据无人守）⇒ R96④ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "nonisolated static func signingFailure(for error: Error) -> ImportFailure",
+         "private static func signingFailure(for error: Error) -> ImportFailure",
+         "R96④:"),
+        # ④b 关键单测被改名（不变量没人守）⇒ R96④ 报红。
+        ("SealTests/Renewal/DeviceChannelTransientPolicyTests.swift",
+         "func shouldRetryRespectsBudgetAndChannelJudgement()",
+         "func shouldRetryIgnoresBudget()",
+         "R96④:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

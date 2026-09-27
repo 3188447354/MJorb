@@ -117,4 +117,84 @@ struct DeviceChannelTransientPolicyTests {
     func cancellationIsNeverRetryable() {
         #expect(RenewalCoordinator.isRetryable(CancellationError()) == false)
     }
+
+    // ── 单应用续签的重试预算（2026-09-27 真机：自替换后自动续签 Seal 硬失败）──────
+
+    @Test("单应用重试预算与批量一致（同一份策略，不另造一套）")
+    func singleAppRetryBudgetMatchesBatch() {
+        // `RenewalCoordinator.maxAttempts` = 3。两处必须一致，否则「同一个通道抖动」
+        // 在批量能自愈、在单签整轮白做（这正是本次真机踩到的形态）。
+        #expect(DeviceChannelTransientPolicy.singleAppMaxAttempts == 3)
+    }
+
+    @Test("还有预算且是通道瞬时失败才重试；预算用尽或非通道错误一律不重试")
+    func shouldRetryRespectsBudgetAndChannelJudgement() {
+        let channelError = NSError(
+            domain: DeviceChannelTransientPolicy.minimuxerErrorDomain, code: 1)
+        // 预算内 + 通道瞬时 ⇒ 重试
+        #expect(DeviceChannelTransientPolicy.shouldRetry(
+            afterAttempt: 1, maxAttempts: 3, error: channelError))
+        #expect(DeviceChannelTransientPolicy.shouldRetry(
+            afterAttempt: 2, maxAttempts: 3, error: channelError))
+        // 预算用尽 ⇒ 不重试（最后一次失败必须落到用户可见的错误上）
+        #expect(DeviceChannelTransientPolicy.shouldRetry(
+            afterAttempt: 3, maxAttempts: 3, error: channelError) == false)
+        // 非通道错误 ⇒ 不重试（配对文件坏了、签名包问题重试无用）
+        #expect(DeviceChannelTransientPolicy.shouldRetry(
+            afterAttempt: 1, maxAttempts: 3,
+            error: NSError(domain: DeviceChannelTransientPolicy.minimuxerErrorDomain, code: 2)
+        ) == false)
+        #expect(DeviceChannelTransientPolicy.shouldRetry(
+            afterAttempt: 1, maxAttempts: 3, error: NSError(domain: "NSURLErrorDomain", code: 1)
+        ) == false)
+    }
+
+    @Test("取消绝不重试（用户点了取消不该被重试拖住）")
+    func shouldRetryNeverRetriesCancellation() {
+        #expect(DeviceChannelTransientPolicy.shouldRetry(
+            afterAttempt: 1, maxAttempts: 3, error: CancellationError()) == false)
+    }
+
+    @Test("重试退避随尝试序号增长（8 秒基数 × 第几次）")
+    func retryDelayGrowsWithAttempt() {
+        #expect(DeviceChannelTransientPolicy.retryDelayNanoseconds(forAttempt: 1)
+            == DeviceChannelTransientPolicy.channelRetryDelayNanoseconds)
+        #expect(DeviceChannelTransientPolicy.retryDelayNanoseconds(forAttempt: 2)
+            == DeviceChannelTransientPolicy.channelRetryDelayNanoseconds * 2)
+        // 防御：非法序号（0 / 负数）不得把退避算成 0
+        #expect(DeviceChannelTransientPolicy.retryDelayNanoseconds(forAttempt: 0)
+            == DeviceChannelTransientPolicy.channelRetryDelayNanoseconds)
+    }
+
+    @Test("通道类失败重试前要拆死会话；描述文件超时类交给污染闸门自己拆")
+    func requiresChannelResetOnlyForChannelFailures() {
+        // 通道类（裸 Minimuxer 错误 / 安装提交前的通道码）⇒ 要 reset
+        #expect(DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(
+            NSError(domain: DeviceChannelTransientPolicy.minimuxerErrorDomain, code: 1)))
+        #expect(DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(
+            ImportFailure(title: "", reason: "", recovery: "", code: "SEAL-INSTALL-706b")))
+        // 描述文件超时类 ⇒ 不重复拆（`renewProfilesOnly` 的 `ProfileOnlyTaintGate` 会自己
+        // reset + start；这里再拆一次只是多付一轮诊断）
+        #expect(DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(
+            ImportFailure(title: "", reason: "", recovery: "", code: "SEAL-PROFILE-352")) == false)
+        #expect(DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(
+            ImportFailure(title: "", reason: "", recovery: "", code: "SEAL-PROFILE-353")) == false)
+        // 非通道错误 ⇒ 不拆
+        #expect(DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(
+            ImportFailure(title: "", reason: "", recovery: "", code: "SEAL-INSTALL-702l")) == false)
+    }
+
+    @Test("单应用失败归类：通道类给带码可引导的 SEAL-SIGN-504，其余才是 SEAL-SIGN-500")
+    func singleAppFailureClassificationRoutesChannelFailures() {
+        // 裸 Minimuxer NoConnection（真机里自替换后自动续签 Seal 撞到的那个）⇒ 504 + 跳 VPN 页
+        let channelFailure = AppsViewModel.signingFailure(for:
+            NSError(domain: DeviceChannelTransientPolicy.minimuxerErrorDomain, code: 1))
+        #expect(channelFailure.code == "SEAL-SIGN-504")
+        #expect(InstallFailureSettingsRoute.route(forCode: channelFailure.code) == .localDevVPN)
+        // 非通道的未预期错误 ⇒ 保持 500，且不误导用户去 VPN 页
+        let otherFailure = AppsViewModel.signingFailure(for:
+            NSError(domain: "Seal.SomeUnexpected", code: 7))
+        #expect(otherFailure.code == "SEAL-SIGN-500")
+        #expect(InstallFailureSettingsRoute.route(forCode: otherFailure.code) == nil)
+    }
 }

@@ -2481,29 +2481,14 @@ final class AppsViewModel: ObservableObject {
                 await installChannel?.clearFailureCooldown()
                 beginSigningChannel()
             }
-            let completed = try await signingCoordinator.signAndInstall(
-                appID: app.id,
-                accountID: account.id,
+            let completed = try await signWithChannelRetry(
+                app: app,
+                account: account,
                 requestedBundleIdentifier: requestedBundleIdentifier,
                 selectedCertificateSerialNumber: selectedCertificateSerialNumber,
                 allowDroppingExtensions: allowDroppingExtensions,
-                forceResign: forceResign || isRenewal,
                 bypassFreeAccountDeviceLimit: bypassFreeAccountDeviceLimit,
-                progress: { [weak self] update in
-                    await self?.updateSigningStage(update.stage, subject: update.subject)
-                },
-                onCertificateResolved: { [weak self] serialNumber in
-                    await self?.updateResolvedCertificateSerialNumber(serialNumber)
-                },
-                onRenewalExecutionPath: { [weak self] path in
-                    await self?.updateRenewalExecutionPath(path)
-                },
-                onInstallProgress: { [weak self] progress in
-                    await self?.updateInstallProgress(progress)
-                },
-                onWorkUnits: { [weak self] units in
-                    await self?.updateWorkUnits(units)
-                }
+                forceResign: forceResign || isRenewal
             )
             let action: SigningHistoryRecord.Action = isRenewal ? .renew : .sign
             signingSession?.status = .succeeded(completed)
@@ -2547,7 +2532,7 @@ final class AppsViewModel: ObservableObject {
             )
             await load(force: true)
         } catch {
-            let failure = Self.unexpectedSigningFailure(error)
+            let failure = Self.signingFailure(for: error)
             signingSession?.status = .failed(failure)
             try? await logStore?.append(
                 category: .signing,
@@ -2567,6 +2552,96 @@ final class AppsViewModel: ObservableObject {
             )
             await load(force: true)
         }
+    }
+
+    /// 单应用签名 / 续签的**设备通道瞬时失败**重试（2026-09-27 真机）。
+    ///
+    /// 背景：Seal 自替换后 3 秒自动续签自己，`SEAL-PROFILE-363`（设备端描述文件枚举
+    /// 不可用）开场，约 24 秒后以 `Minimuxer.MinimuxerError 1`（`NoConnection`）
+    /// 硬失败成 `SEAL-SIGN-500`。批量 / 后台续签早就有了这条重试
+    /// （`RenewalCoordinator` + `DeviceChannelTransientPolicy`），**单应用路径没有**
+    /// ⇒ 同一个通道抖动，批量能自愈、单签整轮白做。
+    ///
+    /// 这里把批量那条策略**原样**接到单签路径：同一份词表（`isTransientChannelFailure`）、
+    /// 同一个退避基数（8 秒 × 尝试序号）、同样的尝试次数。判据全落在
+    /// `DeviceChannelTransientPolicy`（纯函数，可单测）—— 不要在本地另抄一套。
+    private func signWithChannelRetry(
+        app: AppRecord,
+        account: AppleAccountRecord,
+        requestedBundleIdentifier: String?,
+        selectedCertificateSerialNumber: String?,
+        allowDroppingExtensions: Bool,
+        bypassFreeAccountDeviceLimit: Bool,
+        forceResign: Bool
+    ) async throws -> AppRecord {
+        guard let signingCoordinator else {
+            throw Self.unexpectedSigningFailure(
+                NSError(domain: "Seal.AppsViewModel", code: 1)
+            )
+        }
+        let maxAttempts = DeviceChannelTransientPolicy.singleAppMaxAttempts
+        for attempt in 1...maxAttempts {
+            try Task.checkCancellation()
+            do {
+                return try await signingCoordinator.signAndInstall(
+                    appID: app.id,
+                    accountID: account.id,
+                    requestedBundleIdentifier: requestedBundleIdentifier,
+                    selectedCertificateSerialNumber: selectedCertificateSerialNumber,
+                    allowDroppingExtensions: allowDroppingExtensions,
+                    forceResign: forceResign,
+                    bypassFreeAccountDeviceLimit: bypassFreeAccountDeviceLimit,
+                    progress: { [weak self] update in
+                        await self?.updateSigningStage(update.stage, subject: update.subject)
+                    },
+                    onCertificateResolved: { [weak self] serialNumber in
+                        await self?.updateResolvedCertificateSerialNumber(serialNumber)
+                    },
+                    onRenewalExecutionPath: { [weak self] path in
+                        await self?.updateRenewalExecutionPath(path)
+                    },
+                    onInstallProgress: { [weak self] progress in
+                        await self?.updateInstallProgress(progress)
+                    },
+                    onWorkUnits: { [weak self] units in
+                        await self?.updateWorkUnits(units)
+                    }
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                guard DeviceChannelTransientPolicy.shouldRetry(
+                    afterAttempt: attempt,
+                    maxAttempts: maxAttempts,
+                    error: error
+                ) else { throw error }
+                // 重试前拆掉可能已被隧道抖动顶掉的死会话：`reset()` 连 Swift 侧会话缓存
+                // 与失败熔断一起清（否则下一次 `start()` 会在 900 秒窗口内把同一个死会话
+                // 原样还回来）。描述文件**超时**类交给 `renewProfilesOnly` 的污染闸门
+                // 自己 reset + start，这里只清熔断，避免重复拆多付一轮诊断。
+                if DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(error) {
+                    await installChannel?.reset()
+                } else {
+                    await installChannel?.clearFailureCooldown()
+                }
+                let delay = DeviceChannelTransientPolicy.retryDelayNanoseconds(forAttempt: attempt)
+                // 留痕：没有这一条时，重试在日志上完全看不出来（这正是本次难定位的原因）。
+                try? await logStore?.append(
+                    category: app.belongsInInstalledList ? .renewal : .signing,
+                    level: .warning,
+                    message: "设备通道瞬时失败（第 \(attempt)/\(maxAttempts) 次尝试），"
+                        + "\(Int(delay / 1_000_000_000)) 秒后重试："
+                        + DeviceChannelTransientPolicy.diagnostic(error),
+                    code: "SEAL-SIGN-503"
+                )
+                try? await Task.sleep(nanoseconds: delay)
+            }
+        }
+        // `maxAttempts >= 1` ⇒ 循环要么 return、要么在最后一次 `shouldRetry` 为假时抛出。
+        // 这行只是让编译器满意，实际不可达。
+        throw Self.unexpectedSigningFailure(
+            NSError(domain: "Seal.AppsViewModel", code: 2)
+        )
     }
 
     private func latestStoredApp(for fallback: AppRecord) async -> AppRecord {
@@ -2892,13 +2967,39 @@ final class AppsViewModel: ObservableObject {
     /// （2026-09-26 构建 53 实证：21:12:07 一条 `SEAL-SIGN-500`，除了那句话什么都没有）。
     /// 对照批量链路 —— `RenewalCoordinator.normalize` 会把 `[域 码: 描述]` 拼进 reason，
     /// 所以 `SEAL-RENEW-500` 的根因是看得见的。守卫 R92 钉住这三处都要带。
-    private static func unexpectedSigningFailure(_ error: Error) -> ImportFailure {
+    private nonisolated static func unexpectedSigningFailure(_ error: Error) -> ImportFailure {
         let nsError = error as NSError
         return ImportFailure(
             title: "签名失败",
             reason: "签名流程遇到未预期错误。\n[\(nsError.domain) \(nsError.code)]",
             recovery: "重试",
             code: "SEAL-SIGN-500"
+        )
+    }
+
+    /// 单应用签名 / 续签的**失败归类**：通道类给带码、可引导的 `SEAL-SIGN-504`，
+    /// 其余才退回 `SEAL-SIGN-500`。
+    ///
+    /// 🔴 为什么不能一律 `SEAL-SIGN-500`（2026-09-27 真机）：自替换后自动续签 Seal
+    /// 撞上通道抖动（`Minimuxer.MinimuxerError 1`）时，用户拿到的是一句「签名流程遇到
+    /// 未预期错误」——**既没有下一步动作，也看不出这是通道问题**。重试已经把抖动兜住了；
+    /// 兜不住时也必须说清「这是设备通道问题、去哪儿修」。
+    /// `SEAL-SIGN-504` 的 recovery 明确引导去检查 LocalDevVPN ⇒ 已登记进
+    /// `InstallFailureSettingsRoute.localDevVPNCodes`（失败弹窗的「恢复」按钮据此跳设置页）。
+    ///
+    /// ⚠️ `nonisolated`：判据是**纯函数**，必须能从测试 target 直接调
+    ///（`@MainActor` 类的 static func 默认是 MainActor 隔离的，测试里调不到）。
+    nonisolated static func signingFailure(for error: Error) -> ImportFailure {
+        if let failure = error as? ImportFailure { return failure }
+        guard DeviceChannelTransientPolicy.isTransientChannelFailure(error) else {
+            return unexpectedSigningFailure(error)
+        }
+        let nsError = error as NSError
+        return ImportFailure(
+            title: "无法连接设备",
+            reason: "续签时设备通道不可用，已自动重试仍未恢复。\n[\(nsError.domain) \(nsError.code)]",
+            recovery: "确认手机已解锁、与 Seal 在同一 Wi-Fi，并已打开 LocalDevVPN 后重试",
+            code: "SEAL-SIGN-504"
         )
     }
 

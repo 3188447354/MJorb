@@ -27,7 +27,8 @@ enum InstallFailureSettingsRoute {
         "SEAL-INSTALL-706b",  // 设备连接失败
         "SEAL-INSTALL-706t",  // 本地通道连接超时
         "SEAL-INSTALL-708",   // 设备未响应
-        "SEAL-INSTALL-710"    // 无法经本地隧道连到设备
+        "SEAL-INSTALL-710",   // 无法经本地隧道连到设备
+        "SEAL-SIGN-504"       // 单应用续签：设备通道不可用（自动重试后仍未恢复）
     ]
 
     /// 返回 nil 表示这条失败**没有**对应的设置页可去 —— 调用方不应跳转，

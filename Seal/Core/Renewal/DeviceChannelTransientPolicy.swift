@@ -118,4 +118,59 @@ enum DeviceChannelTransientPolicy {
     /// 那个退避几乎必然撞在通道还没恢复的窗口里，重试等于白跑（构建 53 真机：
     /// 两项失败相隔 30 秒以上，说明 2/4 秒对这种问题太短）。
     static let channelRetryDelayNanoseconds: UInt64 = 8_000_000_000
+
+    // ── 单应用续签（`AppsViewModel.runSigning`）的重试预算（2026-09-27 真机）─────
+    //
+    // 现象：Seal 自替换后 3 秒自动续签自己，`SEAL-PROFILE-363`（设备端描述文件枚举
+    // 不可用）开场，约 24 秒后以 `Minimuxer.MinimuxerError 1`（`NoConnection`）
+    // 硬失败成 `SEAL-SIGN-500`。**同一个通道抖动，批量 / 后台路径早就被
+    // `RenewalCoordinator` + 本策略重试掉了，而单应用路径没有重试** ⇒ 批量能自愈、
+    // 单签整轮白做。
+    //
+    // 这里把批量那条策略**原样**接到单签路径：同一份词表（`isTransientChannelFailure`）、
+    // 同一个退避基数、同样的尝试次数。**不另造一套判据**
+    //（AGENTS.md §3：有外层重试的地方，内层词表必须同源）。
+
+    /// 单应用续签的尝试预算 —— 与 `RenewalCoordinator.maxAttempts`（3）**一致**：
+    /// 首次 + 2 次重试。
+    static let singleAppMaxAttempts = 3
+
+    /// 纯判据：第 `attempt` 次尝试失败后**还要不要再来一次**。
+    ///
+    /// - 取消永远不重试（用户点了「取消」不该被重试拖住）；
+    /// - 只有「通道瞬时失败」才重试，且必须**还有预算**。
+    static func shouldRetry(afterAttempt attempt: Int, maxAttempts: Int, error: Error) -> Bool {
+        if error is CancellationError { return false }
+        guard attempt < maxAttempts else { return false }
+        return isTransientChannelFailure(error)
+    }
+
+    /// 第 `attempt` 次尝试失败后的退避时长：通道基数 × 尝试序号（8s / 16s）。
+    /// 与 `RenewalCoordinator` 的 `base * UInt64(attempt)` **同源**。
+    static func retryDelayNanoseconds(forAttempt attempt: Int) -> UInt64 {
+        channelRetryDelayNanoseconds * UInt64(max(1, attempt))
+    }
+
+    /// 重试前是否要**主动拆掉设备通道**。
+    ///
+    /// - 通道类（`transientChannelFailureCodes` / 裸 `MinimuxerError`）⇒ **要**：
+    ///   会话可能已被隧道抖动顶掉，而 `start()` 的 900 秒缓存会把同一个死会话原样
+    ///   还回来（这正是「重试三次都撞同一个死会话」的形态）；
+    /// - 描述文件**超时**类（`profileOperationTimeoutCodes`）⇒ **不要**：
+    ///   `renewProfilesOnly` 的污染闸门（`ProfileOnlyTaintGate`）会在下一次调用里
+    ///   自己 `reset()` + `start()`，这里重复拆只会多付一轮诊断。
+    static func requiresChannelResetBeforeRetry(_ error: Error) -> Bool {
+        if let failure = error as? ImportFailure,
+           profileOperationTimeoutCodes.contains(failure.code) {
+            return false
+        }
+        return isTransientChannelFailure(error)
+    }
+
+    /// 留痕用的「域 码: 描述」—— 与 `RenewalCoordinator.normalize` /
+    /// `AppsViewModel.unexpectedSigningFailure` 同一形态（不脱敏任何凭据）。
+    static func diagnostic(_ error: Error) -> String {
+        let nsError = error as NSError
+        return "\(nsError.domain) \(nsError.code): \(nsError.localizedDescription)"
+    }
 }

@@ -997,10 +997,15 @@ def violations(load=read):
           "R16: the probe must go through the bounded wrapper, not call the FFI directly")
     # ⚠️ 这一步**只记日志**：真正的补救是重建连接，而它会拆掉可能仍在跑的上一笔安装
     # 连接（R05）。没有直接证据之前不许动行为 —— 探测就是为了拿到那条证据。
+    # ⚠️ 区间终点必须是 `probeCachedSessionIfStale` 的**下一个函数**，不能沿用 `init(`：
+    # 2026-09-27 在两者之间插入了 `cachedSessionIsAlive`（它也调用 `fetchUDIDDetailed()`），
+    # 沿用旧终点会把新函数**并进** `probe_body` ⇒ 「探测必须用真实往返」那条变异
+    # （把 `fetchUDIDDetailed()` 换成 `ready()`）会被新函数里的 `fetchUDIDDetailed()` 救活，
+    # 变异不再报红、R16 悄悄失去约束力。
     probe_body = squash(section_or_empty(
         install_source,
         "private func probeCachedSessionIfStale() async {",
-        "\n    init(\n        pairingStore: PairingStore,"
+        "\n    private func cachedSessionIsAlive("
     ))
     check(probe_body != ""
           and "Minimuxer.reset()" not in probe_body
@@ -5334,9 +5339,19 @@ def violations(load=read):
         "    private func handleInterruption(rawType: UInt?) {",
         "\n    private func append("
     ))
+    # ⚠️ 2026-09-27 收窄：恢复动作已抽进**唯一实现** `reactivate(reason:)`
+    #（`start()` 与三种自愈回调共用），所以这里改判「中断分支确实走恢复」
+    # ＋「恢复实现确实激活会话并播放」。旧写法把 `setActive(true)` / `play()` 直接
+    # 钉在 `handleInterruption` 里，等于**鼓励**为每种原因各写一份恢复（本仓已踩过五次）。
+    r90_reactivate = strip_comments(section_or_empty(
+        r90_service,
+        "    private func reactivate(reason: BackgroundKeepAliveActivationReason) {",
+        "\n    private func makeSilentAudioFile("
+    ))
     check("BackgroundKeepAlivePolicy.shouldResume(afterInterruption: type)" in r90_interruption
-          and "try AVAudioSession.sharedInstance().setActive(true)" in r90_interruption
-          and "player?.play()" in r90_interruption,
+          and "reactivate(reason: .interruptionResumed)" in r90_interruption
+          and "try session.setActive(true)" in r90_reactivate
+          and "player.play()" in r90_reactivate,
           "R90⑤: 音频中断结束后必须重新激活会话并继续播放 ✗ —— "
           "不恢复的话，**一次来电或闹钟就能把保活永久打断**，而日志里一行异常都没有")
 
@@ -5392,9 +5407,46 @@ def violations(load=read):
 
     check("func silentWAVDataIsARecognizableOneSecondMonoPCMFile()" in r90_tests
           and "func silentWAVPayloadIsEntirelySilent()" in r90_tests
-          and "func keepAliveResumesOnlyAfterTheInterruptionEnds()" in r90_tests,
-          "R90⑬: 必须有单测覆盖「生成的是合法 WAV」「采样全为 0」「中断结束后才恢复」✗ —— "
-          "这三件事错了都不会崩，只会在真机上表现为「保活没生效、后台续签跑一半停了」")
+          and "func keepAliveResumesOnlyAfterTheInterruptionEnds()" in r90_tests
+          and "func keepAliveReactivatesAfterRouteChangesThatCanStopPlayback()" in r90_tests
+          and "func keepAliveIgnoresRouteChangesThatCannotOrShouldNotTriggerRecovery()" in r90_tests
+          and "func keepAliveActivationReasonsHaveDistinctLogCodes()" in r90_tests,
+          "R90⑬: 必须有单测覆盖「生成的是合法 WAV」「采样全为 0」「中断结束后才恢复」"
+          "「路由变更判据（该恢复的恢复、不该恢复的不恢复）」「四种恢复原因各有不同日志码」✗ —— "
+          "这几件事错了都不会崩，只会在真机上表现为「保活没生效、后台续签跑一半停了」")
+
+    # 🔴 保活**自愈**（2026-09-27）：上面 R90⑤ 只覆盖了「音频中断」一种打断。
+    # 真机上「锁屏 / 看电视 / 听歌时续签不成功」的病根是另外两种**没有任何通知被漏掉**、
+    # 只是从没处理过的打断 —— 而它们的共同症状都是「进程还在后台、音频早停了」：
+    #   · 路由变更：拔耳机 / 断蓝牙 ⇒ 系统 `setActive(false)` 并停掉播放；
+    #   · 媒体服务重置：媒体守护进程重启 ⇒ 所有音频对象作废（`AVAudioPlayer` 变无效）。
+    # 判据分两层：① 幂等/自愈的**状态判据**必须区分「意图」与「事实」；
+    #            ② 两种打断都必须有监听、且恢复走**同一个**实现。
+    check("player?.isPlaying == true" in r90_service_code
+          and "private(set) var isEnabled = false" in r90_service_code
+          and "guard isRunning == false else { return }" in r90_service_code,
+          "R90⑭: 保活的 `isRunning` 必须是**真实播放状态**（`player?.isPlaying`），"
+          "`start()` 的幂等闸门按它判，且另设 `isEnabled` 表达「意图」 ✗ —— "
+          "保活的失败模式全是「进程还在、音频早停了」；用一个自维护的布尔位当判据时，"
+          "它仍为 true 会把后续**每一次**自愈请求全部挡掉 ⇒ 保活一旦死掉就再也起不来，"
+          "而后台续签会在无人察觉时被挂起")
+
+    check("AVAudioSession.routeChangeNotification" in r90_service_code
+          and "AVAudioSession.mediaServicesWereResetNotification" in r90_service_code
+          and "reactivate(reason: .routeChanged)" in r90_service_code
+          and "reactivate(reason: .mediaServicesReset)" in r90_service_code,
+          "R90⑮: 保活必须监听**路由变更**与**媒体服务重置**并自愈 ✗ —— "
+          "拔耳机 / 断蓝牙后系统会停掉播放、媒体守护进程重启会让 `AVAudioPlayer` 作废；"
+          "不恢复的话保活静默失效（进程还在后台、日志一行异常都没有），"
+          "用户报的正是「锁屏 / 看电视 / 听歌时续签不成功」")
+
+    check("SEAL-BACKGROUND-010" in r90_index
+          and "SEAL-BACKGROUND-011" in r90_index
+          and "SEAL-BACKGROUND-012" in r90_index
+          and "SEAL-BACKGROUND-013" in r90_index,
+          "R90⑯: 新增的自愈日志码必须登记进 `docs/qa/log-code-index.md` ✗ —— "
+          "这条链路在后台跑、界面上什么都没有，日志是唯一的证据；"
+          "用户发来日志时第一件事就是查码表")
 
     # ── R91：签名/续签的**性能**改动不得改变产物语义（2026-09-26）──────────────────
     #
@@ -5603,6 +5655,19 @@ def violations(load=read):
           "必须都留痕**并登记进 `docs/qa/log-code-index.md`** ✗ —— "
           "这条链路在后台跑、界面上什么都没有，用户发来日志时第一件事就是查码表")
 
+    # 操作仲裁（2026-09-27）：手动与后台相遇时**不许静默丢弃**。
+    #   · `SEAL-BACKGROUND-014`：后台触发发现已有操作在跑 ⇒ **让位**并留痕（不重复点火）；
+    #   · `SEAL-OP-002`：用户手动点的请求被未完成的操作挡住 ⇒ 明确说出**被谁挡住**。
+    # 两个码都必须登记进码表 —— 否则用户报「点了没反应」时，日志里那两条码无从判读。
+    check('code: "SEAL-BACKGROUND-014"' in r92_view_model_code
+          and 'code: "SEAL-OP-002"' in r92_view_model_code
+          and "`SEAL-BACKGROUND-014`" in r92_index
+          and "`SEAL-OP-002`" in r92_index,
+          "R92⑪: 后台触发「让位」与「已有操作在进行」两个码必须留痕**并登记进 "
+          "`docs/qa/log-code-index.md`** ✗ —— "
+          "这两条正是「手动续签被快捷指令挡住 / 点了没反应」在日志上的唯一证据；"
+          "不登记的话用户发来日志也判读不出来")
+
     check(r92_wait.count("return") == 1
           and "if let failureDetail {" in r92_wait,
           "R92④: 等不到通道也必须**照常点火**（不得 early return）✗ —— "
@@ -5658,6 +5723,52 @@ def violations(load=read):
           and "func renewalCoordinatorTreatsChannelFailuresAsRetryable()" in r92_policy_tests,
           "R92⑨: 通道瞬时判据必须有单测 ✗ —— "
           "它的错法只在真机上表现为「本该重试却没有重试」，不崩、不报错、日志里也看不出来")
+
+    # 🔴 通道瞬时判据的**第二种形态**：安装链路归类出的 `ImportFailure` 码（2026-09-27）。
+    #   R92⑤ 只钉了「域 ＋ 序号」—— 那是**裸 `MinimuxerError`** 的形态；而安装链路
+    #   （`start()` / `connectionFailure` / `discoveryFailure`）是**归类成带码的
+    #   `ImportFailure` 之后才抛给续签侧**的 ⇒ 只认「域 ＋ 序号」时这些码会落空，
+    #   通道抖动又被当成终态错误（构建 53 那个错法换一层包装复现）。
+    r92_import_block = section_or_empty(
+        r92_policy,
+        "static let transientChannelFailureCodes: Set<String> = [",
+        "static func isTransientChannelFailure(_ failure: ImportFailure)"
+    )
+    r92_import_codes = re.findall(r'"(SEAL-[A-Za-z0-9\-]+)"', r92_import_block)
+    check(r92_import_codes == [
+        "SEAL-INSTALL-701", "SEAL-INSTALL-705", "SEAL-INSTALL-706b",
+        "SEAL-INSTALL-706t", "SEAL-INSTALL-708", "SEAL-INSTALL-709",
+        "SEAL-INSTALL-710", "SEAL-VPN-001",
+    ],
+          "R92⑩: 「安装提交之前」的通道失败码必须**逐条显式列出**（且不得混入安装阶段 / "
+          "确定性拒绝 / 配对类码）✗ —— 这张表是「词表同源」的落点：安装链路归类出的通道码"
+          "必须能被续签重试侧认出来，否则整轮白做；而收进 `702` / `702d`（安装阶段，"
+          "底下那次安装可能还在跑）或 `702t`（超时 ≠ 失败）会在同一 Bundle ID 上造出并发 installd")
+
+    r92_error_overload = section_or_empty(
+        r92_policy,
+        "static func isTransientChannelFailure(_ error: Error) -> Bool {",
+        "static let channelRetryDelayNanoseconds"
+    )
+    check("if let failure = error as? ImportFailure {" in r92_error_overload
+          and "return isTransientChannelFailure(failure)" in r92_error_overload,
+          "R92⑩b: `Error` 重载必须**优先按 `ImportFailure` 的码判** ✗ —— "
+          "`error as NSError` 对 Swift 结构体错误只给出 `Seal.ImportFailure` 这种非 Minimuxer 域，"
+          "不先判它，安装链路那些通道码会静默落空")
+
+    r92_channel_check = "if DeviceChannelTransientPolicy.isTransientChannelFailure(error) { return true }"
+    r92_net_branch = "if let failure = error as? ImportFailure {"
+    check(r92_channel_check in r92_renewal
+          and r92_net_branch in r92_renewal
+          and r92_renewal.index(r92_channel_check) < r92_renewal.index(r92_net_branch),
+          "R92⑩c: 通道判定必须排在 `ImportFailure` 的 `SEAL-NET-` 判定**之前** ✗ —— "
+          "安装链路把通道错误归类成带码的 `ImportFailure` 才抛上来，"
+          "排到 `SEAL-NET-` 分支后面等于没加")
+
+    check("func channelFamilyImportFailuresAreTransient()" in r92_policy_tests
+          and "func installationStageAndTerminalCodesAreNotTransient()" in r92_policy_tests,
+          "R92⑩d: `ImportFailure` 通道码判据必须有单测（该重试的收全、不该重试的别收）✗ —— "
+          "它的错法只在真机上表现为「本该重试却没有重试 / 白等一轮又失败」")
 
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
@@ -8447,10 +8558,13 @@ def main():
          "player.volume = 0.01",
          "player.volume = 0",
          "R90④:"),
-        # ⑤ 中断结束后不再激活会话（一次来电就永久打断保活）⇒ R90⑤ 报红。
+        # ⑤ 恢复时不再激活会话（一次来电就永久打断保活）⇒ R90⑤ 报红。
+        #    ⚠️ 2026-09-27 锚点跟着重构改：恢复动作已抽进 `reactivate(reason:)`，
+        #    旧锚点（`handleInterruption` 里那行 `AVAudioSession.sharedInstance().setActive`）
+        #    已不存在 ⇒ 不改会报 `Mutation anchor missing`。
         ("Seal/Infrastructure/Background/BackgroundKeepAliveService.swift",
-         "            try AVAudioSession.sharedInstance().setActive(true)\n",
-         "            try AVAudioSession.sharedInstance().setActive(false)\n",
+         "            try session.setActive(true)\n",
+         "            try session.setActive(false)\n",
          "R90⑤:"),
         # ⑥ 不再调用运行时生成（静音音频来源被换掉）⇒ R90⑥ 报红。
         ("Seal/Infrastructure/Background/BackgroundKeepAliveService.swift",
@@ -8499,6 +8613,21 @@ def main():
          "func silentWAVPayloadIsEntirelySilent()",
          "func silentWAVPayloadLegacy()",
          "R90⑬:"),
+        # ⑭ `start()` 的幂等闸门改回自维护的布尔位（保活死后不再自愈）⇒ R90⑭ 报红。
+        ("Seal/Infrastructure/Background/BackgroundKeepAliveService.swift",
+         "guard isRunning == false else { return }",
+         "guard isEnabled == false else { return }",
+         "R90⑭:"),
+        # ⑮ 不再监听路由变更（拔耳机 / 断蓝牙后保活静默失效）⇒ R90⑮ 报红。
+        ("Seal/Infrastructure/Background/BackgroundKeepAliveService.swift",
+         "forName: AVAudioSession.routeChangeNotification,",
+         "forName: Notification.Name(\"SealDisabledRouteChange\"),",
+         "R90⑮:"),
+        # ⑯ 新增的自愈日志码从码表里删掉（日志出现时无从判读）⇒ R90⑯ 报红。
+        ("docs/qa/log-code-index.md",
+         "SEAL-BACKGROUND-012",
+         "SEAL-BACKGROUND-912",
+         "R90⑯:"),
 
         # ── R91：签名/续签的**性能**改动不得改变产物语义 ──
         # ① `size()` 退回「build 一遍再数长度」（Pass 1 的省法被撤销）⇒ R91① 报红。
@@ -8602,11 +8731,14 @@ def main():
          "",
          "R92①:"),
         # ①b 把等待挪到点火**之后**（顺序反了）⇒ R92① 报红。
+        #    ⚠️ 2026-09-27：`refreshAllFromBackgroundTrigger` 里在等待与点火之间插入了
+        #    「让位」闸门，旧锚点（等待紧跟 `self.refreshAll()`）已不存在 ⇒ 改成
+        #    「在等待之前先插一次 `self.refreshAll()`」：`index(await) > index(refreshAll)`
+        #    同样能把顺序判据打红（变异不必是合法 Swift，只需让判据落空）。
         ("Seal/Features/Apps/AppsViewModel.swift",
-         "            await self.awaitDeviceChannelBeforeBackgroundRenewal()\n"
-         "            self.refreshAll()",
+         "            await self.awaitDeviceChannelBeforeBackgroundRenewal()\n",
          "            self.refreshAll()\n"
-         "            await self.awaitDeviceChannelBeforeBackgroundRenewal()",
+         "            await self.awaitDeviceChannelBeforeBackgroundRenewal()\n",
          "R92①:"),
         # ② 等待退化成弱判据 `isReady()`（裸 TCP 探测）。
         #    ⚠️ 锚点必须带上下文：`_ = try await installChannel.start()` 在 AppsViewModel 里
@@ -8686,6 +8818,39 @@ def main():
          "func pairingFileIsDeliberatelyNotTransient()",
          "func pairingFileIsTransient()",
          "R92⑨:"),
+        # ⑩ 通道码表里漏掉一个真实存在的码（该重试的认不出来）⇒ R92⑩ 报红。
+        ("Seal/Core/Renewal/DeviceChannelTransientPolicy.swift",
+         '        "SEAL-INSTALL-706b",  // 设备连接失败（超时 / 网络不可达 / 无设备）\n',
+         '',
+         "R92⑩:"),
+        # ⑩b 通道码表里混进安装阶段 / 超时码（重试会造并发 installd）⇒ R92⑩ 报红。
+        ("Seal/Core/Renewal/DeviceChannelTransientPolicy.swift",
+         '        "SEAL-VPN-001"        // 签名完成后仍无法连接设备完成安装\n',
+         '        "SEAL-VPN-001",\n        "SEAL-INSTALL-702t",\n',
+         "R92⑩:"),
+        # ⑩c `Error` 重载不再优先按 `ImportFailure` 的码判（安装链路的通道码静默落空）⇒ R92⑩b 报红。
+        ("Seal/Core/Renewal/DeviceChannelTransientPolicy.swift",
+         "        if let failure = error as? ImportFailure {\n"
+         "            return isTransientChannelFailure(failure)\n"
+         "        }\n",
+         "",
+         "R92⑩b:"),
+        # ⑩d 续签重试把通道判定挪到 `SEAL-NET-` 分支之后（等于没加）⇒ R92⑩c 报红。
+        ("Seal/Core/Renewal/RenewalCoordinator.swift",
+         '        if DeviceChannelTransientPolicy.isTransientChannelFailure(error) { return true }\n'
+         '        if let failure = error as? ImportFailure {\n'
+         '            return failure.code.hasPrefix("SEAL-NET-")\n'
+         '        }\n',
+         '        if let failure = error as? ImportFailure {\n'
+         '            return failure.code.hasPrefix("SEAL-NET-")\n'
+         '        }\n'
+         '        if DeviceChannelTransientPolicy.isTransientChannelFailure(error) { return true }\n',
+         "R92⑩c:"),
+        # ⑪ 把「已有操作在进行」的码从码表里删掉（用户报「点了没反应」时无从判读）⇒ R92⑪ 报红。
+        ("docs/qa/log-code-index.md",
+         "`SEAL-OP-002`",
+         "`SEAL-OP-902`",
+         "R92⑪:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

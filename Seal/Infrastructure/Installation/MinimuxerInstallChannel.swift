@@ -239,6 +239,50 @@ actor MinimuxerInstallChannel: InstallChannel {
         }
     }
 
+    /// 复用缓存通道前的 **RSD 级**活性判据（2026-09-27）。
+    ///
+    /// 与 `probeCachedSessionIfStale` 共用同一个探测原语（`fetchUDIDDetailed`）与同一份
+    /// 有界预算，区别只在**用途**：那个只记日志（R16 明文要求「没有直接证据之前不动行为」），
+    /// 这个**决定 `start()` 要不要复用缓存**。
+    ///
+    /// 直接证据已经有了：2026-09-27 真机日志里，每一轮后台批量续签都以
+    /// `SEAL-PROFILE-363`（「设备端描述文件枚举不可用（通道未就绪或解析失败）」）开场、
+    /// 随后整项以 `Minimuxer.MinimuxerError 1`（`NoConnection`）失败，而同一进程里
+    /// 几分钟前的前台续签成功 —— 就是「TCP 通、RSD 会话死」。
+    ///
+    /// - Parameter age: 缓存会话已启动的秒数。**未超过 `cachedSessionProbeThresholdSeconds`
+    ///   的会话按活处理**：保住 900 秒缓存的意义（不为每个 App 都多问一次设备）。
+    ///   批量续签里相邻两次 `start()` 通常远超 60 秒（每个 App 都要签名、申请描述文件），
+    ///   所以死会话在下一次尝试一定会被探到 —— 这也是「重试能自愈」的原因。
+    ///
+    /// ⚠️ 探测**自己也不能卡住**：它要验证的正是「死连接会阻塞」，所以走
+    /// `offThread` 的有界包装（`cachedSessionProbeTimeoutSeconds`）。
+    private func cachedSessionIsAlive(age: TimeInterval) async -> Bool {
+        guard age > Self.cachedSessionProbeThresholdSeconds else { return true }
+        let outcome = await offThread(seconds: Self.cachedSessionProbeTimeoutSeconds) {
+            try Minimuxer.fetchUDIDDetailed()
+        }
+        switch outcome {
+        case .some(.success(let udid)):
+            return udid.isEmpty == false
+        case .some(.failure(let error)):
+            await log(
+                "通道缓存复用前探测：会话已启动 \(Int(age)) 秒，查询报错"
+                + "（判定为死会话，改为重建连接）—— \(Self.diagnostic(error))",
+                level: .warning
+            )
+            return false
+        case .none:
+            await log(
+                "通道缓存复用前探测：会话已启动 \(Int(age)) 秒，"
+                + "\(Int(Self.cachedSessionProbeTimeoutSeconds)) 秒无响应"
+                + "（判定为死会话，改为重建连接）",
+                level: .warning
+            )
+            return false
+        }
+    }
+
     init(
         pairingStore: PairingStore,
         logDirectory: URL,
@@ -254,11 +298,28 @@ actor MinimuxerInstallChannel: InstallChannel {
     func start() async throws -> String {
         // 优化：如果最近一次成功启动仍在缓存窗口内且设备仍就绪，直接返回缓存的 UDID，
         // 避免批量签名/续签对每个 App 都重跑完整诊断（reset + RSD 握手 + 轮询）卡在「连设备」。
+        //
+        // 🔴 **「设备仍就绪」不能只看 `isReady()`（裸 TCP）**（2026-09-27 真机日志）。
+        // 每一轮后台批量续签都先报 `SEAL-PROFILE-363`（「设备端描述文件枚举不可用
+        // （通道未就绪或解析失败）」），随后整项以 `Minimuxer.MinimuxerError 1`
+        //（`NoConnection`）失败；而同一进程里几分钟前的前台续签是成功的。
+        // 成因：隧道端口（`isReady()` 探的 `rsdPort` / `lockdowndPort`）一直通着，
+        // 但 `connect_to_rsd_services` 缓存的 **RSD 会话早已死掉** —— 保活让进程跨轮
+        // 存活，900 秒缓存就把这个死会话一轮一轮地发出去，重试也拿到同一个死会话。
+        // ⇒ 复用缓存前必须过一道 **RSD 级**活性探测（`cachedSessionIsAlive`）。
         if let cached = cachedDeviceIdentifier,
-           let lastStart = lastSuccessfulStart,
-           Date().timeIntervalSince(lastStart) < Self.cacheWindowSeconds,
-           await isReady() {
-            return cached
+           let lastStart = lastSuccessfulStart {
+            let age = Date().timeIntervalSince(lastStart)
+            if age < Self.cacheWindowSeconds,
+               await isReady(),
+               await cachedSessionIsAlive(age: age) {
+                return cached
+            }
+            // 走到这里说明缓存不可信：已过期、隧道不可达、或 RSD 会话已死。
+            // **必须清掉**：否则下一次 `start()`（含重试）会拿同一个死会话再探一遍、
+            // 再还回去，重试就永远自愈不了。
+            cachedDeviceIdentifier = nil
+            lastSuccessfulStart = nil
         }
         // 失败熔断：刚诊断失败过就不再来一遍，直接把同一个错误还回去。
         // 这是批量续签能安全去掉前置等待的前提 —— 否则 N 个 App 各跑一遍 75s 诊断。
@@ -506,6 +567,17 @@ actor MinimuxerInstallChannel: InstallChannel {
         #if !targetEnvironment(simulator)
         Minimuxer.reset()
         #endif
+        // 🔴 **必须连 Swift 侧缓存一起清**（2026-09-27）。`Minimuxer.reset()` 拆的是
+        // Rust 侧的会话（`invalidateConnection()`），但 `start()` 复用的是**本 actor 的**
+        // `cachedDeviceIdentifier` / `lastSuccessfulStart` —— 只拆 Rust 会话、留着 Swift 缓存，
+        // 下一次 `start()` 仍会在 900 秒窗口内直接返回那个「已经作废」的 UDID，
+        // 于是 `reset()` 之后的第一笔操作继续用死连接（这正是「导入配对文件后仍连不上」的形态）。
+        // 一并清熔断：`reset()` 的调用方（导入配对文件 / 恢复连接）期待的是**真实重跑诊断**，
+        // 留着 60 秒熔断会把刚修好的通道直接搪塞成一个旧错误。
+        cachedDeviceIdentifier = nil
+        lastSuccessfulStart = nil
+        lastFailureAt = nil
+        lastFailure = nil
     }
 
     /// 整体硬超时：超时先到直接抛出；同步阻塞 FFI 无法被真正中断，

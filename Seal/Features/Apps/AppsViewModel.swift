@@ -1709,8 +1709,69 @@ final class AppsViewModel: ObservableObject {
                 code: "SEAL-BACKGROUND-006"
             )
             await self.awaitDeviceChannelBeforeBackgroundRenewal()
+            // 🔴 **让位**（2026-09-27）：已有签名/续签在跑时**不重复点火**。
+            //
+            // 两种情形都要让：
+            //   · 用户正在**手动**续签/签名 ⇒ 那一轮本来就会把应用续完，再点一次火
+            //     只会多造一次 installd 命令（历史事故，见守卫 R05）；
+            //   · 上一轮**后台**触发还在跑 ⇒ 同理，重复点火毫无收益。
+            // ⚠️ 必须留痕：这条链路在后台跑、界面上什么都没有，日志是唯一证据。
+            //    没有这条日志时，用户报「快捷指令没续上」与「其实被让位了」在日志上
+            //    长得一模一样。
+            guard self.hasActiveSigningWork == false else {
+                try? await self.logStore?.append(
+                    category: .renewal,
+                    message: "后台触发让位：\(self.activeOperationDescription)尚未完成，"
+                        + "本轮不重复点火（进行中的那一轮会完成续签）",
+                    code: "SEAL-BACKGROUND-014"
+                )
+                return
+            }
             self.refreshAll()
         }
+    }
+
+    /// 是否已有签名/续签（或任何占用设备通道的操作）在跑。
+    ///
+    /// 🔴 用途是**让位**与**不再静默丢弃**（2026-09-27）：
+    ///   · 后台触发与手动操作相遇时必须让手动那一轮跑完，而不是重复点火；
+    ///   · 反过来，用户手动点的请求被后台批量挡住时必须有可见反馈（见
+    ///     `operationInProgressFailure`）。
+    ///
+    /// ⚠️ 除两个任务外还要看 `operationCoordinator.activeLease`：导入配对文件、
+    /// 管理证书等操作**不经过这两个任务**，但它们同样占着设备通道 —— 只看任务会让
+    /// 后台触发在这种情况下照旧点火，然后在 `runBatchRefresh` 的取锁处白等 30 秒。
+    private var hasActiveSigningWork: Bool {
+        signingTask != nil
+            || batchRefreshTask != nil
+            || operationCoordinator?.activeLease != nil
+    }
+
+    /// 当前占用通道的操作名，用于「让位」日志与冲突提示；读不到时给一句兜底。
+    private var activeOperationDescription: String {
+        if batchRefreshTask != nil { return "「续签全部应用」" }
+        if signingTask != nil { return "单应用签名 / 续签" }
+        if let lease = operationCoordinator?.activeLease { return "「\(lease.kind.title)」" }
+        return "另一项操作"
+    }
+
+    /// 「已有操作在进行」的可操作提示（**不再静默丢弃**）。
+    ///
+    /// 🔴 为什么必须有（2026-09-27）：签名/续签入口的 `guard` 原来一律直接 `return` ——
+    /// 用户点了「续签全部」/「签名」却**什么都不发生**，日志里也一行没有。
+    /// 真机上这最容易被误读成「快捷指令的自动续签把通道占住了 / 手动和自动互相影响」，
+    /// 而实际只是「前一项还没做完」。现在明确说出**被谁挡住**、以及下一步做什么。
+    ///
+    /// ⚠️ 文案刻意点明「也可能是快捷指令在后台触发」：后台那一轮**没有界面**，
+    /// 用户只看到自己点的那一下没反应。
+    private static func operationInProgressFailure(blockedBy blocker: String) -> ImportFailure {
+        ImportFailure(
+            title: "已有操作在进行",
+            reason: "\(blocker)尚未完成（可能是你刚发起的，也可能是快捷指令在后台触发的自动续签）。"
+                + "为避免同时执行两次安装、把设备上的应用装坏，本次请求没有开始。",
+            recovery: "等它完成后再试",
+            code: "SEAL-OP-002"
+        )
     }
 
     /// 后台触发的点火前置：**先把设备通道拉起来，再续签**（见 `refreshAllFromBackgroundTrigger`）。
@@ -1814,9 +1875,15 @@ final class AppsViewModel: ObservableObject {
     }
 
     private func startBatchRefresh(appIDs: [UUID]? = nil) {
+        guard renewalCoordinator != nil else { return }
         guard batchRefreshTask == nil,
-              signingTask == nil,
-              renewalCoordinator != nil else { return }
+              signingTask == nil else {
+            // 不再静默丢弃（2026-09-27）：原来这里直接 `return`，用户点了「续签全部」
+            // 却什么都不发生、日志里也一行没有 —— 真机上最容易被误读成
+            // 「快捷指令的自动续签把通道占住了 / 手动和自动互相影响」。
+            alertFailure = Self.operationInProgressFailure(blockedBy: activeOperationDescription)
+            return
+        }
         batchRefreshSession = BatchRefreshSession()
         batchRefreshTask = Task { [weak self] in
             guard let self else { return }
@@ -1907,6 +1974,11 @@ final class AppsViewModel: ObservableObject {
         guard let operationLease = await acquireOperation(.renewing) else {
             batchRefreshSession = nil
             batchRefreshTask = nil
+            // 等不到锁（`beginWaiting` 默认 30 秒）说明确实有另一项操作长期占着通道 ——
+            // 必须说出来（2026-09-27）：否则用户看到的是「点了续签、抽屉一闪就没了」，
+            // 日志里也只有沉默，真机上会被误读成「被快捷指令的自动续签挡住」。
+            alertFailure = operationCoordinator?.conflictFailure(requested: .renewing)
+                ?? Self.operationInProgressFailure(blockedBy: activeOperationDescription)
             return
         }
         defer { releaseOperation(operationLease) }
@@ -2276,9 +2348,13 @@ final class AppsViewModel: ObservableObject {
         completionMode: SigningCompletionMode = .signAndInstall,
         allowDroppingExtensions: Bool = false
     ) {
+        guard signingCoordinator != nil else { return }
         guard signingTask == nil,
-              batchRefreshTask == nil,
-              signingCoordinator != nil else { return }
+              batchRefreshTask == nil else {
+            // 不再静默丢弃（2026-09-27）：理由与文案见 `operationInProgressFailure`。
+            alertFailure = Self.operationInProgressFailure(blockedBy: activeOperationDescription)
+            return
+        }
         let selectedCertificateSerialNumber: String?
         if app.belongsInInstalledList {
             selectedCertificateSerialNumber = nil
@@ -2338,9 +2414,13 @@ final class AppsViewModel: ObservableObject {
         bypassFreeAccountDeviceLimit: Bool = false,
         forceResign: Bool = false
     ) {
+        guard signingCoordinator != nil else { return }
         guard signingTask == nil,
-              batchRefreshTask == nil,
-              signingCoordinator != nil else { return }
+              batchRefreshTask == nil else {
+            // 不再静默丢弃（2026-09-27）：理由与文案见 `operationInProgressFailure`。
+            alertFailure = Self.operationInProgressFailure(blockedBy: activeOperationDescription)
+            return
+        }
         signingSession?.allowsDroppingExtensions = allowDroppingExtensions
         signingSession?.renewalExecutionPath = nil
         // 重试 = 又要跑一遍 `signAndInstall` ⇒ 子流程簿记同样清空（理由见 `startSigning`）。

@@ -40,12 +40,57 @@ enum DeviceChannelTransientPolicy {
         domain == minimuxerErrorDomain && transientChannelErrorCodes.contains(code)
     }
 
-    /// `Error` 重载：把任意错误的 `NSError` 身份（域 ＋ 码）取出来交给上面那条纯判据。
+    /// **`ImportFailure` 形态**的通道瞬时失败码 —— 与安装链路的分类同源。
+    ///
+    /// ## 为什么除了「域 ＋ 序号」还要这一张表
+    ///
+    /// 安装链路把底层错误**归类成 `ImportFailure` 之后才抛给上层**
+    /// （`MinimuxerInstallChannel.start()` / `connectionFailure` / `discoveryFailure`），
+    /// 于是续签重试侧拿到的往往是**带码的 `ImportFailure`，而不是裸 `MinimuxerError`**。
+    /// 只认「域 ＋ 序号」时这些码会落空 ⇒ 通道抖动又被当成终态错误、整轮白做 ——
+    /// 与构建 53 真机那个错法是**同一个**，只是换了一层包装。
+    ///
+    /// ## 只收「**安装提交之前**」的通道失败
+    ///
+    /// 判据是「重试**安全**」而不只是「像通道问题」：安装一旦提交（`stageAndInstall`），
+    /// 重试就可能在同一 Bundle ID 上造出**并发 installd**（R05 / AGENTS.md「超时 ≠ 失败」）。
+    /// 所以：
+    ///   · ✅ 收 `start()` / `ensureReady()` / 安装入口 `guard isReady()` 抛出的那些 ——
+    ///     都在**没有任何安装被提交**之前，重试只是再跑一次；
+    ///   · ✗ 不收 `installationFailure` 归类出来的 `SEAL-INSTALL-702` / `702d`
+    ///     （来自安装阶段，底下那次安装可能还在跑）；
+    ///   · ✗ 不收 `702t`（超时 ≠ 失败）、`702l` / `702s`（确定性拒绝）、
+    ///     `703` / `704` / `707` / `SEAL-PAIR-*`（配对 / 信任是**记录问题**，同 `PairingFile`）、
+    ///     `711`–`735`（签名包问题，重试无用）。
+    /// ⚠️ 改这张表前先读 `InstallFailureActionPolicy`：两处都在回答「这条码是不是通道类」。
+    static let transientChannelFailureCodes: Set<String> = [
+        "SEAL-INSTALL-701",   // LocalDevVPN / 本地隧道未就绪
+        "SEAL-INSTALL-705",   // 无法连接设备（未能识别具体原因）
+        "SEAL-INSTALL-706b",  // 设备连接失败（超时 / 网络不可达 / 无设备）
+        "SEAL-INSTALL-706t",  // `start()` 硬超时（**安装尚未提交**，区别于 702t）
+        "SEAL-INSTALL-708",   // 设备未响应
+        "SEAL-INSTALL-709",   // 与设备的安全握手未完成
+        "SEAL-INSTALL-710",   // 本地隧道端口暂时不可达
+        "SEAL-VPN-001"        // 签名完成后仍无法连接设备完成安装
+    ]
+
+    static func isTransientChannelFailure(_ failure: ImportFailure) -> Bool {
+        transientChannelFailureCodes.contains(failure.code)
+    }
+
+    /// `Error` 重载：把任意错误归一成上面两条判据之一。
+    ///
+    /// ⚠️ `ImportFailure` 必须**优先按码判**：它在安装链路里是通道错误的主要形态，
+    /// 而 `error as NSError` 对 Swift 结构体错误只会给出 `Seal.ImportFailure` 这种
+    /// 非 Minimuxer 域 ⇒ 不先判它，这些码会静默落空（正是构建 53 那个错法的复现）。
     ///
     /// 之所以保留「域 ＋ 码」那条独立入口：单测与守卫都**只**能构造 `NSError(domain:code:)`
     /// （测试 target 看不到 `MinimuxerError`）⇒ 判据必须是可构造输入的纯函数，
     /// 而调用点（`RenewalCoordinator`）拿到的只有 `Error`。
     static func isTransientChannelFailure(_ error: Error) -> Bool {
+        if let failure = error as? ImportFailure {
+            return isTransientChannelFailure(failure)
+        }
         let nsError = error as NSError
         return isTransientChannelFailure(domain: nsError.domain, code: nsError.code)
     }

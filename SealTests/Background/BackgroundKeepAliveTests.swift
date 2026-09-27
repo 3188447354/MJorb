@@ -49,6 +49,46 @@ struct BackgroundKeepAliveTests {
         #expect(BackgroundKeepAlivePolicy.shouldResume(afterInterruption: .began) == false)
     }
 
+    @Test
+    func keepAliveReactivatesAfterRouteChangesThatCanStopPlayback() {
+        // 拔耳机 / 断蓝牙：系统会 `setActive(false)` 并停掉播放 ⇒ **必须**恢复，
+        // 否则保活静默失效（进程还在后台、日志一行异常都没有）。
+        #expect(BackgroundKeepAlivePolicy.shouldReactivate(afterRouteChange: .oldDeviceUnavailable))
+        #expect(BackgroundKeepAlivePolicy.shouldReactivate(afterRouteChange: .newDeviceAvailable))
+        #expect(BackgroundKeepAlivePolicy.shouldReactivate(afterRouteChange: .routeConfigurationChange))
+        #expect(BackgroundKeepAlivePolicy.shouldReactivate(afterRouteChange: .override))
+        #expect(BackgroundKeepAlivePolicy.shouldReactivate(afterRouteChange: .wakeFromSleep))
+        // 原因读不到（`userInfo` 缺键）时保守恢复：漏恢复的代价是保活静默失效。
+        #expect(BackgroundKeepAlivePolicy.shouldReactivate(afterRouteChange: nil))
+    }
+
+    @Test
+    func keepAliveIgnoresRouteChangesThatCannotOrShouldNotTriggerRecovery() {
+        // `.categoryChange` 是我们自己 `setCategory` 发出来的 —— 恢复动作里又要 `setCategory`，
+        // 一旦恢复失败就会自激（恢复失败 → 又收到 categoryChange → 再恢复…）。
+        #expect(BackgroundKeepAlivePolicy.shouldReactivate(afterRouteChange: .categoryChange) == false)
+        // 当前没有可用输出路由，恢复注定失败（只会刷警告日志）。
+        #expect(
+            BackgroundKeepAlivePolicy.shouldReactivate(afterRouteChange: .noSuitableRouteForCategory)
+                == false
+        )
+    }
+
+    @Test
+    func keepAliveActivationReasonsHaveDistinctLogCodes() {
+        // 四种原因（首次 / 中断 / 路由变更 / 媒体服务重置）必须各有**不同的**日志码 ——
+        // 真机排障时要能从码表直接区分「保活到底被什么打断过」。
+        let reasons: [BackgroundKeepAliveActivationReason] = [
+            .initial, .interruptionResumed, .routeChanged, .mediaServicesReset
+        ]
+        let successCodes = Set(reasons.map(\.successCode))
+        let failureCodes = Set(reasons.map(\.failureCode))
+        #expect(successCodes.count == reasons.count)
+        #expect(failureCodes.count == reasons.count)
+        // 成功码与失败码也不能撞车（否则日志里分不清「恢复了」和「没恢复」）。
+        #expect(successCodes.isDisjoint(with: failureCodes))
+    }
+
     private static func uint16(_ data: Data, at offset: Int) -> UInt16 {
         var value: UInt16 = 0
         for index in 0..<2 {

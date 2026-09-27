@@ -5,6 +5,71 @@
 
 ---
 
+## 2026-09-27 快捷指令后台续签「续不上」：死会话复用、保活不自愈、手动/后台互撞、通道码没进重试词表
+
+- **背景**（用户原话）：「快捷指令那边的自动续签不会续签不成功，锁屏、看电视、听歌各种情况下
+  都需要能够续签成功，不会被占用通道，手动续签不会被快捷指令续签互相影响」。
+- **现象 / 根因（四件独立的事，一次改完）**：
+  1. **死会话被一轮一轮复用**。每轮后台批量续签都以 `SEAL-PROFILE-363`（「设备端描述文件
+     枚举不可用（通道未就绪或解析失败）」）开场、随后整项以 `Minimuxer.MinimuxerError 1`
+     （`NoConnection`）失败，而**同一进程**里几分钟前的前台续签成功。
+     ⇒ 根因：`MinimuxerInstallChannel.start()` 的 900 秒缓存只查 `isReady()`（**裸 TCP**：
+     `rsdPort` / `lockdowndPort` 通着就放行），而 `connect_to_rsd_services` 缓存的 **RSD 会话
+     早已死掉**；保活让进程跨轮存活，于是这个死会话被一轮一轮发出去，**重试也拿到同一个死会话**
+     （重试自愈不了）。
+  2. **保活不能自愈**。保活的失败模式全是「进程还在、标志位还是 true、但音频早停了」：
+     - 拔耳机 / 断蓝牙 ⇒ 系统 `setActive(false)` 并停掉播放；
+     - 媒体守护进程重启（`mediaServicesWereResetNotification`）⇒ 所有音频对象作废，
+       `AVAudioPlayer` 变无效对象；
+     而旧实现**只监听中断**这一种，且 `isRunning` 是**自维护的布尔位** ⇒ 音频停了它仍是 `true`，
+     `start()` 的幂等闸门把后续**每一次**自愈请求全部挡掉 ⇒ 保活一旦死掉就再也起不来。
+  3. **手动与后台互撞时静默丢弃**。后台触发不看是否已有操作在跑就重复点火（多造一次 installd
+     命令，历史事故 R05）；而手动入口的 `guard` 一律直接 `return` —— 用户点了「续签全部」/「签名」
+     却**什么都不发生**、日志里也一行没有。真机上这最容易被误读成「快捷指令把通道占住了」。
+  4. **通道码没进重试词表（词表不同源）**。安装链路把底层错误**归类成带码的 `ImportFailure`**
+     （`SEAL-INSTALL-70x` / `SEAL-VPN-001`）才抛给续签侧，而 `RenewalCoordinator.isRetryable`
+     只认 `SEAL-NET-` 前缀 ⇒ 这些通道码被当成**终态错误**、整轮白做 —— 与构建 53 那个
+     「通道抖动被当成终态」是同一个错法，只是换了一层包装。
+- **修复**：
+  1. `start()` 复用缓存前加 **RSD 级**活性闸门 `cachedSessionIsAlive(age:)`（与 `probeCachedSessionIfStale`
+     共用 `fetchUDIDDetailed()` 原语与 5 秒有界预算，区别是**这个决定行为**）；缓存不可信
+     （过期 / 隧道不可达 / RSD 会话死）时**清掉** `cachedDeviceIdentifier` / `lastSuccessfulStart`，
+     让下一次 `start()`（含重试）真正重建。`reset()` 同时清 Swift 侧缓存与 60 秒熔断
+     （它拆的是 Rust 会话，Swift 缓存不清的话第一笔操作继续用死连接）。
+  2. `isRunning` 改成**真实播放状态**（`player?.isPlaying == true`，对齐上游 SideStore
+     `BackgroundAudioService.swift:15-17`）；另设 `isEnabled` 表达「意图」供通知回调判据用。
+     恢复动作抽成**唯一实现** `reactivate(reason:)`（`start()` 与三种自愈共用）；新增
+     `routeChangeNotification` / `mediaServicesWereResetNotification` 监听（`object: nil` ——
+     媒体服务重置会换新会话实例，用旧实例当过滤器就再也收不到通知），并把路由变更判据抽成
+     可单测的纯函数 `BackgroundKeepAlivePolicy.shouldReactivate(afterRouteChange:)`
+     （`categoryChange` 自激、`noSuitableRouteForCategory` 注定失败 ⇒ 不恢复）。
+  3. 后台触发在点火前 `guard hasActiveSigningWork == false`，命中则**让位并留痕**
+     （`SEAL-BACKGROUND-014`）；手动入口（`startBatchRefresh` / `startSigning` / `restartSigning`）
+     与取锁失败（`runBatchRefresh`）不再静默 `return`，改为 `alertFailure = operationInProgressFailure`
+     （`SEAL-OP-002`，明确说出**被谁挡住**）。
+  4. `DeviceChannelTransientPolicy` 新增**显式** `transientChannelFailureCodes`（`ImportFailure` 码），
+     `Error` 重载**优先按 `ImportFailure` 的码判**；`RenewalCoordinator.isRetryable` 把通道判定
+     提到 `SEAL-NET-` 分支**之前**（退避也跟着走 8 秒基数）。
+     **只收「安装提交之前」的通道码**：`701 / 705 / 706b / 706t / 708 / 709 / 710 / SEAL-VPN-001`；
+     **刻意不收** `702` / `702d`（安装阶段，底下那次安装可能还在跑 ⇒ 重试会造并发 installd）、
+     `702t`（超时 ≠ 失败）、`702l` / `702s`（确定性拒绝）、`703` / `704` / `707` / `SEAL-PAIR-*`
+     （配对 / 信任是记录问题，同 `PairingError=2`）、`711`–`735`（签名包问题，重试无用）。
+- **涉及文件**：`Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`、
+  `Seal/Infrastructure/Background/BackgroundKeepAliveService.swift`、
+  `Seal/Features/Apps/AppsViewModel.swift`、`Seal/Core/Renewal/DeviceChannelTransientPolicy.swift`、
+  `Seal/Core/Renewal/RenewalCoordinator.swift`、
+  `SealTests/Background/BackgroundKeepAliveTests.swift`、
+  `SealTests/Renewal/DeviceChannelTransientPolicyTests.swift`、
+  `docs/qa/log-code-index.md`、`Scripts/verify-release-safety.py`。
+- **验证状态**：⚠️ **待真机回归**（Windows 本机不能编译；一切以云 CI + 真机为准）。
+  静态守卫已加：R90⑭（`isRunning` 用真实播放状态 + `isEnabled` 表达意图）、R90⑮（监听路由变更 /
+  媒体服务重置并自愈）、R90⑯（自愈日志码登记进码表）、R92⑩/⑩b/⑩c/⑩d（通道 `ImportFailure` 码表、
+  `Error` 重载优先按码判、通道判定排在 `SEAL-NET-` 之前、单测齐全）、R92⑪（让位码 `-014` 与冲突码
+  `SEAL-OP-002` 留痕并登记进码表），各配变异自检。
+  ⚠️ 本机跑守卫用托管解释器绝对路径并放后台（见 AGENTS.md §7）。
+
+---
+
 ## 2026-09-26 导入新版 Seal 后点「续签」不会真正装上：profile-only 准入只比 Bundle ID、不比版本
 
 - **背景**（用户原话）：「我是将 1.3.20 直接导入 1.3.19 的 seal 里，它没有在待签名页而是在已安装

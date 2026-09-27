@@ -200,10 +200,14 @@ actor RenewalCoordinator {
     /// `Minimuxer.MinimuxerError`，`AppleServiceFailurePolicy.isNetworkError` 认不出来。
     nonisolated static func isRetryable(_ error: Error) -> Bool {
         if error is CancellationError { return false }
+        // 🔴 通道瞬时失败必须**先于** `ImportFailure` 的网络判定。安装链路把通道错误
+        // **归类成带码的 `ImportFailure`**（`SEAL-INSTALL-70x` / `SEAL-VPN-001`）才抛上来，
+        // 而下面那条 `SEAL-NET-` 前缀分支只认网络码 ⇒ 排到它后面等于没加
+        //（构建 53 那个「通道抖动被当成终态错误」会换一层包装复现）。
+        if DeviceChannelTransientPolicy.isTransientChannelFailure(error) { return true }
         if let failure = error as? ImportFailure {
             return failure.code.hasPrefix("SEAL-NET-")
         }
-        if DeviceChannelTransientPolicy.isTransientChannelFailure(error) { return true }
         return AppleServiceFailurePolicy.isNetworkError(error)
     }
 

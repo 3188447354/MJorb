@@ -100,6 +100,18 @@
 | `SEAL-BACKGROUND-007` | 后台触发**先等设备通道就绪再点火** —— **信息级**。快捷指令触发走的是**冷启动的新进程**，通道可能还在起步；点火前用强判据（`installChannel.start()`：reset + RSD 握手 + 轮询）等它 | `AppsViewModel.swift` |
 | `SEAL-BACKGROUND-008` | 后台触发：设备通道**已就绪**（带等待秒数）—— **信息级**。秒数≈0 说明通道本来就好的（命中 900 秒成功缓存）；秒数很大说明这次是冷启动 | `AppsViewModel.swift` |
 | `SEAL-BACKGROUND-009` | 后台触发：设备通道**未就绪**（带原因与等待秒数），**仍照常点火** —— **警告级**。看到这条说明这一轮很可能失败；失败项会按「通道瞬时错误」（`MinimuxerError` 的 `NoDevice` / `NoConnection`）自动重试 | `AppsViewModel.swift` |
+| `SEAL-BACKGROUND-010` | 后台保活已从**音频路由变更**（插拔耳机 / 连断蓝牙）中恢复 —— **信息级**。上游 SideStore 不处理路由变更；这条出现说明 Seal 的自愈生效了（用户报的「听歌 / 看电视时续签不成功」正是缺了它） | `BackgroundKeepAliveService.swift` |
+| `SEAL-BACKGROUND-011` | 后台保活**恢复失败**（音频路由变更后，带底层原因）—— **警告级**。下一次切后台起 Seal 会被挂起 | `BackgroundKeepAliveService.swift` |
+| `SEAL-BACKGROUND-012` | 后台保活已从**媒体服务重置**中恢复（媒体守护进程崩溃重启，**重建播放器**）—— **信息级**。旧 `AVAudioPlayer` 已作废，只 `play()` 不够 | `BackgroundKeepAliveService.swift` |
+| `SEAL-BACKGROUND-013` | 后台保活**恢复失败**（媒体服务重置后，带底层原因）—— **警告级**。下一次切后台起 Seal 会被挂起 | `BackgroundKeepAliveService.swift` |
+| `SEAL-BACKGROUND-014` | 后台触发**让位**：已有签名 / 续签（或导入配对、管理证书等占着通道的操作）尚未完成，本轮**不重复点火** —— **信息级**。看到它说明「快捷指令这一轮没续上」不是失败，而是进行中的那一轮会完成续签；没有这条日志时，「没续上」与「其实被让位」在日志上长得一模一样 | `AppsViewModel.swift` |
+
+## 操作仲裁
+
+| 码 | 它在说什么 | 出处 |
+|---|---|---|
+| `SEAL-OP-001` | 暂时无法执行：另一项操作（导入 / 签名 / 安装 / 续签 / 证书 / 配对…）正在进行，为避免状态互相覆盖已阻止本次操作 —— 等它完成后重试 | `OperationCoordinator.swift` |
+| `SEAL-OP-002` | 已有操作在进行：用户点的「续签全部」/「签名」被另一项**未完成**的操作挡住（**也可能是快捷指令在后台触发的自动续签**）—— 明确说出被谁挡住，不再静默丢弃 | `AppsViewModel.swift` |
 
 ## 账号清单同步
 

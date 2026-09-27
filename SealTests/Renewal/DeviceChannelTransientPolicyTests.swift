@@ -72,6 +72,47 @@ struct DeviceChannelTransientPolicyTests {
         #expect(RenewalCoordinator.isRetryable(NSError(domain: domain, code: 2)) == false)
     }
 
+    @Test("安装链路归类出的通道 `ImportFailure` 也算瞬时（否则整轮白做）")
+    func channelFamilyImportFailuresAreTransient() {
+        // 安装链路把底层错误**归类成带码的 `ImportFailure`** 才抛给续签侧，
+        // 所以重试判据必须认这些码 —— 只认「域 ＋ 序号」时它们会落空。
+        for code in DeviceChannelTransientPolicy.transientChannelFailureCodes {
+            let failure = ImportFailure(title: "", reason: "", recovery: "", code: code)
+            #expect(DeviceChannelTransientPolicy.isTransientChannelFailure(failure))
+            #expect(RenewalCoordinator.isRetryable(failure))
+        }
+        // 两条**典型**的「冷启动后台续签」失败码必须可重试：
+        // 隧道还没起来（706b）与签名后连不上设备（SEAL-VPN-001）。
+        #expect(RenewalCoordinator.isRetryable(
+            ImportFailure(title: "", reason: "", recovery: "", code: "SEAL-INSTALL-706b")))
+        #expect(RenewalCoordinator.isRetryable(
+            ImportFailure(title: "", reason: "", recovery: "", code: "SEAL-VPN-001")))
+    }
+
+    @Test("安装阶段 / 确定性拒绝 / 配对类码**不得**算瞬时（重试会造并发安装或纯白跑）")
+    func installationStageAndTerminalCodesAreNotTransient() {
+        let notTransient = [
+            "SEAL-INSTALL-702",    // 安装阶段归类（底下那次安装可能还在跑）
+            "SEAL-INSTALL-702d",   // 与设备连接断开（安装阶段）
+            "SEAL-INSTALL-702t",   // 超时 ≠ 失败（R05 的核心判据）
+            "SEAL-INSTALL-702l",   // iOS 拒绝：3 应用上限 / 校验失败
+            "SEAL-INSTALL-702s",   // 设备存储空间不足
+            "SEAL-INSTALL-703",    // 配对不可用（记录问题）
+            "SEAL-INSTALL-704",    // 设备尚未信任（要用户在设备上操作）
+            "SEAL-INSTALL-707",    // 无法刷新已安装应用（记录问题）
+            "SEAL-INSTALL-711",    // 签名包缺失（重签才行）
+            "SEAL-INSTALL-735",    // 需重启 Seal
+            "SEAL-INSTALL-738",    // 上一笔自替换安装仍在跑
+            "SEAL-PAIR-203b",      // 设备未配对
+            "SEAL-PAIR-211"        // 设备未信任当前配对
+        ]
+        for code in notTransient {
+            let failure = ImportFailure(title: "", reason: "", recovery: "", code: code)
+            #expect(DeviceChannelTransientPolicy.isTransientChannelFailure(failure) == false)
+            #expect(RenewalCoordinator.isRetryable(failure) == false)
+        }
+    }
+
     @Test("取消永远不可重试（通道判定不能把它翻过来）")
     func cancellationIsNeverRetryable() {
         #expect(RenewalCoordinator.isRetryable(CancellationError()) == false)

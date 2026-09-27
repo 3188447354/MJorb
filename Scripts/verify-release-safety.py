@@ -5864,6 +5864,204 @@ def violations(load=read):
           "它们的错法只在真机上表现为「白重置一次通道」或「本该自愈却没有」，"
           "不崩、不报错、日志里也看不出来")
 
+    # ── R94：通道「不就绪原因」必须能判读 + 掉线必须自愈（2026-09-27 真机）────────
+    #
+    # 现象：续签 / 安装失败时用户只看到「设备连接失败（超时 / 网络不可达 / 无设备）」，
+    #   分不清「LocalDevVPN 没开」与「设备没响应」—— 那是两种完全不同的下一步动作；
+    #   而且「重试三次都撞同一个死会话」（缓存会话已掉线、却仍在 900 秒窗口内被复用）。
+    # 判据：① vendor 的 `MinimuxerReadyIssue` 与 Seal 侧 `ChannelReadinessPolicy` 的字符串
+    #   映射必须一一对应（`rawValue` 是跨模块契约，测试 target 看不到 Minimuxer）；
+    #   ② 安装入口必须走**带原因**的门禁；③ 分类只允许一份（禁止在通道里再抄一张表）；
+    #   ④ `Minimuxer.reset()` 之后必须连 Swift 侧会话缓存一起作废；
+    #   ⑤ 掉线判定必须接线并留痕；⑥ 两条纯函数必须有单测。
+    r94_vendor = strip_comments(load("Vendor/Minimuxer/Sources/Minimuxer.swift"))
+    r94_readiness = strip_comments(load("Seal/Core/Renewal/ChannelReadinessPolicy.swift"))
+    r94_channel = strip_comments(load(
+        "Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift"))
+    r94_ready_tests = load("SealTests/Renewal/ChannelReadinessPolicyTests.swift")
+    r94_drop_tests = load("SealTests/Renewal/DeviceChannelVPNDropPolicyTests.swift")
+    r94_index = load("docs/qa/log-code-index.md")
+
+    r94_issue_raws = [
+        "noVPNInterface", "tunnelUnreachable", "notStarted",
+        "usbmuxdNotReady", "heartbeatStale", "noDevice"
+    ]
+
+    check("public enum MinimuxerReadyIssue: String" in r94_vendor
+          and "public static func readyVerdict() -> MinimuxerReadyVerdict {" in r94_vendor
+          # ⚠️ `ready()` 是单表达式函数（隐式返回），源码里**没有** `return` ——
+          #    锚点按代码写（AGENTS.md：冲突时以代码为准）。
+          and "readyVerdict().isReady" in r94_vendor
+          and all(("case " + raw) in r94_vendor for raw in r94_issue_raws)
+          and all(('"' + raw + '"') in r94_readiness for raw in r94_issue_raws),
+          "R94①: vendor 的 `MinimuxerReadyIssue` 与 Seal 侧 `ChannelReadinessPolicy` "
+          "必须一一对应 ✗ —— `rawValue` 是跨模块契约（测试 target 看不到 Minimuxer，"
+          "只能吃字符串）：改 vendor 的 case 名而不同步映射 ⇒ 该原因静默落进 `unknown`，"
+          "用户拿到的又是那句笼统的「超时 / 网络不可达 / 无设备」")
+
+    check("func requireReady() async throws" in r94_channel
+          and "try await requireReady()" in r94_channel
+          and "Self.readinessFailure(for: verdict.issue?.rawValue)" in r94_channel
+          and "guard await isReady() else { throw Self.channelNotReadyFailure }"
+              not in r94_channel,
+          "R94②: 安装入口必须走**带原因**的就绪门禁 ✗ —— "
+          "退回裸 `isReady()` ⇒ 判定仍等价，但失败原因丢失："
+          "「LocalDevVPN 没开」会被显示成「设备没响应」"
+          "（用户去重启 iPhone，而该做的是打开 LocalDevVPN）")
+
+    check("enum ChannelReadinessPolicy {" in r94_readiness
+          and "static func cause(fromIssueRawValue" in r94_readiness
+          and "switch ChannelReadinessPolicy.cause(fromIssueRawValue: issueRawValue) {"
+              in r94_channel
+          and r94_channel.count("cause(fromIssueRawValue") == 1,
+          "R94③: 原因分类只允许**一份**（`ChannelReadinessPolicy`）✗ —— "
+          "在通道里再抄一张 `switch` ⇒ 两张表迟早漂移，"
+          "「改了一处、漏了另一处」正是本仓反复踩的坑")
+
+    # ⚠️ 邻近判定只看**代码行**（去掉注释与空行）—— 在 `reset()` 与作废缓存之间
+    #    插一段说明是正常的（本仓注释密度高），不该把不变量判成红；
+    #    但两者之间**隔着真正的代码**（比如先 `waitForNetworkRefresh` 再作废）就不行。
+    r94_code_lines = [r94_ln for r94_ln in r94_channel.split("\n") if r94_ln.strip()]
+    r94_reset_calls = sum(1 for r94_ln in r94_code_lines if "Minimuxer.reset()" in r94_ln)
+    r94_reset_pairs = 0
+    for r94_i, r94_line in enumerate(r94_code_lines):
+        if "Minimuxer.reset()" in r94_line:
+            if any("invalidateCachedSession()" in r94_ln
+                   for r94_ln in r94_code_lines[r94_i + 1:r94_i + 7]):
+                r94_reset_pairs += 1
+    check(r94_reset_calls > 0 and r94_reset_pairs == r94_reset_calls,
+          "R94④: `Minimuxer.reset()` 之后必须连 Swift 侧会话缓存一起作废 ✗ —— "
+          "`Minimuxer.reset()` 拆的是 Rust 会话，而 `start()` 复用的是本 actor 的 "
+          "`cachedDeviceIdentifier` / `lastSuccessfulStart` ⇒ 不清缓存时，"
+          "下一次 `start()` 会在 900 秒窗口内直接还回那个已作废的 UDID"
+          "（真机形态：重试三次都撞同一个死会话）")
+
+    check("DeviceChannelVPNDropPolicy.isVPNDrop(error)" in r94_channel
+          and "await noteVPNDropIfNeeded(error)" in r94_channel
+          and 'code: "SEAL-VPN-003"' in r94_channel
+          and "`SEAL-VPN-003`" in r94_index,
+          "R94⑤: 隧道掉线必须被识别、作废缓存并留痕 ✗ —— "
+          "识别漏了 ⇒ 掉线后的重试继续复用死会话；"
+          "不留痕 ⇒ 这条链路在批量 / 后台跑，日志上看不出「为什么这轮又失败」")
+
+    check("struct ChannelReadinessPolicyTests" in r94_ready_tests
+          and "func mapsEveryVendorIssueRawValue()" in r94_ready_tests
+          and "struct DeviceChannelVPNDropPolicyTests" in r94_drop_tests
+          and "func detectsTunnelDropMarkers()" in r94_drop_tests
+          and "func deterministicRejectionsAreNotDrops()" in r94_drop_tests,
+          "R94⑥: 两条纯函数必须有单测 ✗ —— "
+          "它们的错法只在真机上表现为「给错下一步动作」或「重试撞死会话」，"
+          "不崩、不报错、编译也过")
+
+    # ── R95：RemotePairing 端口必须能自愈（2026-09-27：隧道通、端口不可达）────────
+    #
+    # 现象：LocalDevVPN 通、隧道也通，但续签 / 安装始终「连不上设备」，重试也只撞同一个死端口。
+    # 根因：iOS **不保证** `_remotepairing._tcp` 挂在固定端口，而 Seal 把它硬编码成 49152
+    #   （`MuxerConstants.rsdPort`）⇒ 设备侧守护进程换端口之后，就变成「隧道通、这个端口不通」。
+    # 判据（对齐上游 SideStore `MinimuxerWrapper` 的「失败后经 Bonjour 重查端口、变了就换」）：
+    #   ① `NSBonjourServices` 必须声明 `RemotePairingPortPolicy.serviceTypes` 的**每一个**
+    #      服务类型（漏一个 ⇒ 那个类型的 `NWBrowser` 静默无结果）；
+    #   ② 触发重查的失败码必须是**显式集合**（禁止数字区间）；
+    #   ③ 两处调用点都必须接线，且换端口必须发生在 `reset()` **之前**；
+    #   ④ 采纳必须走 `Minimuxer.setRemotePairingPort` 并留痕 `SEAL-VPN-004`；
+    #   ⑤ Rust 侧换端口必须写入状态、经 FFI 暴露、并让连接用动态端口；
+    #   ⑥ 判据必须有单测（含「相邻码 / 设备语义错误不触发」）。
+    r95_policy = strip_comments(load("Seal/Core/Renewal/RemotePairingPortPolicy.swift"))
+    r95_discovery = strip_comments(load(
+        "Seal/Infrastructure/Installation/RemotePairingPortDiscovery.swift"))
+    r95_channel = strip_comments(load(
+        "Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift"))
+    r95_ffi_swift = strip_comments(load(
+        "Vendor/Minimuxer/RustBridge/MinimuxerBridgeIdevice.swift"))
+    r95_rust = strip_comments(load("Vendor/Minimuxer/RustBridge/src/idevice_support/rsd.rs"))
+    r95_rust_bridge = strip_comments(load("Vendor/Minimuxer/RustBridge/src/bridge_idevice.rs"))
+    r95_yml = load("project.yml")
+    r95_index = load("docs/qa/log-code-index.md")
+    r95_tests = load("SealTests/Renewal/RemotePairingPortPolicyTests.swift")
+
+    r95_service_types = [
+        "_remotepairing._tcp",
+        "_remotepairing-pairable-host._tcp",
+        "_remotepairing-manual-pairing._tcp",
+    ]
+    r95_bonjour = section_or_empty(
+        r95_yml, "NSBonjourServices:", "NSPhotoLibraryAddUsageDescription")
+    check(all(("- " + st) in r95_bonjour for st in r95_service_types)
+          and all(('"' + st + '"') in r95_policy for st in r95_service_types)
+          and "for serviceType in RemotePairingPortPolicy.serviceTypes" in r95_discovery,
+          "R95①: `NSBonjourServices` 必须声明 `RemotePairingPortPolicy.serviceTypes` "
+          "的**每一个**服务类型，且浏览侧只认这一份列表 ✗ —— "
+          "漏一个 ⇒ 那个类型的 `NWBrowser` 不报错、只是永远没有结果"
+          "（端口自愈静默失效，日志上也看不出来）")
+
+    check("static let reprobeFailureCodes: Set<String>" in r95_policy
+          and '"SEAL-INSTALL-710"' in r95_policy
+          and "hasPrefix" not in r95_policy
+          and "reprobeFailureCodes.contains(failureCode)" in r95_policy,
+          "R95②: 触发端口重查的失败码必须是**显式集合** ✗ —— "
+          "写成 `hasPrefix(\"SEAL-INSTALL-71\")` 会把 `709`（安全握手未完成）"
+          "也算成「端口不对」，每次失败白跑一轮 Bonjour 浏览 "
+          "（AGENTS.md 第 3 节：错误码 → 动作必须用显式码集合）")
+
+    r95_lines = r95_channel.split("\n")
+
+    def r95_first_index(token, start=0):
+        for r95_i in range(start, len(r95_lines)):
+            if token in r95_lines[r95_i]:
+                return r95_i
+        return -1
+
+    def r95_reset_follows(start, window=4):
+        """`start` 之后 window 行内必须出现 reset（换端口要赶在重建连接之前）。
+
+        只看「重查端口」**之后**的那一个 reset —— 文件里 `reset()` 方法内部也有一个
+        `Minimuxer.reset()`（在 `reset()` 定义处，位置远早于安装重试循环），
+        取「全文件第一次出现」会拿到它、把顺序判据判成红。
+        """
+        if start < 0:
+            return False
+        return any(("Minimuxer.reset()" in r95_lines[r95_j]
+                    or "await reset()" in r95_lines[r95_j])
+                   for r95_j in range(start + 1, min(start + 1 + window, len(r95_lines))))
+
+    r95_start_reprobe = r95_first_index("await reprobeRemotePairingPortIfNeeded(")
+    r95_install_reprobe = r95_first_index(
+        'adoptDiscoveredRemotePairingPort(reason: "安装失败后")')
+    # ⚠️ 只数**调用点**（带 `await`）—— 方法定义行也含 `adoptDiscoveredRemotePairingPort(reason:`，
+    #    按裸串数会数成 3，把「两处都接线」判成红。
+    check(r95_channel.count("await adoptDiscoveredRemotePairingPort(reason:") == 2
+          and r95_start_reprobe >= 0 and r95_install_reprobe >= 0
+          and r95_reset_follows(r95_start_reprobe)
+          and r95_reset_follows(r95_install_reprobe),
+          "R95③: 端口自愈必须在**两处**接线（诊断失败后 / 安装失败后），"
+          "且换端口必须赶在 `reset()` **之前** ✗ —— 反过来（先 reset 再换端口）"
+          "会让重建后的那一轮仍然撞旧端口，等于白跑一轮")
+
+    check("Minimuxer.setRemotePairingPort(newPort)" in r95_channel
+          and "Minimuxer.remotePairingPort" in r95_channel
+          and 'code: "SEAL-VPN-004"' in r95_channel
+          and "`SEAL-VPN-004`" in r95_index,
+          "R95④: 采纳新端口必须走 `Minimuxer.setRemotePairingPort` 并留痕 ✗ —— "
+          "只改本地变量、不同步给 Rust 侧 ⇒ 连接仍用旧端口；"
+          "不留痕 ⇒ 「隧道明明通、就是连不上」在日志上看不出来")
+
+    check("pub fn set_remote_pairing_port(port: u16)" in r95_rust
+          and "state.port = port;" in r95_rust
+          and "SocketAddrV4::new(Ipv4Addr::new(10, 7, 0, 1), port)" in r95_rust
+          and "rust_bridge_idevice_set_remote_pairing_port" in r95_rust_bridge
+          and "rust_bridge_idevice_set_remote_pairing_port" in r95_ffi_swift,
+          "R95⑤: Rust 侧换端口必须写入状态、经 FFI 暴露、并让连接用动态端口 ✗ —— "
+          "换端口不写入 ⇒ 连接仍连 49152；不暴露 FFI ⇒ Swift 侧改了没用；"
+          "连接不用 `port` ⇒ 换了个寂寞")
+
+    check("struct RemotePairingPortPolicyTests" in r95_tests
+          and "func siblingCodesDoNotTriggerReprobe()" in r95_tests
+          and "func deviceSemanticRejectionsDoNotTriggerReprobe()" in r95_tests
+          and "func adoptsOnlyChangedPort()" in r95_tests,
+          "R95⑥: 端口自愈判据必须有单测（含「相邻码 / 设备语义错误不触发」）✗ —— "
+          "错法只在真机上表现为「隧道通、就是连不上」或「每次失败白跑一轮浏览」，"
+          "不崩、不报错、编译也过")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -8967,6 +9165,99 @@ def main():
          "            _ = try await installChannel.start()\n",
          "",
          "R93②:"),
+
+        # ── R94：通道就绪原因可判读 + 掉线自愈 ──
+        # ① vendor 的 case 改名而映射不同步（该原因静默落进 unknown）⇒ R94① 报红。
+        ("Vendor/Minimuxer/Sources/Minimuxer.swift",
+         "        case noVPNInterface\n",
+         "        case noVpnInterface\n",
+         "R94①:"),
+        # ①b Seal 侧映射漏掉一个 rawValue ⇒ R94① 报红。
+        ("Seal/Core/Renewal/ChannelReadinessPolicy.swift",
+         '        case "noVPNInterface":\n',
+         '',
+         "R94①:"),
+        # ② 安装入口退回裸 `isReady()`（失败原因丢失）⇒ R94② 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "        try await requireReady()\n",
+         "        guard await isReady() else { throw Self.channelNotReadyFailure }\n",
+         "R94②:"),
+        # ③ 通道里自抄一张分类表（两张表迟早漂移）⇒ R94③ 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "        switch ChannelReadinessPolicy.cause(fromIssueRawValue: issueRawValue) {\n",
+         "        switch issueRawValue {\n",
+         "R94③:"),
+        # ④ reset 之后不再作废 Swift 侧缓存（重试撞死会话）⇒ R94④ 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "                    invalidateCachedSession()\n"
+         "                    await waitForNetworkRefresh(rounds: 4",
+         "                    await waitForNetworkRefresh(rounds: 4",
+         "R94④:"),
+        # ⑤ 掉线判定不再接线（缓存不被作废）⇒ R94⑤ 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "        guard DeviceChannelVPNDropPolicy.isVPNDrop(error) else { return }\n",
+         "",
+         "R94⑤:"),
+        # ⑤b `SEAL-VPN-003` 不再登记进码索引 ⇒ R94⑤ 报红。
+        ("docs/qa/log-code-index.md",
+         "`SEAL-VPN-003`",
+         "`SEAL-VPN-903`",
+         "R94⑤:"),
+        # ⑥ 关键单测被改名（不变量没人守）⇒ R94⑥ 报红。
+        ("SealTests/Renewal/DeviceChannelVPNDropPolicyTests.swift",
+         "func deterministicRejectionsAreNotDrops()",
+         "func deterministicRejectionsAreDrops()",
+         "R94⑥:"),
+
+        # ── R95：RemotePairing 端口自愈 ──
+        # ① 服务类型列表漏一个（那个类型的 NWBrowser 静默无结果）⇒ R95① 报红。
+        ("Seal/Core/Renewal/RemotePairingPortPolicy.swift",
+         '        "_remotepairing-pairable-host._tcp",\n',
+         "",
+         "R95①:"),
+        # ② 触发条件退回数字区间（709 也被算成「端口不对」）⇒ R95② 报红。
+        ("Seal/Core/Renewal/RemotePairingPortPolicy.swift",
+         "        return reprobeFailureCodes.contains(failureCode)\n",
+         '        return failureCode.hasPrefix("SEAL-INSTALL-71")\n',
+         "R95②:"),
+        # ③ 安装失败那一处不再重查端口（只剩诊断一处）⇒ R95③ 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         'await adoptDiscoveredRemotePairingPort(reason: "安装失败后")\n',
+         "",
+         "R95③:"),
+        # ③b 换端口挪到 reset 之后（重建那一轮仍撞旧端口）⇒ R95③ 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "            await reprobeRemotePairingPortIfNeeded(afterFailure: diagnostics.failure)\n"
+         "            await reset()\n",
+         "            await reset()\n"
+         "            await reprobeRemotePairingPortIfNeeded(afterFailure: diagnostics.failure)\n",
+         "R95③:"),
+        # ④ 采纳不再同步给 Rust 侧（连接仍用旧端口）⇒ R95④ 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "        Minimuxer.setRemotePairingPort(newPort)\n",
+         "",
+         "R95④:"),
+        # ④b `SEAL-VPN-004` 不再登记进码索引 ⇒ R95④ 报红。
+        ("docs/qa/log-code-index.md",
+         "`SEAL-VPN-004`",
+         "`SEAL-VPN-904`",
+         "R95④:"),
+        # ⑤ Rust 侧换端口不再写入状态（连接仍连 49152）⇒ R95⑤ 报红。
+        ("Vendor/Minimuxer/RustBridge/src/idevice_support/rsd.rs",
+         "        state.port = port;\n",
+         "",
+         "R95⑤:"),
+        # ⑤b FFI 被改名（Swift 侧改了没用）⇒ R95⑤ 报红。
+        # ⚠️ 新名必须**不含**原名作为子串（`..._port_v2` 会含 ⇒ 变异不生效、白跑一轮）。
+        ("Vendor/Minimuxer/RustBridge/src/bridge_idevice.rs",
+         "pub extern \"C\" fn rust_bridge_idevice_set_remote_pairing_port(port: u16) {",
+         "pub extern \"C\" fn rust_bridge_idevice_remote_pairing_port(port: u16) {",
+         "R95⑤:"),
+        # ⑥ 关键单测被改名（不变量没人守）⇒ R95⑥ 报红。
+        ("SealTests/Renewal/RemotePairingPortPolicyTests.swift",
+         "func siblingCodesDoNotTriggerReprobe()",
+         "func siblingCodesDoTriggerReprobe()",
+         "R95⑥:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

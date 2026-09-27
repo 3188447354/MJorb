@@ -48,6 +48,8 @@
 | `SEAL-INSTALL-708` | 已安装页设备核验**跳过**：有前台操作正在进行（避免抢占同一条设备会话） | `AppsViewModel.swift` |
 | `SEAL-INSTALL-739` | 已安装页设备核验**中止**：阳性对照未通过（通道不可信），本轮一条记录都不删 | `AppsViewModel.swift` |
 | `SEAL-VPN-001` | 签名完成后仍无法连接设备完成安装 | `SigningCoordinator.swift` |
+| `SEAL-VPN-003` | 观测到**本地隧道掉线**（`broken pipe` / `connection reset` / `early eof` 这类传输层对端消失），已作废 Swift 侧通道会话缓存、下一次操作重建连接 —— **警告级**。看到它说明这一轮撞上了掉线；没有它时「重试三次都撞同一个死会话」在日志上完全看不出来 | `MinimuxerInstallChannel.swift` |
+| `SEAL-VPN-004` | **RemotePairing 端口自愈**：通道诊断 / 安装失败像是「隧道通、设备服务端口不可达」（`SEAL-INSTALL-710` 或 `connection refused` / `no route to host` / `connection timed out` 原文）时，经 Bonjour 重查 `_remotepairing._tcp` 端口，**发现到不同端口才采纳**（同步给 Rust 侧并作废按旧端口建的 RSD 缓存）—— **警告级**。看到它说明设备把服务换到了别的端口；没有它时「隧道明明通、就是连不上」在日志上完全看不出来 | `MinimuxerInstallChannel.swift` |
 
 ## 描述文件清理 / 维护
 

@@ -82,6 +82,9 @@ internal func _rust_bridge_idevice_remove_app(
 @_silgen_name("rust_bridge_idevice_invalidate_rsd_connection")
 internal func _rust_bridge_idevice_invalidate_rsd_connection()
 
+@_silgen_name("rust_bridge_idevice_set_remote_pairing_port")
+internal func _rust_bridge_idevice_set_remote_pairing_port(_ port: UInt16)
+
 @_silgen_name("rust_bridge_idevice_lookup_app")
 internal func _rust_bridge_idevice_lookup_app(
 	_ bundleId: UnsafePointer<Int8>?,
@@ -163,6 +166,12 @@ public class RustIdevice {
 	/// 废弃缓存的 RSD 连接（隧道可能已断）。下一次服务调用会重建连接。
 	public static func invalidateConnection() {
 		_rust_bridge_idevice_invalidate_rsd_connection()
+	}
+
+	/// 写入 Bonjour 发现的 RemotePairing 服务端口。
+	/// 端口变化会连 RSD 连接缓存一起作废（Rust 侧按配对代次校验）。
+	public static func setRemotePairingPort(_ port: UInt16) {
+		_rust_bridge_idevice_set_remote_pairing_port(port)
 	}
 
 	public static func fetchUDID() -> String? {

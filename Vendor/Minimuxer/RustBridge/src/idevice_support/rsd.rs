@@ -14,6 +14,12 @@ use std::{
 
 type RsdAdapter = idevice::tcp::handle::AdapterHandle;
 
+/// 设备 RemotePairing 服务的默认端口（`_remotepairing._tcp` 未发现到时的回退）。
+///
+/// 设备可能把该服务挂在别的端口上（iOS 不保证固定）⇒ Swift 侧会用 Bonjour
+/// 重查并经 `set_remote_pairing_port` 写入；这里只做回退。
+pub(crate) const DEFAULT_REMOTE_PAIRING_PORT: u16 = 49152;
+
 pub struct CachedRsdConnection {
     pub adapter: RsdAdapter,
     pub handshake: RsdHandshake,
@@ -25,6 +31,8 @@ struct PairingState {
     generation: u64,
     /// rpp 配对文件原文（plist），供 CoreDevice 隧道的 lockdown 配对解析使用
     raw: Option<String>,
+    /// RemotePairing 服务端口；见 `DEFAULT_REMOTE_PAIRING_PORT`。
+    port: u16,
 }
 
 static RPPAIRING_STATE: OnceLock<Mutex<PairingState>> = OnceLock::new();
@@ -36,6 +44,7 @@ fn pairing_state() -> &'static Mutex<PairingState> {
             file: None,
             generation: 0,
             raw: None,
+            port: DEFAULT_REMOTE_PAIRING_PORT,
         })
     })
 }
@@ -99,10 +108,10 @@ fn current_generation() -> u64 {
     lock_recover(pairing_state(), "pairing_state").generation
 }
 
-fn pairing_snapshot() -> Result<(idevice::remote_pairing::RpPairingFile, u64), IdeviceError> {
+fn pairing_snapshot() -> Result<(idevice::remote_pairing::RpPairingFile, u64, u16), IdeviceError> {
     let state = lock_recover(pairing_state(), "pairing_state");
     match state.file.as_ref() {
-        Some(file) => Ok((file.clone(), state.generation)),
+        Some(file) => Ok((file.clone(), state.generation, state.port)),
         None => Err(IdeviceError::UserDeniedPairing),
     }
 }
@@ -132,6 +141,30 @@ pub fn set_rppairing_file(pairing_file_string: String) -> Result<(), IdeviceErro
 pub fn invalidate_rsd_connection() {
     *lock_recover(connection_state(), "rsd_connection") = None;
     info!("RSD connection cache invalidated");
+}
+
+/// 写入 Bonjour 发现的 RemotePairing 服务端口（Swift 侧发现后调用）。
+///
+/// 端口一变，**已缓存的 RSD 连接就是用旧端口建的** ⇒ 必须连缓存一起作废，
+/// 否则 `connect_to_rsd_services` 会继续复用那条连不上的隧道。
+/// 复用与 `set_rppairing_file` 相同的杠杆：缓存按 `generation` 校验，换代即弃。
+/// 端口没变则什么都不做 —— 不无谓拆掉一条已经好的连接。
+pub fn set_remote_pairing_port(port: u16) {
+    let changed = {
+        let mut state = lock_recover(pairing_state(), "pairing_state");
+        if state.port == port {
+            false
+        } else {
+            state.port = port;
+            state.generation = state.generation.wrapping_add(1);
+            true
+        }
+    };
+
+    if changed {
+        *lock_recover(connection_state(), "rsd_connection") = None;
+        info!("Remote pairing port updated to {port}; RSD connection cache invalidated");
+    }
 }
 
 pub async fn connect_to_rsd_services<Service: RsdService>() -> Result<Service, IdeviceError> {
@@ -195,12 +228,12 @@ pub async fn get_or_create_rppairing_rsd_connection(
 }
 
 async fn create_rppairing_rsd_connection() -> Result<CachedRsdConnection, IdeviceError> {
-    let (mut pairing_file, generation) = pairing_snapshot().map_err(|error| {
+    let (mut pairing_file, generation, port) = pairing_snapshot().map_err(|error| {
         error!("No remote pairing file is available");
         error
     })?;
 
-    let socket_addr = SocketAddrV4::new(Ipv4Addr::new(10, 7, 0, 1), 49152);
+    let socket_addr = SocketAddrV4::new(Ipv4Addr::new(10, 7, 0, 1), port);
     let stream = tokio::net::TcpStream::connect(socket_addr)
         .await
         .map_err(|error| IdeviceError::Socket(error))?;

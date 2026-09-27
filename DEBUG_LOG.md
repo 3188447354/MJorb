@@ -5,6 +5,83 @@
 
 ---
 
+## 2026-09-27 通道失败只剩一句笼统话 + 隧道掉线后重试撞死会话：就绪判据丢原因、掉线不被识别
+
+- **现象**：① 续签 / 安装失败时提示永远是同一句「设备连接失败（超时、网络不可达或无设备）」——
+  「**LocalDevVPN 没开**」与「**设备没响应**」是两种完全不同的下一步动作，用户却拿不到区分；
+  ② 安装 / 上传中途隧道掉线后重试三次都失败，而且**三次撞的是同一条已死的会话**。
+- **根因**（**Seal 侧**）：
+  1. 就绪判据只有 `Minimuxer.ready() -> Bool` —— 一个**布尔值**，失败时「为什么失败」在返回那一刻就丢了。
+     上游 `SideStore/minimuxer` 的 `isReady(withNetworkCheck:withDDIMountCheck:)` 返回的是**带原因的结果**
+     （配对没加载 / 没启动 / 没有 VPN / 不可达 / 没有设备 / muxer 没监听）。
+  2. 通道复用一条**缓存会话**（900 秒窗口）；掉线后 `Minimuxer.reset()` 拆的是 **Rust 侧**会话，
+     而 `start()` 复用的是**通道自己的 Swift 侧缓存**（`cachedDeviceIdentifier` / `lastSuccessfulStart`）
+     ⇒ 缓存没清，下一次 `start()` 在窗口内**直接还回那个已作废的 UDID**，重试自然一直撞死会话。
+- **修复**：
+  1. 把上游那条**带原因**的判据补进来（`MinimuxerReadyVerdict` / `MinimuxerReadyIssue`），
+     **判定与顺序一字不改**（`readyVerdict().isReady` 与 `ready()` 完全等价，原因全部来自原本就要算的布尔量
+     ⇒ 没有新增探测、也没有新增等待）。Seal 侧新增纯函数 `ChannelReadinessPolicy` 把原因翻成可判读类别，
+     安装入口改走**带原因的门禁**（`requireReady()`）：`noVPNInterface ⇒ SEAL-INSTALL-701`、
+     `tunnelUnreachable ⇒ 710`、`noDevice ⇒ 708`、`heartbeatStale ⇒` 单独文案。
+     分类**只允许一份**（`ChannelReadinessPolicy`），通道里不再另抄一张表。
+  2. 新增纯函数 `DeviceChannelVPNDropPolicy`（移植上游 `isVPNDrop` 思路），识别 `broken pipe` /
+     `connection reset` / `early eof` 这类**传输层对端消失**的错误（刻意**不含**
+     `ApplicationVerificationFailed` / `No space left` 这类设备语义错误，否则失去区分度）；
+     通道内每次 `Minimuxer.reset()` 之后**必须连 Swift 侧会话缓存一起作废**；观测到掉线时立刻作废缓存
+     并留痕 `SEAL-VPN-003`（警告级）。
+- **涉及文件**：`Vendor/Minimuxer/Sources/Minimuxer.swift`（`readyVerdict()` / `MinimuxerReadyIssue`）、
+  `Seal/Core/Renewal/ChannelReadinessPolicy.swift`、`Seal/Core/Renewal/DeviceChannelVPNDropPolicy.swift`、
+  `Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`、`SealTests/Renewal/ChannelReadinessPolicyTests.swift`、
+  `SealTests/Renewal/DeviceChannelVPNDropPolicyTests.swift`、`docs/qa/log-code-index.md`、
+  `Scripts/verify-release-safety.py`（新增 R94①–⑥ 断言 + 8 变异）、`RELEASE_NOTES.md`、`project.yml`（`1.3.27`）。
+- **验证状态**：⚠️ **待真机回归**（Windows 本机不能编译）。回归点：
+  ① 关掉 LocalDevVPN 再续签 ⇒ 提示应是「LocalDevVPN 未就绪」而不是「设备未响应」；
+  ② 开着 VPN、手机锁屏离线再续签 ⇒ 应是「设备未响应」；③ 安装中途掉线后重试 ⇒ 日志里应出现 `SEAL-VPN-003`，
+  且下一次操作**重建**连接（而非复用旧会话）。
+- **教训**：**「判定等价」不等于「信息等价」** —— 把 `Bool` 换成「带原因的 Result」时，
+  只要原因全部来自原本就要算的量，就**既不多一次探测、也不改变任何行为**，却能立刻让失败可行动。
+  另一条：`reset()` 这类「拆会话」的操作必须**连上层缓存一起作废**，否则上层会在窗口内把死会话再还回来。
+
+## 2026-09-27 隧道通、就是连不上：RemotePairing 端口被硬编码成 49152
+
+- **现象**：LocalDevVPN 通、隧道也通，但续签 / 安装**始终**连不上设备；重试多少轮都一样。
+- **根因**（**Seal 侧**）：Seal 把 RemotePairing 服务端口**硬编码**成 `49152`（`MuxerConstants.rsdPort`），
+  Rust 侧 `SocketAddrV4::new(Ipv4Addr::new(10, 7, 0, 1), 49152)` 写死；而 iOS **不保证**
+  `_remotepairing._tcp` 挂在这个端口上 ⇒ 设备侧守护进程换端口之后，就变成「隧道通、这个端口不通」，
+  每一轮重试都撞同一个死端口（自愈不了）。
+- **修复**（对齐上游 SideStore `MinimuxerWrapper` 的「失败后经 Bonjour 重查端口、变了就换」）：
+  1. 新增纯函数 `RemotePairingPortPolicy`，只在**端口不对同义**的那一类失败上触发重查
+     （就绪失败码 `SEAL-INSTALL-710`，或 `connection refused` / `no route to host` / `connection timed out`
+     这类**端口层**原文）。**显式集合**，不用数字区间 —— 否则 `709`「安全握手未完成」也会被算进来
+     （`AGENTS.md` 第 3 节：错误码 → 动作必须用显式码集合）。
+  2. 新增 `RemotePairingPortDiscovery`：`NWBrowser` 并发浏览 `_remotepairing._tcp` 系列取服务端点，
+     `NWConnection` 解析端口；复用现成 `ContinuationBox`（**不新造锁盒**）。`project.yml` 已声明
+     `NSBonjourServices` —— 缺它 `NWBrowser` **不报错、只是永远没有结果**（静默失效，日志上看不出来）。
+  3. 通道在**两处**接线（诊断失败后 `startOnce` / 安装失败重试循环），且换端口**赶在 `reset()` 之前**
+     —— 反过来（先 reset 再换端口）会让重建后的那一轮仍撞旧端口，等于白跑一轮。
+  4. **发现到不同端口才采纳**（`Minimuxer.setRemotePairingPort` 同步给 Rust 侧并作废按旧端口建的 RSD 缓存；
+     端口没变则什么都不做，不无谓拆掉一条已经好的连接），留痕 `SEAL-VPN-004`（警告级）。
+  Rust 侧：`PairingState` 加 `port` 字段（默认 `DEFAULT_REMOTE_PAIRING_PORT = 49152` 作回退）＋
+  `set_remote_pairing_port(port)`（**换端口即作废 RSD 连接缓存**）＋ 新 FFI
+  `rust_bridge_idevice_set_remote_pairing_port`；连接创建改用 `state.port`。
+- **涉及文件**：`Seal/Core/Renewal/RemotePairingPortPolicy.swift`、
+  `Seal/Infrastructure/Installation/RemotePairingPortDiscovery.swift`、
+  `Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`、`project.yml`（`NSBonjourServices`）、
+  `Vendor/Minimuxer/Sources/Minimuxer.swift`、`Vendor/Minimuxer/RustBridge/MinimuxerBridgeIdevice.swift`、
+  `Vendor/Minimuxer/RustBridge/src/bridge_idevice.rs`、
+  `Vendor/Minimuxer/RustBridge/src/idevice_support/rsd.rs`、
+  `SealTests/Renewal/RemotePairingPortPolicyTests.swift`、`docs/qa/log-code-index.md`、
+  `Scripts/verify-release-safety.py`（新增 R95①–⑥ 断言 + 10 变异）、`docs/upstream-alignment.md`、`RELEASE_NOTES.md`。
+- **验证状态**：⚠️ **待真机回归**。回归点：设备换了 RemotePairing 端口后续签 ⇒ 日志里应出现
+  `SEAL-VPN-004`，且本轮**换端口后**能连上（而不是一直撞旧端口）。
+  ⚠️ **本机不能编译**（`NWEndpoint` / `NWBrowser` 的 Sendable 与 `ContinuationBox` 约束以云 CI 为准）。
+- **教训**：**「网络层通」不等于「服务端口通」** —— 探测通过（隧道可达）只证明到网关的路由没问题，
+  不代表目标守护进程还挂在**记忆里的那个端口**上；凡是「硬编码对端端口/地址」的地方，
+  都要问一句「这个值由谁保证不变」。另一条：Bonjour 浏览**漏声明 `NSBonjourServices` 是静默失败**，
+  必须靠守卫把「声明」与「代码里的服务类型列表」钉成同源。
+
+---
+
 ## 2026-09-27 `Lara`（`Eagle.app`）签名安装后一打开就闪退：瘦身把 arm64e / arm64 搞成混装
 
 - **现象**：`Lara` 能签名、能安装，一点图标就闪退；崩溃报告 `bug_type 309`，

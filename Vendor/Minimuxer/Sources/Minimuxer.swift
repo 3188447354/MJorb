@@ -22,12 +22,97 @@ public struct Minimuxer {
     /// 当前配对文件决定的传输协议。RemotePairing 走 RSD 合并安装；Lockdown 必须走
     /// AFC 暂存 + installation_proxy，不能调用仅支持 RSD 的 Rust 合并入口。
     public static var isRemotePairing: Bool { Muxer.isrppairing }
+
+    /// 当前 RemotePairing 服务端口（Bonjour 发现后更新；默认 `MuxerConstants.rsdPort`）。
+    ///
+    /// 设备不保证把 `_remotepairing._tcp` 挂在 49152 上 ⇒ 发现到别的端口时必须
+    /// **同时**改这里（探测用）与 Rust 侧（真正建连用），否则会出现
+    /// 「探测说不通、实际能通」这类错判。
+    private static let remotePairingPortLock = NSLock()
+    private static var _remotePairingPort: UInt16 = MuxerConstants.rsdPort
+
+    public static var remotePairingPort: UInt16 {
+        remotePairingPortLock.lock()
+        defer { remotePairingPortLock.unlock() }
+        return _remotePairingPort
+    }
+
+    /// 写入 Bonjour 发现的 RemotePairing 端口：同步下发 Rust 侧
+    /// （Rust 侧会连按旧端口建的 RSD 连接缓存一起作废）。`0` 视为无效值忽略。
+    public static func setRemotePairingPort(_ port: UInt16) {
+        guard port != 0 else { return }
+        remotePairingPortLock.lock()
+        let changed = _remotePairingPort != port
+        _remotePairingPort = port
+        remotePairingPortLock.unlock()
+        guard changed else { return }
+        RustIdevice.setRemotePairingPort(port)
+    }
+
+    /// 回到默认端口。**换设备 / 重新导入配对时必须调用** —— 上一台设备 Bonjour
+    /// 发现的端口对新设备无效，留着它会让新设备第一笔操作白撞一次。
+    public static func resetRemotePairingPort() {
+        setRemotePairingPort(MuxerConstants.rsdPort)
+    }
     
     public static func bindTunnelConfig(_ binding: TunnelConfigBinding) {
         IfaceScanner.shared.bindTunnelConfig(binding)
     }
     
+    /// 设备通道「不就绪」的**具体原因**（对齐上游 `SideStore/minimuxer` 的
+    /// `MinimuxerError` 就绪类分支：`pairingNotLoaded` / `notStarted` / `noVPN` /
+    /// `notReachable` / `noDevice` / `muxerNotListening`）。
+    ///
+    /// ⚠️ `rawValue` 是**跨模块契约**：`Seal` 侧的 `ChannelReadinessPolicy`
+    /// 按它做映射（测试 target 看不到本模块，只能吃字符串）。改名等于改契约。
+    public enum MinimuxerReadyIssue: String, Sendable, Equatable {
+        /// 非 RSD 路径拿不到设备 IP ⇒ 还没从 VPN 接口上发现对端。
+        case noVPNInterface
+        /// VPN 接口在、但设备服务端口不可达。
+        case tunnelUnreachable
+        /// 配对文件已加载但 `Muxer` 未启动。
+        case notStarted
+        /// `Muxer.usbmuxdReady` 为假。
+        case usbmuxdNotReady
+        /// 保活心跳已中断（会话可能已失效）。
+        case heartbeatStale
+        /// 隧道通、但设备没有出现在设备列表里。
+        case noDevice
+    }
+
+    /// 就绪判据的结果：`isReady` ＋ 不就绪时的**原因**。
+    public struct MinimuxerReadyVerdict: Sendable, Equatable {
+        public let isReady: Bool
+        public let issue: MinimuxerReadyIssue?
+
+        public init(isReady: Bool, issue: MinimuxerReadyIssue?) {
+            self.isReady = isReady
+            self.issue = issue
+        }
+
+        public static let ready = MinimuxerReadyVerdict(isReady: true, issue: nil)
+
+        public static func notReady(_ issue: MinimuxerReadyIssue) -> MinimuxerReadyVerdict {
+            MinimuxerReadyVerdict(isReady: false, issue: issue)
+        }
+    }
+
     public static func ready() -> Bool {
+        readyVerdict().isReady
+    }
+
+    /// 就绪判据（带**原因**）—— 对齐上游 `SideStore/minimuxer` 的
+    /// `isReady(withNetworkCheck:withDDIMountCheck:) -> Result<Bool, MinimuxerError>`。
+    ///
+    /// 上游那条判据能区分「配对没加载 / 没启动 / 没有 VPN / 不可达 / 没有设备 / muxer 没监听」；
+    /// 而 `ready()` 只回 `Bool` ⇒ 上层（`MinimuxerInstallChannel.diagnose()`）只能给一句
+    /// 「设备连接失败（超时 / 网络不可达 / 无设备）」，用户分不清「LocalDevVPN 没开」
+    /// 与「设备没响应」—— 那是两种完全不同的下一步动作。
+    ///
+    /// ⚠️ **不改变任何判据与顺序**：`ready()` 的语义（含 R61 钉住的「便宜判据在前」）
+    /// 一字不动，只是把失败那一路的**原因**取出来。全部原因都来自原本就要算的布尔量
+    /// ⇒ 没有新增探测、也没有新增等待。
+    public static func readyVerdict() -> MinimuxerReadyVerdict {
         
         let deviceIP: String
         do {
@@ -39,12 +124,13 @@ public struct Minimuxer {
 
         } catch {
             print("[minimuxer] minimuxer not ready: device endpoint not initialized")
-            return false
+            // 非 RSD 路径拿不到设备 IP = `NetworkObserver` 还没从 VPN 接口上发现对端
+            return .notReady(.noVPNInterface)
         }
         
         let deviceConnection = testDeviceConnection(ifaddr: deviceIP)
         if Muxer.isrppairing {
-            return deviceConnection
+            return deviceConnection ? .ready : .notReady(.tunnelUnreachable)
         }
 
         /// 统一的不就绪诊断行。抽成局部函数只为**保持两个分支的字段完全一致**
@@ -70,8 +156,16 @@ public struct Minimuxer {
         // 但每轮都会遗弃一个还要再跑 15 秒的阻塞 FFI、持续占着协作线程池 ⇒
         // 真机「验证中」卡 **12 分钟以上**（构建 184 已复现，见 `DEBUG_LOG.md`）。
         guard deviceConnection, Heartbeat.lastBeatSuccessful, Muxer.started, Muxer.usbmuxdReady else {
+            // 原因在 `else` 里现算 —— **不再复述一遍那几个条件**（避免出现第二份判据表，
+            // 那正是本仓「两张表同源」反复踩的坑）。取值顺序与上面 guard 的书写顺序一致。
+            let issue: MinimuxerReadyIssue = {
+                if deviceConnection == false { return .tunnelUnreachable }
+                if Heartbeat.lastBeatSuccessful == false { return .heartbeatStale }
+                if Muxer.started == false { return .notStarted }
+                return .usbmuxdNotReady
+            }()
             reportNotReady(deviceExists: "unknown")
-            return false
+            return .notReady(issue)
         }
 
         // 前置条件都成立、只差设备本身 ⇒ 用**短预算**探测：探测不负责等待，
@@ -85,7 +179,7 @@ public struct Minimuxer {
         }
         guard deviceExists else {
             reportNotReady(deviceExists: "\(deviceExists)")
-            return false
+            return .notReady(.noDevice)
         }
         
         if #available(iOS 26.4, *) {
@@ -93,7 +187,7 @@ public struct Minimuxer {
                 print("[minimuxer] WARN: VPN subnet not patched")
             }
         }
-        return true
+        return .ready
     }
 
     public static func setDebug(_ debug: Bool) {
@@ -188,7 +282,7 @@ public struct Minimuxer {
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = Muxer.isrppairing
-            ? MuxerConstants.rsdPort.bigEndian
+            ? remotePairingPort.bigEndian
             : MuxerConstants.lockdowndPort.bigEndian
         guard inet_pton(AF_INET, ip, &addr.sin_addr) == 1 else { return false }
 

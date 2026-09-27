@@ -363,7 +363,12 @@ actor MinimuxerInstallChannel: InstallChannel {
     private func startOnce() async throws -> String {
         var diagnostics = await diagnose()
         if diagnostics.failure != nil || diagnostics.deviceIdentifier == nil {
-            // 第一轮失败：重置 Minimuxer 后再诊断一次。
+            // 第一轮失败：**先试一次 RemotePairing 端口自愈**，再重置 Minimuxer 重新诊断。
+            //
+            // 顺序有意义：换端口必须发生在 `reset()` **之前** —— `reset()` 之后紧接着
+            // 就是第二轮 `diagnose()`，而第二轮要用的正是新端口。反过来（先 reset 再换端口）
+            // 会让第二轮仍然撞旧端口，等于白跑一轮。
+            await reprobeRemotePairingPortIfNeeded(afterFailure: diagnostics.failure)
             await reset()
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             diagnostics = await diagnose()
@@ -518,7 +523,19 @@ actor MinimuxerInstallChannel: InstallChannel {
             }
             pass(.pairingMatch)
 
-            guard await isReady() else {
+            // 用带原因的就绪判据替换裸 `isReady()`：判定完全等价
+            //（`readyVerdict().isReady == ready()`），区别只在失败时能给出
+            // 「LocalDevVPN 没开 / 隧道不可达 / 设备没响应」的具体原因。
+            let readiness = await readinessVerdict()
+            if let readiness {
+                guard readiness.isReady else {
+                    return fail(
+                        .installationService,
+                        Self.readinessFailure(for: readiness.issue?.rawValue)
+                    )
+                }
+            } else if await isReady() == false {
+                // 探测超时（同步 FFI 卡住）：原因未知 ⇒ 退回通用失败。
                 return fail(.installationService, Self.channelNotReadyFailure)
             }
             pass(.installationService)
@@ -555,6 +572,64 @@ actor MinimuxerInstallChannel: InstallChannel {
         #endif
     }
 
+    /// 带**原因**的就绪判据（对齐上游 minimuxer 的 `isReady(...) -> Result`）。
+    ///
+    /// 判定与 `isReady()` **完全等价**（`readyVerdict().isReady == ready()`），
+    /// 区别只在失败时能给出具体原因，供 `ChannelReadinessPolicy` 分类。
+    /// 返回 `nil` = 探测本身超时（同步 FFI 卡住）⇒ 原因未知，调用方退回通用失败。
+    func readinessVerdict() async -> MinimuxerReadyVerdict? {
+        #if targetEnvironment(simulator)
+        return .ready
+        #else
+        let outcome = await offThread(seconds: Self.blockingCallTimeoutSeconds) {
+            Minimuxer.readyVerdict()
+        }
+        guard case .some(.success(let verdict)) = outcome else { return nil }
+        return verdict
+        #endif
+    }
+
+    /// 通道就绪的**带原因**门禁：不就绪时抛出精确的 `ImportFailure`。
+    ///
+    /// 「LocalDevVPN 没开」与「设备没响应」需要完全不同的下一步动作，
+    /// 而过去这里一律抛 `channelNotReadyFailure`（一句「超时 / 网络不可达 / 无设备」）。
+    private func requireReady() async throws {
+        guard let verdict = await readinessVerdict() else {
+            // 探测超时：原因未知 ⇒ 退回原来的通用失败。
+            throw Self.channelNotReadyFailure
+        }
+        guard verdict.isReady else {
+            throw Self.readinessFailure(for: verdict.issue?.rawValue)
+        }
+    }
+
+    /// 不就绪原因 → 可操作的失败。**分类只在 `ChannelReadinessPolicy` 里做**，
+    /// 这里只负责把类别翻成文案与码（避免出现第二份判据表 —— 本仓反复踩过的坑）。
+    static func readinessFailure(for issueRawValue: String?) -> ImportFailure {
+        switch ChannelReadinessPolicy.cause(fromIssueRawValue: issueRawValue) {
+        case .vpnNotConnected:
+            return vpnTunnelUnavailableFailure
+        case .tunnelUnreachable:
+            return ImportFailure(
+                title: "无法经本地隧道连到设备",
+                reason: "LocalDevVPN 的接口已出现，但设备服务端口不可达 —— 隧道没有真正把流量转发到设备。请确认 LocalDevVPN 已连接、网络稳定后重试。",
+                recovery: "检查是否打开 LocalDevVPN",
+                code: "SEAL-INSTALL-710"
+            )
+        case .deviceMissing:
+            return deviceNotRespondingFailure
+        case .heartbeatStale:
+            return ImportFailure(
+                title: channelNotReadyFailure.title,
+                reason: "与设备的会话已中断（保活心跳丢失），需要重建连接。请确认 iPhone 已解锁、已连接 Wi-Fi，并检查是否打开 LocalDevVPN。",
+                recovery: channelNotReadyFailure.recovery,
+                code: channelNotReadyFailure.code
+            )
+        case .notStarted, .unknown:
+            return channelNotReadyFailure
+        }
+    }
+
     func storedDeviceIdentifier() async -> String? {
         do {
             return try await pairingStore.current()?.effectiveDeviceIdentifier
@@ -574,10 +649,72 @@ actor MinimuxerInstallChannel: InstallChannel {
         // 于是 `reset()` 之后的第一笔操作继续用死连接（这正是「导入配对文件后仍连不上」的形态）。
         // 一并清熔断：`reset()` 的调用方（导入配对文件 / 恢复连接）期待的是**真实重跑诊断**，
         // 留着 60 秒熔断会把刚修好的通道直接搪塞成一个旧错误。
-        cachedDeviceIdentifier = nil
-        lastSuccessfulStart = nil
+        invalidateCachedSession()
         lastFailureAt = nil
         lastFailure = nil
+    }
+
+    /// 只作废**会话缓存**（`cachedDeviceIdentifier` / `lastSuccessfulStart`）、
+    /// **不动熔断**：用于「安装 / 上传失败后重试前」——那时 `start()` 本是成功的、
+    /// 熔断为空，要清的是**已被拆掉或已掉线**的会话所对应的 Swift 侧缓存。
+    ///
+    /// ⚠️ 不清它就会「重试三次都撞同一个死会话」：`Minimuxer.reset()` 拆的是 Rust 会话，
+    /// 而 `start()` 复用的是本 actor 的 Swift 缓存 ⇒ 900 秒窗口内直接还回那个作废的 UDID。
+    private func invalidateCachedSession() {
+        cachedDeviceIdentifier = nil
+        lastSuccessfulStart = nil
+    }
+
+    /// 把「本地隧道掉线」这一类错误变成**可自愈**的信号：立刻作废 Swift 侧会话缓存。
+    ///
+    /// 与 `DeviceChannelVPNDropPolicy` 同源；只有判定为掉线才动作 ——
+    /// 其它通道抖动时会话可能还活着，无谓作废只会让下一次 `start()` 多跑一遍诊断。
+    private func noteVPNDropIfNeeded(_ error: Error) async {
+        guard DeviceChannelVPNDropPolicy.isVPNDrop(error) else { return }
+        invalidateCachedSession()
+        await log(
+            "观测到本地隧道掉线（\(Self.diagnostic(error))），已作废通道会话缓存，"
+            + "下一次操作将重建连接",
+            level: .warning,
+            code: "SEAL-VPN-003"
+        )
+    }
+
+    /// 通道诊断失败后试一次 **RemotePairing 端口自愈**（对齐上游 `MinimuxerWrapper`）。
+    ///
+    /// iOS 不保证 `_remotepairing._tcp` 挂在固定端口上，而 Seal 过去硬编码 49152 ⇒
+    /// 设备换端口后表现为「隧道通、这个端口不通」（就绪判据报 `.tunnelUnreachable`）。
+    /// 只在**端口不对同义**的那一类失败码上试（判据在 `RemotePairingPortPolicy`）。
+    ///
+    /// - Returns: 是否真的换了端口。
+    @discardableResult
+    private func reprobeRemotePairingPortIfNeeded(afterFailure failure: ImportFailure?) async -> Bool {
+        guard RemotePairingPortPolicy.shouldReprobe(failureCode: failure?.code) else { return false }
+        return await adoptDiscoveredRemotePairingPort(reason: "通道诊断失败（\(failure?.code ?? "未知")）")
+    }
+
+    /// 经 Bonjour 重查 RemotePairing 端口；**发现到不同的端口才采纳**。
+    ///
+    /// 采纳即调 `Minimuxer.setRemotePairingPort(_:)` —— 它会把新端口同步给 Rust 侧，
+    /// 并连带作废**按旧端口建的** RSD 连接缓存（Rust 侧按配对代次校验）。
+    /// 端口没变则什么都不做：不无谓拆掉一条已经好的连接。
+    ///
+    /// - Returns: 是否真的换了端口。
+    @discardableResult
+    private func adoptDiscoveredRemotePairingPort(reason: String) async -> Bool {
+        let current = Minimuxer.remotePairingPort
+        guard let discovered = await RemotePairingPortDiscovery.discoverPort() else { return false }
+        guard let newPort = RemotePairingPortPolicy.resolve(current: current, discovered: discovered) else {
+            return false
+        }
+        Minimuxer.setRemotePairingPort(newPort)
+        await log(
+            "RemotePairing 端口自愈：\(reason)，Bonjour 重查到端口 \(discovered)"
+            + "（原 \(current)），已换端口并作废按旧端口建的 RSD 连接缓存",
+            level: .warning,
+            code: "SEAL-VPN-004"
+        )
+        return true
     }
 
     /// 整体硬超时：超时先到直接抛出；同步阻塞 FFI 无法被真正中断，
@@ -843,7 +980,7 @@ actor MinimuxerInstallChannel: InstallChannel {
     /// 走缓存隧道会话，含同连接回读校验（大小不一致立即抛错，不把截断包留给 installd）。
     func pushIpa(ipaData: Data, bundleID: String) async throws {
         #if !targetEnvironment(simulator)
-        guard await isReady() else { throw Self.channelNotReadyFailure }
+        try await requireReady()
         let ipaMB = Double(ipaData.count) / 1_000_000
         // 上传含全量回读校验，总量约为单向上传的 2 倍（封顶 30 分钟）
         let pushTimeout = Self.uploadBudgetSeconds(ipaMB: ipaMB)
@@ -860,11 +997,15 @@ actor MinimuxerInstallChannel: InstallChannel {
                 return
             } catch {
                 lastError = error
+                await noteVPNDropIfNeeded(error)
                 guard attempt < maxAttempts else { break }
                 if attempt == 1 {
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
                 } else {
                     Minimuxer.reset()
+                    // ⚠️ 必须连 Swift 侧会话缓存一起作废：`Minimuxer.reset()` 只拆 Rust 会话，
+                    // 留着缓存会让下一次 `start()` 在 900 秒窗口内还回这个已作废的 UDID。
+                    invalidateCachedSession()
                     await waitForNetworkRefresh(rounds: 4, delay: .milliseconds(600))
                     try? await Task.sleep(nanoseconds: 6_000_000_000)
                 }
@@ -885,7 +1026,7 @@ actor MinimuxerInstallChannel: InstallChannel {
     /// MissingPackagePath，由 install() 的整体重跑恢复。
     func installPushedIpa(bundleID: String, isSelfReplacement: Bool) async throws {
         #if !targetEnvironment(simulator)
-        guard await isReady() else { throw Self.channelNotReadyFailure }
+        try await requireReady()
         let installTimeout = 600.0
         var lastError: Error?
         for attempt in 1...3 {
@@ -920,6 +1061,7 @@ actor MinimuxerInstallChannel: InstallChannel {
                 return
             } catch {
                 lastError = error
+                await noteVPNDropIfNeeded(error)
                 guard attempt < 3 else { break }
                 // 自替换被闸门拒绝：重试只会被同一个闸门再拒一次，
                 // 且重试前的 reset 会把可能仍在跑的安装连接拆掉 —— 原样抛出。
@@ -966,7 +1108,7 @@ actor MinimuxerInstallChannel: InstallChannel {
         onProgress: @escaping @Sendable (Double) async -> Void
     ) async throws {
         #if !targetEnvironment(simulator)
-        guard await isReady() else { throw Self.channelNotReadyFailure }
+        try await requireReady()
         let ipaMB = Double(ipaData.count) / 1_000_000
         // 合并调用 = 上传（对齐原 push 预算，封顶 30 分钟）+ 安装（600 秒）
         let mergedTimeout = Self.mergedInstallBudgetSeconds(ipaMB: ipaMB)
@@ -1073,6 +1215,7 @@ actor MinimuxerInstallChannel: InstallChannel {
                     throw CancellationError()
                 }
                 lastError = error
+                await noteVPNDropIfNeeded(error)
                 guard attempt < maxAttempts else { break }
                 // 超时必须按「确定性拒绝」处理 —— 立即终止，不再重传重试（R05）。
                 // 原因见 isTimeoutInstallError 的注释：底下那次安装很可能还在跑。
@@ -1092,7 +1235,16 @@ actor MinimuxerInstallChannel: InstallChannel {
                     break
                 }
                 if detail.contains("MissingPackagePath") == false {
+                    // 端口自愈：失败像是「连不上设备服务端口」时，先经 Bonjour 重查端口。
+                    // 必须放在 `reset()` 之前（同 `startOnce` 的理由：换端口要赶在重建连接前）。
+                    // 原因写短：底层错误原文这一轮已经由上面「安装调用抛错」那行记过了。
+                    if RemotePairingPortPolicy.shouldReprobe(detail: detail) {
+                        await adoptDiscoveredRemotePairingPort(reason: "安装失败后")
+                    }
                     Minimuxer.reset()
+                    // 同 pushIpa：reset 必须连 Swift 侧会话缓存一起作废，
+                    // 否则下一次 `start()` 会还回这个已被拆掉的会话对应的 UDID。
+                    invalidateCachedSession()
                     await waitForNetworkRefresh(rounds: 2, delay: .milliseconds(600))
                 }
                 var readyWait = 0
@@ -1110,7 +1262,7 @@ actor MinimuxerInstallChannel: InstallChannel {
         #if targetEnvironment(simulator)
         return
         #else
-        guard await isReady() else { throw Self.channelNotReadyFailure }
+        try await requireReady()
         // ⚠️ 这里**刻意不调** `Install.resetProvider()`（2026-09-24 删）。
         //
         // 原来那句注释写的是「验证前重置连接，避免用死连接查询」，但那个杠杆**是无效的**：

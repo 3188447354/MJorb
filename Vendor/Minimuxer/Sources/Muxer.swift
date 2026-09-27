@@ -78,6 +78,7 @@ public class Muxer {
 
         stateLock.lock()
         var staleListenerFD: Int32?
+        var pairingIdentityChanged = false
         if _started, cachedPairingXml == pairingXml {
             // 同一份配对：幂等跳过，保留既有会话，避免重复建连。
             stateLock.unlock()
@@ -88,6 +89,7 @@ public class Muxer {
             // 配对身份发生变化（换了另一台设备 / 重新导入配对）：先拆除旧会话再用新配对重建。
             // 绝不能沿用旧设备的配对身份，否则新设备会一直 pair-verify 失败、卡在“已导入，待验证”。
             staleListenerFD = teardownLocked()
+            pairingIdentityChanged = true
             print("[minimuxer] Pairing identity changed while running; rebuilding the session")
         }
         generation &+= 1
@@ -102,6 +104,12 @@ public class Muxer {
         if let fd = staleListenerFD {
             Heartbeat.reset()
             _ = shutdown(fd, SHUT_RDWR)
+        }
+
+        if pairingIdentityChanged {
+            // 换设备后，上一台设备 Bonjour 发现的端口对新设备无效 ⇒ 回默认值重新发现。
+            // 放在 `stateLock` 之外：避免持锁做 FFI。
+            Minimuxer.resetRemotePairingPort()
         }
 
         do {

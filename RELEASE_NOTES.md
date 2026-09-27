@@ -1,3 +1,63 @@
+# 1.3.27 通道失败能说清原因 + 隧道掉线自动重建 + RemotePairing 端口自愈
+
+这一版只动**设备通道**这一层：让「续不上」时能看到**具体**原因，让隧道掉线**自己恢复**，
+并让设备换了 RemotePairing 端口后**自己找回**。
+不改签名、不改描述文件、不改安装包 —— 判据与行为都不放松。
+
+## 一、通道失败不再只说「超时 / 网络不可达 / 无设备」
+
+- **现象**：续签 / 安装失败时，提示永远是同一句「设备连接失败（超时、网络不可达或无设备）」。
+  但「**LocalDevVPN 没开**」和「**设备没响应**」是两种完全不同的下一步动作 ——
+  前者要去打开 LocalDevVPN，后者要去检查手机解锁与 Wi-Fi。用户拿到的却是一句无法行动的笼统话。
+- **根因**：Seal 用的就绪判据只有 `Minimuxer.ready() -> Bool` —— 一个**布尔值**，
+  失败时「为什么失败」在返回的那一刻就丢了。而上游 `SideStore/minimuxer` 的判据
+  `isReady(...)` 返回的是**带原因的结果**（配对没加载 / 没启动 / 没有 VPN / 不可达 / 没有设备 / muxer 没监听）。
+- **修复**：把上游那条**带原因**的判据补进来（`MinimuxerReadyVerdict`），
+  **判定与顺序一字不改**（`readyVerdict().isReady` 与 `ready()` 完全等价，原因全部来自原本就要算的布尔量
+  ⇒ 没有新增探测、也没有新增等待）。Seal 侧新增纯函数 `ChannelReadinessPolicy` 把原因翻成可判读类别，
+  安装入口改走**带原因的门禁**：
+  - 「VPN 接口还没出现」⇒ `SEAL-INSTALL-701`「LocalDevVPN 未就绪」；
+  - 「接口在、端口不可达」⇒ `SEAL-INSTALL-710`「无法经本地隧道连到设备」；
+  - 「隧道通、设备不在列表」⇒ `SEAL-INSTALL-708`「设备未响应」；
+  - 「保活心跳已断」⇒ 单独文案（会话已中断、需要重建连接）。
+  分类**只允许一份**（`ChannelReadinessPolicy`），通道里不再另抄一张表。
+
+【验证】把 LocalDevVPN 关掉再续签 ⇒ 提示应是「LocalDevVPN 未就绪」而不是「设备未响应」；
+开着 VPN、手机锁屏离线再续签 ⇒ 应是「设备未响应」。
+
+## 二、隧道掉线自动重建连接（不再「重试三次都撞同一个死会话」）
+
+- **现象**：安装 / 上传中途隧道掉线后，重试三次都失败 —— 而且三次**撞的是同一条已死的会话**。
+- **根因**：通道复用一条**缓存会话**（900 秒窗口）。掉线后 `Minimuxer.reset()` 拆的是 **Rust 侧**会话，
+  但 `start()` 复用的是**通道自己的 Swift 侧缓存**（`cachedDeviceIdentifier` / `lastSuccessfulStart`）
+  ⇒ 缓存没清，下一次 `start()` 在窗口内**直接还回那个已作废的 UDID**，重试自然一直撞死会话。
+- **修复**：① 新增纯函数 `DeviceChannelVPNDropPolicy`（移植上游 `isVPNDrop` 思路），
+  识别 `broken pipe` / `connection reset` / `early eof` 这类**传输层对端消失**的错误
+  （刻意**不含** `ApplicationVerificationFailed` / `No space left` 这类设备语义错误，否则失去区分度）；
+  ② 通道内每次 `Minimuxer.reset()` 之后**必须连 Swift 侧会话缓存一起作废**；
+  ③ 观测到掉线时立刻作废缓存并留痕 `SEAL-VPN-003`（**警告级**）。
+
+【验证】安装中途掉线后重试 ⇒ 日志里应出现 `SEAL-VPN-003`，且下一次操作**重建**连接（而非复用旧会话）。
+
+## 三、RemotePairing 端口自愈（「隧道明明通、就是连不上」）
+
+- **现象**：LocalDevVPN 通、隧道也通，但续签 / 安装**始终**连不上设备；重试多少轮都一样。
+- **根因**：Seal 把 RemotePairing 服务端口**硬编码**成 49152（`MuxerConstants.rsdPort`），
+  而 iOS **不保证** `_remotepairing._tcp` 挂在这个端口上 ⇒ 设备侧守护进程换端口之后，
+  就变成「隧道通、这个端口不通」，而每一轮重试都撞同一个死端口。
+- **修复**（对齐上游 SideStore `MinimuxerWrapper` 的「失败后经 Bonjour 重查端口、变了就换」）：
+  ① 新增纯函数 `RemotePairingPortPolicy`，只在**端口不对同义**的那一类失败上触发重查
+  （就绪失败码 `SEAL-INSTALL-710`，或 `connection refused` / `no route to host` / `connection timed out`
+  这类**端口层**原文；**显式集合**，不用数字区间 —— 否则 `709`「安全握手未完成」也会被算进来）；
+  ② 新增 `RemotePairingPortDiscovery`，经 Bonjour 并发浏览 `_remotepairing._tcp` 系列取端口
+  （`project.yml` 已声明 `NSBonjourServices`；缺它 `NWBrowser` **不报错、只是永远没有结果**）；
+  ③ 通道在**两处**接线（诊断失败后 / 安装失败后），且换端口**赶在 `reset()` 之前** ——
+  否则重建后的那一轮仍撞旧端口；④ 发现到**不同**端口才采纳（同步给 Rust 侧并作废按旧端口建的 RSD 缓存），
+  端口没变则什么都不做，留痕 `SEAL-VPN-004`（**警告级**）。
+
+【验证】设备换了 RemotePairing 端口后续签 ⇒ 日志里应出现 `SEAL-VPN-004`，且本轮**换端口后**能连上
+（而不是一直撞旧端口）。
+
 # 1.3.26 续签不再被一次通道抖动毒掉 + 修「Lara 这类越狱工具装完一打开就闪退」
 
 这一版修两件事：一件让 profile-only（只换描述文件）续签「一次超时就成片失败」不再发生，

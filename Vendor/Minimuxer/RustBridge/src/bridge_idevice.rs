@@ -424,6 +424,16 @@ pub extern "C" fn rust_bridge_idevice_invalidate_rsd_connection() {
     crate::idevice_support::rsd::invalidate_rsd_connection();
 }
 
+/// 写入 Bonjour 发现的 RemotePairing 服务端口（Swift 侧发现后调用）。
+/// `0` 视为无效值直接忽略 —— 端口不能为 0。
+#[no_mangle]
+pub extern "C" fn rust_bridge_idevice_set_remote_pairing_port(port: u16) {
+    if port == 0 {
+        return;
+    }
+    crate::idevice_support::rsd::set_remote_pairing_port(port);
+}
+
 #[no_mangle]
 pub extern "C" fn rust_bridge_idevice_mount_personalized_ddi(
     image_ptr: *const u8,

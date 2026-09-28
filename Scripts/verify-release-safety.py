@@ -7403,9 +7403,21 @@ def main():
          "                if let application = applications[mappedBundleID] {",
          "                if let application = applications[originalBundleID] {",
          "R24b: Phase 1 的 applications 查询必须用 mapped ID"),
-        # 把 App Group 分配退回「直接请求」（去掉 withSessionRecovery 包裹）或重新加回免费闸门。
+        # 把 App Group 分配退回「直接请求」（去掉 withSessionRecovery 包裹）或重新加回免费闸门；
+        # 降级跳过（`if updated.downgradedToEmptyEntitlements == false`）也必须保留，
+        # 否则 3001 降级（feature 未启用）后再调 assign 端点会被 Apple 1200 拒。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "                        try await withSessionRecovery(\"分配 App Group \\(mappedBundleID)\") {\n"
+         "                        if updated.downgradedToEmptyEntitlements == false {\n"
+         "                            try await withSessionRecovery(\"分配 App Group \\(mappedBundleID)\") {\n"
+         "                                try await assignAppGroups(\n"
+         "                                    appID: appID,\n"
+         "                                    application: application,\n"
+         "                                    team: team,\n"
+         "                                    session: session\n"
+         "                                )\n"
+         "                            }\n"
+         "                        }",
+         "                        if updated.downgradedToEmptyEntitlements == false {\n"
          "                            try await assignAppGroups(\n"
          "                                appID: appID,\n"
          "                                application: application,\n"
@@ -7413,12 +7425,6 @@ def main():
          "                                session: session\n"
          "                            )\n"
          "                        }",
-         "                        try await assignAppGroups(\n"
-         "                            appID: appID,\n"
-         "                            application: application,\n"
-         "                            team: team,\n"
-         "                            session: session\n"
-         "                        )",
          "R24: 分配 App Group（免费付费都走"),
         # ── R25：同步阻塞 FFI 的每一处等待都要有界（2026-09-17 审计）──
         # 把设备核验退回「只 Task.detached、无超时」：死会话上它会永久阻塞。

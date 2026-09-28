@@ -5,6 +5,35 @@
 
 ---
 
+## 2026-09-29 免费账号签 LiveContainer：3001（参数无效）→ 降级后再撞 1200（未启用 App Group）（1.3.34）
+
+- **现象**（真机，1.3.33 构建 68）：放开三处免费闸门后，免费账号重签 LiveContainer 仍失败。
+  Apple 先返 **3001**（`provided parameters are invalid`）；Seal 走空能力降级重发成功后，紧接着
+  `assignAppGroups` 又撞 **1200**（`Application Group feature should be enabled before associating`）。
+  ⇒ App Group 依旧没签进去，多任务仍不可用。
+- **根因**（逐文件读上游 + AltSign 源码，非网上搜索）：
+  ① **3001**：`updateFeatures` 把 `updated.entitlements = filteredEntitlements`（app-groups 数组、
+  increased-memory-limit 等值）写进 App ID，AltSign 的 `update`（`ALTAppleAPI+Operations.swift`）把这些
+  **entitlements 值**连同 feature 开关一起塞进 `updateAppId.action`。上游 SideStore 的 `updateFeatures`
+  （`FetchProvisioningProfilesOperation.swift:233`）只发 **feature 开关**
+  （`targetFeatures: [ALTFeature: String]`，"true"/"false"），**从不发 entitlements 值**；免费账号两种
+  一起发被 Apple 3001 拒。
+  ② **1200**：3001 降级分支把 App ID 的 feature 清空（App Group 开关并未真正启用），但调用点仍
+  **无条件**执行 `assignAppGroups`（assign 端点）⇒ Apple 判「先启用 App Group 再关联」而 1200 拒。
+- **修复**：
+  ① `updateFeatures` 改为只发 feature 开关（`"true"/"false"`），不再写 `updated.entitlements`
+  （`copy()` 后本就是空字典，AltSign `update` 于是只提交开关）；补 `featureEnabled` 纯函数对齐
+  SideStore 的 isEnabled 判据（数组非空 / 布尔取值 / 默认开）。
+  ② `assignAppGroups` 调用点包一层 `if updated.downgradedToEmptyEntitlements == false` —— 降级后
+  跳过，避免 1200；正常路径（feature 已启用）零影响。
+- **涉及文件**：`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、
+  `Scripts/verify-release-safety.py`（R24 变异锚点同步缩进 + 降级跳过注释）、
+  `docs/upstream-alignment.md`、`DEBUG_LOG.md`、`RELEASE_NOTES.md`、`project.yml`。
+- **验证状态**：⏳ CI 编译 + 真机回归待做。
+  真机验收：免费账号重签 LiveContainer，不再 3001/1200，诊断页 `App Group 可访问` 变「是」、多任务可用。
+
+---
+
 ## 2026-09-29 免费账号签名被剥掉 App Group ⇒ LiveContainer 多任务不可用（1.3.33）
 
 - **现象**（真机诊断页 + 样本取证）：Seal 免费账号签出的 LiveContainer（3.8.10，Bundle `com.kdt.livecontainer.seal.CT8QZ7352B`）

@@ -2354,13 +2354,19 @@ actor ApplePortalSigningService {
                         }
                         // 免费账号与付费账号同样分配 App Group（对齐 SideStore 上游：`Feature.freeFeatures`
                         // 含 `.appGroups`，`updateAppGroups` 对免费账号无条件执行）。
-                        try await withSessionRecovery("分配 App Group \(mappedBundleID)") {
-                            try await assignAppGroups(
-                                appID: appID,
-                                application: application,
-                                team: team,
-                                session: session
-                            )
+                        // ⚠️ 但若上面 updateFeatures 已按空能力降级（3001），App Group 的 feature
+                        // 开关并未真正启用 —— 此时再调 assign 端点会被 Apple 1200 拒
+                        //（"Application Group feature should be enabled before associating"）、
+                        // 且 1200 不归「参数无效」降级分支管 ⇒ 直接跳过分配，跟着上面把请求集清空即可。
+                        if updated.downgradedToEmptyEntitlements == false {
+                            try await withSessionRecovery("分配 App Group \(mappedBundleID)") {
+                                try await assignAppGroups(
+                                    appID: appID,
+                                    application: application,
+                                    team: team,
+                                    session: session
+                                )
+                            }
                         }
                     } catch where mappedBundleID != mappedMainBundleID {
                         // 扩展降级：清空 features，用空 entitlements 继续签名
@@ -2619,15 +2625,20 @@ actor ApplePortalSigningService {
             from: application,
             team: team
         )
+        // 对齐 SideStore `updateFeatures`：updateAppId 只发 feature 开关（"true"/"false"），
+        // 绝不把 entitlements 值（app-groups 数组、increased-memory-limit 等）一起打包进去。
+        // AltSign 旧框架的 `update` 会额外把 `appID.entitlements` 塞进 `entitlements` 参数，
+        // 免费账号被 Apple 3001 拒（provided parameters are invalid）即源于此；
+        // App Group 的实际 group 分配走后面单独的 `assignAppGroups`（assign 端点）。
         var features: [ALTFeature: Any] = [:]
         for (entitlement, value) in filteredEntitlements {
             if let feature = ALTFeature(entitlement: entitlement) {
-                features[feature] = value
+                features[feature] = Self.featureEnabled(value) ? "true" : "false"
             }
         }
         if let groups = filteredEntitlements[.appGroups] as? [String],
            groups.isEmpty == false {
-            features[.appGroups] = true
+            features[.appGroups] = "true"
         }
 
         // If there is nothing Apple needs to toggle, keep the existing App ID as-is.
@@ -2645,7 +2656,9 @@ actor ApplePortalSigningService {
             )
         }
         updated.features = features
-        updated.entitlements = filteredEntitlements
+        // `updated.entitlements` 保持 `copy()` 后的空字典 —— 不再把 entitlements 值塞给 Apple，
+        // 这正是免费账号 3001 的根因（见上方注释）。App Group 由 `APG3427HIY` 开关启用，
+        // 具体 group 的绑定由 `assignAppGroups` 单独走 assign 端点完成。
         do {
             return (try await submitUpdatedAppID(updated, team: team, session: session), false)
         } catch {
@@ -2729,6 +2742,17 @@ actor ApplePortalSigningService {
         return nsError.code == 3001
             || normalized.contains("3001")
             || normalized.contains("provided parameters are invalid")
+    }
+
+    /// 对齐 SideStore `updateFeatures` 的 isEnabled 判据：数组看是否非空、布尔取值、其余默认开。
+    private static func featureEnabled(_ value: any Sendable) -> Bool {
+        if let bool = value as? Bool {
+            return bool
+        }
+        if let array = value as? [Any] {
+            return array.isEmpty == false
+        }
+        return true
     }
 
     private func assignAppGroups(

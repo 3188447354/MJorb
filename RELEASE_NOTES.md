@@ -1,3 +1,36 @@
+# 1.3.34 免费账号签 LiveContainer 真正跑通：App Group 只发开关、降级不再撞 1200
+
+1.3.33 放开了免费账号的 App Group 闸门，但真机一签还是失败：Apple 先回 **3001（参数无效）**，
+Seal 空能力降级后又回 **1200（未启用 App Group 就关联）**，App Group 依旧没签进去。这一版把
+两枪都修掉，对齐上游 SideStore 的提交方式：更新 App ID 时**只发 feature 开关**（`APG3427HIY: true`），
+**不再把 entitlements 的原始值一起打包**（那正是免费账号 3001 的根因）；并且一旦能力被 Apple 判
+无效而降级，就**跳过 App Group 分配**，不再撞 1200。
+
+## 一、现象（真机，1.3.33 构建 68）
+
+- 免费账号重签 LiveContainer，Apple 先返 3001 `provided parameters are invalid`；Seal 按空能力
+  重发成功后，紧接着分配 App Group 又返 1200 `Application Group feature should be enabled
+  before associating` ⇒ 多任务仍不可用。
+
+## 二、根因
+
+- **3001**：Seal 把 `updated.entitlements`（app-groups 数组、increased-memory-limit 等值）写进
+  App ID，AltSign 旧框架的 `update` 把这些 entitlement 值连同 feature 开关一起提交 `updateAppId`。
+  上游 SideStore 只发 feature 开关（`[ALTFeature: String]`，"true"/"false"），**从不发 entitlements 值**。
+- **1200**：3001 降级后 App ID 的 feature 被清空（App Group 开关并未启用），但 Seal 仍无条件执行
+  `assignAppGroups`（assign 端点）⇒ Apple 要求先启用 App Group 再关联。
+
+## 三、修复
+
+- `updateFeatures` 改为只发 feature 开关（"true"/"false"），不再写 `updated.entitlements`；
+  App Group 由 `APG3427HIY` 开关启用，具体 group 绑定走单独的 assign 端点。
+- `assignAppGroups` 调用点加 `if updated.downgradedToEmptyEntitlements == false`，降级后跳过，
+  避免 1200；正常路径零影响。
+
+- 【验证】免费账号重签 LiveContainer 后，不再 3001/1200，诊断页 `App Group 可访问` 变「是」，多任务可用。
+
+---
+
 # 1.3.33 免费账号也能用 App Group：修复 LiveContainer 类多任务应用签了打不开
 
 免费账号签名时，Seal 会把应用里的 App Group（应用组）能力整条剥掉 —— 这会让**依赖 App Group

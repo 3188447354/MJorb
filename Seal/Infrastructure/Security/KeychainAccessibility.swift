@@ -34,7 +34,10 @@ enum SealKeychainServices {
 /// 那是为了让它的 App 与 App Extension 共享账号；Seal 只跟「可访问性」这一半，
 /// **不跟**同步那一半（对照台账见 `docs/upstream-alignment.md`）。
 enum SealKeychainAccessibility {
-    static let value: CFString = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    /// `nonisolated(unsafe)` 的理由：这是 Security 框架导出的**不可变** `CFString` 常量，
+    /// 只被读、从不被改；`CFString` 本身未标 `Sendable`，Swift 6 严格并发下静态存储会报
+    /// 「非 Sendable 类型可能有共享可变状态」。这里没有可变状态需要保护，故按常量放行。
+    nonisolated(unsafe) static let value: CFString = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 }
 
 /// 单个 service 的迁移结果。

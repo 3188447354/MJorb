@@ -2710,7 +2710,28 @@ actor ApplePortalSigningService {
                ALTFreeDeveloperCanUseEntitlement(entitlement) == false {
                 continue
             }
-            filtered[entitlement] = value
+            // 只保留能通过 `updateAppId` 的 feature 开关提交的能力。`increased-memory-limit` 这类
+            // capability 在 AltSign 里没有 `ALTFeature` 映射（`ALTFeature(entitlement:)` 只映射
+            // appGroups / interAppAudio），无法经门户提交 ⇒ 描述文件里必然没有它 ⇒ 若留在
+            // 「期望授权集」里，签后 `validateEntitlements` 必报 SEAL-ENTITLEMENT-401。
+            // 对齐上游 SideStore：`updateFeatures` 也只对 `ALTFeature(entitlement:)` 能映射到的
+            // 能力做门户提交，其余 capability 直接跳过（签出的包由 SideSign 按描述文件裁剪，自洽）。
+            guard ALTFeature(entitlement: entitlement) != nil else { continue }
+            if entitlement == .appGroups, let groups = value as? [String] {
+                // App Group 的实际 group ID 在 `assignAppGroups` 里经
+                // `bundleIDMapper.appGroupID` 映射成 `group.<original>.seal.<teamID>`，
+                // 描述文件返回的也是映射后 ID。这里若保留原始 ID，签后 `validateEntitlements`
+                // 用「原始请求」对「映射后 profile」必报 SEAL-ENTITLEMENT-402（权限值不一致）。
+                // 必须用同一个映射源，让「请求集」与「描述文件」两侧的 group ID 逐字一致。
+                filtered[entitlement] = groups.map {
+                    signingWorkspace.bundleIDMapper.appGroupID(
+                        original: $0,
+                        teamID: team.identifier
+                    )
+                }
+            } else {
+                filtered[entitlement] = value
+            }
         }
         return filtered
     }

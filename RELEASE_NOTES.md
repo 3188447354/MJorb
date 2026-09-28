@@ -1,3 +1,33 @@
+# 1.3.35 签后校验不再误报 401/402：只保留可提交的能力、App Group ID 与描述文件对齐
+
+1.3.34 修掉了 3001/1200，但签含 App Group 的应用仍会在「描述文件逐 bundle 校验」关卡被
+**SEAL-ENTITLEMENT-401 / 402** 拦下 —— 这两枪是修完 3001/1200 之后才会浮出的下一环。这一版把
+账本对齐签名的真实能力集：只保留能经 Apple 门户 feature 开关提交的能力（App Groups / 
+inter-app-audio），并把 App Group 的 group ID 映射成与描述文件一致的 `group.<x>.seal.<teamID>`。
+
+## 一、现象（代码路径推演）
+
+- 前一轮真机（1.3.33）止步于 3001/1200，还没走到描述文件校验；修完这两枪后，含 App Group 的
+  应用会接着在 `validateEntitlements` 报 **401（权限缺失）** 或 **402（权限值不一致）**。
+
+## 二、根因
+
+- **401**：`filteredAppIDEntitlements` 把 `increased-memory-limit` 等 `ALTFeature` 查不到的能力
+  也塞进「期望授权集」，而这些能力门户根本拿不到 ⇒ 描述文件不带它们 ⇒ 校验报 401。
+- **402**：App Group 的 group ID 在请求集里是原始值，`assignAppGroups` 提交、描述文件返回的却是
+  `bundleIDMapper.appGroupID` 映射后的 ID ⇒「原始」对「映射后」⇒ 校验报 402。
+
+## 三、修复
+
+- `filteredAppIDEntitlements` 加 `guard ALTFeature(entitlement:) != nil else { continue }`，
+  只保留能经门户提交的能力（App Groups / inter-app-audio）。
+- `.appGroups` 值经 `bundleIDMapper.appGroupID` 映射，与 `assignAppGroups`、描述文件两侧 ID 逐字一致。
+- 二者只改「账本」：最终 Mach-O 的 entitlements 仍由上游 SideSign 按描述文件裁剪，不多授不少授。
+
+- 【验证】免费账号重签 LiveContainer 全流程不再 3001/1200/401/402，诊断页「App Group 可访问」变「是」、多任务可用。
+
+---
+
 # 1.3.34 免费账号签 LiveContainer 真正跑通：App Group 只发开关、降级不再撞 1200
 
 1.3.33 放开了免费账号的 App Group 闸门，但真机一签还是失败：Apple 先回 **3001（参数无效）**，

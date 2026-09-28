@@ -34,6 +34,34 @@
 
 ---
 
+## 2026-09-29 签后校验会误报 401/402：filteredAppIDEntitlements 留下非 feature 能力 + App Group 原始 ID 未映射（1.3.35）
+
+- **现象**（代码路径推演，非真机）：1.3.34 修完 3001/1200 后，签含 App Group 的应用仍会在
+  「描述文件逐 bundle 校验」关报 **SEAL-ENTITLEMENT-401 / 402**。前一轮真机（1.3.33 构建 68）止步于
+  3001/1200，还没走到这一步 ⇒ 这两枪是「修完 3001/1200 之后才会浮出的下一环」，不能等真机再撞。
+- **根因**（逐文件读上游 `SideSign/CodeSignerAPI.swift:95-123` + `AltSign/ALTCapabilities.swift`）：
+  上游签名器以**描述文件授权集**为起点生成 Mach-O entitlements、与 app 原始 entitlements 取交集 ⇒
+  **portal 拿不到的能力本就写不进包**。而 `filteredAppIDEntitlements` 却：
+  ① 把 `increased-memory-limit` 等 `ALTFeature(entitlement:) != nil` 判定不过的能力也塞进
+  「期望授权集」⇒ 描述文件不带它们 ⇒ `validateEntitlements` 拿「期望」对「描述文件」必报 **401**；
+  ② App Group 的 group ID 保留**原始**值，而 `assignAppGroups` 用 `bundleIDMapper.appGroupID` 映射成
+  `group.<x>.seal.<teamID>` 才提交、描述文件返回的也是映射后 ID ⇒「原始」对「映射后」⇒ 必报 **402**。
+- **修复**（`filteredAppIDEntitlements` 单点生效，`updateFeatures` / `requestedEntitlements` 同源自洽）：
+  ① 加 `guard ALTFeature(entitlement: entitlement) != nil else { continue }` —— 只保留能经门户
+  feature 开关提交的能力（appGroups / interAppAudio）；
+  ② 对 `.appGroups` 值经 `signingWorkspace.bundleIDMapper.appGroupID(original:teamID:)` 映射，
+  与 `assignAppGroups` 提交、描述文件返回的 ID 逐字一致。
+  ⚠️ 只改「账本」、不碰签名器：最终 Mach-O 的 entitlements 仍由上游 SideSign 按描述文件裁剪 ⇒
+  不会多授/少授任何能力，只是消除误报。
+- **涉及文件**：`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、
+  `Scripts/verify-release-safety.py`（新增 R65⑲ 主守卫 + 两条变异锚点）、
+  `docs/upstream-alignment.md`、`DEBUG_LOG.md`、`RELEASE_NOTES.md`、`project.yml`。
+- **验证状态**：⏳ CI 编译 + 真机回归待做。
+  真机验收：免费账号重签 LiveContainer，全流程不再 3001 / 1200 / 401 / 402，
+  诊断页 `App Group 可访问` 变「是」、`App Group 名` 为映射后 `group.*.seal.<teamID>`、多任务可用。
+
+---
+
 ## 2026-09-29 免费账号签名被剥掉 App Group ⇒ LiveContainer 多任务不可用（1.3.33）
 
 - **现象**（真机诊断页 + 样本取证）：Seal 免费账号签出的 LiveContainer（3.8.10，Bundle `com.kdt.livecontainer.seal.CT8QZ7352B`）

@@ -4294,6 +4294,30 @@ def violations(load=read):
           "R65⑱c: 清空范围的单测必须仍在 ✗ —— 三条缺一不可：共享模式清全部、独立模式只清自己、"
           "结果恒含被降级的那个 bundle（后者防的是「调用方漏传」这种静默退化）")
 
+    # R65⑲: `filteredAppIDEntitlements` 只能保留「能经门户 feature 开关提交」的能力，
+    # 且 `.appGroups` 的 group ID 必须映射成与 `assignAppGroups` / 描述文件逐字一致的 ID
+    #（2026-09-29，LiveContainer 多任务根治的最后一环）。
+    #
+    # ① 只保留 `ALTFeature(entitlement:) != nil` 的能力：AltSign 的 `ALTFeature` 只映射
+    #    appGroups / interAppAudio，`increased-memory-limit` 这类查不到 ⇒ 门户拿不到 ⇒
+    #    描述文件里必然没有 ⇒ 若残留在「期望授权集」，签后 `validateEntitlements` 必报
+    #    SEAL-ENTITLEMENT-401。
+    # ② `.appGroups` 的值是原始 group ID，而 `assignAppGroups` 提交、描述文件返回的却是
+    #    `bundleIDMapper.appGroupID` 映射后的 `group.<x>.seal.<teamID>`。请求集保留原始 ID
+    #    会用「原始」对「映射后」对账 ⇒ 必报 SEAL-ENTITLEMENT-402（权限值不一致）。
+    filtered_fn = section_or_empty(
+        portal,
+        "private func filteredAppIDEntitlements(",
+        "private func submitUpdatedAppID("
+    )
+    check("guard ALTFeature(entitlement: entitlement) != nil else { continue }" in filtered_fn
+          and "if entitlement == .appGroups, let groups = value as? [String] {" in filtered_fn
+          and "signingWorkspace.bundleIDMapper.appGroupID(" in filtered_fn,
+          "R65⑲: filteredAppIDEntitlements 必须只保留能走 feature 开关的能力、且 App Group ID 必须映射 ✗ —— "
+          "不过滤 increased-memory-limit 等非 ALTFeature 能力会让它们残留在期望授权集，签后必报 "
+          "SEAL-ENTITLEMENT-401；App Group 原始 group ID 不映射则请求集与描述文件 ID 不一致，"
+          "签后必报 SEAL-ENTITLEMENT-402")
+
     # R68: **续签的账号判据只能有一份，且必须识别悬空引用**（2026-09-24 构建 34 真机）。
     #
     # 现象（用户报告）：「seal + guoguo + livecontainer 都用同一个 Apple ID，删掉账号再重新
@@ -7426,6 +7450,17 @@ def main():
          "                            )\n"
          "                        }",
          "R24: 分配 App Group（免费付费都走"),
+        # 把 filteredAppIDEntitlements 退回「不过滤 ALTFeature」：increased-memory-limit 等
+        # 非 feature 能力会残留在期望授权集，描述文件不授予它们，签后必报 SEAL-ENTITLEMENT-401。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "            guard ALTFeature(entitlement: entitlement) != nil else { continue }",
+         "            guard ALTFeature(entitlement: entitlement) == nil else { continue }",
+         "R65⑲"),
+        # 把 App Group ID 退回「不映射」：请求集用原始 group ID 对「映射后描述文件」⇒ 402。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "                    signingWorkspace.bundleIDMapper.appGroupID(",
+         "                    signingWorkspace.rawIdentity(",
+         "R65⑲"),
         # ── R25：同步阻塞 FFI 的每一处等待都要有界（2026-09-17 审计）──
         # 把设备核验退回「只 Task.detached、无超时」：死会话上它会永久阻塞。
         #

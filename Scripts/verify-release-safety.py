@@ -3484,14 +3484,33 @@ def violations(load=read):
           and "let wasBackgroundTriggered = consumeBackgroundTriggerFlag()\n"
               "        guard let renewalCoordinator else { return }" in r106_view_model
           and "guard wasBackgroundTriggered else { return }" in r106_view_model
-          and "var shouldNotify: Bool { succeeded > 0 }" in r106_notifier,
-          "R106④: 快捷指令续签通知必须只认「后台点火 + 有成功项」✗ —— "
+          and "var shouldNotify: Bool { total > 0 }" in r106_notifier,
+          "R106④: 快捷指令续签通知必须只认「后台点火 + 有项要续签」✗ —— "
           "① 标记必须在 `runBatchRefresh` **入口**消费并清位（紧跟第一条 `guard` 之前）："
           "本轮有三条**不产生 result** 的出口（`renewalCoordinator` 缺失、抢不到操作锁、"
           "`refreshAll` 直接抛错），只在成功路径清位会让标记**跨轮存活** ⇒ "
           "「快捷指令失败一次、之后手动点续签全部」误发一条本不该有的通知；"
-          "② `shouldNotify` 只看 `succeeded > 0`：全失败 / 全未执行时弹通知既不解决问题、"
-          "又会和「续签成功」这条通知的语义混在一起")
+          "② `shouldNotify` 必须是 `total > 0`（有项要续签就发）："
+          "退回 `succeeded > 0` 会让**全失败那一轮彻底沉默** —— 2026-09-28 真机日志实证"
+          "（18:41:38「共 3，成功 0，失败 3」只留下「按规则不发」，用户什么都没收到），"
+          "而快捷指令续签的全部价值就是「不打开 App 也能续」，静默失败会让用户"
+          "在应用过期那天才发现")
+
+    check("private var hasActiveRenewalWork: Bool {" in r106_view_model
+          and "if self.hasActiveRenewalWork == false {" in r106_view_model
+          and ".blockedByOtherOperation(blocker)" in r106_view_model
+          and ".operationLockTimeout(activeOperationDescription)" in r106_view_model
+          and "notifyBackgroundRenewalSkipped(.roundFailed(title: failure.title))" in r106_view_model
+          and 'code: "SEAL-BACKGROUND-016"' in r106_view_model
+          and "`SEAL-BACKGROUND-016`" in r106_index,
+          "R106⑥: 「本轮未执行 / 整轮失败」通知必须只发**不会自动补上**的三档 ✗ —— "
+          "① 让位给**签名/续签**时**不能**发（那一轮自己会给出结论：后台轮会发通知、"
+          "手动轮用户就在 App 里看着），所以让位那处必须按 `hasActiveRenewalWork` 分流；"
+          "② 让位给**非续签类操作**（导入配对文件 / 管理证书，只占 `activeLease`）"
+          "⇒ 那项操作不续签、没有任何一轮会补上 ⇒ 必须发；"
+          "③ 取操作锁**等满 30 秒**仍没等到 ⇒ 必须发（`alertFailure` 在后台没人看得见）；"
+          "④ 整轮抛错的两个 `catch` 只写 `batchRefreshSession.status` ⇒ 后台用户什么都收不到，"
+          "这是最大的静默口子 ⇒ 必须发；⑤ 该码要登记进 `docs/qa/log-code-index.md`")
 
     check('code: "SEAL-BACKGROUND-015"' in r106_view_model
           and 'code: "SEAL-KEYCHAIN-001"' in r106_access
@@ -9854,10 +9873,10 @@ def main():
          "        backgroundTriggerRequested = false\n",
          "        let requested = backgroundTriggerRequested\n",
          "R106④:"),
-        # ⑤ `shouldNotify` 改成恒真（全失败也弹通知）⇒ R106④ 报红。
+        # ⑤ `shouldNotify` 改成恒假（有项要续签也不发 ⇒ 全失败那一轮彻底沉默）⇒ R106④ 报红。
         ("Seal/Infrastructure/Notifications/BackgroundRenewalNotifier.swift",
-         "var shouldNotify: Bool { succeeded > 0 }",
-         "var shouldNotify: Bool { true }",
+         "var shouldNotify: Bool { total > 0 }",
+         "var shouldNotify: Bool { false }",
          "R106④:"),
         # ⑥ 通知码改名（码表查不到 ⇒ 用户报「没收到通知」时无从判读）⇒ R106⑤ 报红。
         ("Seal/Features/Apps/AppsViewModel.swift",
@@ -9872,6 +9891,11 @@ def main():
          "        guard let renewalCoordinator else { return }\n"
          "        let wasBackgroundTriggered = consumeBackgroundTriggerFlag()\n",
          "R106④:"),
+        # ⑧ 让位分流判据翻面（让位给续签也发「未执行」⇒ 与那一轮自己的结论重复）⇒ R106⑥ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "if self.hasActiveRenewalWork == false {",
+         "if self.hasActiveRenewalWork == true {",
+         "R106⑥:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

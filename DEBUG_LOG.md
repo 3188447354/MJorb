@@ -5,6 +5,36 @@
 
 ---
 
+## 2026-09-28 快捷指令续签「全失败」那一轮什么都没发 —— 通知判据 `succeeded > 0` 把失败吞了（1.3.32）
+
+- **现象**（用户真机，1.3.31）：快捷指令在后台续签，日志记「续签完成：共 3，成功 0，失败 3」
+  （逐项 `NSURLErrorDomain -1001`，Apple 服务器超时），紧接着一句
+  「本轮没有成功续签的项，按规则不发」⇒ **用户什么通知都没收到**，以为续签成功了。
+- **根因**：1.3.31 的通知判据是 `BackgroundRenewalNotificationResult.shouldNotify == (succeeded > 0)`。
+  这条判据本身是「只报喜」的思路，与「快捷指令续签的全部价值 = 不打开 App 也能知道结果」直接冲突 ——
+  失败才是最需要打扰用户的那一半，却被判据整轮吞掉 ✗。
+- **修复**：
+  ① `shouldNotify` 改为 `total > 0`（**有项要续签就发**）—— 全失败 / 全未执行 / 全待核验都会发；
+     标题分四档（完成 / 部分失败 / 失败 / 未完成），正文把四桶一个不少地列出；
+  ② `awaitingConfirmation` 原来**根本没被带进通知**（`AppsViewModel` 组装参数时漏了这个字段）
+     ⇒ 正文「已续签 1/3」看不出另外 2 个是「待核验」，会被误读成失败 ⇒ 补进参数与正文；
+  ③ 新增 `BackgroundRenewalSkippedNotice`，覆盖**本轮根本没跑起来**、且**不会自动补上**的三档：
+     让位给非续签类操作（导入配对文件 / 管理证书，只占 `activeLease`）、取操作锁等满 30 秒、
+     整轮抛错的两个 `catch`（原来只写 `batchRefreshSession.status`，后台没人看得见）；
+  ④ 让位分流判据新增 `hasActiveRenewalWork`（那项操作会不会把应用续完）：让位给**签名 / 续签**
+     **刻意不发**（那一轮自己会给出结论），只发让位给非续签类的那一档。
+- **涉及文件**：`Seal/Infrastructure/Notifications/BackgroundRenewalNotifier.swift`、
+  `Seal/Features/Apps/AppsViewModel.swift`、
+  `SealTests/Notifications/BackgroundRenewalNotificationResultTests.swift`、
+  `docs/qa/log-code-index.md`（`SEAL-BACKGROUND-016`）、
+  `Scripts/verify-release-safety.py`（R106④ 判据改写 ＋ 新增 R106⑥ ＋ 变异 8 条）、
+  `RELEASE_NOTES.md`、`project.yml`（1.3.32）。
+- **验证状态**：⏳ 守卫交 CI 跑（本机不再跑）；CI `swift-regression` 编译与真机回归待做。
+  真机验收：快捷指令续签**全失败也收到「Seal 续签失败」通知**；被非续签操作挡住 / 等锁超时 /
+  整轮抛错各收到一条对应通知；Seal 内手动续签始终不发通知。
+
+---
+
 ## 2026-09-28 锁屏下用快捷指令续签：日志说成功、抽屉全红 —— 钥匙串 `WhenUnlocked` 锁屏读不到（1.3.31）
 
 - **现象**：锁屏状态下用快捷指令续签，日志记**成功**，打开 Seal 抽屉里**全是失败**。
@@ -54,6 +84,8 @@
   全失败 / 全未执行**刻意不发**（那属于「用户需要处理」，界面与日志已有引导，弹通知既不解决问题
   又会与「续签成功」的语义混在一起）。用户没给通知权限时**只留日志、不在后台索要权限**
   （`requestAuthorization()` 在后台根本弹不出授权框）。
+  ⚠️ **这一条判据（`succeeded > 0`）已在 1.3.32 被真机推翻** —— 全失败那一轮彻底沉默，
+  见本文件顶部同名条目。
 - **涉及文件**：`Seal/Infrastructure/Security/KeychainAccessibility.swift`（新）、
   `Seal/Infrastructure/Notifications/BackgroundRenewalNotifier.swift`（新）、
   `Seal/Infrastructure/Security/KeychainVault.swift`、`Seal/Infrastructure/Accounts/AnisetteProvisioningStore.swift`、

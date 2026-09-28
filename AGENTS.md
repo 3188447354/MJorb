@@ -36,8 +36,14 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
 - **最小改动**：只改目标所需，不顺手重构；根因修完即停。
 - **根因不绕绕**：从真机日志定位根因再改，禁止 `--no-verify` 类绕行；现象→根因→修复→回归闭环。
 - **大包内存纪律**：500MB+ 只流式处理（`unzipItem` 等），禁止整块载入内存。
-  注意还有两条**未走流式**的历史路径：`AppFileStore.extractNestedIPAIfNeeded`（嵌套包整份进内存）、
-  `IPAParserService` 为读 Mach-O 头而 `extract` 整个主二进制 —— 改到它们时顺手改掉。
+  ✅ 两条历史遗留的非流式路径**已于 2026-09-28 逐行复核，确认都已改成流式**（旧记录称
+  「改到它们时顺手改掉」，现已不成立，别再照旧记录去「顺手修」）：
+  ① `AppFileStore.extractNestedIPAIfNeeded` 走 `archive.extract(_:to:)` 直接落盘
+     （旧写法是 `Data` + `reserveCapacity(uncompressedSize)`，而 `uncompressedSize` 是包内
+     **自填值** ⇒ 500MB+ 包选完即被 jetsam 杀掉）；
+  ② `IPAParserService.isEncryptedBinary` 只流式读**主二进制前 4KB** 判 Mach-O 头
+     （`archive.extract(entry) { chunk in if binaryData.count < 4096 { append } }`），
+     不再 `extract` 整个主二进制。两条都有源码守卫（`nestedData` 不得出现于 parser 等）。
 - **错误码规范**：一律 `ImportFailure(title/reason/recovery/code)`，code 用 `SEAL-<模块>-<类别><序号>`，
   唯一且带可恢复引导。改动错误分类前先跑 `Scripts/` 里的码清单核对（全仓已有 327 个码 / 29 个模块前缀）。
 - **并发基线**：`Config/Base.xcconfig` 已开 `SWIFT_VERSION = 6.0` + `SWIFT_STRICT_CONCURRENCY = complete`。

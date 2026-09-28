@@ -66,10 +66,12 @@ final class ExpiryNotificationScheduler {
             return
         }
 
-        // ⚠️ 必须把 `leadHours` **传下去**：此前只写 `plans(for:now:)` ⇒ 参数是死的、
-        // 永远按默认 24 小时排期，调用方（`setNotificationsEnabled` 传 `reminderHours`、
-        // `AppsViewModel` 传偏好值）设置的提前量被静默忽略。
-        for plan in planner.plans(for: apps, leadHours: leadHours, now: Date()) {
+        // ⚠️ 排期**恒定**在到期前 24 小时 —— 由 `ExpiryNotificationPlanner` 的规格钉住
+        //（设置页标签写死「提前 24 小时提醒」，`ExpiryNotificationPlannerTests` 断言
+        // 「传入 `leadHours = 144` 时 fireDate 仍是到期前 24 小时」）。`reschedule(leadHours:)`
+        // 的入参是为将来可配置化预留的，**当前不影响**排期 —— 所以这里不把它传给 planner
+        //（传了也是被忽略，反而让读者以为它生效）。要开放配置先改那两处规格。
+        for plan in planner.plans(for: apps, now: Date()) {
             let content = UNMutableNotificationContent()
             content.title = "Seal 即将到期"
             let time = Self.timeFormatter.string(from: plan.expiryDate)

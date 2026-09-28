@@ -5,6 +5,54 @@
 
 ---
 
+## 2026-09-28 把「通知提前量 `leadHours` 真正生效」当修复改进去 —— 它其实改了**被测试钉住的规格**，CI `swift-regression` 红（**已回退**）
+
+- **现象**：`a64d2b9` 推送后 CI `swift-regression` ✗：`ExpiryNotificationPlannerTests
+  .schedulesSealBeforeExpiration` 报 `Expectation failed: (plans.count → 0) == 1`，**紧接着**
+  进程 `Swift/ContiguousArrayBuffer.swift:692: Fatal error: Index out of range`、`exit code 65`
+  —— 测试在前一条断言失败后仍去取 `plans[0]`，下标越界把整个测试进程打崩。
+  `build-package` ✓、`signer-tests` ✓ —— **又一次只有 `swift-regression` 能暴露**（同 09-28 那条
+  `Int` 传参的教训）。
+- **根因**：`a64d2b9` 把 planner 的 `-24 * 3_600` 改成 `-leadHours * 3_600`（并让 scheduler 传
+  `leadHours`）。但**「提醒恒定排在到期前 24 小时」是规格**，有两处钉住：
+  ① 设置页标签写死「提前 24 小时提醒」（`SettingsRootView`，无 UI 可改该值）；
+  ② `schedulesSealBeforeExpiration` 明确断言「即使传 `leadHours = 144`，`fireDate` 仍是到期前 24 小时」。
+  于是 `leadHours = 144` ⇒ `fireDate` 落在过去 ⇒ 被 `guard requestedFireDate > now` 滤掉 ⇒ `count == 0`。
+- **为什么当初会改错**：看到 `planner.plans(for:now:)` 没传 `leadHours`、`NotificationPreferences
+  .leadHours` 又确实读写 UserDefaults，就断定「参数是死的 ⇒ 修它」。但**「偏好能存取」与「排期用不用它」
+  是两条独立不变量**：前者由 `NotificationPreferencesTests` 覆盖，后者是**被测试钉住的规格**。
+  在没有任何 UI 能改该值的前提下改排期 = **未被要求的行为变更**（AGENTS.md「最小改动 / 不要改没坏的东西」）。
+- **修复**：**回退** —— planner 还原为 `-24 * 3_600`、scheduler 还原为 `plans(for:now:)`；
+  并在两处各留一条**规格说明**注释（写明钉住它的两个位置 ＋「曾改成 `-leadHours * 3_600` 导致
+  CI 红」），防止下次再被「顺手修」。`RELEASE_NOTES.md` §4 由「七处」改回「六处」并删掉该条。
+- **涉及文件**：`Seal/Core/Notifications/ExpiryNotificationPlanner.swift`、
+  `Seal/Infrastructure/Notifications/ExpiryNotificationScheduler.swift`、`RELEASE_NOTES.md`。
+- **验证状态**：⏳ 待 CI `swift-regression` 复验（Windows 本机不编译 Swift）。
+
+---
+
+## 2026-09-28 复核 AGENTS.md §2「两条未走流式的历史路径」——两条其实都已修好（**文档漂移**）
+
+- **现象**：无用户上报。这是**逐行复核** AGENTS.md §2 时发现的**文档漂移**：旧记录写着
+  「注意还有两条**未走流式**的历史路径……改到它们时顺手改掉」，而代码里**两条都已经改了**。
+- **事实核对**（逐行读代码，不凭记录）：
+  ① `AppFileStore.extractNestedIPAIfNeeded`（`AppFileStore.swift:241`）走的是
+     `archive.extract(nestedIPAEntry, to: nestedIPATempURL)` —— **流式落盘**；旧写法是
+     `Data` ＋ `reserveCapacity(uncompressedSize)`，而 `uncompressedSize` 是**包内自填值**
+     ⇒ 500MB+ 嵌套包选完即被 jetsam 杀掉（表现为「点了没反应」）。
+  ② `IPAParserService.isEncryptedBinary`（`IPAParserService.swift:439`）用
+     `archive.extract(entry) { chunk in if binaryData.count < 4096 { binaryData.append(chunk) } }`
+     —— 只流式读**主二进制前 4KB** 判 Mach-O 头，不再 `extract` 整个主二进制。
+- **为什么要改记录**：留着旧记录会让下一次会话去「顺手修」**已经修好的代码**（白工 ＋ 误改
+  既有正确实现的真实风险）。AGENTS.md 明文「冲突时以代码为准，并回来更新本文件」。
+- **修复**：AGENTS.md §2 改为「✅ 已于 2026-09-28 逐行复核，确认都已改成流式」，并写明两个
+  判据的位置与旧错法，避免再被旧记录误导。
+- **涉及文件**：`AGENTS.md`（§2 大包内存纪律）。
+- **验证状态**：✅ 逐行读代码确认两条均已流式；守卫侧另有 `nestedData` **不得**出现于
+  `IPAParserService` 的断言（`verify-release-safety.py`），本次未新增守卫（属文档同步，不改行为）。
+
+---
+
 ## 2026-09-28 CI `swift-regression` 编译失败：新测试把 `Int` 传给了 `TimeInterval`（守卫 PASS 也拦不住）
 
 - **现象**：`a64d2b9`（1.3.29）推送后 CI **`build-package` ✓、`signer-tests` ✓，只有

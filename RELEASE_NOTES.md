@@ -1,7 +1,7 @@
 # 1.3.29 批量续签重试也重建设备通道 + 已安装列表剩余天数显示「7 天」
 
 这一版把**批量 / 后台续签的重试**补齐成与单签**同源**的一处恢复动作（这是「快捷指令 /
-手动续签整轮全失败」的直接原因），另修**七处稳健性、一处证书导出安全问题**与两处显示问题。
+手动续签整轮全失败」的直接原因），另修**六处稳健性、一处证书导出安全问题**与两处显示问题。
 不改签名算法、不改描述文件申请、不改安装包，判据与安全边界都不放松。
 
 ## 一、批量续签重试前重建「设备通道」（与单签同源，根治「重试三次全撞同一个死会话」）
@@ -40,7 +40,7 @@
 用户反馈「圆环过大、动效朴素」：直径 50→38、线宽 5→3.5，描边改**渐变色**；进度确定时补一层
 平滑推进动画，不确定态用**两段反向旋转的弧**（比单段更像「在推进」）。
 
-## 四、同批稳健性修复（七处）
+## 四、同批稳健性修复（六处）
 
 - **安装失败取词与终端判定同源**：`MinimuxerInstallChannel.installationFailure` 改用
   `errorDetail`（`ImportFailure` 取 `reason`，其余走 `diagnostic`）—— 旧实现用 `diagnostic`
@@ -58,9 +58,6 @@
 - **日志导出也过脱敏**：`SealLogStore.exportText()`（= 镜像到 Documents 的 `Seal-log.txt`）
   对缓存条目再脱敏一次 —— `append` 只保证**新写入**的那份已脱敏，升级前遗留的未脱敏 JSON
   会被原样读进缓存后原样导出（公开仓库即泄露开发者账号）。
-- **到期提醒的提前量真正生效**：`ExpiryNotificationScheduler` 此前只调
-  `planner.plans(for:now:)`，**没把 `leadHours` 传下去** ⇒ 参数是死的、永远按默认 24 小时排期，
-  调用方设置的提前量被静默忽略。
 - **隧道掉线判定取词同源**：`DeviceChannelVPNDropPolicy` 改用
   `MinimuxerInstallChannel.errorDetail`（而非 `NSError.localizedDescription`）—— 后者对
   `MinimuxerError.InstallApp(deviceError)` 只剩一句泛化文案，`Broken pipe` /

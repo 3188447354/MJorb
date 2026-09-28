@@ -1,3 +1,32 @@
+# 1.3.33 免费账号也能用 App Group：修复 LiveContainer 类多任务应用签了打不开
+
+免费账号签名时，Seal 会把应用里的 App Group（应用组）能力整条剥掉 —— 这会让**依赖 App Group
+的应用**（如 LiveContainer 的免 JIT 多任务、内置 SideStore）签出来**多任务打不开**。这一版
+对齐上游 SideStore：免费账号和付费账号一样保留并申请 App Group。不改证书、不改安装、不改描述
+文件校验，只放开一处免费能力过滤；**对不含 App Group 的普通应用零影响**。
+
+## 一、现象（真机诊断页 + 样本取证三证合一）
+
+- LiveContainer 免 JIT 诊断页显示 `App Group 名 = Unknown`、`App Group 可访问 = 否`，
+  而证书五项全正常 ✗ ⇒ 多任务与内置 SideStore 不可用。
+- 源 IPA 主 App 与 3 个扩展都声明了 `application-groups`，但 Seal 签出的包里这条能力
+  完全消失、描述文件只剩 4 项。
+
+## 二、根因
+
+免费账号有三处能力闸门把 App Group 整条剥掉（过滤 / 开关 / 分配）。但 **App Group 不是付费
+能力** —— 上游 SideStore 明确把它放进免费账号可用清单（`freeFeatures`），并对免费账号
+**无条件**申请 App Group（`updateAppGroups`）。
+
+## 三、修复
+
+放开三处闸门：免费账号与付费账号同样保留并分配 App Group。对不含 App Group 的普通应用零影响
+（分配前先判空、为空直接跳过）。
+
+- 【验证】免费账号重签 LiveContainer 后，诊断页 App Group 变为「可访问」，多任务可用。
+
+---
+
 # 1.3.32 快捷指令续签「没成」也要说一声：补齐失败与未执行的通知
 
 1.3.31 只发「续签成功」的通知，**失败那一轮反而彻底沉默** —— 而快捷指令续签的全部价值

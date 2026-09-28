@@ -2352,18 +2352,15 @@ actor ApplePortalSigningService {
                                         : "")
                             )
                         }
-                        if team.type != .free {
-                            // 同上：App Group 的分配也是 per-bundle-ID 的门户写入（付费账号才走）。
-                            // 免费账号走不到这里，所以它不是「只有抖音签不上」的成因，
-                            // 但同一条「遇 1100 就退避」的规则不该只落在免费路径上。
-                            try await withSessionRecovery("分配 App Group \(mappedBundleID)") {
-                                try await assignAppGroups(
-                                    appID: appID,
-                                    application: application,
-                                    team: team,
-                                    session: session
-                                )
-                            }
+                        // 免费账号与付费账号同样分配 App Group（对齐 SideStore 上游：`Feature.freeFeatures`
+                        // 含 `.appGroups`，`updateAppGroups` 对免费账号无条件执行）。
+                        try await withSessionRecovery("分配 App Group \(mappedBundleID)") {
+                            try await assignAppGroups(
+                                appID: appID,
+                                application: application,
+                                team: team,
+                                session: session
+                            )
                         }
                     } catch where mappedBundleID != mappedMainBundleID {
                         // 扩展降级：清空 features，用空 entitlements 继续签名
@@ -2628,8 +2625,7 @@ actor ApplePortalSigningService {
                 features[feature] = value
             }
         }
-        if team.type != .free,
-           let groups = filteredEntitlements[.appGroups] as? [String],
+        if let groups = filteredEntitlements[.appGroups] as? [String],
            groups.isEmpty == false {
             features[.appGroups] = true
         }
@@ -2699,9 +2695,6 @@ actor ApplePortalSigningService {
             }
             if team.type == .free,
                ALTFreeDeveloperCanUseEntitlement(entitlement) == false {
-                continue
-            }
-            if team.type == .free, entitlement == .appGroups {
                 continue
             }
             filtered[entitlement] = value

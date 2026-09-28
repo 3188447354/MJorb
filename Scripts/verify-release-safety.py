@@ -1293,7 +1293,7 @@ def violations(load=read):
          "创建证书 —— 它是整条流程里第一个真正落到 Apple 侧的变更，最容易撞上限流；"
          "漏掉它会让限流被误报成「账号需要重新验证」"),
         ('withSessionRecovery("分配 App Group \\(mappedBundleID)")',
-         "分配 App Group（付费账号才走，但同一条规则不该只落在免费路径上）"),
+         "分配 App Group（免费付费都走，对齐 SideStore freeFeatures）"),
         ('withSessionRecovery("读取 App ID 列表", retriesOnTimeout: true)',
          "读取 App ID 列表（Phase 1 的**第一个**请求；2026-09-18 真机：它撞上 1100 时"
          "会直接让整轮签名失败，而失败点排在名额诊断之前 ⇒ 日志里连走到哪一步都看不出）"),
@@ -4277,7 +4277,7 @@ def violations(load=read):
     downgrade_body = section_or_empty(
         portal_source,
         "if updated.downgradedToEmptyEntitlements {",
-        "if team.type != .free {"
+        "try await withSessionRecovery(\"分配 App Group"
     )
     check("let affectedBundleIDs = AppExtensionProfileStrategy.affectedBundles(" in downgrade_body
           and "for affectedBundleID in affectedBundleIDs {" in downgrade_body
@@ -7403,23 +7403,23 @@ def main():
          "                if let application = applications[mappedBundleID] {",
          "                if let application = applications[originalBundleID] {",
          "R24b: Phase 1 的 applications 查询必须用 mapped ID"),
-        # 把 App Group 分配退回「直接请求」：同一条规则不该只落在免费路径上。
+        # 把 App Group 分配退回「直接请求」（去掉 withSessionRecovery 包裹）或重新加回免费闸门。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "                            try await withSessionRecovery(\"分配 App Group \\(mappedBundleID)\") {\n"
-         "                                try await assignAppGroups(\n"
-         "                                    appID: appID,\n"
-         "                                    application: application,\n"
-         "                                    team: team,\n"
-         "                                    session: session\n"
-         "                                )\n"
-         "                            }",
+         "                        try await withSessionRecovery(\"分配 App Group \\(mappedBundleID)\") {\n"
          "                            try await assignAppGroups(\n"
          "                                appID: appID,\n"
          "                                application: application,\n"
          "                                team: team,\n"
          "                                session: session\n"
-         "                            )",
-         "R24: 分配 App Group（付费账号才走"),
+         "                            )\n"
+         "                        }",
+         "                        try await assignAppGroups(\n"
+         "                            appID: appID,\n"
+         "                            application: application,\n"
+         "                            team: team,\n"
+         "                            session: session\n"
+         "                        )",
+         "R24: 分配 App Group（免费付费都走"),
         # ── R25：同步阻塞 FFI 的每一处等待都要有界（2026-09-17 审计）──
         # 把设备核验退回「只 Task.detached、无超时」：死会话上它会永久阻塞。
         #

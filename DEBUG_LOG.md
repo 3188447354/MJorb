@@ -5,6 +5,30 @@
 
 ---
 
+## 2026-09-29 免费账号签名被剥掉 App Group ⇒ LiveContainer 多任务不可用（1.3.33）
+
+- **现象**（真机诊断页 + 样本取证）：Seal 免费账号签出的 LiveContainer（3.8.10，Bundle `com.kdt.livecontainer.seal.CT8QZ7352B`）
+  在「免 JIT 模式诊断」页显示 `App Group 名 = Unknown`、`App Group 可访问 = 否`；证书五项全正常（团队 CT8QZ7352B 匹配、有效期至 2027）⇒ 多任务与内置 SideStore 均不可用。
+- **根因**（三证合一）：源 IPA（3.8.8 单独版）主 App + 3 个扩展都声明了
+  `com.apple.security.application-groups = [group.com.SideStore.SideStore, group.com.rileytestut.AltStore]`
+  ＋ `increased-memory-limit` ＋ healthkit；Seal 签出的产物这三样**全无**、profile 只剩 4 键。
+  `ApplePortalSigningService.swift` 三处免费闸门剥掉 App Groups：
+  ① `filteredAppIDEntitlements` 里 `if team.type == .free, entitlement == .appGroups { continue }` 直接丢弃；
+  ② `updateFeatures` 里 `team.type != .free` 才 toggle `features[.appGroups] = true`；
+  ③ `assignAppGroups` 调用点 `team.type != .free` 才执行。
+  （`increased-memory-limit` 是白名单放行后被 Apple 3001 拒 → 降级清空，本日志 2026-09-24 已记，非本次；healthkit 不在免费白名单，本就不该免费拿。）
+- **修复**：放开三处闸门 —— 免费账号与付费账号同样保留/分配 App Group（对齐 SideStore 上游
+  `Feature.freeFeatures` 含 `.appGroups`、`updateAppGroups` 无条件执行）。对无 App Group 的普通应用零影响
+  （`assignAppGroups` 内 `guard originalGroups.isEmpty == false else { return }` 直接空转）。
+- **涉及文件**：`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、
+  `docs/upstream-alignment.md`、`DEBUG_LOG.md`。
+- **验证状态**：⏳ CI 编译 + 真机回归待做。
+  真机验收：免费账号重签 LiveContainer，诊断页 `App Group 可访问` 变「是」、`App Group 名` 不再是 Unknown；多任务可用。
+  ⚠️ 唯一未验证事实：免费账号 `addAppGroup`/`assign` 是否被 Apple 接受 —— 若被拒，`assignAppGroups`
+  会 throw（与上游一致硬失败），届时再决定回退或仿 3001 降级兜底。
+
+---
+
 ## 2026-09-28 快捷指令续签「全失败」那一轮什么都没发 —— 通知判据 `succeeded > 0` 把失败吞了（1.3.32）
 
 - **现象**（用户真机，1.3.31）：快捷指令在后台续签，日志记「续签完成：共 3，成功 0，失败 3」

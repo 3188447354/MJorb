@@ -5,6 +5,45 @@
 
 ---
 
+## 2026-09-28 「Wi-Fi 与 LocalDevVPN 都连了」仍签名 / 续签失败：RSD 端口变了却被误报成 708，端口自愈永不触发（1.3.29 续）
+
+- **现象**：用户**做对了操作**（Wi-Fi ＋ LocalDevVPN 都连上），签名 / 续签 / 配对校验仍失败，
+  报 `SEAL-INSTALL-708`「设备未响应」；重试多少轮都只撞同一个死端口。用户明确要求：
+  **「都连了就必须一定能签名续签，不受任何影响」**。
+- **根因（逐行读真源码，不靠搜索）**：
+  ① iOS 不保证 `_remotepairing._tcp` 挂在固定端口。设备换端口后，
+     `Minimuxer.readyVerdict()` 在 RemotePairing 模式下（`Muxer.isrppairing` 为真）走
+     `testDeviceConnection(ifaddr: "10.7.0.1")`
+     （`Vendor/Minimuxer/Sources/Minimuxer.swift:132-133`），它探测的是**当前 `remotePairingPort`**
+     （同文件 `:284-286`）⇒ 端口不对**必然**返回 `.tunnelUnreachable`。
+  ② 但 `readyDeviceIdentifier()` 用的是**裸 `isReady()`** ⇒ 原因被丢光 ⇒ `lastDiscoveryDetail` 恒空
+     ⇒ 最终失败落到 `discoveryFailure(tunnelReachable: true, detail: nil)`
+     ⇒ 归成 **708**（`deviceNotRespondingFailure`）。
+  ③ 端口自愈只认 **710**（`RemotePairingPortPolicy.reprobeFailureCodes`）⇒ **永不触发** ✗。
+  ④ 配对校验路径（`SettingsViewModel.runInstallChannelCheck`）**直接调 `diagnose()`、不走
+     `start()`** ⇒ 连 `startOnce` 的外层那次重试都没有 ⇒ 配对页上「都连上了还报错」永远修不好 ✗。
+- **修复**（`MinimuxerInstallChannel.swift`）：
+  ① 新增 `lastReadinessIssueRaw` 记录就绪原因；`readyDeviceIdentifier()` 用 `readinessVerdict()`
+     替换裸 `isReady()`（判定**完全等价**：`readyVerdict().isReady == ready()`，只多出原因）。
+  ② `diagnose()` 诊断循环内接一次端口重查：`readinessFailure` → `RemotePairingPortPolicy
+     .shouldReprobe(failureCode:)` → `reprobeRemotePairingPortIfNeeded`，**让配对校验路径也能自愈**；
+     判据复用唯一那份表，不在通道里再抄一张（本仓反复踩的「两张表同源」坑）。
+  ③ 拿不到设备标识的最终失败据**就绪原因**归码（710 而非 708）；隧道本身不可达时保持 `discoveryFailure`
+     的 701 / 708 判断。
+- **为什么这样就能「都连了就一定成功」**：端口一换 → 就绪报 `.tunnelUnreachable` → 归 710 →
+  当场经 Bonjour 重查端口 → `Minimuxer.setRemotePairingPort` 写新端口，Rust 侧
+  `set_remote_pairing_port`（`Vendor/Minimuxer/RustBridge/src/idevice_support/rsd.rs:152-168`）
+  按 `generation` **作废按旧端口建的 RSD 连接缓存** ⇒ 下一轮 `readyDeviceIdentifier()` 即连上新端口。
+  即：**判对原因（过程）→ 触发自愈 → 真的连上（结果）**；改错误码只是让自愈能被触发的手段。
+- **涉及文件**：`Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`、
+  `SealTests/Installation/InstallChannelDiagnosticClassificationTests.swift`（新增
+  `portLevelReadinessReasonMapsToReprobeCode` / `nonPortReadinessReasonsDoNotTriggerReprobe`）、
+  `Scripts/verify-release-safety.py`（守卫 **R104**，4 断言 ＋ 4 变异）。
+- **验证状态**：✅ 守卫本机复跑 **PASS（782 断言 / 549 变异，含新增 R104 的 4 断言 ＋ 4 变异）**；
+  ⏳ 待 CI `swift-regression` 编译 ＋ 真机回归（Windows 本机不编译 Swift，单测/编译通过 ≠ 可用）。
+
+---
+
 ## 2026-09-28 把「通知提前量 `leadHours` 真正生效」当修复改进去 —— 它其实改了**被测试钉住的规格**，CI `swift-regression` 红（**已回退**）
 
 - **现象**：`a64d2b9` 推送后 CI `swift-regression` ✗：`ExpiryNotificationPlannerTests

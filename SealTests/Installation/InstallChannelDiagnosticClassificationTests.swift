@@ -281,4 +281,37 @@ struct InstallChannelDiagnosticClassificationTests {
         )
         #expect(Channel.mustKeepSelfReplacementGateLocked(failure) == false)
     }
+
+    // MARK: - 就绪原因 → 端口自愈（2026-09-28：「Wi-Fi 与 LocalDevVPN 都连了还报错」）
+
+    /// RemotePairing 模式下设备换 RSD 端口后，就绪判据报 `.tunnelUnreachable`。
+    /// 它必须归成 **710**（而不是 708「设备未响应」），而且 **710 才在端口重查集合里** ——
+    /// 两步合起来才是「都连上了就能签」：710 → `shouldReprobe` 为真 → 重查端口并重试。
+    ///
+    /// 过去 `readyDeviceIdentifier()` 用裸 `isReady()` 把原因丢光 ⇒ 归成 708 ⇒
+    /// 端口自愈（只认 710）**永不触发**，用户只能反复看到「设备未响应」。
+    @Test
+    func portLevelReadinessReasonMapsToReprobeCode() {
+        let failure = Channel.readinessFailure(for: "tunnelUnreachable")
+        #expect(failure.code == "SEAL-INSTALL-710")
+        #expect(
+            RemotePairingPortPolicy.shouldReprobe(failureCode: failure.code),
+            "端口层原因必须落进端口重查集合，否则自愈永不触发"
+        )
+    }
+
+    /// 反向对照：**只有**端口层原因才该触发重查 —— 没开 VPN / 设备没响应换端口都无济于事，
+    /// 每次失败白跑一轮 Bonjour 浏览（R95② 的「相邻码不触发」同源）。
+    @Test
+    func nonPortReadinessReasonsDoNotTriggerReprobe() {
+        #expect(Channel.readinessFailure(for: "noVPNInterface").code == "SEAL-INSTALL-701")
+        #expect(Channel.readinessFailure(for: "noDevice").code == "SEAL-INSTALL-708")
+        for raw in ["noVPNInterface", "noDevice", "notStarted", "heartbeatStale", nil] {
+            let failure = Channel.readinessFailure(for: raw)
+            #expect(
+                RemotePairingPortPolicy.shouldReprobe(failureCode: failure.code) == false,
+                "非端口层原因（\(raw ?? "nil")）不该触发端口重查"
+            )
+        }
+    }
 }

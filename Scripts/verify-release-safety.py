@@ -3359,6 +3359,66 @@ def violations(load=read):
           "R103②: 导出的 base64 必须过 URL query 转义（剔掉 `+ / = ; ,` 等）✗ —— "
           "否则 `+` 被解成空格、证书传过去即损坏（表现为目标应用「导入失败」）")
 
+    # ── R104：端口不对必须归成 710 并触发端口自愈（2026-09-28 真机「都连上了还报错」）──
+    #
+    # 现象：Wi-Fi 与 LocalDevVPN **都连了**，签名 / 续签 / 配对校验仍然失败，报
+    #   `SEAL-INSTALL-708`「设备未响应」；重试也只撞同一个死端口。
+    # 根因：iOS 不保证 `_remotepairing._tcp` 挂在固定端口。设备换端口后，
+    #   `Minimuxer.readyVerdict()` 在 RemotePairing 模式下报 `.tunnelUnreachable`，
+    #   但 `readyDeviceIdentifier()` 用的是**裸 `isReady()`** ⇒ 原因被丢光 ⇒
+    #   `lastDiscoveryDetail` 恒为空 ⇒ 最终失败落到
+    #   `discoveryFailure(tunnelReachable: true, detail: nil)` ⇒ 被误报成 708
+    #（`deviceNotRespondingFailure`）⇒ 端口自愈只认 710（R95②）**永不触发**。
+    #   而且配对校验路径（`SettingsViewModel.runInstallChannelCheck`）**直接调
+    #   `diagnose()`、不走 `start()`**，连外层那次重试都没有 ⇒ 配对页上永远修不好。
+    # 判据：① 设备标识探测必须走**带原因**的就绪判据并记录原因；
+    #   ② 最终失败必须据原因归码（710 而不是 708）；
+    #   ③ 诊断循环内必须接一次端口重查（让配对校验路径也能自愈）；
+    #   ④ 判据必须有单测（含「非端口层原因不触发」的反向对照）。
+    r104_channel = strip_comments(load(
+        "Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift"))
+    r104_tests = load("SealTests/Installation/InstallChannelDiagnosticClassificationTests.swift")
+    check("private var lastReadinessIssueRaw: String?" in r104_channel
+          and "guard let verdict = await readinessVerdict() else { return nil }" in r104_channel
+          and "lastReadinessIssueRaw = verdict.issue?.rawValue" in r104_channel
+          and "guard await isReady() else { return nil }" not in r104_channel,
+          "R104①: 设备标识探测必须走**带原因**的就绪判据（`readinessVerdict()`）并记录原因 ✗ —— "
+          "退回裸 `isReady()` ⇒ 判定仍等价，但 `.tunnelUnreachable` 被丢光 ⇒ "
+          "端口不对被误报成 708「设备未响应」，用户去重启 iPhone 而该做的是重查端口")
+    check("if tunnelReachable, let issueRaw = lastReadinessIssueRaw {" in r104_channel
+          and "Self.readinessFailure(for: issueRaw)" in r104_channel,
+          "R104②: 拿不到设备标识的最终失败必须据**就绪原因**归码 ✗ —— "
+          "只看 `lastDiscoveryDetail` 时它恒为空（裸 `isReady()` 不记录原因）⇒ "
+          "一律落到 708 ⇒ 端口自愈（只认 710）永不触发")
+    check("let portLevelFailure = Self.readinessFailure(for: lastReadinessIssueRaw)" in r104_channel
+          and "RemotePairingPortPolicy.shouldReprobe(failureCode: portLevelFailure.code)"
+              in r104_channel
+          and "await reprobeRemotePairingPortIfNeeded(afterFailure: portLevelFailure)"
+              in r104_channel,
+          "R104③: 诊断循环内必须接一次 RemotePairing 端口重查 ✗ —— "
+          "配对校验路径直接调 `diagnose()`、不走 `start()`，只靠 `startOnce` 的外层重试 ⇒ "
+          "配对页上「都连上了还报错」永远修不好")
+    check("func portLevelReadinessReasonMapsToReprobeCode()" in r104_tests
+          and "func nonPortReadinessReasonsDoNotTriggerReprobe()" in r104_tests,
+          "R104④: 就绪原因 → 端口自愈 的判据必须有单测（含「非端口层原因不触发」反向对照）✗ —— "
+          "错法只在真机上表现为「都连上了还报错」或「每次失败白跑一轮 Bonjour 浏览」")
+
+    # ── R105：进度环转弧的整圈角度必须是 360° 的整数倍（2026-09-28 用户反馈「圆环动效很怪异」）──
+    #
+    # 现象：签名 / 续签进度环的不确定态「很怪异」，像每秒抽一下。
+    # 根因：两段转弧的相位由 `TimelineView` 逐帧算（`remainder / period`，周期末尾从 ~1 跳回 0），
+    #   相位乘的角度**若不是整圈**，回绕时就会突兀反跳。1.3.29 的副弧写成 `* 360 * 0.55`
+    #   —— 一圈只转 198° ⇒ 每次回绕反跳 162° ✗（主弧乘整 360° 因而无缝）。
+    # 判据：① 副弧必须有独立相位的纯函数；② 两条弧的 rotationEffect 都必须乘**整 360°**；
+    #   ③ 那个非整圈系数（`* 360 * 0.55`）不得再出现在视图里。
+    r105_view = load("Seal/Features/Apps/SigningProgressView.swift")
+    check("private func counterArcPhase(_ now: Date) -> Double {" in r105_view
+          and ".rotationEffect(.degrees(-counterArcPhase(context.date) * 360))" in r105_view
+          and "* 360 * 0.55" not in r105_view,
+          "R105: 进度环两条转弧的整圈角度必须是 360° 的整数倍 ✗ —— "
+          "副弧若乘非整圈系数（一圈只转 198°），相位回绕时会突兀反跳 162°、"
+          "看起来像每秒抽一下（2026-09-28 用户反馈「动效很怪异」）")
+
     # Fast IPA 的产物由 build-unsigned-ipa.sh 按版本命名为 Seal_<version>.ipa。
     # 验证/上传若退回旧的 Seal.ipa 固定名，会在编译成功后误报文件不存在。
     ios_fast = load(".github/workflows/ios-fast.yml")
@@ -9661,6 +9721,29 @@ def main():
          'allowed.remove(charactersIn: ";/?:@&=+$, ")',
          'allowed.remove(charactersIn: "")',
          "R103②:"),
+        # ── R104：端口不对必须归成 710 并触发端口自愈 ──
+        # ① 设备标识探测退回裸 `isReady()`（原因丢失 ⇒ 误报 708）⇒ R104① 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "        guard let verdict = await readinessVerdict() else { return nil }\n",
+         "        guard await isReady() else { return nil }\n",
+         "R104①:"),
+        # ② 最终失败不再看就绪原因（退回只看 `lastDiscoveryDetail` ⇒ 恒空 ⇒ 708）⇒ R104② 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "                if tunnelReachable, let issueRaw = lastReadinessIssueRaw {\n",
+         "                if false, let issueRaw = lastReadinessIssueRaw {\n",
+         "R104②:"),
+        # ③ 循环内不再重查端口（配对校验路径失去自愈）⇒ R104③ 报红。
+        ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
+         "                if !didReprobePort {\n"
+         "                    let portLevelFailure = Self.readinessFailure(for: lastReadinessIssueRaw)\n",
+         "",
+         "R104③:"),
+        # ④ 单测被改名（不变量没人守）⇒ R104④ 报红。
+        # ⚠️ 新名必须**不含**原名作为子串（`...MapsToReprobeCode` 会含 ⇒ 变异不生效、白跑一轮）。
+        ("SealTests/Installation/InstallChannelDiagnosticClassificationTests.swift",
+         "func portLevelReadinessReasonMapsToReprobeCode()",
+         "func portLevelReadinessReasonMapsToCode()",
+         "R104④:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

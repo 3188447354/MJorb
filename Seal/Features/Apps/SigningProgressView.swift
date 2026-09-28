@@ -185,6 +185,19 @@ struct SigningProgressView: View {
         return remainder / period
     }
 
+    /// 副弧相位（0–1）。周期 **1.7 秒** —— 与主弧 1.1 秒错开，两段不同步才像「在推进」。
+    ///
+    /// 🔴 **整圈角度必须是 360° 的整数倍**（2026-09-28 用户反馈「圆环动效很怪异」）。
+    /// 相位在周期末尾从 ~1 跳回 0，旧实现把副弧的整圈角度乘了 0.55 的系数
+    /// —— 一圈只转 **198°** ⇒ 每次回绕就**突兀反跳 162°**，看起来像每秒抽一下 ✗。
+    /// 主弧乘的是整 360° 因而无缝；副弧改用独立周期、同样乘 360° 即可（判定等价于
+    /// 「转一整圈」）。
+    private func counterArcPhase(_ now: Date) -> Double {
+        let period = 1.7
+        let remainder = now.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period)
+        return remainder / period
+    }
+
     // ⚠️ 2026-09-26（构建 48 真机，用户要求）：进度卡片**不再显示自己的计时** ——
     // 原 `elapsedClock(_:)`（「本阶段已用时 m:ss」，1Hz 时钟）已整条移除。
     // 用户原话：「去掉那个阶段上的等待多少时间的文案，设备安装阶段的保留。」
@@ -245,6 +258,8 @@ struct SigningProgressView: View {
                         .monospacedDigit()
                 } else {
                     // 不确定态：主弧正转、副弧（更淡）反转，形成持续「推进」的观感。
+                    // 两弧各用独立周期、且**都乘整 360°** —— 否则回绕时会突兀反跳（见
+                    // `counterArcPhase` 的说明）。
                     Circle()
                         .trim(from: 0, to: 0.3)
                         .stroke(Color.sealAccent, style: StrokeStyle(lineWidth: ringWidth, lineCap: .round))
@@ -255,7 +270,7 @@ struct SigningProgressView: View {
                             Color.sealAccent.opacity(0.32),
                             style: StrokeStyle(lineWidth: ringWidth, lineCap: .round)
                         )
-                        .rotationEffect(.degrees(-spinPhase(context.date) * 360 * 0.55))
+                        .rotationEffect(.degrees(-counterArcPhase(context.date) * 360))
                     if let centerLabel {
                         Text(centerLabel)
                             .font(.system(size: 9, weight: .semibold, design: .rounded))

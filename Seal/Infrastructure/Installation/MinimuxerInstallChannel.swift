@@ -85,6 +85,18 @@ actor MinimuxerInstallChannel: InstallChannel {
     private var inFlightStart: Task<String, Error>?
     /// 最近一次“拿不到设备标识”的底层错误文本（Rust IdeviceError Debug），用于精准分类，不再黑盒。
     private var lastDiscoveryDetail: String?
+    /// 最近一次就绪探测给出的**不就绪原因**（`MinimuxerReadyIssue.rawValue`）。
+    ///
+    /// 与 `lastDiscoveryDetail` **分开存**：后者是设备/底层错误的**文本**，走
+    /// `classifyDiscoveryFailure` 的字符串匹配；这里是就绪判据的**枚举原因**，走
+    /// `ChannelReadinessPolicy` 那张唯一分类表。混进同一个字段会让两张表互相污染。
+    ///
+    /// 为什么必须有它（2026-09-28 真机）：RemotePairing 模式下设备 RSD 端口变化后，
+    /// 就绪判据报 `.tunnelUnreachable`；而 `readyDeviceIdentifier()` 过去用裸 `isReady()`
+    /// 把原因丢光 ⇒ 最终失败落到 `discoveryFailure(tunnelReachable: true, detail: nil)`
+    /// ⇒ 被误报成 `SEAL-INSTALL-708`「设备未响应」⇒ 端口自愈（只认 710）**永不触发**
+    /// ⇒ 用户「Wi-Fi 与 LocalDevVPN 都连了」仍然签不上。
+    private var lastReadinessIssueRaw: String?
     /// 失败熔断：最近一次诊断失败的时间与错误。
     /// 用途是让批量续签在通道不可用时**只付一次**诊断代价，而不是 N×75s。
     private var lastFailureAt: Date?
@@ -385,6 +397,9 @@ actor MinimuxerInstallChannel: InstallChannel {
     func diagnose() async -> InstallChannelDiagnostics {
         var steps = InstallChannelDiagnostics.empty.steps
         var deviceIdentifier: String?
+        // 上一轮（`startOnce` 会跑两轮）的就绪原因不能带到本轮：本轮若在就绪探测**之前**
+        // 就失败，陈旧的 `.tunnelUnreachable` 会把失败误判成端口问题。
+        lastReadinessIssueRaw = nil
         // 追踪当前正进行到哪一步，顶层 catch 据此归因，避免配对/目录/设备断开等
         // 无关异常被一律误报成「配对文件损坏」。
         var currentKind: InstallDiagnosticStepKind = .pairingFile
@@ -494,10 +509,28 @@ actor MinimuxerInstallChannel: InstallChannel {
             // 首次 RSD 握手（pair-verify + TLS-PSK + RSD handshake）在无线/冷启动时可能超过旧的 10 秒，
             // 过短会把“正在建立”误判成“设备未响应/连接失败”。延长到约 18 秒，成功即退出。
             var resolvedUDID: String?
+            var didReprobePort = false
             for attempt in 0..<36 {
                 NetworkObserver.shared.refreshEndpoint()
                 resolvedUDID = try await readyDeviceIdentifier()
                 if resolvedUDID != nil { break }
+                // 就绪判据报「端口不可达」⇒ **当场经 Bonjour 重查一次 RemotePairing 端口**。
+                //
+                // iOS 不保证 `_remotepairing._tcp` 挂在固定端口上；设备换端口后，只有重查
+                // 才能连上。放在**循环内**而不是只靠 `startOnce` 的外层重试，是为了让
+                // **配对校验路径**（`SettingsViewModel.runInstallChannelCheck` 直接调
+                // `diagnose()`、根本不走 `start()`）也能自愈 —— 否则「都连上了还报错」
+                // 在配对页上永远修不好。
+                //
+                // 判据复用唯一那份表：`readinessFailure` → `shouldReprobe(failureCode:)`，
+                // 不在通道里再抄一张（R94③）。
+                if !didReprobePort {
+                    let portLevelFailure = Self.readinessFailure(for: lastReadinessIssueRaw)
+                    if RemotePairingPortPolicy.shouldReprobe(failureCode: portLevelFailure.code) {
+                        didReprobePort = true
+                        await reprobeRemotePairingPortIfNeeded(afterFailure: portLevelFailure)
+                    }
+                }
                 if attempt == 12, tunnelReachable == false {
                     // 中途再给 LocalDevVPN 一次按需拉起/探测机会，避免首次 probe 过早判死。
                     if await onDemandActivator.probeTunnel() { pass(.vpnTunnel) }
@@ -505,6 +538,16 @@ actor MinimuxerInstallChannel: InstallChannel {
                 try? await Task.sleep(for: .milliseconds(500))
             }
             guard let udid = resolvedUDID else {
+                // 隧道可达、但就绪判据报「端口不可达」⇒ 真的是 RemotePairing 端口不对，
+                // 归成 **710**（而不是 708「设备未响应」）—— 只有 710 会触发端口自愈
+                //（`RemotePairingPortPolicy.reprobeFailureCodes`）。
+                //
+                // 过去这里只看 `lastDiscoveryDetail`，而裸 `isReady()` 不记录原因 ⇒ 它恒为空
+                // ⇒ 一律落到 708 ⇒ 自愈永不触发（真机「Wi-Fi 与 LocalDevVPN 都连了还报错」
+                // 的根因）。隧道本身不可达时保持 `discoveryFailure` 的判断（701 / 708）。
+                if tunnelReachable, let issueRaw = lastReadinessIssueRaw {
+                    return fail(.deviceIdentifier, Self.readinessFailure(for: issueRaw))
+                }
                 return fail(
                     .deviceIdentifier,
                     Self.discoveryFailure(tunnelReachable: tunnelReachable, detail: lastDiscoveryDetail)
@@ -1402,7 +1445,17 @@ actor MinimuxerInstallChannel: InstallChannel {
     }
 
     private func readyDeviceIdentifier() async throws -> String? {
-        guard await isReady() else { return nil }
+        // 用**带原因**的就绪判据替换裸 `isReady()`：判定完全等价
+        //（`readyVerdict().isReady == ready()`），区别只在失败时能拿到原因 ——
+        // RemotePairing 模式下端口不对必然报 `.tunnelUnreachable`，记进
+        // `lastReadinessIssueRaw` 后，`diagnose()` 才归得成 710 并触发端口自愈。
+        // 返回 `nil`（探测超时）与过去 `isReady() == false` 同义：原因未知。
+        guard let verdict = await readinessVerdict() else { return nil }
+        guard verdict.isReady else {
+            lastReadinessIssueRaw = verdict.issue?.rawValue
+            return nil
+        }
+        lastReadinessIssueRaw = nil
         let outcome = await offThread(seconds: Self.blockingCallTimeoutSeconds) {
             () -> DeviceIdentifierFetch in
             do {

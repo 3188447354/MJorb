@@ -118,8 +118,8 @@ def main() -> int:
         "AnisetteProvider.swift": "**跟** ✓（上游每次 fetch 都重新取，从不缓存）",
         "AnisetteClient.swift": "同上（Seal 的本地/远程双通道对应上游 ODA/远程）",
         "ApplePortalCertificateService.swift": "**跟** ✓ 已实施 `ff718d9`（先创建、撞 3022 才撤销）",
-        "ApplePortalSigningService.swift": "见台账（anisette 刷新 / 节流 待定）",
-        "MinimuxerInstallChannel.swift": "待对照",
+        "ApplePortalSigningService.swift": "见台账（anisette 刷新 ✓ 已修；串行 + 节流保留 ✓）",
+        "MinimuxerInstallChannel.swift": "见台账（安装通道诊断 / 端口自愈 ✓）",
     }
     for seal_name, rels in sorted(PAIRS.items()):
         if seal_name not in seal:

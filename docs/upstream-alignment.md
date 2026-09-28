@@ -21,8 +21,7 @@
 
 | 上游 | 关系 | 处置 |
 |---|---|---|
-| **`rorkai/rork-sign`** | **内置源码**（`Vendor/rork-sign/`，Apache-2.0） | 同步时要**保住 Seal 的补丁** ✓（见第三节） |
-| **`rileytestut/AltSign`** | **SwiftPM 依赖**（`ALTAppleAPI` / `ALTTeam` / `ALTCertificate`） | 跟版本号 + 对照**用法** ✓ |
+| **`rileytestut/AltSign`** | **SwiftPM 依赖**（`ALTAppleAPI` / `ALTTeam` / `ALTCertificate`） | 跟版本号 + 对照**用法** ✓（Seal 实际用的是 `SideStore/AltSign`，见第三节） |
 
 ---
 
@@ -36,41 +35,7 @@ Seal 的 git 历史**被重建过** ✗：全部 659 个提交都是同一个作
 
 ---
 
-## 三、~~`Vendor/rork-sign/` 的补丁清单~~ 🔴 **已作废**（2026-09-19）
-
-> 🔴 **`Vendor/rork-sign` 整个目录已删除** ✗ —— 签名器换成了上游 **`SideSign` + `CodeSignKit`** ✓
-> （用户死命令：「**一个代码不漏地给我抄 不要打补丁 签名器不一样你就换啊**」✓）。
-> ⇒ **下面这一节只作历史记录** ✓，**不要再照它去改代码** ✗（那些文件已经不在仓库里了）。
-> ⇒ 现在生效的是**第九节**（换签名器之后的对齐台账 ✓）。
-
-> **这是本仓唯一能真正做到「一字一码」的地方** ✓ ——
-> `Vendor/rork-sign` 就是 `rorkai/rork-sign` **0.6.5** 的副本 + **4 个文件**的补丁 ✓
-> （`upstream/rork-sign` 已按 0.6.5 拿进来；完整 diff 见
-> [`docs/upstream/rork-sign-0.6.5-vs-Vendor.diff`](./upstream/rork-sign-0.6.5-vs-Vendor.diff) ✓）
->
-> ⚠️ **对比时必须加 `--strip-trailing-cr`** ✗ —— 两边换行符不同，
-> 不加会把整个文件算成差异（实测：2949 行 → 实际 15 行 ✓）。
-
-| 文件 | 改动 | 性质 | 守卫 |
-|---|---|---|---|
-| `MachO/MachOSigner.swift` | 125+ / 13- | **Seal 补丁**：`clearFairPlayCryptid`（修**启动崩溃**）+ `adjustedCodeLimit`/symtab（处理「已签名二进制再签」）| **R52** ✓ |
-| `Bundle/AppBundleSigner.swift` | 13+ / 2- | mmap（`readEntitlementsXML` 不再整块读 ✗） | R50 ✓ |
-| `Bundle/BundleSigner.swift` | 26+ / 7- | mmap（3 处） | R50 ✓ |
-| `Bundle/BundleSignatureCache.swift` | 4+ / 2- | mmap（缓存条目） | R50 ✓ |
-
-**⇒ 同步上游时这 4 个文件的补丁必须逐条保住** ✓
-
-Seal 改过它 ✗ —— 每次同步上游前先确认这些补丁仍在（守卫已钉 ✓）：
-
-| 补丁 | 守卫 |
-|---|---|
-| 判 Mach-O 时**不许整块读入**（`.mappedIfSafe`） | R37 / R49 |
-| 读可执行文件用 mmap（`readEntitlementsXML` 两条链路 + 签名主路径 + host 校验 + 缓存条目） | R50 |
-| 签名缓存必须真的传进去 | R38 |
-
----
-
-## 三点五、依赖层的上游（`project.yml` 指向的用户 fork，均为**未改动镜像** ✓）
+## 三、依赖层的上游（`project.yml` 指向的用户 fork，均为**未改动镜像** ✓）
 
 | Seal 的依赖 | 用户 fork | **真正的上游** | 版本 |
 |---|---|---|---|
@@ -108,7 +73,7 @@ Seal 的是**自己的 wrapper**（`struct AnisetteV3Client: AnisetteEnvironment
 | **2026-09-19** | 🔴 **免费账号只有「一张」活动证书（Apple 硬限制）** | `CertificateTakeoverPolicy.swift:28` 已记录：「免费团队只有一个『活动 iOS 开发证书』槽位（Apple 硬限制，非两个）」✓ | SideStore `CertificateProvisioningFlow` 同样是「先创建、失败才撤销」—— **在免费账号上「先创建」必然 3022** ✗ | **关键约束，必须记住** ✓：<br>① **只有 1 张 ⇒「先创建」在免费账号上必然失败** ✗ ⇒ **必须先撤销** ✓；<br>② ⇒ **「撤销 → 创建」的窗口无法消除** ✗（腾槽位才能建 ✓）；<br>③ ⇒ 能做的只有：**撤销后立刻创建** ✓ + **失败给清晰说明** ✓ + **撤销前确保会话新鲜**（anisette ✓）；<br>④ ⇒ 本轮的 anisette 修复**顺带**降低了这个风险 ✓（会话过期是创建失败的主因之一 ✓） |
 | **2026-09-19** | **证书的整体策略（顺序 / 谁来撤）** | **先撤销旧证书、再创建** ✗ —— 撤销成功但创建失败 ⇒ **账号变 0 张证书** ⇒ 用它签过的 App 全部打不开 ✗✗ | **SideStore `CertificateProvisioningFlow`**：<br>① 先找活跃证书/embedded 复用 ✓<br>② 否则**先尝试创建** ✓<br>③ 创建失败才进 `replaceCertificate`：候选 = `name` 含 `ios development`/`iphone developer` ✓；**弹窗让用户选** `keepExisting`（不撤，直接再试 ✓）/ `revokeSelected` ✓<br>⇒ **「先创建」⇒ 不存在「撤了没建成」的窗口** ✓✓ | **跟** ✓ —— 按用户指示「**Seal 比 SideStore 严格就去除，按 SideStore 来**」<br>⇒ 改成「**先创建；失败才处理撤销，且由用户选**」<br>⇒ **顺带消灭「0 张证书」这个灾难** ✓✓<br>**已实施 `ff718d9`** ✓（**自动撤销能力保留** ✓ —— 撞 3022 后仍自动撤销 + 重建）<br>⚠️ 那条既有守卫的文案本就写着 **`or`**（「rotate before a free-team request **or** after exact 3022」），实现却写成 `and` ✗ ⇒ 按意图更新 ✓ |
 | **2026-09-26** | 🔴 **「运行中 Seal 正在用」的证书能否进轮换候选** | 1.3.17 曾在调用点加闸门「签非 Seal 时**剔除**运行中 Seal 的证书」✗ ⇒ 免费账号（只有 1 个活动槽位，而 Seal 的证书覆盖安装后**必然**丢本机私钥）**永久死锁**：签任何 App 都报 `SEAL-CERT-204b`（3022），构建 47 真机三条路径全被拦死 ✗ | SideStore `CertificateProvisioningFlow`：**先创建** → 撞 3022 → 才 `replaceCertificate`（撤销 → 再创建）；它**从不把自己排除在候选之外** ✓（Seal 没有内嵌证书，也就没有上游 `CacheSigningCertOperation` 那套自身跳过） | **跟** ✓ —— 与上游一致：**候选不排除自身，只把自身排到最后**。<br>⇒ 落地：删除闸门（`SigningCertificateRotationGate`），调用点恢复 `candidates: candidates`；安全性由**三条**保证 —— ① `rotationRank` 把 Seal 的证书排最后（`isRunningSealCertificate ⇒ 3`，普通证书 0/1/2）；② 撤销前必须发 warning 说清「Seal 将在本事务末尾重装」；③ 撤销后由 `resignAppsAffectedByCertificateRotation(includeSeal: true)` 恢复。<br>⚠️ 同族：`CertificateTakeoverPolicy` 的**规格**原写「真实签名者 A 永远不能成为撤销候选」＋单测 `fullSlotsWithOnlySignerBlocks` 断言「只剩 A 时 blocked」—— **把死锁钉成了契约**；已改为「A 排最后但仍进候选」。<br>⚠️ 变砖的真凶是**自替换安装失败**（构建 38 / 46 的 `SEAL-SELF-109`），不是撤销本身 ⇒ 修错了环节。 |
-| **2026-09-19** | **扩展的 App ID 准备顺序** | 主 App **排最前** ✓（`ApplePortalAppIDResolver.preparationOrder`）；扩展**串行**、且每请求**节流 0.4 秒**（`AppleRequestThrottle`）✗ | SideStore `FetchProvisioningProfilesOperation`：<br>① **主 App 先准备** ✓（`provisionAndFetchProfile(for: targetAppBundle, parentAppBundle: nil)`，在扩展之前）<br>② 扩展用 **`withThrowingTaskGroup` 并发** ✓<br>③ **没有节流** ✓<br>（`PrepareAppExtensionBundleIDsOperation` 只做「扩展 BundleID 跟着主 profile 改写」✓，不涉及注册顺序） | **一半一致、一半待定**：<br>① **主 App 先 = 上游一致** ✓ ⇒ **不用改** ✓；<br>② **串行 + 节流 vs 并发无节流** ✗ ⇒ **待定** —— 节流是为「1100 短时频率限制」加的 ✓，<br>但**本轮的 anisette 修复可能才是 1100 的真因** ✗（gap 前成功 / gap 后失败的时间线支持这点 ✓）<br>⇒ **建议先跑一次带 anisette 修复的构建**：若不再 1100 ⇒ 再考虑去掉节流、改成并发 ✓<br>（并发还能**缩短 Apple 窗口** ⇒ 对 anisette 寿命有利 ✓✓） |
+| **2026-09-19** | **扩展的 App ID 准备顺序** | 主 App **排最前** ✓（`ApplePortalAppIDResolver.preparationOrder`）；扩展**串行**、且每请求**节流 0.4 秒**（`AppleRequestThrottle`）✗ | SideStore `FetchProvisioningProfilesOperation`：<br>① **主 App 先准备** ✓（`provisionAndFetchProfile(for: targetAppBundle, parentAppBundle: nil)`，在扩展之前）<br>② 扩展用 **`withThrowingTaskGroup` 并发** ✓<br>③ **没有节流** ✓<br>（`PrepareAppExtensionBundleIDsOperation` 只做「扩展 BundleID 跟着主 profile 改写」✓，不涉及注册顺序） | **一半一致、一半已定** ✓：<br>① **主 App 先 = 上游一致** ✓ ⇒ **不用改** ✓；<br>② **串行 + 节流 vs 并发无节流** ⇒ **暂不跟并发** ✓（2026-09-22 定）：节流是为「1100 短时频率限制」加的，先收集「无 1100」的大包样本再评估 ✓<br>（并发能**缩短 Apple 窗口** ⇒ 对 anisette 寿命有利 ✓，条件成熟再上 ✓） |
 | **2026-09-19** | **证书「有效性」的判据** | **本机有私钥 + 剩余有效期 > 7 天** ✓（`SigningCertificateMaterialPolicy` / `CertificateTakeoverPolicy`） | SideStore `VerifyCertificateOperation`：先看证书在不在 **portal 列表**里 ✓，不在才退到 **OCSP** 校验 ✓ | **保留 Seal 的判据** ✓ —— 两者**目的不同**：SideStore 问「这张证书还有效吗」（可否**继续用**）✓；Seal 问「这张证书够不够签**满 7 天**」✓<br>⚠️ **7 天那条不是「多余的严格」** ✗ —— 只判「当下未过期」会把**次日到期**的证书签进新包 ⇒ iOS 判「尚未验证」**闪退** ✗（`AGENTS.md` 第 3 节有记载 ✓）<br>⇒ 按判据属于「**更完整/防缺陷**」⇒ **保留** ✓（不是「更严格」✗）|
 | **2026-09-19** | **描述文件批量安装** | **不逐个装 profile** ✗ —— 走 `installPushedIpa` / `install(ipaData:)`（**profile 随 IPA 一起进设备** ✓） | SideStore 的 `InjectBatchProfilesOperation` + `addPendingProfileBatch` **只在 `isCellularRefreshGroup` 时触发** ✗ —— 那是**蜂窝网络下批量续签**的场景，目的是**少切几次数据网络**（`turnOffDataIfNeeded` ✓） | **不用跟** ✓ —— **Seal 里没有「蜂窝」这个概念** ✓（grep 为空 ✓），也没有对应场景；而且两边装 profile 的路径本来就不同（Seal 随 IPA 装 ✓） |
 | **2026-09-22** | **profile-only 的 App ID 能力更新与提速** | profile-only 复用完整签名的 `provisioningProfiles`：读取既有 App ID、更新能力、逐份申请 profile；真机日志显示 Apple 返回的 `features` 持续为空，4 目标 App 约 24–55 秒 | SideStore `FetchProvisioningProfilesOperation` 同样始终 `registerAppID → updateFeatures → updateAppGroups → downloadProvisioningProfile`；没有“直接跳过能力更新”的 profile-only 分支 | **不跟“盲跳过能力更新”** ✓：远端空 `features` 不能证明能力已一致，跳过会静默丢 entitlement。继续保留串行与节流，先收集无 1100 的大包样本再评估并发。Seal 的 profile-only 额外规定：远端缺失已装目标 App ID 时**拒绝**并要求完整重签，绝不借“续签”名义新建 App ID / 消耗免费名额 ✓ |

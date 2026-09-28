@@ -245,9 +245,7 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
 - **纯函数化才能测**：判据落在 actor / 网络 / `#if !targetEnvironment(simulator)` 里就测不到。
   新增不变量时把判定抽成可单测的纯函数（`errorDetail`/`isTerminalInstallError`/
   `InstallFailureActionPolicy` 都是这么挪出 `#if` 的），并补一条守卫测试。
-- 🔴 **写守卫时，新 `check()` 必须先跑 `check-mutation-power.py <tree> <前缀>` 看基线**，
-  再跑整轮。整轮在 OneDrive 上 >20 分钟，而新写的判据最容易犯两种**静默恒假**的错
-  （2026-09-26 一轮里同时踩到两条，都是靠 `ASSERT FAILURES` 的基线失败才发现的）：
+- 🔴 **写守卫时最容易犯两种「静默恒假」的错**（2026-09-26 一轮里同时踩到两条）：
   ① 判「源码里不得出现某写法」时**忘了 `strip_comments`** —— 注释里引用了那个写法，
      于是断言恒假。`strip_comments()` 保留字符串字面量，所以 `code: "SEAL-XXX"` 这类判据不受影响；
   ② 判据里写了一条**被 Swift 折行拆开**的连续字符串（例如
@@ -255,6 +253,7 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
      ⇒ 恒假。**先 `grep` 确认那串在文件里真的连续存在**。
   同族：`section()` 的 start/end marker 也必须先用 `grep` 核对（Read 工具会截断长行，
   照抄截断后的文本必然失配）。
+  ⇒ 守卫**一律交给 CI 跑**（见第 7 节），**本地不再执行**。
 
 ## 6. 版本与发布
 
@@ -296,9 +295,7 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
   **不许 rm 整个 SourcePackages**（会删掉 OpenSSL.xcframework → `openssl/err.h not found`）。
 - CI 校验 `IPHONEOS_DEPLOYMENT_TARGET=17.4`（2026-09-24 起最低支持 iOS 17.4，禁止 16.0–17.3.1）；
   改部署目标时同步查三份 workflow 的断言 + `Config/Base.xcconfig`（共 9 处，守卫 R69 已钉）。
-- 改工作流触发条件前先跑 `Scripts/verify-release-safety.py`。
-  ⚠️ **裸 `python` / `python3` 在本机不可用**（WindowsApps 存根：零输出、退出码 49
-  —— 静默「没输出」不等于通过 ✗）；**但守卫本机可跑** ✓ —— 用托管解释器的**绝对路径**：
-  `C:/Users/DMJ/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe Scripts/verify-release-safety.py`
-  （一轮 85–200 秒，**必须放后台跑**，否则会被 120 秒默认超时 SIGTERM 且没有任何输出 ✗）。
-  ⇒ **CI 只当最后一道关，不要拿它当第一次验证。**
+- 🔴 **守卫一律交给 CI 跑，本地不再执行**（2026-09-28 用户指令：「以后不本地了，修改完没问题直接推」）：
+  `ios.yml` 与 `ios-release.yml` 都有 `python3 Scripts/verify-release-safety.py`（**含变异自检**）⇒
+  改工作流触发条件、加/改守卫之后**直接推**，看 CI 结果即可。
+  ⚠️ `ios-fast.yml` **不跑守卫**（它是 Debug 快速出包档）⇒ 别拿它当验收。

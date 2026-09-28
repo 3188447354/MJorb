@@ -4,6 +4,13 @@ struct RootTabView: View {
     @ObservedObject var appsViewModel: AppsViewModel
     @ObservedObject var settingsViewModel: SettingsViewModel
     let certificateExportHandler: CertificateExportHandler
+    /// 回到前台时补做钥匙串可访问性迁移（见 `AppContainer.migrateKeychainAccessibilityIfNeeded`）。
+    ///
+    /// 🔴 这个钩子不是锦上添花：进程若在**锁屏**时被快捷指令冷启动，那次迁移会被系统拒绝
+    /// （`errSecInteractionNotAllowed`），而保活让这个进程活很久 —— 用户解锁后打开 Seal 时
+    /// `SealApp.init()` 不会再跑。没有这个钩子，迁移就一直没有机会做，锁屏续签会继续失败。
+    /// 迁移本身幂等（迁过就短路），所以每次回到前台调用都无所谓。
+    let migrateKeychainAccessibility: () -> Void
     @Environment(\.scenePhase) private var scenePhase
     @State private var selection: AppSection = .apps
     @State private var launchCheckInProgress = false
@@ -59,6 +66,8 @@ struct RootTabView: View {
         }
         .onChange(of: scenePhase) { phase in
             guard phase == .active else { return }
+            // 此刻设备必然已解锁 ⇒ 是补做钥匙串迁移最可靠的时机（锁屏冷启动那次会被系统拒绝）。
+            migrateKeychainAccessibility()
             Task {
                 await performLaunchCheck()
                 await performUpdateCheck()

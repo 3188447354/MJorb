@@ -5,6 +5,71 @@
 
 ---
 
+## 2026-09-28 锁屏下用快捷指令续签：日志说成功、抽屉全红 —— 钥匙串 `WhenUnlocked` 锁屏读不到（1.3.31）
+
+- **现象**：锁屏状态下用快捷指令续签，日志记**成功**，打开 Seal 抽屉里**全是失败**。
+  用户当场纠正：「抽屉失败是因为真实就是失败了，**日志误判了**」。日志里只剩一句
+  `Seal.KeychainError 1`（没有别的上下文）。
+- **根因（逐行读真源码，不靠搜索）**：
+  ① 不打开 App 的续签由快捷指令在**锁屏**时冷启动进程触发
+     （`SealRenewalIntent` / `RefreshAllAppsIntent`，`openAppWhenRun = false`），
+     而这条链路**每次都现读钥匙串**、进程里没有任何内存缓存：
+     `SigningCoordinator.signAndInstall` 一进来就 `keychain.load(accountID:)` 取
+     `AccountSecret`（authToken / 口令 / 各证书 P12）—— **profile-only 续签也走这条**，
+     它只更新描述文件，照样要这份密钥；每次 Apple 请求还要
+     `AnisetteClient` 的 `loadIdentifier()` / `load()`。
+  ② 两处 store 的条目都写的是 `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`
+     ⇒ **锁屏时不可读** ⇒ 抛 `KeychainError`。
+  ③ `RenewalCoordinator.isRetryable` **不认**这个错误（不是通道瞬时错误、不是 `SEAL-NET-`、
+     不是网络错误）⇒ **不重试** ⇒ `SEAL-RENEW-500` 直接判失败进抽屉。
+  ④ 为什么日志会「说成功」：`KeychainError` 是 struct 且**未实现 `CustomNSError`** ⇒
+     桥成 `NSError` 后 `domain` 恒为 `Seal.KeychainError`、**code 恒为 1**、
+     文案是系统默认 ⇒ 真机日志只剩一句 `Seal.KeychainError 1`，把「设备锁定」与
+     「条目不存在」混成同一句话，看起来像「钥匙串里没有」。
+- **修复**：
+  ① **写入权限**改为 `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`（锁屏可读；
+     仍保留 `ThisDeviceOnly` ⇒ 口令与私钥**不随 iCloud 同步**，AGENTS.md §4）。
+     上游 SideStore/AltStore 用 `.afterFirstUnlock` **＋ `synchronizable(true)`** ——
+     那是为了让它的 App 与 App Extension 共享账号；Seal **只跟可访问性这一半、不跟同步那一半**。
+  ② **一次性迁移** `KeychainAccessibilityMigrator`：改写入常量只影响**新写入**的条目，
+     而 profile-only 续签**根本不写钥匙串**（只读）⇒ 已加过账号的老设备会一直是旧值。
+     迁移只按 `class + service` 查询、`SecItemUpdate` 只改可访问性（口令与私钥明文不出内存）。
+     **同步**跑（`SealApp.init()`，必须早于任何钥匙串读取），并在 `RootTabView` 的
+     `scenePhase == .active` **补做** —— 锁屏冷启动那次会被系统拒绝
+     （`errSecInteractionNotAllowed`），而保活让进程活很久、`init()` 不会再跑，只挂 init 有真实缺口。
+  ③ 迁移完成判定 `shouldMarkCompleted = didChangeAnything && !isBlocked && !hasFailure`：
+     **刻意不把 `.nothingToDo` 当完成** —— 设备锁着时 `SecItemUpdate` 也可能返回
+     `errSecItemNotFound`（条目锁屏不可见）而不是 `errSecInteractionNotAllowed` ⇒
+     会被误判成「本来就没有条目」⇒ 一旦落标记就再也不重试，**修复静默失效** ✗。
+  ④ `KeychainError` 实现 `CustomNSError`：`errorCode = Int(status)`、`describe` 把
+     `errSecInteractionNotAllowed` 翻成「设备已锁定，当前无法读取该钥匙串条目」。
+- **顺带（用户同轮要求）**：**只有快捷指令续签成功才发系统通知，Seal 内手动续签不发**。
+  `AppsViewModel` 用请求级标记 `backgroundTriggerRequested`（`refreshAllFromBackgroundTrigger()`
+  置位，**放在让位 `guard` 之后** —— 被让位时本轮没跑，不该发通知），在
+  `runBatchRefresh` **入口处**（任何 `guard` / `throw` 之前）**消费并清位**；
+  ⚠️ 收尾处清位是错的：本轮有三条**不产生结果**的出口（`renewalCoordinator` 缺失、
+  抢不到操作锁、`refreshAll` 直接抛错），标记会跨轮存活 ⇒ 「快捷指令失败一次、之后手动续签」
+  误发通知（写守卫时发现并改掉，R106④ 钉住这个顺序）。
+  `BackgroundRenewalNotifier` 只在 `succeeded > 0` 时投递一条。
+  全失败 / 全未执行**刻意不发**（那属于「用户需要处理」，界面与日志已有引导，弹通知既不解决问题
+  又会与「续签成功」的语义混在一起）。用户没给通知权限时**只留日志、不在后台索要权限**
+  （`requestAuthorization()` 在后台根本弹不出授权框）。
+- **涉及文件**：`Seal/Infrastructure/Security/KeychainAccessibility.swift`（新）、
+  `Seal/Infrastructure/Notifications/BackgroundRenewalNotifier.swift`（新）、
+  `Seal/Infrastructure/Security/KeychainVault.swift`、`Seal/Infrastructure/Accounts/AnisetteProvisioningStore.swift`、
+  `Seal/Application/AppContainer.swift`、`Seal/App/SealApp.swift`、`Seal/App/RootTabView.swift`、
+  `Seal/Features/Apps/AppsViewModel.swift`、
+  `SealTests/Security/KeychainAccessibilityTests.swift`（新）、
+  `SealTests/Notifications/BackgroundRenewalNotificationResultTests.swift`（新）、
+  `docs/qa/log-code-index.md`、`Scripts/verify-release-safety.py`（守卫 **R106**）、
+  `docs/upstream-alignment.md`（钥匙串可访问性对照台账）、`RELEASE_NOTES.md`、`project.yml`（1.3.31）。
+- **验证状态**：✅ 守卫本机复跑 **PASS（788 断言 / 556 变异，含新增 R106 的 5 断言 ＋ 7 变异）**；
+  ⏳ CI `swift-regression` 编译与真机回归待做
+  （Windows 本机不编译 Swift，单测/编译通过 ≠ 可用）。真机验收：**锁屏下用快捷指令续签成功**
+  且收到系统通知；解锁后打开 Seal 抽屉状态与日志一致。
+
+---
+
 ## 2026-09-28 「Wi-Fi 与 LocalDevVPN 都连了」仍签名 / 续签失败：RSD 端口变了却被误报成 708，端口自愈永不触发（1.3.29 续）
 
 - **现象**：用户**做对了操作**（Wi-Fi ＋ LocalDevVPN 都连上），签名 / 续签 / 配对校验仍失败，

@@ -11,6 +11,27 @@ struct AppContainer {
     /// ⚠️ UI 测试与「存储初始化失败」两条分支传的是**不带日志**的实例：前者不该在测试里
     /// 真的放音频，后者连日志文件都没建起来。保活失败不影响续签本身（见该类的 `start()`）。
     let backgroundKeepAlive: BackgroundKeepAliveService
+    /// 迁移/启动类日志用。UI 测试与「存储初始化失败」两条分支为 `nil`（那时日志文件都没建起来）。
+    let logStore: SealLogStore?
+
+    /// 把升级前写入的 `WhenUnlocked` 钥匙串条目迁到「首次解锁后可读」——
+    /// **这是「锁屏下快捷指令续签」的必要条件**（判据与原因见 `SealKeychainAccessibility`）。
+    ///
+    /// 🔴 **必须同步跑**：`SealApp.init()` 是进程最早执行点，快捷指令冷启动的续签在那之后
+    /// 才读钥匙串 —— 做成 `Task` 会和续签抢时序（续签前那道通道等待**通常**够，但不保证）。
+    ///
+    /// 🔴 **必须有两个调用点**：
+    ///   · `SealApp.init()`（正常启动）；
+    ///   · `RootTabView` 的 `scenePhase == .active`（**补做**）。
+    /// 只挂 init 有真实缺口：进程若在锁屏时被快捷指令冷启动，那次迁移会被系统拒绝
+    /// （`errSecInteractionNotAllowed`），而保活又让这个进程活很久 —— 用户解锁后打开 Seal 时
+    /// `init()` 不会再跑，迁移就一直没有机会做，锁屏续签会继续失败。
+    ///
+    /// 幂等：迁过一次后用 `KeychainAccessibilityMigrationMarker` 短路（避免刷日志）。
+    func migrateKeychainAccessibilityIfNeeded() {
+        guard let summary = KeychainAccessibilityMigrator.runSynchronously() else { return }
+        Task { await KeychainAccessibilityMigrator.log(summary: summary, logStore: logStore) }
+    }
 
     static func live(
         arguments: [String] = ProcessInfo.processInfo.arguments
@@ -23,7 +44,8 @@ struct AppContainer {
                     keychain: KeychainVault(),
                     signingPreferenceStore: SigningPreferenceStore()
                 ),
-                backgroundKeepAlive: BackgroundKeepAliveService(logStore: nil)
+                backgroundKeepAlive: BackgroundKeepAliveService(logStore: nil),
+                logStore: nil
             )
         }
 
@@ -210,6 +232,7 @@ struct AppContainer {
                     signingHistoryStore: signingHistoryStore,
                     notificationScheduler: notificationScheduler,
                     notificationPreferences: notificationPreferences,
+                    backgroundRenewalNotifier: BackgroundRenewalNotifier(),
                     signingPreferenceStore: signingPreferenceStore,
                     operationCoordinator: operationCoordinator,
                     maintenanceJob: maintenanceJob
@@ -234,7 +257,8 @@ struct AppContainer {
                     selfReplacementStore: transactionStore
                 ),
                 certificateExportHandler: certificateExportHandler,
-                backgroundKeepAlive: BackgroundKeepAliveService(logStore: logStore)
+                backgroundKeepAlive: BackgroundKeepAliveService(logStore: logStore),
+                logStore: logStore
             )
         } catch {
             let failure = ImportFailure(
@@ -250,7 +274,8 @@ struct AppContainer {
                     keychain: KeychainVault(),
                     signingPreferenceStore: SigningPreferenceStore()
                 ),
-                backgroundKeepAlive: BackgroundKeepAliveService(logStore: nil)
+                backgroundKeepAlive: BackgroundKeepAliveService(logStore: nil),
+                logStore: nil
             )
         }
     }

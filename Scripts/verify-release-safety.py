@@ -3419,6 +3419,93 @@ def violations(load=read):
           "副弧若乘非整圈系数（一圈只转 198°），相位回绕时会突兀反跳 162°、"
           "看起来像每秒抽一下（2026-09-28 用户反馈「动效很怪异」）")
 
+    # ── R106：锁屏下的「快捷指令续签」必须能读到钥匙串；成功后发系统通知（2026-09-28）──
+    #
+    # 现象：锁屏时用快捷指令续签，日志报成功、抽屉里全是失败。真机日志只剩一句
+    #   `Seal.KeychainError 1`（OSStatus 被 NSError 桥接丢掉 ⇒ 看不出是「设备锁定」）。
+    # 根因：钥匙串条目用的是 `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` —— 锁屏下
+    #   **读不到**账号密钥与 anisette，而快捷指令走的正是「不打开 App 的冷启动续签」
+    #   （`RefreshAllAppsIntent` 的 `openAppWhenRun = false`），每次都现读钥匙串 ⇒
+    #   抛 `KeychainError` ⇒ `RenewalCoordinator.isRetryable` 不认它 ⇒ 直接判失败进抽屉。
+    #   改写入常量只影响**新写入**的条目，而 profile-only 续签**根本不写钥匙串**（只读）⇒
+    #   已加过账号的老设备必须靠**一次性迁移**把旧条目改成「首次解锁后可读」。
+    # 判据：① 可访问性常量必须是 `AfterFirstUnlockThisDeviceOnly`，两个 store 都改用它，
+    #   写入路径不得再出现 `WhenUnlocked`；
+    #   ② 迁移必须**同步**跑，且 `SealApp.init()` 与 `RootTabView(scenePhase == .active)`
+    #   两处都要接（锁屏冷启动那次会被系统拒绝，靠回前台补做）；
+    #   ③ `KeychainError` 必须把真实 OSStatus 暴露成 `NSError.code`（否则又变回恒 1）；
+    #   ④ 通知只服务快捷指令：请求级标记要**消费并清位**、`shouldNotify` 只在有成功项时为真；
+    #   ⑤ 新增的四个日志码必须登记进 `docs/qa/log-code-index.md`。
+    r106_access = strip_comments(load("Seal/Infrastructure/Security/KeychainAccessibility.swift"))
+    r106_vault = strip_comments(load("Seal/Infrastructure/Security/KeychainVault.swift"))
+    r106_anisette = strip_comments(load("Seal/Infrastructure/Accounts/AnisetteProvisioningStore.swift"))
+    r106_container = strip_comments(load("Seal/Application/AppContainer.swift"))
+    r106_app = load("Seal/App/SealApp.swift")
+    r106_root = load("Seal/App/RootTabView.swift")
+    r106_view_model = strip_comments(load("Seal/Features/Apps/AppsViewModel.swift"))
+    r106_notifier = load("Seal/Infrastructure/Notifications/BackgroundRenewalNotifier.swift")
+    r106_index = load("docs/qa/log-code-index.md")
+
+    check("static let value: CFString = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly"
+          in r106_access
+          and "kSecAttrAccessibleWhenUnlockedThisDeviceOnly" not in r106_access
+          and "SealKeychainAccessibility.value" in r106_vault
+          and "SealKeychainAccessibility.value" in r106_anisette
+          and "kSecAttrAccessibleWhenUnlockedThisDeviceOnly" not in r106_vault
+          and "kSecAttrAccessibleWhenUnlockedThisDeviceOnly" not in r106_anisette,
+          "R106①: 钥匙串可访问性必须是「首次解锁后可读」且两个 store 都用它 ✗ —— "
+          "退回 `WhenUnlockedThisDeviceOnly` ⇒ 锁屏下快捷指令续签读不到账号密钥 / anisette ⇒ "
+          "`Seal.KeychainError` ⇒ 不重试、直接失败（真机表现：日志说成功、抽屉全红）")
+
+    r106_root_active = "guard phase == .active else { return }"
+    check("KeychainAccessibilityMigrator.runSynchronously()" in r106_container
+          and "Task { await KeychainAccessibilityMigrator.log(" in r106_container
+          and r106_app.count("container.migrateKeychainAccessibilityIfNeeded()") == 2
+          and r106_root_active in r106_root
+          and "migrateKeychainAccessibility()" in r106_root
+          and r106_root.index(r106_root_active) < r106_root.index("migrateKeychainAccessibility()"),
+          "R106②: 钥匙串迁移必须**同步**跑且**两个调用点**都在 ✗ —— "
+          "① 做成 `Task` 会和续签抢时序（迁移必须早于那次钥匙串读取）；"
+          "② 只挂 `SealApp.init()` 有真实缺口：锁屏冷启动那次迁移会被系统拒绝"
+          "（`errSecInteractionNotAllowed`），而保活让进程活很久、`init()` 不会再跑 ⇒ "
+          "必须靠 `RootTabView` 的 `scenePhase == .active` 补做，否则锁屏续签一直修不好")
+
+    check("extension KeychainError: CustomNSError" in r106_vault
+          and "var errorCode: Int { Int(status) }" in r106_vault
+          and "case errSecInteractionNotAllowed:" in r106_vault,
+          "R106③: `KeychainError` 必须把真实 OSStatus 暴露成 `NSError.code` ✗ —— "
+          "不实现 `CustomNSError` 时桥接后 code 恒为 1、文案是系统默认 ⇒ "
+          "真机日志只剩一句 `Seal.KeychainError 1`，分不清「设备锁定」和「条目不存在」"
+          "（2026-09-28 正是被这句话带偏了一整轮排查）")
+
+    check("private var backgroundTriggerRequested = false" in r106_view_model
+          and "let requested = backgroundTriggerRequested\n        backgroundTriggerRequested = false"
+          in r106_view_model
+          and "let wasBackgroundTriggered = consumeBackgroundTriggerFlag()\n"
+              "        guard let renewalCoordinator else { return }" in r106_view_model
+          and "guard wasBackgroundTriggered else { return }" in r106_view_model
+          and "var shouldNotify: Bool { succeeded > 0 }" in r106_notifier,
+          "R106④: 快捷指令续签通知必须只认「后台点火 + 有成功项」✗ —— "
+          "① 标记必须在 `runBatchRefresh` **入口**消费并清位（紧跟第一条 `guard` 之前）："
+          "本轮有三条**不产生 result** 的出口（`renewalCoordinator` 缺失、抢不到操作锁、"
+          "`refreshAll` 直接抛错），只在成功路径清位会让标记**跨轮存活** ⇒ "
+          "「快捷指令失败一次、之后手动点续签全部」误发一条本不该有的通知；"
+          "② `shouldNotify` 只看 `succeeded > 0`：全失败 / 全未执行时弹通知既不解决问题、"
+          "又会和「续签成功」这条通知的语义混在一起")
+
+    check('code: "SEAL-BACKGROUND-015"' in r106_view_model
+          and 'code: "SEAL-KEYCHAIN-001"' in r106_access
+          and 'code: "SEAL-KEYCHAIN-002"' in r106_access
+          and 'code: "SEAL-KEYCHAIN-003"' in r106_access
+          and "`SEAL-BACKGROUND-015`" in r106_index
+          and "`SEAL-KEYCHAIN-001`" in r106_index
+          and "`SEAL-KEYCHAIN-002`" in r106_index
+          and "`SEAL-KEYCHAIN-003`" in r106_index,
+          "R106⑤: 迁移与后台续签通知的四个码必须留痕**并登记进 "
+          "`docs/qa/log-code-index.md`** ✗ —— "
+          "「用户说没收到通知」与「其实没给权限」、"
+          "「锁屏续签失败」与「条目本来就不存在」全靠这几条码分辨")
+
     # Fast IPA 的产物由 build-unsigned-ipa.sh 按版本命名为 Seal_<version>.ipa。
     # 验证/上传若退回旧的 Seal.ipa 固定名，会在编译成功后误报文件不存在。
     ios_fast = load(".github/workflows/ios-fast.yml")
@@ -9744,6 +9831,47 @@ def main():
          "func portLevelReadinessReasonMapsToReprobeCode()",
          "func portLevelReadinessReasonMapsToCode()",
          "R104④:"),
+        # ── R106：锁屏下的「快捷指令续签」钥匙串可读 + 成功后发系统通知 ──
+        # ① 可访问性退回 `WhenUnlockedThisDeviceOnly`（锁屏读不到 ⇒ 后台续签全失败）⇒ R106① 报红。
+        ("Seal/Infrastructure/Security/KeychainAccessibility.swift",
+         "static let value: CFString = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly",
+         "static let value: CFString = kSecAttrAccessibleWhenUnlockedThisDeviceOnly",
+         "R106①:"),
+        # ② 只留 `SealApp.init()` 一个调用点（锁屏冷启动迁移被拒后没人补做）⇒ R106② 报红。
+        ("Seal/App/SealApp.swift",
+         "                migrateKeychainAccessibility: {\n"
+         "                    container.migrateKeychainAccessibilityIfNeeded()\n",
+         "                migrateKeychainAccessibility: {\n",
+         "R106②:"),
+        # ③ `errorCode` 退回恒 1（真机日志又只剩 `Seal.KeychainError 1`）⇒ R106③ 报红。
+        ("Seal/Infrastructure/Security/KeychainVault.swift",
+         "var errorCode: Int { Int(status) }",
+         "var errorCode: Int { 1 }",
+         "R106③:"),
+        # ④ 标记不再清位（「快捷指令失败一次 + 之后手动续签」误发通知）⇒ R106④ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "        let requested = backgroundTriggerRequested\n"
+         "        backgroundTriggerRequested = false\n",
+         "        let requested = backgroundTriggerRequested\n",
+         "R106④:"),
+        # ⑤ `shouldNotify` 改成恒真（全失败也弹通知）⇒ R106④ 报红。
+        ("Seal/Infrastructure/Notifications/BackgroundRenewalNotifier.swift",
+         "var shouldNotify: Bool { succeeded > 0 }",
+         "var shouldNotify: Bool { true }",
+         "R106④:"),
+        # ⑥ 通知码改名（码表查不到 ⇒ 用户报「没收到通知」时无从判读）⇒ R106⑤ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         'code: "SEAL-BACKGROUND-015"',
+         'code: "SEAL-BACKGROUND-016"',
+         "R106⑤:"),
+        # ⑦ 清位挪到第一条 `guard` 之后（三条不产生 result 的出口会让标记跨轮存活 ⇒
+        #    「快捷指令失败一次 + 之后手动续签」误发通知）⇒ R106④ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "        let wasBackgroundTriggered = consumeBackgroundTriggerFlag()\n"
+         "        guard let renewalCoordinator else { return }\n",
+         "        guard let renewalCoordinator else { return }\n"
+         "        let wasBackgroundTriggered = consumeBackgroundTriggerFlag()\n",
+         "R106④:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

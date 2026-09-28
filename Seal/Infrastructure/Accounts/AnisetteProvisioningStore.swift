@@ -15,7 +15,7 @@ actor KeychainAnisetteProvisioningStore: AnisetteProvisioningStore {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    init(service: String = "com.mjorb.seal.anisette-v3") {
+    init(service: String = SealKeychainServices.anisetteProvisioning) {
         self.service = service
     }
 
@@ -38,8 +38,9 @@ actor KeychainAnisetteProvisioningStore: AnisetteProvisioningStore {
         let query = query(account: "identifier")
         let attributes: [String: Any] = [
             kSecValueData as String: data,
-            kSecAttrAccessible as String:
-                kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            // 必须是「首次解锁后可读」：锁屏下后台续签每次 Apple 请求都要读 anisette，
+            // 用 `WhenUnlocked` 会直接失败（见 `SealKeychainAccessibility`）。
+            kSecAttrAccessible as String: SealKeychainAccessibility.value
         ]
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
@@ -79,8 +80,8 @@ actor KeychainAnisetteProvisioningStore: AnisetteProvisioningStore {
         let data = try encoder.encode(state)
         let attributes: [String: Any] = [
             kSecValueData as String: data,
-            kSecAttrAccessible as String:
-                kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            // 同 `saveIdentifier`：锁屏下要能读到，否则后台续签的 Apple 请求全部失败。
+            kSecAttrAccessible as String: SealKeychainAccessibility.value
         ]
         let query = query(account: "provisioning")
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)

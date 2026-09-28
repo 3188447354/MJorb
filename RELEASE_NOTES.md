@@ -1,3 +1,53 @@
+# 1.3.31 锁屏下用快捷指令续签必须成功 + 成功后发系统通知
+
+这一版修**锁屏状态**下用快捷指令续签失败的问题，并补上「快捷指令续签成功」的系统通知。
+不改签名算法、不改描述文件申请、不改安装包，判据与安全边界都不放松。
+
+## 一、锁屏时用快捷指令续签：日志说成功、抽屉里全红
+
+- **现象**（用户真机）：锁屏状态下用快捷指令续签，日志记成功，但打开 Seal 抽屉里全是失败。
+  真实结果是**失败**，日志误判了。日志里只剩一句 `Seal.KeychainError 1`。
+- **根因**：不打开 App 的续签由快捷指令在**锁屏**时冷启动进程触发
+  （`RefreshAllAppsIntent` 的 `openAppWhenRun = false`），而这条链路**每次都现读钥匙串**
+  （账号密钥 + anisette），进程里没有任何内存缓存。条目用的是
+  `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` ⇒ **锁屏下读不到** ⇒ 抛 `KeychainError`
+  ⇒ `RenewalCoordinator.isRetryable` 不认它（不是通道瞬时错误、不是网络错误）⇒ 不重试、
+  直接判失败进抽屉。另外 `KeychainError` 未实现 `CustomNSError`，桥接成 `NSError` 后
+  **code 恒为 1**，把「设备锁定」和「条目不存在」混成同一句话。
+- **修复**：
+  ① 写入权限改为 `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`（锁屏可读，仍保留
+     `ThisDeviceOnly` ⇒ 口令与私钥**不随 iCloud 同步**），`KeychainVault` 与
+     `AnisetteProvisioningStore` 两处 store 都改；
+  ② 新增**一次性迁移**（`KeychainAccessibilityMigrator`）：改常量只影响**新写入**的条目，
+     而 profile-only 续签**根本不写钥匙串**（只读）⇒ 已加过账号的老设备必须把旧条目迁过去。
+     迁移在 `SealApp.init()` **同步**跑（早于任何钥匙串读取），并在 `RootTabView` 的
+     `scenePhase == .active` **补做**（锁屏冷启动那次会被系统拒绝，靠解锁回前台补迁）；
+  ③ `KeychainError` 实现 `CustomNSError`，把真实 OSStatus 暴露成 `NSError.code`，
+     并提供「设备已锁定」这类可直接判断下一步的文案。
+- 【验证】锁屏状态下用快捷指令续签，账号密钥与 anisette 可正常读取，续签成功；
+  日志出现 `SEAL-KEYCHAIN-001`（迁移完成），不再出现 `Seal.KeychainError 1`。
+
+## 二、快捷指令续签成功后的系统通知
+
+- **需求**：**只有**通过快捷指令续签成功才发系统通知，Seal 内手动续签不发。
+- **实现**：`AppsViewModel` 用请求级标记记录「这一轮是快捷指令点火的」，在
+  `runBatchRefresh` **入口处**（任何 `guard` / `throw` 之前）**消费并清位** ——
+  本轮有三条不产生结果的出口（协调器缺失、抢不到操作锁、续签直接抛错），
+  放到收尾处清位会让标记跨轮存活、让之后的手动续签误发通知；
+  `BackgroundRenewalNotifier` 只在**至少一项真的成功**时投递一条
+  「Seal 续签完成 / 部分完成」。全失败 / 全未执行**刻意不发**（那属于「用户需要处理」，
+  界面与日志已有引导）。用户没给通知权限时只留日志、不在后台索要权限。
+- 【验证】快捷指令后台续签成功后收到系统通知；Seal 内手动「续签全部」不发通知；
+  日志出现 `SEAL-BACKGROUND-015`（带投递结果）。
+
+## 守卫
+
+- 新增 **R106**（锁屏续签的钥匙串可访问性 + 迁移接线 + 错误码归因 + 后台通知判据 + 码表登记，
+  含 7 条变异自检）。
+- 本机 `Scripts/verify-release-safety.py`：**788 断言 / 556 变异，PASS**。
+
+---
+
 # 1.3.30 「Wi-Fi 与 LocalDevVPN 都连了」也必须能签名续签：端口自愈补齐到配对校验路径
 
 这一版只修**设备通道**这条链路，目标很明确：**用户做对了操作（Wi-Fi 与 LocalDevVPN 都连上），

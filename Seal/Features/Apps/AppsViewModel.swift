@@ -66,12 +66,24 @@ final class AppsViewModel: ObservableObject {
     private let signingHistoryStore: SigningHistoryStore?
     private let notificationScheduler: ExpiryNotificationScheduler?
     private let notificationPreferences: NotificationPreferences?
+    private let backgroundRenewalNotifier: BackgroundRenewalNotifier?
     private let signingPreferenceStore: SigningPreferenceStore?
     private let operationCoordinator: OperationCoordinator?
     private let maintenanceJob: AppMaintenanceJob?
     private var signingTask: Task<Void, Never>?
     private var batchRefreshTask: Task<Void, Never>?
     private var channelTask: Task<Bool, Never>?
+    /// 「这一轮批量续签是**快捷指令在后台**点火的」—— 请求级瞬态标记。
+    ///
+    /// 🔴 用途只有一个：决定批量收尾时要不要发系统通知。用户明确要求
+    /// **「只有快捷指令续签成功才通知，Seal 内手动续签不通知」**。
+    ///
+    /// 🔴 必须在 `runBatchRefresh` **入口处**（任何 `guard` / `throw` 之前）消费并清位 ——
+    /// 那里就是「一轮」的起点。放到拿到 `result` 之后清位是错的：本轮有三条**不产生
+    /// `result`** 的出口（`renewalCoordinator` 缺失、抢不到操作锁、`refreshAll` 直接抛错），
+    /// 标记会**跨轮存活** ⇒ 用户先跑一次失败的快捷指令、再手动点「续签全部」时
+    /// 就会收到一条本不该有的通知（用户明确要求手动续签不通知）。
+    private var backgroundTriggerRequested = false
     /// 「撤销并继续签名」（SEAL-CERT-204e）确认后，因证书被撤而失效、待自动重签的已装 App。
     /// 仅本次签名重试成功后才会消费；重试失败时清空并提示手动续签。
     private var certificateSacrificeResignQueue: [UUID] = []
@@ -113,6 +125,7 @@ final class AppsViewModel: ObservableObject {
         signingHistoryStore: SigningHistoryStore,
         notificationScheduler: ExpiryNotificationScheduler,
         notificationPreferences: NotificationPreferences,
+        backgroundRenewalNotifier: BackgroundRenewalNotifier? = nil,
         signingPreferenceStore: SigningPreferenceStore,
         operationCoordinator: OperationCoordinator? = nil,
         maintenanceJob: AppMaintenanceJob? = nil
@@ -129,6 +142,7 @@ final class AppsViewModel: ObservableObject {
         self.signingHistoryStore = signingHistoryStore
         self.notificationScheduler = notificationScheduler
         self.notificationPreferences = notificationPreferences
+        self.backgroundRenewalNotifier = backgroundRenewalNotifier
         self.signingPreferenceStore = signingPreferenceStore
         self.operationCoordinator = operationCoordinator
         self.maintenanceJob = maintenanceJob
@@ -152,6 +166,7 @@ final class AppsViewModel: ObservableObject {
         signingHistoryStore = nil
         notificationScheduler = nil
         notificationPreferences = nil
+        backgroundRenewalNotifier = nil
         signingPreferenceStore = nil
         operationCoordinator = nil
         maintenanceJob = nil
@@ -177,6 +192,7 @@ final class AppsViewModel: ObservableObject {
         signingHistoryStore = nil
         notificationScheduler = nil
         notificationPreferences = nil
+        backgroundRenewalNotifier = nil
         signingPreferenceStore = nil
         operationCoordinator = nil
         maintenanceJob = nil
@@ -1727,6 +1743,9 @@ final class AppsViewModel: ObservableObject {
                 )
                 return
             }
+            // 标记「这一轮是快捷指令点火的」—— 批量收尾处据此决定要不要发系统通知。
+            // ⚠️ 放在让位 `guard` **之后**：被让位时本轮根本没跑，不该给用户发通知。
+            self.backgroundTriggerRequested = true
             self.refreshAll()
         }
     }
@@ -1970,6 +1989,12 @@ final class AppsViewModel: ObservableObject {
     }
 
     private func runBatchRefresh(appIDs: [UUID]? = nil) async {
+        // 🔴 **第一件事就是读并清位**：标记只属于「这一轮」，而本函数就是那一轮。
+        // 放在这里（而不是拿到 `result` 之后）是因为本轮有三条**不产生 result** 的出口 ——
+        // `renewalCoordinator` 缺失、抢不到操作锁、以及 `refreshAll` 直接抛错 ——
+        // 若只在成功路径清位，标记会**跨轮存活**：用户先跑一次失败的快捷指令续签、
+        // 之后手动点「续签全部」时会收到一条本不该有的通知（用户明确要求手动续签不通知）。
+        let wasBackgroundTriggered = consumeBackgroundTriggerFlag()
         guard let renewalCoordinator else { return }
         guard let operationLease = await acquireOperation(.renewing) else {
             batchRefreshSession = nil
@@ -1995,6 +2020,7 @@ final class AppsViewModel: ObservableObject {
             } else {
                 result = try await renewalCoordinator.refreshAll(progress: progress)
             }
+            // 拿到结果就发通知（标记已在函数入口读并清位，见那里的说明）。
             if result.total == 0 {
                 batchRefreshSession = nil
                 alertFailure = ImportFailure(
@@ -2019,6 +2045,10 @@ final class AppsViewModel: ObservableObject {
                     level: (result.failed == 0 && result.needsAction == 0 && result.awaitingConfirmation == 0) ? .info : .warning,
                     message: "续签完成：共 \(result.total)，成功 \(result.succeeded)，失败 \(result.failed)，未执行 \(result.needsAction)，等待 Seal 新进程核验 \(result.awaitingConfirmation)",
                     code: "SEAL-RENEW-009"
+                )
+                await notifyBackgroundRenewalIfNeeded(
+                    wasBackgroundTriggered: wasBackgroundTriggered,
+                    result: result
                 )
                 if result.needsAction > 0 {
                     // 必须显式说出来：这些应用**根本没被处理**，而列表里它们只是「等待中」，
@@ -2049,6 +2079,59 @@ final class AppsViewModel: ObservableObject {
             )
         }
         batchRefreshTask = nil
+    }
+
+    /// 读一次并清位。**只在批量拿到结果后调用** —— 保证标记跟着这一轮走、不留给下一轮。
+    private func consumeBackgroundTriggerFlag() -> Bool {
+        let requested = backgroundTriggerRequested
+        backgroundTriggerRequested = false
+        return requested
+    }
+
+    /// 快捷指令后台续签成功后的**系统通知**。
+    ///
+    /// 🔴 只有快捷指令点火的那一轮会走到这里（`wasBackgroundTriggered` 来自
+    /// `refreshAllFromBackgroundTrigger()` 置的请求级标记）；Seal 内手动「续签全部」
+    /// 永远是 `false`，用户明确要求手动续签不发通知。
+    ///
+    /// 判据与文案在 `BackgroundRenewalNotificationResult`（纯类型、可单测）；
+    /// 没权限时只留日志、不去要权限（原因见 `BackgroundRenewalNotifier`）。
+    private func notifyBackgroundRenewalIfNeeded(
+        wasBackgroundTriggered: Bool,
+        result: BatchRefreshResult
+    ) async {
+        guard wasBackgroundTriggered else { return }
+        guard let backgroundRenewalNotifier else { return }
+        let delivery = await backgroundRenewalNotifier.post(
+            BackgroundRenewalNotificationResult(
+                total: result.total,
+                succeeded: result.succeeded,
+                failed: result.failed,
+                needsAction: result.needsAction
+            )
+        )
+        // 无论发没发都留痕：真机上「用户说没收到通知」与「其实没给权限」必须能分辨。
+        try? await logStore?.append(
+            category: .renewal,
+            level: delivery == .delivered ? .info : .warning,
+            message: "快捷指令后台续签通知：\(Self.describeNotificationDelivery(delivery))",
+            code: "SEAL-BACKGROUND-015"
+        )
+    }
+
+    private static func describeNotificationDelivery(
+        _ delivery: BackgroundRenewalNotificationDelivery
+    ) -> String {
+        switch delivery {
+        case .delivered:
+            return "已发出（快捷指令后台续签成功）"
+        case .skippedNoSuccess:
+            return "本轮没有成功续签的项，按规则不发"
+        case .skippedNotAuthorized:
+            return "用户未开启 Seal 的通知权限，未发出"
+        case .failed(let detail):
+            return "投递失败：\(detail)"
+        }
     }
 
     /// 批量续签失败文案引导：认证/会话类问题统一引导到“我的”页重新验证；

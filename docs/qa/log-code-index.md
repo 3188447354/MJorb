@@ -116,6 +116,7 @@
 | `SEAL-BACKGROUND-012` | 后台保活已从**媒体服务重置**中恢复（媒体守护进程崩溃重启，**重建播放器**）—— **信息级**。旧 `AVAudioPlayer` 已作废，只 `play()` 不够 | `BackgroundKeepAliveService.swift` |
 | `SEAL-BACKGROUND-013` | 后台保活**恢复失败**（媒体服务重置后，带底层原因）—— **警告级**。下一次切后台起 Seal 会被挂起 | `BackgroundKeepAliveService.swift` |
 | `SEAL-BACKGROUND-014` | 后台触发**让位**：已有签名 / 续签（或导入配对、管理证书等占着通道的操作）尚未完成，本轮**不重复点火** —— **信息级**。看到它说明「快捷指令这一轮没续上」不是失败，而是进行中的那一轮会完成续签；没有这条日志时，「没续上」与「其实被让位」在日志上长得一模一样 | `AppsViewModel.swift` |
+| `SEAL-BACKGROUND-015` | 快捷指令后台续签**系统通知**的投递结果（已发出 / 本轮无成功项按规则不发 / 用户未开通知权限 / 投递失败带原因）—— **信息级**（未发出为警告级）。用户报「快捷指令续签成功但没收到通知」时，先用这条分清「其实没给通知权限」与「真的投递失败」 | `AppsViewModel.swift` |
 
 ## 操作仲裁
 
@@ -141,6 +142,20 @@
 |---|---|---|
 | `SEAL-PAIR-209` | 未存有可导出的配对文件 | `PairingStore.swift` |
 | `SEAL-PAIR-209a` | 本机配对文件读取或结构复核失败，无法导出 | `SettingsViewModel.swift` |
+
+## 钥匙串可访问性
+
+> 背景：锁屏下用**快捷指令**续签（`openAppWhenRun = false`，进程在锁屏时冷启动）时，
+> 每次都要**现读**钥匙串（账号密钥 + anisette）。条目若还是 `WhenUnlockedThisDeviceOnly`
+> 就**读不到** ⇒ 抛 `Seal.KeychainError` ⇒ 续签直接失败。真机日志一度只剩一句
+> `Seal.KeychainError 1`（OSStatus 被 NSError 桥接丢掉），看起来像「钥匙串里没有」，
+> 其实是**设备锁定**。修复 = 写入改用「首次解锁后可读」＋ 把升级前的旧条目**一次性迁移**过去。
+
+| 码 | 它在说什么 | 出处 |
+|---|---|---|
+| `SEAL-KEYCHAIN-001` | 钥匙串可访问性**已迁移**为「首次解锁后可读」，锁屏下的后台续签可正常读取账号密钥与 anisette —— **信息级**，只在真的改过条目时记一次 | `KeychainAccessibility.swift` |
+| `SEAL-KEYCHAIN-002` | 迁移时**设备仍锁定**，本次未完成（`errSecInteractionNotAllowed`）—— **警告级**。不是失败：解锁后打开 Seal 会自动补迁；若用户始终不解锁，锁屏续签仍会失败 | `KeychainAccessibility.swift` |
+| `SEAL-KEYCHAIN-003` | 迁移**失败**（带各 service 的归类结果）—— **警告级**。下次启动重试；这条说明修复没能生效，锁屏续签会继续失败 | `KeychainAccessibility.swift` |
 
 ## 已从源码移除（旧日志里还会看到，**别当成现在还在报**）
 

@@ -53,8 +53,13 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
   证书签进新包 → iOS 判「尚未验证」闪退。复用/新建各分支（快速路径列表命中、网络失败回退、
   慢速路径选中、账户证书、新建证书收尾）都要过 `SigningCertificateMaterialPolicy.reuseStatus` /
   `certificateReusable(_:)`。**网络失败回退本地证书也必须查有效期。**
-  ⚠️ 其中「快速路径列表命中」与「网络失败回退」两支目前既无守卫也无单测（`signingIdentity` 是
+  ⚠️ 其中「快速路径列表命中」与「网络失败回退」两支**单测仍缺**（`signingIdentity` 是
   actor private 且含网络）—— 改这两支时先把它抽成纯函数再改。
+  ✅ 但**源码断言守卫已在**（R102①，2026-09-28 补）：钉住这两支各自的校验形态
+  （`}), Self.certificateReusable(local) {` / `if Self.certificateReusable(local) {`）
+  —— 判据写成「每一支的形态各自存在」而不是 `count == 2`（后者删一支再补一处即可假绿）。
+  缺守卫正是它最容易再次退化的原因：删掉调用编译照过、其余检查照绿，
+  只有真机上「次日到期的证书被签进新包 ⇒ iOS 判尚未验证闪退」。
 - 序列号跨来源比对必须**归一化（去前导零/大小写）**，否则误判「证书已轮换」（`normalizedSerialNumber`）。
 - 签名/续签处于 LocalDevVPN 环境，无法可靠自动重登 Apple；会话过期统一引导到「我的」页重新验证，
   **不要实现会触发 2FA 的签名页验证码路径**。
@@ -226,6 +231,11 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
 - **真机优先**：涉及安装/installd 的改动必须走回归样本真机验证（见 `docs/qa/device-regression-checklist.md`）；
   单测/编译通过 ≠ 可用。
 - **自证**：不声称「已修复/已完成」直到有验证证据。
+- 🔴 **守卫 PASS ≠ 能编译**（2026-09-28 实证）：`verify-release-safety.py` 是**纯静态文本
+  断言**，不编译 Swift；`build-package` job **不编译测试 target** ⇒ 改了 `SealTests/**`
+  之后，**只有 `swift-regression` 能暴露编译错误**。那次 `Int(3.9 * 86_400)` 传给
+  `addingTimeInterval`（要 `Double`）就是这么漏过去的：守卫 776 checks 全绿、
+  `build-package` ✓，`swift-regression` ✗。**别拿「守卫全绿」当「可以发布」**。
 - **纯函数化才能测**：判据落在 actor / 网络 / `#if !targetEnvironment(simulator)` 里就测不到。
   新增不变量时把判定抽成可单测的纯函数（`errorDetail`/`isTerminalInstallError`/
   `InstallFailureActionPolicy` 都是这么挪出 `#if` 的），并补一条守卫测试。

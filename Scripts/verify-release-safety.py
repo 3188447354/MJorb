@@ -3309,6 +3309,27 @@ def violations(load=read):
           and "SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: remote.serialNumber)" in reuse_section
           and "Self.certificateReusable(local)" in reuse_section,
           "Certificates: signing must reuse any stored P12 whose remote certificate is still active")
+    # ── R102：快速路径的两支都要过**完整 7 天**复用校验（2026-09-28 补守卫）──
+    #
+    # 旧记录（AGENTS.md §3）说这两支「既无守卫也无单测」。2026-09-28 逐行复核：
+    # **代码守卫已在**（两支都调 `Self.certificateReusable(local)`），缺的是**守卫/单测**
+    # —— 而缺守卫正是它最容易再次退化的原因（把 `Self.certificateReusable(local)` 删掉
+    # 编译照过、其余检查照绿，只有真机上「次日到期的证书被签进新包 ⇒ iOS 判尚未验证闪退」）。
+    # ⇒ 按本仓惯例把不变量钉成源码断言（判据本体 `SigningCertificateMaterialPolicy.reuseStatus`
+    # 已是纯函数，另有 R54 系列钉住它本身）。
+    fast_path = section(
+        signing_service,
+        "// 快速路径：本地证书可读时先做",
+        "// 慢速路径：本地证书不可用，从 Apple 服务器获取证书列表。",
+    )
+    # 判据写成「**每一支的形态各自存在**」而不是 `count == 2`：后者会假绿
+    # —— 删掉一支的校验、同时在别处再添一次同样的调用，计数照样是 2。
+    check(fast_path.count("Self.certificateReusable(local)") == 2
+          and "}), Self.certificateReusable(local) {" in fast_path
+          and "if Self.certificateReusable(local) {" in fast_path,
+          "R102①: 快速路径的两支（Apple 列表命中 / 列表拉取失败回退本地）都必须过"
+          "**完整 7 天**复用校验 ✗ —— 少一支就会把次日到期的证书签进新包，"
+          "iOS 判「尚未验证」闪退（AGENTS.md §3 签名）")
     check("isCertificateImporterPresented" not in cert_view
           and "从 P12 备份恢复本机私钥" not in cert_view,
           "Certificates: UI must not expose P12 recovery (removed, one cert per Apple ID)")
@@ -3316,6 +3337,27 @@ def violations(load=read):
           and "nonLocalCertificates" in cert_view
           and "CertificateRevocationImpact.isLocalCertificate(" in cert_view,
           "Certificates: manual revoke must be gated to non-local certificates")
+
+    # ── R103：证书导出**不得**把 Apple ID 密码当成证书密码（2026-09-28 补守卫）──
+    #
+    # `CertificateExportHandler` 会把证书 base64 与密码拼进 URL 交给外部应用
+    #（LiveContainer 等）。旧实现用 `secret.password`（= **Apple ID 账号口令**，见
+    # `AccountSecret.password` 注释）当证书密码 ⇒ 既把账号口令泄露给第三方，又解不开包
+    #（Seal 的 P12 由 AltSign/OpenSSL 生成、**本身无密码**，全仓解析处一律
+    # `ALTCertificate(p12Data:password:nil)`）。这是**安全**不变量，退化后编译照过、
+    # 其余检查照绿 ⇒ 必须钉成源码断言。
+    cert_export = load("Seal/Infrastructure/Accounts/CertificateExportHandler.swift")
+    check("secret.password" not in cert_export
+          and 'let password = ""' in cert_export,
+          "R103①: 证书导出不得把 `secret.password`（Apple ID 账号口令）当证书密码 ✗ —— "
+          "它会被拼进 URL 交给外部应用：既泄露账号口令给第三方，又解不开包"
+          "（Seal 的 P12 无密码，解析处一律 `password:nil`）")
+    # ② base64 必须按 query 规则转义：`+` 在 query 里会被解成**空格**、`/` `=` 也会被
+    #    目标解析器误读 ⇒ 传过去的是**损坏的证书**（表现为「导入失败」而非报错）。
+    check("Self.urlQueryEncoded(base64Cert)" in cert_export
+          and "allowed.remove(charactersIn: \";/?:@&=+$, \")" in cert_export,
+          "R103②: 导出的 base64 必须过 URL query 转义（剔掉 `+ / = ; ,` 等）✗ —— "
+          "否则 `+` 被解成空格、证书传过去即损坏（表现为目标应用「导入失败」）")
 
     # Fast IPA 的产物由 build-unsigned-ipa.sh 按版本命名为 Seal_<version>.ipa。
     # 验证/上传若退回旧的 Seal.ipa 固定名，会在编译成功后误报文件不存在。
@@ -9595,6 +9637,30 @@ def main():
          "let isUrgent = days <= 3",
          "let isUrgent = interval < 4 * 86_400",
          "R101②:"),
+        # ── R102：快速路径两支各自的 7 天复用校验 ──
+        # ① 抹掉「Apple 列表命中」那一支的复用校验（`}), Self.certificateReusable(local) {`
+        #    → `}) {`）⇒ 该支恒复用、次日到期证书被签进新包 ⇒ R102① 报红。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "}), Self.certificateReusable(local) {",
+         "}) {",
+         "R102①:"),
+        # ② 抹掉「列表拉取失败回退本地」那一支的复用校验（`if Self.certificateReusable(local) {`
+        #    → `if true {`）⇒ R102① 报红。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "if Self.certificateReusable(local) {",
+         "if true {",
+         "R102①:"),
+        # ── R103：证书导出的安全不变量 ──
+        # ① 退回「用 Apple ID 账号口令当证书密码」⇒ R103① 报红。
+        ("Seal/Infrastructure/Accounts/CertificateExportHandler.swift",
+         'let password = ""',
+         'let password = secret.password ?? ""',
+         "R103①:"),
+        # ② 退回「不做 URL query 转义」⇒ R103② 报红。
+        ("Seal/Infrastructure/Accounts/CertificateExportHandler.swift",
+         'allowed.remove(charactersIn: ";/?:@&=+$, ")',
+         'allowed.remove(charactersIn: "")',
+         "R103②:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

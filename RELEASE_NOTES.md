@@ -1,8 +1,8 @@
 # 1.3.29 批量续签重试也重建设备通道 + 已安装列表剩余天数显示「7 天」
 
 这一版把**批量 / 后台续签的重试**补齐成与单签**同源**的一处恢复动作（这是「快捷指令 /
-手动续签整轮全失败」的直接原因），另修三处稳健性与两处显示问题。不改签名算法、不改描述
-文件申请、不改安装包，判据与安全边界都不放松。
+手动续签整轮全失败」的直接原因），另修**七处稳健性、一处证书导出安全问题**与两处显示问题。
+不改签名算法、不改描述文件申请、不改安装包，判据与安全边界都不放松。
 
 ## 一、批量续签重试前重建「设备通道」（与单签同源，根治「重试三次全撞同一个死会话」）
 
@@ -40,19 +40,44 @@
 用户反馈「圆环过大、动效朴素」：直径 50→38、线宽 5→3.5，描边改**渐变色**；进度确定时补一层
 平滑推进动画，不确定态用**两段反向旋转的弧**（比单段更像「在推进」）。
 
-## 四、同批三处稳健性修复
+## 四、同批稳健性修复（七处）
 
 - **安装失败取词与终端判定同源**：`MinimuxerInstallChannel.installationFailure` 改用
   `errorDetail`（`ImportFailure` 取 `reason`，其余走 `diagnostic`）—— 旧实现用 `diagnostic`
   对 `ImportFailure` 只经 `NSError` 桥接拿到 `title`，设备端确定性拒绝
   （`No space left` / `ApplicationVerificationFailed`）会被归入泛化 `SEAL-INSTALL-702`
   「安装失败」，而不是「设备存储空间不足」这类**可操作**的原因。
+- **自替换安装闸门：取消与超时同义**：`SelfReplacementInstallGate` 在安装被**取消**
+  （`CancellationError`）时也必须**保持置位**。取消只代表上层不再等待 —— 承载安装的是
+  `Task.detached`（不继承取消）、`Minimuxer.stageAndInstall` 又是同步 FFI ⇒ 底下那笔安装
+  很可能仍在跑；旧写法只判超时，用户一取消就解锁，下一笔安装立刻在同一个 Bundle ID 上
+  **并发提交**（`ApplicationVerificationFailed` / 白图标 / 装到一半的应用）。
 - **描述文件清理的 dump 目录枚举失败改为 fail closed**：旧写法 `(try? ...) ?? []` 会把
   「枚举失败」退化成空清单，与「设备上确实没有 profile」**同形** ⇒ 清理静默不生效、profile
   继续堆积而日志看不出原因。现在拿不到清单就整轮不回收，并把真实原因写进 `stage` / `firstError`。
 - **日志导出也过脱敏**：`SealLogStore.exportText()`（= 镜像到 Documents 的 `Seal-log.txt`）
   对缓存条目再脱敏一次 —— `append` 只保证**新写入**的那份已脱敏，升级前遗留的未脱敏 JSON
   会被原样读进缓存后原样导出（公开仓库即泄露开发者账号）。
+- **到期提醒的提前量真正生效**：`ExpiryNotificationScheduler` 此前只调
+  `planner.plans(for:now:)`，**没把 `leadHours` 传下去** ⇒ 参数是死的、永远按默认 24 小时排期，
+  调用方设置的提前量被静默忽略。
+- **隧道掉线判定取词同源**：`DeviceChannelVPNDropPolicy` 改用
+  `MinimuxerInstallChannel.errorDetail`（而非 `NSError.localizedDescription`）—— 后者对
+  `MinimuxerError.InstallApp(deviceError)` 只剩一句泛化文案，`Broken pipe` /
+  `connection reset` 全丢 ⇒ 掉线恒判 false、死会话不被作废。
+- **更新弹窗消失即取消下载**：点「取消」后视图没了，但 `downloadTask` 仍持着闭包继续跑，
+  下载完成照样回调安装 ⇒ **用户明明点了取消，更新还是被装上**。现在 `onDisappear` 里取消。
+
+## 五、证书导出：不再把 Apple ID 账号口令交给外部应用，且修好 base64 转义
+
+- **安全问题**（自查发现）：`CertificateExportHandler` 把 `AccountSecret.password`（= **Apple ID
+  账号口令**）当成证书密码，拼进 `callback_template` 的 `$(PASSWORD)` 交给外部应用
+  （LiveContainer 等）。既**泄露账号口令**给第三方，又**解不开包** —— Seal 的 P12 由
+  AltSign/OpenSSL 生成、**本身没有密码**（全仓解析处一律 `ALTCertificate(p12Data:password:nil)`）。
+  上游 SideStore 传的是**证书自己的**密码；Seal 没有这一层封装 ⇒ 改为**空串**。
+- **转义修复**：导出的 base64 现在按 URL query 规则转义（剔掉 `+ / = ; ,`）—— 此前 `+` 在
+  query 里会被解成**空格**，`/` `=` 也会被目标解析器误读 ⇒ 传过去的是**损坏的证书**
+  （表现为目标应用「导入失败」而非报错）。
 
 ---
 

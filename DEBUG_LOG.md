@@ -5,6 +5,76 @@
 
 ---
 
+## 2026-09-28 CI `swift-regression` 编译失败：新测试把 `Int` 传给了 `TimeInterval`（守卫 PASS 也拦不住）
+
+- **现象**：`a64d2b9`（1.3.29）推送后 CI **`build-package` ✓、`signer-tests` ✓，只有
+  `swift-regression` ✗**，报
+  `AppPresentationTests.swift:53:48: cannot convert value of type 'Int' to expected argument type 'TimeInterval'`，
+  外加一条**级联**假错 `:57:39: cannot infer contextual base in reference to member 'renewal'`
+  （同一函数内前一条语句类型失败 ⇒ 后续 `#expect(presentation.kind == .renewal)` 被带崩）。
+- **根因**：新测试写 `now.addingTimeInterval(Int(3.9 * 86_400))`。`TimeInterval` 是 `Double`，
+  **整数字面量**（`-60` / `86_400`）能隐式转换，但 `Int(...)` 产生的是**真正的 `Int` 值**，
+  不会隐式转 `Double` ⇒ 编译失败。修法：去掉 `Int(...)`，直接写 `3.9 * 86_400`（已是 Double）。
+- **为什么守卫没拦住**：`verify-release-safety.py` 是**纯静态文本断言**，不编译 Swift；
+  而 `build-package` job **不编译测试 target** ⇒ 只有 `swift-regression` 能暴露。
+  **教训**：守卫 PASS ≠ 能编译。改测试文件后，`swift-regression` 是**唯一**关卡，
+  不要拿「守卫全绿」当「可以发布」。
+- **涉及文件**：`SealTests/Apps/AppPresentationTests.swift`。
+- **验证状态**：⏳ 待 CI `swift-regression` 复验。
+
+---
+
+## 2026-09-28 证书导出把 **Apple ID 账号口令**当证书密码回传外部应用（补守卫 R103）
+
+- **现象**：无用户上报 —— 这是**自查**出来的安全缺陷（写 R102 守卫时顺手复核
+  `CertificateExportHandler`）。
+- **根因**：`performExport` 取 `secret.password`（`AccountSecret.password` = **Apple ID
+  账号口令**）当证书密码，拼进 `callback_template` 的 `$(PASSWORD)` 交给外部应用
+  （LiveContainer 等）。两重危害：
+  ① 把账号口令泄露给第三方应用；
+  ② Seal 的 P12 由 AltSign/OpenSSL 生成、**本身没有密码**（全仓解析处一律
+     `ALTCertificate(p12Data:password:nil)`）⇒ 传过去的密码是错的，目标应用解不开包。
+  上游 SideStore 传的是**证书自己的**密码（`CertificateManager.getPassword(for:)` =
+  序列号），Seal 没有这一层封装 ⇒ 正确做法是**空串**。
+- **修复**：`let password = ""`；同时补 **URL query 转义**（`urlQueryEncoded`，从
+  `urlQueryAllowed` 再剔掉 `;/?:@&=+$, `）—— base64 里的 `+` 在 query 里会被解成**空格**、
+  `/` `=` 也会被目标解析器误读 ⇒ 不转义传过去的是**损坏的证书**（表现为「导入失败」
+  而非报错）。
+- **涉及文件**：`Seal/Infrastructure/Accounts/CertificateExportHandler.swift`（含顶部流程注释
+  与 `performExport` 内注释同步改写，避免注释与实现打架）。
+- **验证状态**：守卫 **R103①**（本文件不得出现取账号口令的属性路径、必须有 `let password = ""`）
+  与 **R103②**（base64 必须过 `urlQueryEncoded`）＋ 两条变异自检 —— 本地 **PASS
+  （778 checks / 545 mutations）**。⚠️ 本项**无单测** ——
+  `performExport` 是 `@MainActor` 且含 `UIApplication`/Keychain，判据抽纯函数的成本高于收益，
+  故只钉源码断言。
+
+---
+
+## 2026-09-28 快速路径两支的 7 天复用校验补源码守卫（R102）：此前只靠「记得别删」
+
+- **现象**：无真机现象 —— 这是一条**防退化**记录。AGENTS.md §3 一直写着
+  「快速路径列表命中 / 网络失败回退两支既无守卫也无单测」，但一直没补。
+- **根因**（为什么必须补）：这两支的 `Self.certificateReusable(local)` 是**唯一**把
+  「次日到期的证书」挡在新包之外的东西。把它删掉：**编译照过**、其余 700+ 条静态检查**照绿**，
+  只有真机上表现为「iOS 判尚未验证 ⇒ 一打开就闪退」。也就是说，它一旦被误删，
+  除了真机回归没有任何环节会拦住 —— 正是「必须钉成源码断言」的形态。
+- **修复**：`Scripts/verify-release-safety.py` 新增 **R102①**：取 `ApplePortalSigningService.swift`
+  的快速路径片段（`// 快速路径：…` → `// 慢速路径：…`），断言
+  - `fast_path.count("Self.certificateReusable(local)") == 2`，**且**
+  - 两支各自的形态都在：`}), Self.certificateReusable(local) {`（Apple 列表命中）
+    与 `if Self.certificateReusable(local) {`（列表拉取失败回退本地）。
+  - **为什么不只写 `count == 2`**：那会假绿 —— 删掉一支的校验、同时在别处再补一次同样的
+    调用，计数照样是 2。判据必须落在**每一支的形态**上。
+  - 同时补**两条变异自检**（抹掉任一支的校验 ⇒ R102① 必须报红），防止守卫本身空转。
+- **涉及文件**：`Scripts/verify-release-safety.py`、`AGENTS.md`（§3 签名把「既无守卫也无单测」
+  改成「单测仍缺、源码守卫已补」）。
+- **验证状态**：守卫本地两轮一致 **PASS（778 checks / 545 mutations）**，含 R102① 的两条变异。
+  ⚠️ **单测仍缺** ——
+  要真正可单测，得先把 `signingIdentity` 里这段「拉列表 + 两支回退」抽成纯函数，
+  本次只补了守卫，未动该结构（见 AGENTS.md §3）。
+
+---
+
 ## 2026-09-28 公开仓库泄露开发者账号：日志 / 文档 / 测试夹具里的真实 Apple ID 与 Team ID
 
 - **现象**（AGENTS.md §4 早先记为「已知违反」，一直没清）：`DEBUG_LOG.md`、`docs/qa/`、

@@ -2,13 +2,13 @@ import Foundation
 import UIKit
 
 /// 处理 LiveContainer 等外部应用通过 sidestore://certificate?callback_template=...
-/// 请求导出当前签名证书（P12 + 密码），对齐 SideStore 官方行为。
+/// 请求导出当前签名证书（P12），对齐 SideStore 官方行为。
 ///
 /// 流程：
 /// 1. 外部应用打开 sidestore://certificate?callback_template=...
 /// 2. Seal 弹确认框"是否导出证书"
-/// 3. 用户点 Export → 取当前活跃账号的 certificateP12 + password
-/// 4. 替换 callback_template 中的 $(BASE64_CERT) 和 $(PASSWORD)
+/// 3. 用户点 Export → 取当前活跃账号的 certificateP12（**不含** Apple ID 密码）
+/// 4. 替换 callback_template 中的 $(BASE64_CERT) 和 $(PASSWORD)（密码恒为空串，见 `performExport`）
 /// 5. 打开替换后的 callback URL，把证书回传给外部应用
 @MainActor
 final class CertificateExportHandler {
@@ -98,12 +98,13 @@ final class CertificateExportHandler {
             return
         }
 
-        // 🔴 不能把 `secret.password`（= **Apple ID 密码**，见 `AccountSecret.password` 注释）
+        // 🔴 不能把账号口令（`AccountSecret.password`，即 **Apple ID 密码**）
         // 当成证书密码导出（2026-09-28）：它会被拼进 URL 交给外部应用（LiveContainer 等），
         // 既把账号口令泄露给第三方，又解不开包 —— Seal 的 P12 由 AltSign/OpenSSL 生成、
         // **本身没有密码**（全仓解析处一律 `ALTCertificate(p12Data:password:nil)`，
         // 见 `ApplePortalSigningService`）。上游 SideStore 传的是**证书自己的**密码
         // （`CertificateManager.getPassword(for:)` = 序列号）；Seal 没有这一层封装 ⇒ 传空串。
+        // ⚠️ 守卫 R103① 钉住这条：本文件里**不得**出现取账号口令的那条属性路径。
         let password = ""
 
         // 4. 校验 callback_template 包含占位符

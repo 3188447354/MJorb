@@ -50,7 +50,7 @@ struct AppPresentationTests {
     func justUnderFourDaysShowsFourNeutralDays() {
         let app = makeApp(
             state: .installed,
-            expiryDate: now.addingTimeInterval(Int(3.9 * 86_400))
+            expiryDate: now.addingTimeInterval(3.9 * 86_400)
         )
         let presentation = AppOperationPresentation(app: app, now: now)
 

@@ -119,7 +119,7 @@ struct SignedArtifactSnapshotTests {
             teamIdentifier: "TEAM123456",
             certificateSerialNumbers: ["SERIAL1"],
             deviceIdentifiers: ["DEVICE-UDID"],
-            entitlementKeys: []
+            entitlements: [:]
         )
     }
 

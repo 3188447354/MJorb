@@ -611,7 +611,7 @@ struct ProfileOnlyRenewalPolicyTests {
             teamIdentifier: "TEAM123456",
             certificateSerialNumbers: ["00AABB"],
             deviceIdentifiers: ["DEVICE-UDID"],
-            entitlementKeys: []
+            entitlements: [:]
         )
     }
 }

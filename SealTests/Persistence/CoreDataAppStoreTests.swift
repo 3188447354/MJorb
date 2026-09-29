@@ -83,7 +83,7 @@ struct CoreDataAppStoreTests {
             teamIdentifier: "TEAM-COMPLETE",
             certificateSerialNumbers: ["00AABBCCDDEEFF"],
             deviceIdentifiers: ["00008110-001A388E0A13801E"],
-            entitlementKeys: ["application-identifier", "get-task-allow"]
+            entitlements: ["application-identifier": .bool(true), "get-task-allow": .bool(true)]
         )
         let extensionRecord = AppExtensionRecord(
             name: "Share",

@@ -1,3 +1,28 @@
+# 1.3.41 续签提速：profile-only 免解压 + 只换描述文件、不再重发能力写请求
+
+续签慢的根子在两处白做功：一是每次 profile-only 续签都**解压整个 IPA** 去读 Mach-O
+改 Bundle ID（根目录带 `.framework`/`.dylib` 的大包实测 30–35 秒），可续签只换描述文件、
+压根不产出新 IPA；二是续签**复用完整签名的 `provisioningProfiles`**，为每个目标重复发
+「注册 App ID / 更新能力 / 分配 App Group」这类写请求，而这些在首签时早都建好了，
+续签时纯属冗余、徒增 Apple 限流风险。
+
+## 修复
+
+- `SigningTargetRecord` 从「只存权限键」升级为「持久化实授权限键值对」（`entitlements`），
+  首签与上次续签两条路径都落盘；旧记录解码自动落空、回落旧路径，向后兼容。
+- 续签免解压：记录里有完整权限集时，直接从记录重建目标与权限集，不再解压 IPA。
+- 新增续签专用路径：只「读 App ID 列表 + 申请描述文件」，**跳过** App ID 注册、能力更新、
+  App Group 分配三类写请求 —— 对齐 SideStore refresh 只换 profile 的做法，并比它更彻底
+  （SideStore 仍会短路式 `updateFeatures`/`updateAppGroups`，Seal 续签根本不碰）。
+- 安全不放松：跳过能力更新后，仍用 `validateEntitlements` 对「新描述文件 vs 旧描述文件实授
+  权限」逐键对账（signer 自管的 team-id / application-identifier / keychain / get-task-allow
+  不在对账范围内）；对不上就报 401/402 并引导完整重签，绝不静默丢能力。
+
+- 【验证】免费账号续签已装应用，速度快到「只读列表 + 换 profile」，大包不再先卡解压；
+  诊断页「App Group 可访问」仍为「是」，多任务不受影响。
+
+---
+
 # 1.3.40 修复：端口冷启动没同步给 Rust，签名/续签/安装首笔 ConnectionRefused
 
 1.3.38 引入的「端口持久化」留了个硬 bug：冷启动时 Swift 从 UserDefaults 恢复了上次发现的

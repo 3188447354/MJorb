@@ -5,6 +5,41 @@
 
 ---
 
+## 2026-09-29 续签慢复用完整签名两条白做功：解压 IPA + 重复能力写请求（1.3.41，用户「续签必须快」）
+
+- **现象**（用户）：同样本地通道，SideStore 续签几秒就成功，Seal 续签要几十秒到一两分钟。
+  一字一码读 SideStore `FetchProvisioningProfilesOperation.swift` 后定位差距不在底层库、在**续签**这条
+  流水线本身做了什么。
+- **根因（两处白做功）**：
+  1. **解压 IPA**：`prepareProfileOnlyRenewal` 无条件 `signingWorkspace.prepare(.layoutOnly)`，
+     而 `layoutOnly` 仍会解压 + 改 Bundle ID + 遍历扩展，大包实测 30–35 秒 —— 可续签只换描述文件、
+     从不产出新 IPA，这份解压纯属浪费（首签才需要读 Mach-O 取 entitlements）。
+  2. **重复能力写请求**：续签复用完整签名的 `provisioningProfiles`，对每个目标依次
+     `registerAppID`（存在则复用，但仍走一遍）+`updateFeatures`+`assignAppGroups`。这些在首签时已建好，
+     续签时是纯冗余；且 `updateFeatures` 的 SideStore 式「能力已满足就跳过」短路依赖 `appID.features`
+     被 `fetchAppIDs` 回填 —— 本仓 `ALTAppID.features` 只被写入、从未被读取，无法证明会回填，
+     照抄短路有静默丢能力风险（见 2026-09-22 台账那条「不跟随盲跳过」的顾虑）。
+- **修复（对齐 SideStore 且更彻底）**：
+  1. `SigningTargetRecord` 由「存权限键 `entitlementKeys`」升级为「持久化实授 `entitlements` 键值对」，
+     自定义 Codable 向后兼容（旧记录缺字段落 `[:]`）。首签与 profile-only 续签两条路径都写。
+  2. `reconstructProfileOnlyRenewalTargets`：记录里每个目标 entitlements 非空 ⇒ 免解压重建；
+     否则回落原 `prepare(.layoutOnly)` 慢路径。
+  3. 新增 `renewalProvisioningProfiles`：只「读 App ID 列表 + 下载描述文件」，
+     **跳过** register/updateFeatures/assignAppGroups。SideStore 即便短路也仍会发 updateFeatures/updateAppGroups，
+     Seal 续签根本不碰这三类写请求。
+  4. **安全兜底靠对账而非取证**：`validateEntitlements` 对新描述文件 vs 旧描述文件实授权限逐键对账
+     （`valuesManagedBySigner` 白名单外的键缺了/值变了就报 401/402 引导完整重签），
+     因此「跳过能力更新」不再有「静默丢能力」风险 —— 这正补齐了 2026-09-22 台账那条「不跟随盲跳过」的顾虑。
+- **涉及文件**：`Seal/Core/Signing/SigningTargetRecord.swift`、
+  `Seal/Infrastructure/Signing/ApplePortalSigningService.swift`（`prepareProfileOnlyRenewal` /
+  `reconstructProfileOnlyRenewalTargets` / `renewalProvisioningProfiles`）、
+  `SealTests/`（8 个构造点 `entitlementKeys` → `entitlements`）、`project.yml`（1.3.41）。
+- **验证状态**：交 CI 编译 + 既有回归（`SignedArtifactSnapshotTests` / `ProfileOnlyRenewalPolicyTests` 等
+  构造点已同步）。真机验收：免费账号续签已装应用速度显著提升、大包不再先卡「正在准备应用文件」；
+  诊断页「App Group 可访问」仍「是」；若记录缺失（1.3.4x 之前旧数据）自动回落慢路径，结果不变只慢。
+
+---
+
 ## 2026-09-29 RemotePairing 端口冷启动只恢复内存、没同步 Rust：签名/续签/安装全程 ConnectionRefused（1.3.40，用户「最基本的签名续签都做不到了」）
 
 - **现象**（用户，1.3.39/构建 76）：自替换升级后，签名/续签/安装进来自第一笔就

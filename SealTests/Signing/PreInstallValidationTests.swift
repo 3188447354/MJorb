@@ -202,7 +202,7 @@ struct PreInstallValidationTests {
             teamIdentifier: team ?? self.team,
             certificateSerialNumbers: serials ?? [serial],
             deviceIdentifiers: devices ?? [device],
-            entitlementKeys: []
+            entitlements: [:]
         )
     }
 

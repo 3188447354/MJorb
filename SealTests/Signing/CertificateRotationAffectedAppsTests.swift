@@ -47,7 +47,7 @@ struct CertificateRotationAffectedAppsTests {
                     teamIdentifier: "TEAM123456",
                     certificateSerialNumbers: [targetSerial],
                     deviceIdentifiers: [],
-                    entitlementKeys: []
+                    entitlements: [:]
                 )
             },
             ipaRelativePath: "Apps/\(name)/Original.ipa",

@@ -146,7 +146,7 @@ struct ProfileOnlyIdentityVerifierTests {
                     teamIdentifier: "TEAM123456",
                     certificateSerialNumbers: ["00AABB"],
                     deviceIdentifiers: ["DEVICE-UDID"],
-                    entitlementKeys: []
+                    entitlements: [:]
                 )
             ],
             ipaRelativePath: "Apps/Demo.ipa",

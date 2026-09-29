@@ -22,7 +22,7 @@ struct SelfAppPendingHandoffTests {
         let target = SigningTargetRecord(
             bundleIdentifier: "com.mjorb.seal", profileUUID: "NEW", profileName: "New",
             profileCreationDate: nil, profileExpirationDate: newExpiry, teamIdentifier: "TEAM",
-            certificateSerialNumbers: ["ABC"], deviceIdentifiers: [], entitlementKeys: []
+            certificateSerialNumbers: ["ABC"], deviceIdentifiers: [], entitlements: [:]
         )
         let app = AppRecord(
             id: id, originalBundleIdentifier: "com.mjorb.seal", name: "Seal", version: "2.0",

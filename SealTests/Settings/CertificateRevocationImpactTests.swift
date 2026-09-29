@@ -61,7 +61,7 @@ struct CertificateRevocationImpactTests {
             teamIdentifier: "TEAM123456",
             certificateSerialNumbers: ["0AA11"],
             deviceIdentifiers: [],
-            entitlementKeys: []
+            entitlements: [:]
         )
         let app = AppRecord(
             originalBundleIdentifier: "com.example.Alpha",
@@ -192,7 +192,7 @@ struct CertificateRevocationImpactTests {
             teamIdentifier: "TEAM123456",
             certificateSerialNumbers: [serial],
             deviceIdentifiers: [],
-            entitlementKeys: []
+            entitlements: [:]
         )
         return AppRecord(
             originalBundleIdentifier: "com.example.\(name)",

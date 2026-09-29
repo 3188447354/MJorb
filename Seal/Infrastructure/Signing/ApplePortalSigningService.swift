@@ -660,41 +660,59 @@ actor ApplePortalSigningService {
         )
 
         await progress(.preparingBundle)
-        // 🔴 **`purpose: .layoutOnly`**（2026-09-26）：本函数要的只有
-        // 「bundle 映射 + 各目标 entitlements」（下面用它比对设备记录、再交给
-        // `provisioningProfiles` 去申请描述文件），**它不产出任何新 IPA** ✗。
-        // 而 `prepare` 默认会做「瘦身 arm64e」与「ESign 布局归一化」——
-        // 归一化在根目录有 `.framework`/`.dylib` 时（抖音正是这种包）
-        // 要**遍历全树**，实测 **30–35 秒**，全部白花 ✗。
-        // ⇒ 跳过这两步（`PreparePurpose.layoutOnly`），只保留解压与 bundle ID 改写。
-        let prepared = try signingWorkspace.prepare(
-            ipaURL: originalIPAURL,
-            workspaceRoot: workspaceRoot,
-            originalBundleID: app.originalBundleIdentifier,
-            teamID: team.identifier,
-            targetMainBundleID: targetBundleIdentifier,
-            preferredDisplayName: app.preferredDisplayName,
-            preferredIconData: nil,
-            purpose: .layoutOnly
-        )
-        guard prepared.mappedMainBundleID.caseInsensitiveCompare(targetBundleIdentifier) == .orderedSame else {
-            throw Self.failure(
-                title: "应用身份已变化",
-                reason: "本地 IPA 推导出的主 Bundle ID 与设备上已安装的应用不一致。",
-                recovery: "执行完整重签以重新建立安装身份",
-                code: "SEAL-PROFILE-331"
-            )
-        }
+        // ⚠️ 续签**必须沿用应用当初实际签名时用的策略**（`app.extensionProfileStrategy`），
+        // 不能用 `app.effectiveExtensionProfileStrategy` —— 后者是 `defaultFor(isSeal:)`、
+        // **不看记录**（见 `AppRecord` 注释「字段仍会记录实际产物」）⇒ 会把历史上按独立描述文件
+        // 签过的应用也当成共享，于是只取主 App 一份描述文件注入设备 ⇒
+        // **扩展自己的描述文件根本没续上，而记录却写着已续签** ✗。
+        // 1.3.5 之前的记录没有这个字段（那时只有独立模式）⇒ 回退 `.independentProfiles`。
+        // 守卫 **R65⑨** 钉住「必须取自记录、不得用 effective、不得写死」。
+        let renewalStrategy = app.extensionProfileStrategy ?? .independentProfiles
         let installedTargetBundleIdentifiers = [targetBundleIdentifier]
             + app.extensions.compactMap(\.mappedBundleIdentifier)
-        guard Set(installedTargetBundleIdentifiers).count == installedTargetBundleIdentifiers.count,
-              Set(prepared.bundleIDMappings.values) == Set(installedTargetBundleIdentifiers) else {
-            throw Self.failure(
-                title: "应用目标已变化",
-                reason: "本地 IPA 推导出的 App 与扩展目标集合和设备上已安装记录不一致。",
-                recovery: "执行完整重签以重新建立应用身份",
-                code: "SEAL-PROFILE-331a"
+        // 🔴 **免解压快路径**（2026-09-29）：profile-only 续签只换描述文件、从不重签，
+        // 它对权限的唯一需求就是「新描述文件仍授予旧描述文件授予过的那些键」。
+        // 旧描述文件的 entitlements 已在 `app.signingTargets[].entitlements` 里落盘
+        // （首签 `SigningCoordinator` 与上次 profile-only 续签 `ProfileOnlyRenewalRecordUpdater`
+        // 两条路径都写）⇒ 直接从记录重建目标与权限集即可，**不必再解开 IPA 重读 Mach-O**。
+        // 而 `prepare(.layoutOnly)` 仍要解压 + 改 Bundle ID，实测 **30–35 秒**
+        // （根目录有 `.framework`/`.dylib` 的包更久）⇒ 这条省时的关键就在这。
+        // 记录里没 entitlements（1.3.4x 之前的旧记录，解码落 `[:]`）⇒ 回落慢路径解压重建。
+        let preparationInput: ProfileOnlyRenewalPreparation
+        if let targets = Self.reconstructProfileOnlyRenewalTargets(
+            app: app,
+            targetBundleIdentifier: targetBundleIdentifier
+        ) {
+            preparationInput = .fastPath(targets)
+        } else {
+            let prepared = try signingWorkspace.prepare(
+                ipaURL: originalIPAURL,
+                workspaceRoot: workspaceRoot,
+                originalBundleID: app.originalBundleIdentifier,
+                teamID: team.identifier,
+                targetMainBundleID: targetBundleIdentifier,
+                preferredDisplayName: app.preferredDisplayName,
+                preferredIconData: nil,
+                purpose: .layoutOnly
             )
+            guard prepared.mappedMainBundleID.caseInsensitiveCompare(targetBundleIdentifier) == .orderedSame else {
+                throw Self.failure(
+                    title: "应用身份已变化",
+                    reason: "本地 IPA 推导出的主 Bundle ID 与设备上已安装的应用不一致。",
+                    recovery: "执行完整重签以重新建立安装身份",
+                    code: "SEAL-PROFILE-331"
+                )
+            }
+            guard Set(installedTargetBundleIdentifiers).count == installedTargetBundleIdentifiers.count,
+                  Set(prepared.bundleIDMappings.values) == Set(installedTargetBundleIdentifiers) else {
+                throw Self.failure(
+                    title: "应用目标已变化",
+                    reason: "本地 IPA 推导出的 App 与扩展目标集合和设备上已安装记录不一致。",
+                    recovery: "执行完整重签以重新建立应用身份",
+                    code: "SEAL-PROFILE-331a"
+                )
+            }
+            preparationInput = .slowPath(prepared)
         }
 
         // Preparing an IPA can take minutes. Renew the one-time anisette value
@@ -723,29 +741,35 @@ actor ApplePortalSigningService {
         )
         await progress(.preparingAppID)
         let requestedAt = Date()
-        // ⚠️ 续签**必须沿用应用当初实际签名时用的策略**（`app.extensionProfileStrategy`），
-        // 不能用 `app.effectiveExtensionProfileStrategy` —— 后者是 `defaultFor(isSeal:)`、
-        // **不看记录**（见 `AppRecord` 注释「字段仍会记录实际产物」）⇒ 会把历史上按独立描述文件
-        // 签过的应用也当成共享，于是只取主 App 一份描述文件注入设备 ⇒
-        // **扩展自己的描述文件根本没续上，而记录却写着已续签** ✗。
-        // 1.3.5 之前的记录没有这个字段（那时只有独立模式）⇒ 回退 `.independentProfiles`。
-        // 守卫 **R65⑨** 钉住「必须取自记录、不得用 effective、不得写死」。
-        let renewalStrategy = app.extensionProfileStrategy ?? .independentProfiles
-        let preparation = try await provisioningProfiles(
-            mappings: prepared.bundleIDMappings,
-            originalMainBundleID: app.originalBundleIdentifier,
-            mappedMainBundleID: prepared.mappedMainBundleID,
-            extensionProfileStrategy: renewalStrategy,
-            appName: app.displayName,
-            appURL: prepared.appURL,
-            workspace: prepared,
-            allowDroppingExtensions: false,
-            requiresExistingAppIDs: true,
-            team: team,
-            session: session,
-            progress: progress,
-            onWorkUnits: onWorkUnits
-        )
+        let preparation: ProfilePreparation
+        switch preparationInput {
+        case .fastPath(let targets):
+            preparation = try await renewalProvisioningProfiles(
+                targets: targets,
+                mappedMainBundleID: targetBundleIdentifier,
+                extensionProfileStrategy: renewalStrategy,
+                team: team,
+                session: session,
+                progress: progress,
+                onWorkUnits: onWorkUnits
+            )
+        case .slowPath(let prepared):
+            preparation = try await provisioningProfiles(
+                mappings: prepared.bundleIDMappings,
+                originalMainBundleID: app.originalBundleIdentifier,
+                mappedMainBundleID: prepared.mappedMainBundleID,
+                extensionProfileStrategy: renewalStrategy,
+                appName: app.displayName,
+                appURL: prepared.appURL,
+                workspace: prepared,
+                allowDroppingExtensions: false,
+                requiresExistingAppIDs: true,
+                team: team,
+                session: session,
+                progress: progress,
+                onWorkUnits: onWorkUnits
+            )
+        }
         guard preparation.droppedExtensionBundleIdentifiers.isEmpty else {
             throw Self.failure(
                 title: "扩展身份不完整",
@@ -794,8 +818,8 @@ actor ApplePortalSigningService {
         let resolvedRenewalStrategy = preparation.extensionProfileStrategy
         let expectedProfileCount = resolvedRenewalStrategy == .sharedMainProfile
             ? 1
-            : prepared.bundleIDMappings.count
-        guard bindings[prepared.mappedMainBundleID] != nil,
+            : installedTargetBundleIdentifiers.count
+        guard bindings[targetBundleIdentifier] != nil,
               bindings.count == expectedProfileCount else {
             throw Self.failure(
                 title: "描述文件不完整",
@@ -807,7 +831,7 @@ actor ApplePortalSigningService {
             )
         }
         return ProfileOnlyPortalResult(
-            mappedMainBundleID: prepared.mappedMainBundleID,
+            mappedMainBundleID: targetBundleIdentifier,
             teamID: team.identifier,
             certificateSerialNumber: resolvedSerial,
             deviceIdentifier: deviceIdentifier,
@@ -2481,6 +2505,131 @@ actor ApplePortalSigningService {
         )
     }
 
+    /// 从应用记录重建 profile-only 续签所需的目标清单（免解压）。
+    ///
+    /// 返回 `nil` 表示记录缺任一目标的实授 entitlements（旧记录，`entitlements == 空字典`），
+    /// 调用方应回落「解压 IPA 重建」的慢路径。目标顺序：主 App 在前、扩展随后（与安装记录一致）。
+    private static func reconstructProfileOnlyRenewalTargets(
+        app: AppRecord,
+        targetBundleIdentifier: String
+    ) -> [ProfileOnlyRenewalTarget]? {
+        let installedTargets = [targetBundleIdentifier] + app.extensions.compactMap(\.mappedBundleIdentifier)
+        guard Set(installedTargets).count == installedTargets.count else { return nil }
+        var targets: [ProfileOnlyRenewalTarget] = []
+        targets.reserveCapacity(installedTargets.count)
+        for bundleIdentifier in installedTargets {
+            guard let record = app.signingTargets.first(where: {
+                $0.bundleIdentifier.caseInsensitiveCompare(bundleIdentifier) == .orderedSame
+            }), record.entitlements.isEmpty == false else {
+                return nil
+            }
+            targets.append(ProfileOnlyRenewalTarget(
+                mappedBundleIdentifier: bundleIdentifier,
+                entitlements: record.entitlements
+            ))
+        }
+        return targets
+    }
+
+    /// profile-only 续签专用路径：**不注册 App ID、不更新 features、不分配 App Group**。
+    ///
+    /// 为什么能跳过它们（而完整签名不能）：续签的前提是「App ID 已存在、能力已就绪」——
+    /// 首签时已建号并设置好 features / App Group，这里只换描述文件，而描述文件反映的
+    /// 正是该 App ID 当前已有的能力 ⇒ 重复提交能力是纯冗余请求，只会徒增 Apple 限流风险。
+    /// 对齐上游 SideStore refresh 流水线：`fetchProvisioningProfiles` 直接复用已有 App ID，
+    /// 只在能力确实缺时才走 `updateFeatures`（profile-only 续签则根本不改能力）。
+    private func renewalProvisioningProfiles(
+        targets: [ProfileOnlyRenewalTarget],
+        mappedMainBundleID: String,
+        extensionProfileStrategy: AppExtensionProfileStrategy,
+        team: ALTTeam,
+        session: ALTAppleAPISession,
+        progress: @escaping @Sendable (SigningStage) async -> Void,
+        onWorkUnits: @escaping @Sendable (SigningWorkUnits) async -> Void
+    ) async throws -> ProfilePreparation {
+        // 门户层面只需主 App（共享）或每个目标（独立）各一份描述文件；主 App 恒排第一。
+        let portalTargets: [ProfileOnlyRenewalTarget]
+        switch extensionProfileStrategy {
+        case .sharedMainProfile:
+            guard let main = targets.first(where: {
+                $0.mappedBundleIdentifier.caseInsensitiveCompare(mappedMainBundleID) == .orderedSame
+            }) else {
+                throw Self.failure(
+                    title: "主应用标识无效",
+                    reason: "应用记录缺少主应用的续签目标，无法申请新的描述文件。",
+                    recovery: "重新导入 IPA 后重试",
+                    code: "SEAL-PROFILE-319"
+                )
+            }
+            portalTargets = [main]
+        case .independentProfiles:
+            portalTargets = targets.sorted {
+                if $0.mappedBundleIdentifier == mappedMainBundleID { return true }
+                if $1.mappedBundleIdentifier == mappedMainBundleID { return false }
+                return $0.mappedBundleIdentifier < $1.mappedBundleIdentifier
+            }
+        }
+
+        let existing = try await withSessionRecovery("读取 App ID 列表", retriesOnTimeout: true) {
+            try await fetchAppIDs(team: team, session: session)
+        }
+
+        var preparedAppIDs: [(mapped: String, appID: ALTAppID)] = []
+        for target in portalTargets {
+            try Task.checkCancellation()
+            guard let appID = existing.first(where: {
+                ApplePortalAppIDResolver.matches(
+                    existingBundleIdentifier: $0.bundleIdentifier,
+                    requestedBundleIdentifier: target.mappedBundleIdentifier
+                )
+            }) else {
+                throw Self.failure(
+                    title: "App ID 身份已变化",
+                    reason: "Apple 门户中找不到当前已安装应用的 "
+                        + target.mappedBundleIdentifier
+                        + " App ID；仅更新描述文件不会注册新的 App ID。",
+                    recovery: "执行完整重签以重新建立应用身份",
+                    code: "SEAL-PROFILE-337"
+                )
+            }
+            preparedAppIDs.append((target.mappedBundleIdentifier, appID))
+        }
+
+        await progress(.preparingProfiles)
+        var profiles: [ALTProvisioningProfile] = []
+        for prepared in preparedAppIDs {
+            try Task.checkCancellation()
+            let profile = try await withSessionRecovery("申请描述文件 \(prepared.mapped)") {
+                try await fetchProvisioningProfile(
+                    for: prepared.appID,
+                    team: team,
+                    session: session
+                )
+            }
+            profiles.append(profile)
+            await onWorkUnits(SigningWorkUnits(
+                stage: .preparingProfiles,
+                done: profiles.count,
+                total: preparedAppIDs.count
+            ))
+        }
+
+        // 请求集 = 旧描述文件实授的 entitlements（键：实际目标 Bundle ID）。
+        // 验证侧（`validateEntitlements`）据此对新描述文件逐键对账；共享模式下扩展嵌入主描述文件、
+        // 但验证只遍历 `profiles`（共享模式只有主 App 一份），所以键集以门户返回为准即可。
+        var requestedEntitlements: [String: [String: ProvisioningEntitlementValue]] = [:]
+        for target in targets {
+            requestedEntitlements[target.mappedBundleIdentifier] = target.entitlements
+        }
+
+        return ProfilePreparation(
+            profiles: profiles,
+            requestedEntitlements: requestedEntitlements,
+            extensionProfileStrategy: extensionProfileStrategy,
+            droppedExtensionBundleIdentifiers: []
+        )
+    }
+
     private func fetchAppIDs(
         team: ALTTeam,
         session: ALTAppleAPISession
@@ -3165,6 +3314,20 @@ private struct ProfilePreparation {
     let requestedEntitlements: [String: [String: ProvisioningEntitlementValue]]
     let extensionProfileStrategy: AppExtensionProfileStrategy
     let droppedExtensionBundleIdentifiers: [String]
+}
+
+/// profile-only 续签的单个目标：实际（映射后）Bundle ID + 旧描述文件实授的 entitlements。
+private struct ProfileOnlyRenewalTarget {
+    let mappedBundleIdentifier: String
+    let entitlements: [String: ProvisioningEntitlementValue]
+}
+
+/// profile-only 续签「描述文件申请」的两种输入：
+/// · `.fastPath`：记录里已有实授 entitlements，直接复用（免解压）；
+/// · `.slowPath`：旧记录无 entitlements，回落解压 IPA 重建的 `PreparedSigningWorkspace`。
+private enum ProfileOnlyRenewalPreparation {
+    case fastPath([ProfileOnlyRenewalTarget])
+    case slowPath(PreparedSigningWorkspace)
 }
 
 struct ProfileOnlyProfileMaterial: Sendable {

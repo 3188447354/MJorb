@@ -30,9 +30,16 @@
   4. **安全兜底靠对账而非取证**：`validateEntitlements` 对新描述文件 vs 旧描述文件实授权限逐键对账
      （`valuesManagedBySigner` 白名单外的键缺了/值变了就报 401/402 引导完整重签），
      因此「跳过能力更新」不再有「静默丢能力」风险 —— 这正补齐了 2026-09-22 台账那条「不跟随盲跳过」的顾虑。
+  5. **退避重试下沉到 fetch 函数（修守卫 R24/R33）**：续签与慢路径都要「读取 App ID 列表」「申请描述文件」，
+     若两处各写一份 `withSessionRecovery`，同一个 label 字符串会在文件里出现两次 —— 守卫 R24 的
+     count 从 8 变 10、R33 的 mutation 自检（`replace(...,1)` 只换第一处）随之失效。故把
+     「读取 App ID 列表」（读，超时重试开）下沉到 `fetchAppIDs`、把「申请描述文件」（写，超时重试关，
+     内部先 delete 再重建）下沉到 `fetchProvisioningProfile`（后者拆出 `requestProvisioningProfile` 保留原逻辑），
+     调用处不再包裹 ⇒ label 各唯一、count 回 8。
 - **涉及文件**：`Seal/Core/Signing/SigningTargetRecord.swift`、
   `Seal/Infrastructure/Signing/ApplePortalSigningService.swift`（`prepareProfileOnlyRenewal` /
-  `reconstructProfileOnlyRenewalTargets` / `renewalProvisioningProfiles`）、
+  `reconstructProfileOnlyRenewalTargets` / `renewalProvisioningProfiles` / `fetchAppIDs` /
+  `fetchProvisioningProfile` 下沉）、`Scripts/verify-release-safety.py`（R24/R33 的「申请描述文件」label）、
   `SealTests/`（8 个构造点 `entitlementKeys` → `entitlements`）、`project.yml`（1.3.41）。
 - **验证状态**：交 CI 编译 + 既有回归（`SignedArtifactSnapshotTests` / `ProfileOnlyRenewalPolicyTests` 等
   构造点已同步）。真机验收：免费账号续签已装应用速度显著提升、大包不再先卡「正在准备应用文件」；

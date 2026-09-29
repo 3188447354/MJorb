@@ -1287,7 +1287,7 @@ def violations(load=read):
         ('withSessionRecovery("更新应用能力 \\(mappedBundleID)")',
          "更新应用能力（updateFeatures）—— Phase 1 里每个 bundle ID 的第二次写请求，"
          "与 addAppID 同等密集；主 App 撞 1100 会直接失败、扩展撞 1100 会被静默清空 entitlements"),
-        ('withSessionRecovery("申请描述文件 \\(preparedAppID.mapped)")',
+        ('withSessionRecovery("申请描述文件 \\(appID.bundleIdentifier)")',
          "申请描述文件"),
         ('withSessionRecovery("创建证书")',
          "创建证书 —— 它是整条流程里第一个真正落到 Apple 侧的变更，最容易撞上限流；"
@@ -2085,7 +2085,7 @@ def violations(load=read):
         check(read_label in portal_source, "R33: 读操作必须允许重试超时：" + read_label)
     for write_label in ('withSessionRecovery("创建证书", retriesOnTimeout',
                         'withSessionRecovery("更新应用能力 \\(mappedBundleID)", retriesOnTimeout',
-                        'withSessionRecovery("申请描述文件 \\(preparedAppID.mapped)", retriesOnTimeout',
+                        'withSessionRecovery("申请描述文件 \\(appID.bundleIdentifier)", retriesOnTimeout',
                         'withSessionRecovery("创建 App ID \\(mappedBundleID)", retriesOnTimeout',
                         'withSessionRecovery("分配 App Group \\(mappedBundleID)", retriesOnTimeout'):
         check(write_label not in portal_source,

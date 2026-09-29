@@ -2108,12 +2108,10 @@ actor ApplePortalSigningService {
             "App ID 阶段开始：\(resolvedExtensionProfileStrategy == .sharedMainProfile ? "共享主描述文件" : "独立扩展描述文件")，"
                 + "本次需 \(portalMappings.count) 个 App ID（主 App 1 + 扩展 \(extensionAppIDCount)），准备读取账号已有列表"
         )
-        // ⚠️ **读列表也必须过退避重试**：它是 Phase 1 的第一个请求，撞上短时限流（1100）时
-        // 原先会**直接让整轮签名失败**（而不是像 addAppID / 描述文件那样先退避再试），
-        // 而且失败点排在名额诊断之前 ⇒ 日志里连「它走到哪一步」都看不出来。
-        var existing = try await withSessionRecovery("读取 App ID 列表", retriesOnTimeout: true) {
-            try await fetchAppIDs(team: team, session: session)
-        }
+        // ⚠️ 「读取 App ID 列表」的退避重试已下沉到 `fetchAppIDs` 内部（withSessionRecovery + 超时重试）。
+        // 它是 Phase 1 的第一个请求，撞上短时限流（1100）若直接失败，失败点会排在名额诊断之前
+        // ⇒ 日志里连「它走到哪一步」都看不出来。
+        var existing = try await fetchAppIDs(team: team, session: session)
 
         // 无条件写一条「App ID 名额」诊断（2026-09-17）。用户报「只有抖音签不上、重新加 ID 也不行」时，
         // 这条日志用来**排除假设**：`需新注册 K` 为 0 ⇒ 本次一个 App ID 都不用新建
@@ -2448,13 +2446,11 @@ actor ApplePortalSigningService {
             do {
                 try Task.checkCancellation()
                 // 同上：9 个 bundle ID 连续申请描述文件同样会触发限流。
-                let profile = try await withSessionRecovery("申请描述文件 \(preparedAppID.mapped)") {
-                    try await fetchProvisioningProfile(
-                        for: preparedAppID.appID,
-                        team: team,
-                        session: session
-                    )
-                }
+                let profile = try await fetchProvisioningProfile(
+                    for: preparedAppID.appID,
+                    team: team,
+                    session: session
+                )
                 profiles.append(profile)
                 // 真实信号：描述文件也是一份一份取的，分母是 Phase 1 已就绪的个数。
                 await onWorkUnits(SigningWorkUnits(
@@ -2570,9 +2566,7 @@ actor ApplePortalSigningService {
             }
         }
 
-        let existing = try await withSessionRecovery("读取 App ID 列表", retriesOnTimeout: true) {
-            try await fetchAppIDs(team: team, session: session)
-        }
+        let existing = try await fetchAppIDs(team: team, session: session)
 
         var preparedAppIDs: [(mapped: String, appID: ALTAppID)] = []
         for target in portalTargets {
@@ -2599,13 +2593,11 @@ actor ApplePortalSigningService {
         var profiles: [ALTProvisioningProfile] = []
         for prepared in preparedAppIDs {
             try Task.checkCancellation()
-            let profile = try await withSessionRecovery("申请描述文件 \(prepared.mapped)") {
-                try await fetchProvisioningProfile(
-                    for: prepared.appID,
-                    team: team,
-                    session: session
-                )
-            }
+            let profile = try await fetchProvisioningProfile(
+                for: prepared.appID,
+                team: team,
+                session: session
+            )
             profiles.append(profile)
             await onWorkUnits(SigningWorkUnits(
                 stage: .preparingProfiles,
@@ -2634,12 +2626,15 @@ actor ApplePortalSigningService {
         team: ALTTeam,
         session: ALTAppleAPISession
     ) async throws -> [ALTAppID] {
-        let box: LegacyBox<[ALTAppID]> = try await withAppleTimeout {
-            try await withCheckedThrowingContinuation {
-                continuation in
-                let callback = ContinuationBox(continuation)
-                ALTAppleAPI.shared.fetchAppIDs(for: team, session: session) { appIDs, error in
-                    Self.resume(callback, value: appIDs, error: error)
+        // ⚠️ 读操作（R33）：限流时 Apple 响应会变慢，超时重试最坏只多花时间（幂等），故开超时重试。
+        let box: LegacyBox<[ALTAppID]> = try await withSessionRecovery("读取 App ID 列表", retriesOnTimeout: true) {
+            try await withAppleTimeout {
+                try await withCheckedThrowingContinuation {
+                    continuation in
+                    let callback = ContinuationBox(continuation)
+                    ALTAppleAPI.shared.fetchAppIDs(for: team, session: session) { appIDs, error in
+                        Self.resume(callback, value: appIDs, error: error)
+                    }
                 }
             }
         }
@@ -2654,6 +2649,17 @@ actor ApplePortalSigningService {
         // 对齐 AltStore 官方实现：先获取，再尝试删除旧描述文件，删除成功则重新获取生成新的。
         // 免费账号从 2023-03-20 起无法删除描述文件，每次 fetch 会自动重新生成，
         // 因此删除失败时直接返回已获取的描述文件即可。
+        // ⚠️ 申请描述文件内部会先 delete 再重建（写操作），退避重试**绝不开超时重试**（R33：超时重试会重复删/写）。
+        return try await withSessionRecovery("申请描述文件 \(appID.bundleIdentifier)") {
+            try await requestProvisioningProfile(appID: appID, team: team, session: session)
+        }
+    }
+
+    private func requestProvisioningProfile(
+        appID: ALTAppID,
+        team: ALTTeam,
+        session: ALTAppleAPISession
+    ) async throws -> ALTProvisioningProfile {
         let requestStartedAt = Date()
         let requestedAfter = requestStartedAt.addingTimeInterval(-Self.profileRequestClockTolerance)
         let firstBox: LegacyBox<ALTProvisioningProfile> = try await withAppleTimeout(30) {

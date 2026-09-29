@@ -3613,8 +3613,8 @@ def violations(load=read):
           "R110①: `project.yml` 必须声明 `UIBackgroundModes: location` + 两项定位权限描述 ✗ —— "
           "缺 `location` 后台模式则切后台定位立刻停；缺 `AlwaysAndWhenInUse` 描述则 "
           "`requestAlwaysAuthorization()` 会因缺失权限描述被 iOS 强制终止")
-    check("pausesLocationUpdatesAutomatically = false" in r110_service
-          and "allowsBackgroundLocationUpdates = true" in r110_service,
+    check("manager.pausesLocationUpdatesAutomatically = false" in r110_service
+          and "manager.allowsBackgroundLocationUpdates = true" in r110_service,
           "R110②: 定位保活两个关键开关必须同时成立 ✗ —— "
           "缺 `allowsBackgroundLocationUpdates` 切后台定位立刻停；"
           "`pausesLocationUpdatesAutomatically` 默认 true，不显式置 false 会被系统在定位静止时"
@@ -10080,8 +10080,8 @@ def main():
          "R110①:"),
         # ② 允许系统自动暂停（定位静止就被暂停，保活静默失效）⇒ R110② 报红。
         ("Seal/Infrastructure/Background/LocationKeepAliveService.swift",
-         "pausesLocationUpdatesAutomatically = false",
-         "pausesLocationUpdatesAutomatically = true",
+         "manager.pausesLocationUpdatesAutomatically = false",
+         "manager.pausesLocationUpdatesAutomatically = true",
          "R110②:"),
         # ③ `SealApp.init()` 里第二路被退成重复音频 start（正常启动丢一路）⇒ R110③ 报红。
         ("Seal/App/SealApp.swift",

@@ -5,6 +5,24 @@
 
 ---
 
+## 2026-09-29 守卫变异锚点歧义：对称函数复用同款 guard 行致变异自查漏检（1.3.36）
+
+- **现象**：CI `build-package` 第一步 `verify-release-safety.py` 报
+  `FAIL: Guard failed mutation check: Update: an ambiguous set of IPA assets`。
+- **根因**：新增 `sha256DownloadURL` 时复用了 `ipaDownloadURL` 里**完全相同**的
+  `guard candidates.count == 1 else { return nil }`。变异 runner 用 `str.replace(old, new, 1)` 只换
+  **第一处**（ipa），原判据 `"..." in update_checker` 又被**第二处**（sha256）满足 ⇒ 变异被放跑、
+  自查判失败。
+- **修复**：把「ambiguous set」判据从「是否存在」改成 `count == 2`（两个直链挑选函数各一处）；
+  变异改第一处后 count 降为 1 ⇒ 判据失败 ⇒ 变异被抓回。
+- **涉及文件**：`Scripts/verify-release-safety.py`（1 断言）。
+- **验证状态**：本地 `rg -c` 确认恰好 2 处 + `py_compile` 通过；交 CI 变异自查。
+- **常犯坑位**：给已配变异锚点的纯函数写**同款对称函数**时，若复用了锚点同款代码行，
+  `.replace(old,new,1)` 只会改第一处、`in` 判据会被第二处满足 ⇒ 变异自查静默漏检。
+  要么用 `count == N`（钉住总处数），要么把锚点文本写得更长使其唯一。
+
+---
+
 ## 2026-09-29 发版前收尾：内建更新补 SHA256 完整性校验 + 证书复用快速路径抽纯函数补单测（1.3.36）
 
 - **背景**（回答「距离正式版还差什么」）：三条缺口 —— 供应链安全、测试覆盖缺口、回归验证。

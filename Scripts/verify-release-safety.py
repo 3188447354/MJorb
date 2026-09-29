@@ -3236,7 +3236,10 @@ def violations(load=read):
     check("static func isTrustedDownloadURL(" in update_checker
           and "hasSuffix(\".githubusercontent.com\")" in update_checker,
           "Update: asset URLs must be pinned to GitHub over HTTPS")
-    check("guard candidates.count == 1 else { return nil }" in update_checker,
+    # IPA 与 `.sha256` 两个直链挑选函数必须**各自**都做「恰好一个才给直链」。
+    # 只判「存在一处」会被另一处（新增的 sha256 对称函数）满足，使 IPA 侧的退化漏检
+    #（变异自查已抓到：replace 只换第一处、第二处仍在，`in` 判据照样通过）。
+    check(update_checker.count("guard candidates.count == 1 else { return nil }") == 2,
           "Update: an ambiguous set of IPA assets must not yield a direct link")
     # 只校验下载域名不够：同一仓库、同一合法域名下的资产仍可被替换。
     # 必须把「API 元数据声称的版本」与「IPA 内真实版本」交叉校验。

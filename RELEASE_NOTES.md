@@ -1,3 +1,22 @@
+# 1.3.40 修复：端口冷启动没同步给 Rust，签名/续签/安装首笔 ConnectionRefused
+
+1.3.38 引入的「端口持久化」留了个硬 bug：冷启动时 Swift 从 UserDefaults 恢复了上次发现的
+RemotePairing 端口，却**没把这个端口同步给 Rust 侧**。真正建连走的是 Rust 里的端口，它冷启动
+恒为默认 49152 —— 于是 Swift 自认已是 61662、Rust 却去撞 49152，设备不在那个口上监听，
+第一笔操作就 `ConnectionRefused`，而且端口自愈因为「看起来值没变」不触发，全程卡在错端口。
+表现为：自替换升级后，进 Seal 签名/续签/安装上来就 `ConnectionRefused`/`NoDevice`，
+LocalDevVPN 显示已连接、设备已解锁也照样失败。
+
+## 修复
+
+- 冷启动恢复端口时，显式把端口同步给 Rust（`RustIdevice.setRemotePairingPort`），
+  与「采纳 Bonjour 新端口」走同一把杠杆，Swift/Rust 端口保持一致。
+- 端口自愈仍只在「设备端口真的变了」时触发，不误伤正常连接。
+
+- 【验证】自替换后冷启动，签名/续签/安装首笔即通，不再 ConnectionRefused。
+
+---
+
 # 1.3.39 后台保活双保险：新增后台定位，锁屏续签不再只靠静音音频
 
 锁屏/后台的自动续签，此前只靠一路「静音音频无限循环」让进程不被系统挂起。但音频会被来电、

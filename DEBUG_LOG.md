@@ -5,6 +5,26 @@
 
 ---
 
+## 2026-09-29 RemotePairing 端口冷启动只恢复内存、没同步 Rust：签名/续签/安装全程 ConnectionRefused（1.3.40，用户「最基本的签名续签都做不到了」）
+
+- **现象**（用户，1.3.39/构建 76）：自替换升级后，签名/续签/安装进来自第一笔就
+  `ConnectionRefused (code 61)` / `NoDevice`；LocalDevVPN 显示已连接、设备已解锁、配对正常
+  （`SEAL-INSTALL-710` / `-706b` / `minimuxer(13) ConnectionRefused` / `702d NoDevice`）。
+  用户确认是正常操作、非环境问题。
+- **根因**：1.3.38 加的「端口持久化」只把端口恢复到 `Minimuxer._remotePairingPort`
+  （内存静态量，`restoredRemotePairingPort()` **只读 UserDefaults、回落即返回**），
+  **没调 `RustIdevice.setRemotePairingPort`**。而真正建连走 Rust 侧 `PairingState.port`
+  （`rsd.rs` `create_rppairing_rsd_connection` 里 `TcpStream::connect(10.7.0.1:{port})`），
+  Rust 冷启动恒为默认 49152 ⇒ Swift 自认 61662、Rust 撞 49152 → 设备不在那口监听 → refused。
+  更糟：端口自愈 `resolve(current, discovered)` 因 Swift 侧值「没变」返回 nil 不重探 ⇒ 死锁在错端口。
+- **修复**：`restoredRemotePairingPort()` 在恢复出合法端口后**显式 `RustIdevice.setRemotePairingPort(port)`**
+  同步给 Rust（与 `setRemotePairingPort` 收尾同一把杠杆），Swift/Rust 端口一致。
+- **涉及文件**：`Vendor/Minimuxer/Sources/Minimuxer.swift`、`project.yml`（1.3.40）。
+- **验证状态**：交 CI 编译 + 既有回归。真机验收：自替换后冷启动，签名/续签/安装首笔即通，
+  不再出现 ConnectionRefused；端口自愈仅在「设备端口真的变了」时触发。
+
+---
+
 ## 2026-09-29 后台保活只有音频一路：被打断的窗口里锁屏续签被挂起（1.3.39，用户「按最牛的方式来」）
 
 - **现象**：锁屏/后台的自动续签只靠「静音音频无限循环」（`BackgroundKeepAliveService`）保活。

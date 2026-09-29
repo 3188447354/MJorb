@@ -3580,13 +3580,17 @@ def violations(load=read):
     # 就绪失败 710 → Bonjour 重查（浏览 + 解析）→ 换端口」，平白卡一下。
     # 必须三件事同时成立：① 冷启动恢复上次发现的端口；② 采纳新端口时写回 UserDefaults；
     # ③ 换设备 / 重新导入配对（reset）时清掉持久化，避免残留上一台设备的死端口。
+    # ④（2026-09-29 补）冷启动恢复出的端口**必须同步给 Rust 侧** —— 真建连走 Rust 的
+    # `PairingState.port`，只把端口写回 Swift 内存会让 Rust 仍撞默认 49152 → 全程
+    # ConnectionRefused，且自愈因 Swift 侧「值没变」不触发。两路（恢复 / 采纳）各一次同步。
     minimuxer_port_code = load("Vendor/Minimuxer/Sources/Minimuxer.swift")
     check("_remotePairingPort: UInt16 = restoredRemotePairingPort()" in minimuxer_port_code
           and "Minimuxer.lastDiscoveredRemotePairingPort" in minimuxer_port_code
           and "UserDefaults.standard.set(Int(port), forKey: remotePairingPortDefaultsKey)" in minimuxer_port_code
-          and "UserDefaults.standard.removeObject(forKey: remotePairingPortDefaultsKey)" in minimuxer_port_code,
-          "R109: RemotePairing 端口必须持久化（冷启动恢复 / 采纳写回 / 换设备清除）✗ —— "
-          "只在内存记端口会让每次冷启动从 49152 撞一遍再 Bonjour 重查，续签/安装进来的那一下卡顿")
+          and "UserDefaults.standard.removeObject(forKey: remotePairingPortDefaultsKey)" in minimuxer_port_code
+          and minimuxer_port_code.count("RustIdevice.setRemotePairingPort(port)") == 2,
+          "R109: RemotePairing 端口必须持久化（冷启动恢复 / 采纳写回 / 换设备清除 / 冷启动同步 Rust）✗ —— "
+          "只在内存记端口会让每次冷启动从 49152 撞一遍再 Bonjour 重查；只恢复 Swift 内存不写 Rust 会全程 ConnectionRefused")
 
     # ── R110：后台保活双保险 —— 后台定位保活（2026-09-29）──
     #
@@ -10071,6 +10075,11 @@ def main():
         ("Vendor/Minimuxer/Sources/Minimuxer.swift",
          "UserDefaults.standard.set(Int(port), forKey: remotePairingPortDefaultsKey)",
          "UserDefaults.standard.set(Int(MuxerConstants.rsdPort), forKey: remotePairingPortDefaultsKey)",
+         "R109:"),
+        # ③ 冷启动恢复端口后不再同步 Rust（只写 Swift 内存）⇒ R109 报红。
+        ("Vendor/Minimuxer/Sources/Minimuxer.swift",
+         "RustIdevice.setRemotePairingPort(port)\n        return port",
+         "return port",
          "R109:"),
         # ── R110：后台保活双保险 —— 后台定位保活 ──
         # ① 后台模式从 location 退成 fetch（切后台定位立刻停）⇒ R110① 报红。

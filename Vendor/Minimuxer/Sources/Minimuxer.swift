@@ -40,7 +40,13 @@ public struct Minimuxer {
     private static func restoredRemotePairingPort() -> UInt16 {
         let persisted = UserDefaults.standard.integer(forKey: remotePairingPortDefaultsKey)
         guard persisted > 0, persisted <= Int(UInt16.max) else { return MuxerConstants.rsdPort }
-        return UInt16(persisted)
+        let port = UInt16(persisted)
+        // 冷启动必须把恢复的端口同步给 Rust 侧：Rust 的 `PairingState.port` 默认停在
+        // 49152，真正建连走的是它（rsd.rs `TcpStream::connect(10.7.0.1:{port})`）。
+        // 若不同步，Swift 自认已是发现端口、Rust 却撞默认端口 → ConnectionRefused，
+        // 且端口自愈因「值没变」不触发，全程卡死。
+        RustIdevice.setRemotePairingPort(port)
+        return port
     }
 
     public static var remotePairingPort: UInt16 {

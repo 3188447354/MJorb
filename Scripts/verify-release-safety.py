@@ -3561,6 +3561,19 @@ def violations(load=read):
           "R107③: `AppFileStore.streamingSHA256` 必须是可调用（非 private）的静态方法 ✗ —— "
           "更新模块要复用它对大文件流式算 SHA256")
 
+    # ── R108：非 Seal 自替换的批量续签结果也必须持久化（2026-09-29）──
+    #
+    # 快捷指令在后台跑完续签后，进程会被系统回收。旧行为只在 `awaitingConfirmation > 0`
+    # （Seal 覆盖安装自己）时写载荷；普通应用 / Seal 走 profile-only 只换描述文件时，
+    # 结果只留在内存里的 `batchRefreshSession` —— 下次进 Seal 恢复不出「续签成功」抽屉，
+    # 真机表现为「通知已说成功、进 App 抽屉却有延迟」。两个分支都必须落盘：
+    # 自替换时 Seal 记成 awaiting、其余按实际终态（completed/failed/waiting）写。
+    check("persistPendingBatchResult(forceSealAwaiting: true)" in view_model_code
+          and "persistPendingBatchResult(forceSealAwaiting: false)" in view_model_code,
+          "R108: 批量续签结果无论是否自替换都必须持久化 ✗ —— "
+          "只保留 `awaitingConfirmation > 0` 分支会随手丢「快捷指令后台续签成功」的结果，"
+          "下次启动恢复不出成功抽屉")
+
     # Fast IPA 的产物由 build-unsigned-ipa.sh 按版本命名为 Seal_<version>.ipa。
     # 验证/上传若退回旧的 Seal.ipa 固定名，会在编译成功后误报文件不存在。
     ios_fast = load(".github/workflows/ios-fast.yml")
@@ -9984,6 +9997,13 @@ def main():
          "UpdateChecker.hashMatches(expected: expected, actual: actual)",
          "true",
          "R107②:"),
+        # ── R108：非 Seal 自替换的批量续签结果也必须持久化 ──
+        # ① 非自替换分支退回「也传 true」（把已成功的 Seal 记成等待核验 / 或退回到只留
+        #    awaiting 分支持久化，结果只在内存）⇒ R108 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "persistPendingBatchResult(forceSealAwaiting: false)",
+         "persistPendingBatchResult(forceSealAwaiting: true)",
+         "R108:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

@@ -2065,9 +2065,14 @@ final class AppsViewModel: ObservableObject {
                     // 不能让旧进程关闭并清掉载荷。Seal 的结果只能由下一次启动中
                     // `SelfAppRegistrar` 读真实运行包身份后结算。
                     batchRefreshSession?.status = .preparingSealUpdate
-                    persistPendingBatchResultForSealUpdate()
+                    persistPendingBatchResult(forceSealAwaiting: true)
                 } else {
                     batchRefreshSession?.status = .completed(result)
+                    // 非自替换（含 Seal 走 profile-only、只换描述文件没换进程）已拿到终态，
+                    // 照样持久化。快捷指令在后台跑完这一轮后进程很可能被系统回收；只留在
+                    // 内存里的话，下次进 Seal 就恢复不出「续签成功」抽屉
+                    //（2026-09-29 真机反馈「通知成功了、进 App 抽屉却有延迟」）。
+                    persistPendingBatchResult(forceSealAwaiting: false)
                 }
                 // 计数分桶写进日志：`total == succeeded + failed + needsAction` 不成立就说明
                 // 有项被静默丢了 —— 这正是旧实现「批量续签完成」却漏跑应用的病根。
@@ -2266,7 +2271,7 @@ final class AppsViewModel: ObservableObject {
             let itemState: BatchRefreshSession.Item.State = app.isSeal && (stage == .pushing || stage == .installing) ? .preparingSealUpdate : .running
             if app.isSeal && (stage == .pushing || stage == .installing) {
                 batchRefreshSession?.status = .preparingSealUpdate
-                persistPendingBatchResultForSealUpdate()
+                persistPendingBatchResult(forceSealAwaiting: true)
                 // 批量续签 Seal：进入 .installing（上传完成）后同样自动回主页触发 iOS 替换，
                 // 与单签 SigningProgressView 行为一致。Seal 自续签必然替换运行中的自己，
                 // 进程会被新包终止，其后排队的续签项会一并中断（与手按 Home 相同）。
@@ -2351,7 +2356,14 @@ final class AppsViewModel: ObservableObject {
         }
     }
 
-    private func persistPendingBatchResultForSealUpdate() {
+    /// 把当前批量续签结果持久化到载荷，供下次启动恢复结果抽屉。
+    ///
+    /// - Parameter forceSealAwaiting: 是否把 Seal 项写成 `awaitingSealConfirmation`。
+    ///   只有「Seal 覆盖安装已提交、等待新进程核验运行包身份」时才该传 `true`；
+    ///   其余（没有 Seal，或 Seal 走 profile-only、只换描述文件没换进程）都已拿到终态，
+    ///   必须传 `false` —— 否则载荷会把一个其实已经成功的 Seal 记成「等待核验」，
+    ///   下次启动非但恢复不出成功，还会误标成「结果未知」。
+    private func persistPendingBatchResult(forceSealAwaiting: Bool) {
         guard let session = batchRefreshSession else {
             Task { try? await logStore?.append(category: .renewal, level: .warning, message: "批量续签结果未能持久化：当前没有进行中的会话", code: "SEAL-RENEW-022") }
             return
@@ -2361,7 +2373,9 @@ final class AppsViewModel: ObservableObject {
                 "id": item.id.uuidString,
                 "name": item.name,
                 "isSeal": item.isSeal,
-                "state": item.isSeal ? BatchRefreshSession.Item.State.awaitingSealConfirmation.storageValue : item.state.storageValue
+                "state": (item.isSeal && forceSealAwaiting)
+                    ? BatchRefreshSession.Item.State.awaitingSealConfirmation.storageValue
+                    : item.state.storageValue
             ]
         }
         let succeeded = itemPayload.filter { ($0["state"] as? String) == "completed" }.count
@@ -2378,7 +2392,8 @@ final class AppsViewModel: ObservableObject {
         if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: Self.pendingBatchResultFileURL, options: .atomic)
         }
-        Task { try? await logStore?.append(category: .renewal, level: .info, message: "批量续签结果已持久化（共 \(session.total)，成功 \(succeeded)，失败 \(session.failed)，Seal 等待新进程核验，明细 \(itemPayload.count) 项）", code: "SEAL-RENEW-023") }
+        let sealNote = forceSealAwaiting ? "Seal 等待新进程核验" : "Seal 无待核验项"
+        Task { try? await logStore?.append(category: .renewal, level: .info, message: "批量续签结果已持久化（共 \(session.total)，成功 \(succeeded)，失败 \(session.failed)，\(sealNote)，明细 \(itemPayload.count) 项）", code: "SEAL-RENEW-023") }
     }
 
     /// 读取「待恢复的批量续签结果」载荷。

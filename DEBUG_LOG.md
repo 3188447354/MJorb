@@ -5,6 +5,26 @@
 
 ---
 
+## 2026-09-29 快捷指令续签成功但进 Seal 结果抽屉有延迟：非自替换结果不落盘（1.3.37）
+
+- **现象**（用户真机，1.3.36）：锁屏/后台用快捷指令续签，系统通知已报「已续签成功」，之后进 Seal
+  打开「续签成功」抽屉却要等一会儿才能看到成功反馈。
+- **根因**：`runBatchRefresh` 只在 `result.awaitingConfirmation > 0`（Seal **覆盖安装自己**）时调用
+  `persistPendingBatchResultForSealUpdate` 落盘；普通应用、以及 Seal 走 profile-only（只换描述文件、没换
+  进程，`awaitingConfirmation == 0`）时，结果只留在内存里的 `batchRefreshSession`。快捷指令那轮在后台跑完、
+  进程被系统回收后，下次进 Seal 走 `restorePendingBatchResultIfNeeded` 读不到任何载荷 ⇒ 抽屉恢复不出
+  那笔真实的「成功」。
+- **修复**：把持久化方法重构为 `persistPendingBatchResult(forceSealAwaiting:)`；`awaitingConfirmation == 0`
+  分支**同样落盘**（`forceSealAwaiting: false`，按每个项的**真实终态** completed/failed/waiting 写，
+  不再把 Seal 一律记成 awaiting）。恢复侧 `restoredResult` / `settledQueueStates` 本就按条目终态派生，无需改动。
+  绝不伪造：载荷里的终态都来自 RenewalCoordinator 已逐项确认的结果。
+- **涉及文件**：`Seal/Features/Apps/AppsViewModel.swift`（方法重构 + 分支补持久化）、
+  `Scripts/verify-release-safety.py`（守卫 R108 1 断言 + 1 变异）。
+- **验证状态**：`py_compile` 通过；守卫 R108 交 CI（变异自查钉住「非自替换也必须落盘」）。
+  真机验收：锁屏快捷指令续签成功后直接进 Seal，抽屉**立即**显示该轮真实成功/失败分桶。
+
+---
+
 ## 2026-09-29 守卫变异锚点歧义：对称函数复用同款 guard 行致变异自查漏检（1.3.36）
 
 - **现象**：CI `build-package` 第一步 `verify-release-safety.py` 报

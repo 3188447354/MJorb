@@ -753,7 +753,7 @@ actor AppFileStore {
         }
     }
 
-    private static func streamingSHA256(url: URL) throws -> String {
+    static func streamingSHA256(url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = SHA256()

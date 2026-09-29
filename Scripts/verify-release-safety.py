@@ -3309,27 +3309,32 @@ def violations(load=read):
           and "SigningCertificateMaterialPolicy.availableCertificate(secret: secret, serialNumber: remote.serialNumber)" in reuse_section
           and "Self.certificateReusable(local)" in reuse_section,
           "Certificates: signing must reuse any stored P12 whose remote certificate is still active")
-    # ── R102：快速路径的两支都要过**完整 7 天**复用校验（2026-09-28 补守卫）──
+    # ── R102：快速路径的两支都要过**完整 7 天**复用校验（2026-09-28 补守卫；2026-09-29 抽纯函数）──
     #
-    # 旧记录（AGENTS.md §3）说这两支「既无守卫也无单测」。2026-09-28 逐行复核：
-    # **代码守卫已在**（两支都调 `Self.certificateReusable(local)`），缺的是**守卫/单测**
-    # —— 而缺守卫正是它最容易再次退化的原因（把 `Self.certificateReusable(local)` 删掉
-    # 编译照过、其余检查照绿，只有真机上「次日到期的证书被签进新包 ⇒ iOS 判尚未验证闪退」）。
-    # ⇒ 按本仓惯例把不变量钉成源码断言（判据本体 `SigningCertificateMaterialPolicy.reuseStatus`
-    # 已是纯函数，另有 R54 系列钉住它本身）。
+    # 旧记录（AGENTS.md §3）说这两支「既无守卫也无单测」。2026-09-28 补了源码守卫（两支都调
+    # `Self.certificateReusable(local)`）。2026-09-29 更进一步：把两支的分支选择抽成**纯函数**
+    # `SigningCertificateMaterialPolicy.fastPathReuseDecision(_:_:_:)` —— `signingIdentity` 是
+    # actor private + 含网络、无法单测，抽出来后判据才可单测（`SigningCertificateMaterialPolicyTests`）。
+    # 判据本体 `reuseStatus` 已是纯函数、另有单测钉住。
     fast_path = section(
         signing_service,
         "// 快速路径：本地证书可读时先做",
         "// 慢速路径：本地证书不可用，从 Apple 服务器获取证书列表。",
     )
-    # 判据写成「**每一支的形态各自存在**」而不是 `count == 2`：后者会假绿
-    # —— 删掉一支的校验、同时在别处再添一次同样的调用，计数照样是 2。
-    check(fast_path.count("Self.certificateReusable(local)") == 2
-          and "}), Self.certificateReusable(local) {" in fast_path
-          and "if Self.certificateReusable(local) {" in fast_path,
-          "R102①: 快速路径的两支（Apple 列表命中 / 列表拉取失败回退本地）都必须过"
-          "**完整 7 天**复用校验 ✗ —— 少一支就会把次日到期的证书签进新包，"
-          "iOS 判「尚未验证」闪退（AGENTS.md §3 签名）")
+    # 快速路径必须经纯函数判定，且 `reuseStatus` 必须传**真实本地证书**的判定（不能硬编 `.reusable`）。
+    check("SigningCertificateMaterialPolicy.fastPathReuseDecision(" in fast_path
+          and "remoteSerials: fetchedCertificates?.map" in fast_path
+          and "reuseStatus: SigningCertificateMaterialPolicy.reuseStatus(local)" in fast_path,
+          "R102①: 快速路径两支（列表命中 / 拉取失败回退本地）必须经纯函数"
+          "`fastPathReuseDecision(remoteSerials:targetSerialNumber:reuseStatus:)` 判定、且"
+          "`reuseStatus` 传真实本地证书的判定 ✗ —— 少一支或硬编 `.reusable` 就会把次日到期的"
+          "证书签进新包，iOS 判「尚未验证」闪退（AGENTS.md §3 签名）")
+    signing_material = load("Seal/Core/Signing/SigningCertificateMaterialPolicy.swift")
+    check("static func fastPathReuseDecision(" in signing_material
+          and "guard reuseStatus == .reusable else { return .fallThroughToSlowPath }" in signing_material
+          and "SigningCertificateSelectionPolicy.normalizedSerialNumber(targetSerialNumber)" in signing_material,
+          "R102②: 纯函数 `fastPathReuseDecision` 必须仍在、且先过 `reuseStatus == .reusable` 门"
+          "再归一化比对 serial ✗ —— 少了守卫门，非 reusable 的证书会被当成可复用")
     check("isCertificateImporterPresented" not in cert_view
           and "从 P12 备份恢复本机私钥" not in cert_view,
           "Certificates: UI must not expose P12 recovery (removed, one cert per Apple ID)")
@@ -3524,6 +3529,34 @@ def violations(load=read):
           "`docs/qa/log-code-index.md`** ✗ —— "
           "「用户说没收到通知」与「其实没给权限」、"
           "「锁屏续签失败」与「条目本来就不存在」全靠这几条码分辨")
+
+    # ── R107：应用内更新必须对下载的 IPA 做 **SHA256 完整性校验**（2026-09-29）──
+    #
+    # 内建更新是一条**远程代码投递通道**：装进设备的 IPA 完全由 Release 响应决定。
+    # 版本串校验只能挡住「换成旧包」，挡不住「同版本内容被替换」—— 同一合法域名下的
+    # 资产仍可能被调包。必须与 Release 附带的 `.sha256` 逐字节比对，且缺校验和 / 对不上都
+    # fail closed（中止安装）。这是**安全**不变量，退化后编译照过、其余检查照绿。
+    update_checker = load("Seal/Infrastructure/UpdateChecker.swift")
+    check("static func sha256DownloadURL(from assets: [[String: Any]]) -> URL?" in update_checker
+          and 'name.lowercased().hasSuffix(".sha256")' in update_checker
+          and "static func expectedSHA256(from content: String) -> String?" in update_checker
+          and "hash.count == 64" in update_checker
+          and "static func hashMatches(expected: String, actual: String) -> Bool" in update_checker
+          and "let sha256DownloadURL: URL?" in update_checker,
+          "R107①: 更新检查器必须提供 `.sha256` 直链挑选 + 64 位哈希解析 + 大小写无关比对 ✗ —— "
+          "内建更新是一条远程代码投递通道，缺任何一环都无法逐字节校验下载包")
+    update_view = load("Seal/Features/UpdateNoticeView.swift")
+    check("AppFileStore.streamingSHA256(url: localURL)" in update_view
+          and "UpdateChecker.expectedSHA256(from: checksumText)" in update_view
+          and "UpdateChecker.hashMatches(expected: expected, actual: actual)" in update_view
+          and 'phase = .failed("更新包缺少校验信息，已中止安装")' in update_view
+          and 'phase = .failed("更新包校验不通过，已中止安装")' in update_view,
+          "R107②: 更新下载流程必须下载校验和、算本地哈希并比对，缺失/不符都 fail closed ✗ —— "
+          "否则「同一合法域名下资产被调包」无法察觉")
+    file_store = load("Seal/Infrastructure/Storage/AppFileStore.swift")
+    check("static func streamingSHA256(url: URL) throws -> String" in file_store,
+          "R107③: `AppFileStore.streamingSHA256` 必须是可调用（非 private）的静态方法 ✗ —— "
+          "更新模块要复用它对大文件流式算 SHA256")
 
     # Fast IPA 的产物由 build-unsigned-ipa.sh 按版本命名为 Seal_<version>.ipa。
     # 验证/上传若退回旧的 Seal.ipa 固定名，会在编译成功后误报文件不存在。
@@ -9845,18 +9878,18 @@ def main():
          "let isUrgent = interval < 4 * 86_400",
          "R101②:"),
         # ── R102：快速路径两支各自的 7 天复用校验 ──
-        # ① 抹掉「Apple 列表命中」那一支的复用校验（`}), Self.certificateReusable(local) {`
-        #    → `}) {`）⇒ 该支恒复用、次日到期证书被签进新包 ⇒ R102① 报红。
+        # ① 把快速路径的 `reuseStatus` 硬编成 `.reusable`（绕过纯函数里的 7 天门）
+        #    ⇒ 次日到期的证书被签进新包 ⇒ R102① 报红。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "}), Self.certificateReusable(local) {",
-         "}) {",
+         "reuseStatus: SigningCertificateMaterialPolicy.reuseStatus(local)",
+         "reuseStatus: .reusable",
          "R102①:"),
-        # ② 抹掉「列表拉取失败回退本地」那一支的复用校验（`if Self.certificateReusable(local) {`
-        #    → `if true {`）⇒ R102① 报红。
-        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "if Self.certificateReusable(local) {",
-         "if true {",
-         "R102①:"),
+        # ② 抹掉纯函数里的 7 天门（`guard reuseStatus == .reusable` → `guard true`）
+        #    ⇒ 非 reusable 的证书被当成可复用 ⇒ R102② 报红。
+        ("Seal/Core/Signing/SigningCertificateMaterialPolicy.swift",
+         "guard reuseStatus == .reusable else { return .fallThroughToSlowPath }",
+         "guard true else { return .fallThroughToSlowPath }",
+         "R102②:"),
         # ── R103：证书导出的安全不变量 ──
         # ① 退回「用 Apple ID 账号口令当证书密码」⇒ R103① 报红。
         ("Seal/Infrastructure/Accounts/CertificateExportHandler.swift",
@@ -9937,6 +9970,17 @@ def main():
          "if self.hasActiveRenewalWork == false {",
          "if self.hasActiveRenewalWork == true {",
          "R106⑥:"),
+        # ── R107：应用内更新下载 IPA 的 SHA256 完整性校验 ──
+        # ① `.sha256` 资产过滤退成恒 false（挑不到校验和 ⇒ 缺校验和时仍继续装）⇒ R107① 报红。
+        ("Seal/Infrastructure/UpdateChecker.swift",
+         'name.lowercased().hasSuffix(".sha256")',
+         'false',
+         "R107①:"),
+        # ② 哈希比对硬编成 true（本地算出的哈希与 Release 不一致也放行）⇒ R107② 报红。
+        ("Seal/Features/UpdateNoticeView.swift",
+         "UpdateChecker.hashMatches(expected: expected, actual: actual)",
+         "true",
+         "R107②:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

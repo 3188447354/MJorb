@@ -59,13 +59,14 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
   证书签进新包 → iOS 判「尚未验证」闪退。复用/新建各分支（快速路径列表命中、网络失败回退、
   慢速路径选中、账户证书、新建证书收尾）都要过 `SigningCertificateMaterialPolicy.reuseStatus` /
   `certificateReusable(_:)`。**网络失败回退本地证书也必须查有效期。**
-  ⚠️ 其中「快速路径列表命中」与「网络失败回退」两支**单测仍缺**（`signingIdentity` 是
-  actor private 且含网络）—— 改这两支时先把它抽成纯函数再改。
-  ✅ 但**源码断言守卫已在**（R102①，2026-09-28 补）：钉住这两支各自的校验形态
-  （`}), Self.certificateReusable(local) {` / `if Self.certificateReusable(local) {`）
-  —— 判据写成「每一支的形态各自存在」而不是 `count == 2`（后者删一支再补一处即可假绿）。
-  缺守卫正是它最容易再次退化的原因：删掉调用编译照过、其余检查照绿，
-  只有真机上「次日到期的证书被签进新包 ⇒ iOS 判尚未验证闪退」。
+  ⚠️ 其中「快速路径列表命中」与「网络失败回退」两支已（2026-09-29）**抽成纯函数**
+  `SigningCertificateMaterialPolicy.fastPathReuseDecision(remoteSerials:targetSerialNumber:reuseStatus:)`
+  —— `signingIdentity`（actor private 且含网络）原先无法单测的分支选择，现在三态（`.reuseFromActiveList` /
+  `.reuseLocalWithoutList` / `.fallThroughToSlowPath`）可单测。先 `guard reuseStatus == .reusable` 的
+  7 天门、再归一化（去前导零）比对 serial。
+  ✅ **源码断言守卫 R102**（2026-09-28 补、2026-09-29 改）钉住纯函数调用点 + 纯函数本体（2 断言 + 2 变异）；
+  单测在 `SigningCertificateMaterialPolicyTests`（4 条：列表命中需 serial + 7 天 / 命中仍过 7 天门 /
+  回退也过 7 天门 / 空列表不算回退）。
 - 序列号跨来源比对必须**归一化（去前导零/大小写）**，否则误判「证书已轮换」（`normalizedSerialNumber`）。
 - 签名/续签处于 LocalDevVPN 环境，无法可靠自动重登 Apple；会话过期统一引导到「我的」页重新验证，
   **不要实现会触发 2FA 的签名页验证码路径**。

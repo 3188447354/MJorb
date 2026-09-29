@@ -63,16 +63,18 @@ struct UpdateChecker {
                 ?? URL(string: "https://github.com/\(repo)/releases")
 
             // 从 attachments 里挑 IPA，供应用内直接下载覆盖安装
-            let ipaDownloadURL = Self.ipaDownloadURL(
-                from: json["assets"] as? [[String: Any]] ?? []
-            )
+            let assets = json["assets"] as? [[String: Any]] ?? []
+            let ipaDownloadURL = Self.ipaDownloadURL(from: assets)
+            // 配套校验和直链：下载 IPA 后必须与其比对口径，堵住「同一合法域名下资产被替换」。
+            let sha256DownloadURL = Self.sha256DownloadURL(from: assets)
 
             return UpdateNotice(
                 version: tagName,
                 title: releaseName,
                 message: message,
                 downloadURL: downloadURL,
-                ipaDownloadURL: ipaDownloadURL
+                ipaDownloadURL: ipaDownloadURL,
+                sha256DownloadURL: sha256DownloadURL
             )
         } catch {
             return nil
@@ -132,6 +134,44 @@ struct UpdateChecker {
         guard candidates.count == 1 else { return nil }
         return candidates[0]
     }
+
+    /// 与 `ipaDownloadURL` 对称：从 Release 资产里挑出唯一一个 `.sha256` 直链（同样过域名白名单）。
+    /// 内容由发布脚本 `shasum -a 256 "$ipa" > "$ipa.sha256"` 生成。
+    static func sha256DownloadURL(from assets: [[String: Any]]) -> URL? {
+        let candidates = assets.compactMap { attachment -> URL? in
+            guard let name = attachment["name"] as? String,
+                  name.lowercased().hasSuffix(".sha256"),
+                  let raw = attachment["browser_download_url"] as? String,
+                  let url = URL(string: raw),
+                  isTrustedDownloadURL(url) else {
+                return nil
+            }
+            return url
+        }
+        guard candidates.count == 1 else { return nil }
+        return candidates[0]
+    }
+
+    /// `shasum` 输出第一个空白分隔 token 是 64 位小写十六进制 hash。
+    /// 长度 / 字符集不对（内容被截断或投毒）一律返回 nil，由调用方 fail closed。
+    static func expectedSHA256(from content: String) -> String? {
+        let token = content
+            .split(whereSeparator: { $0.isWhitespace })
+            .first
+            .map(String.init)?
+            .lowercased()
+        guard let hash = token,
+              hash.count == 64,
+              hash.allSatisfy({ $0.isHexDigit }) else {
+            return nil
+        }
+        return hash
+    }
+
+    /// 忽略大小写的 hash 比对（`shasum` 与 `FileHandle` 两端都可能混大小写）。
+    static func hashMatches(expected: String, actual: String) -> Bool {
+        expected.caseInsensitiveCompare(actual) == .orderedSame
+    }
 }
 
 struct UpdateNotice: Identifiable {
@@ -141,4 +181,5 @@ struct UpdateNotice: Identifiable {
     let message: String
     let downloadURL: URL?
     let ipaDownloadURL: URL?
+    let sha256DownloadURL: URL?
 }

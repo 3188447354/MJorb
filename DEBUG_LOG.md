@@ -5,6 +5,38 @@
 
 ---
 
+## 2026-09-29 发版前收尾：内建更新补 SHA256 完整性校验 + 证书复用快速路径抽纯函数补单测（1.3.36）
+
+- **背景**（回答「距离正式版还差什么」）：三条缺口 —— 供应链安全、测试覆盖缺口、回归验证。
+  前两枪在本版合入，回归验证前一轮（1.3.33–1.3.35）已真机走通（多任务可用）。
+
+  ① **供应链安全：内建更新此前只校验版本串 + 域名白名单**。版本串挡住「换成旧包」，挡不住
+  「同版本内容被替换」—— 同一合法域名下资产被调包就装进盗版/篡改包。这是**安全**缺口：退化后
+  编译照过、其余检查照绿，只能靠守卫钉住。
+  - **修复**：下载 IPA 后从 Release 资产挑唯一 `.sha256` 直链 → 下载校验和 → `AppFileStore.streamingSHA256`
+    流式算本地哈希 → `UpdateChecker.hashMatches` 大小写无关比对；**缺校验和 / 对不上一律 `phase = .failed`**
+    fail closed（不落盘、不覆盖、不 `onInstall`）。
+  - **涉及文件**：`UpdateChecker.swift`（`sha256DownloadURL`/`expectedSHA256`/`hashMatches` 三纯函数 +
+    `UpdateNotice.sha256DownloadURL`）、`AppFileStore.swift`（`streamingSHA256` 提为 static）、
+    `UpdateNoticeView.swift`（`onInstall` 前插校验）、`UpdateCheckerAssetTests.swift`（7 单测）。
+  - **守卫**：R107（3 断言 + 2 变异）。
+  - **验证状态**：纯函数单测覆盖；不涉真机安装路径，交 CI。
+
+  ② **测试覆盖缺口：`signingIdentity` 两个快速路径分支的 7 天复用判据无法单测**（AGENTS.md §3 早已记
+  「既无守卫也无单测」）。两分支都要求本地证书剩余有效期覆盖免费 profile 的 **7 天**寿命，否则把
+  「次日到期证书」签进新包 ⇒ 次日 iOS 判「尚未验证」闪退。此前判据散在 actor private + 网络里，删掉
+  校验也编译照过。
+  - **修复**：抽纯函数 `SigningCertificateMaterialPolicy.fastPathReuseDecision(remoteSerials:targetSerialNumber:reuseStatus:)`
+    返回三态；先 `guard reuseStatus == .reusable`（7 天门）再归一化比对 serial。`signingIdentity` 改调纯函数，
+    行为不变、日志保留（列表拉取失败仍记原因 + 耗时，便于分限流/超时/网络）。
+  - **涉及文件**：`SigningCertificateMaterialPolicy.swift`（新增枚举 + 纯函数）、
+    `ApplePortalSigningService.swift`（快路径改 switch 判定）、`SigningCertificateMaterialPolicyTests.swift`（4 单测）。
+  - **守卫**：R102 由「钉两处 `Self.certificateReusable(local)` 调用」改为「钉纯函数调用点 + 纯函数本体」
+    （2 断言 + 2 变异）。
+  - **验证状态**：纯函数满覆盖单测；不涉真机安装路径，交 CI。
+
+---
+
 ## 2026-09-29 免费账号签 LiveContainer：3001（参数无效）→ 降级后再撞 1200（未启用 App Group）（1.3.34）
 
 - **现象**（真机，1.3.33 构建 68）：放开三处免费闸门后，免费账号重签 LiveContainer 仍失败。

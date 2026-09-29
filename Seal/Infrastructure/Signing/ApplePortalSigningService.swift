@@ -1301,24 +1301,8 @@ actor ApplePortalSigningService {
             } catch {
                 certificateFetchFailure = error
             }
-            if let certificates = fetchedCertificates {
-                // 在生效列表且剩余有效期覆盖 7 天 profile 寿命才可复用：只查列表/只看当下未过期，
-                // 会把「明天就到期的证书」签进新包，次日被 iOS 判「尚未验证」闪退。
-                if certificates.contains(where: {
-                    SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber) == SigningCertificateSelectionPolicy.normalizedSerialNumber(serial)
-                }), Self.certificateReusable(local) {
-                    await diagnostic("证书决策：复用 Apple 生效列表中的本机证书 …\(SigningCertificateSelectionPolicy.normalizedSerialNumber(serial).suffix(8))，剩余有效期已通过完整 7 天校验")
-                    return SigningIdentity(
-                        certificate: local,
-                        secret: secret.activated(
-                            for: serial,
-                            machineIdentifier: local.machineIdentifier
-                        ) ?? secret
-                    )
-                }
-                // 证书已不在 Apple 生效列表、已过期或剩余寿命不足 7 天，落到慢速路径重新申请新证书
-            } else {
-                // ⚠️ 把失败原因与耗时写进日志（见上）：原先只有一句「暂不可用」，查不出是什么。
+            // 列表拉取失败要记原因 + 耗时：原先只有一句「暂不可用」，分不出限流/超时/网络。
+            if fetchedCertificates == nil {
                 let fetchSeconds = Int(Date().timeIntervalSince(fetchStartedAt))
                 var fetchReason = "原因未知"
                 if let failure = certificateFetchFailure {
@@ -1327,19 +1311,37 @@ actor ApplePortalSigningService {
                     fetchReason = "\(kind)；[\(ns.domain) \(ns.code)] \(ns.localizedDescription)"
                 }
                 await diagnostic("证书列表拉取失败：耗时 \(fetchSeconds) 秒；\(fetchReason)")
-                // 网络失败/限流：退回本地证书，保留提速效果。
-                // 但免费账号证书可能已过期或临近到期；复用会让 iOS 判定"尚未验证"导致闪退，
-                // 因此剩余寿命不足 7 天时必须落入慢速路径重新申请，不得复用。
-                if Self.certificateReusable(local) {
-                    await diagnostic("证书决策：Apple 证书列表暂不可用，复用本机证书 …\(SigningCertificateSelectionPolicy.normalizedSerialNumber(serial).suffix(8))；本地有效期已通过完整 7 天校验")
-                    return SigningIdentity(
-                        certificate: local,
-                        secret: secret.activated(
-                            for: serial,
-                            machineIdentifier: local.machineIdentifier
-                        ) ?? secret
-                    )
-                }
+            }
+
+            // 在生效列表且剩余有效期覆盖 7 天 profile 寿命才可复用：只查列表/只看当下未过期，
+            // 会把「明天就到期的证书」签进新包，次日被 iOS 判「尚未验证」闪退。
+            // 快速路径两支共用一份纯判定，让分支选择可单测（不再散在 actor private + 网络里）。
+            let decision = SigningCertificateMaterialPolicy.fastPathReuseDecision(
+                remoteSerials: fetchedCertificates?.map(\.serialNumber),
+                targetSerialNumber: serial,
+                reuseStatus: SigningCertificateMaterialPolicy.reuseStatus(local)
+            )
+            switch decision {
+            case .reuseFromActiveList:
+                await diagnostic("证书决策：复用 Apple 生效列表中的本机证书 …\(SigningCertificateSelectionPolicy.normalizedSerialNumber(serial).suffix(8))，剩余有效期已通过完整 7 天校验")
+                return SigningIdentity(
+                    certificate: local,
+                    secret: secret.activated(
+                        for: serial,
+                        machineIdentifier: local.machineIdentifier
+                    ) ?? secret
+                )
+            case .reuseLocalWithoutList:
+                await diagnostic("证书决策：Apple 证书列表暂不可用，复用本机证书 …\(SigningCertificateSelectionPolicy.normalizedSerialNumber(serial).suffix(8))；本地有效期已通过完整 7 天校验")
+                return SigningIdentity(
+                    certificate: local,
+                    secret: secret.activated(
+                        for: serial,
+                        machineIdentifier: local.machineIdentifier
+                    ) ?? secret
+                )
+            case .fallThroughToSlowPath:
+                break
             }
         }
 

@@ -77,6 +77,67 @@ struct UpdateCheckerAssetTests {
         #expect(UpdateChecker.advertisedVersion("2.0.0", matchesIPAVersion: "1.0.0") == false)
     }
 
+    @Test
+    func theLoneTrustedSHA256BecomesTheDirectLink() {
+        let assets = [
+            asset(name: "Seal.ipa", url: "https://github.com/a/Seal.ipa"),
+            asset(name: "Seal.ipa.sha256", url: "https://github.com/a/Seal.ipa.sha256")
+        ]
+        #expect(
+            UpdateChecker.sha256DownloadURL(from: assets)?.absoluteString
+                == "https://github.com/a/Seal.ipa.sha256"
+        )
+    }
+
+    @Test
+    func multipleSHA256AssetsYieldNoDirectLink() {
+        let assets = [
+            asset(name: "Seal.ipa.sha256", url: "https://github.com/a/one.sha256"),
+            asset(name: "Other.ipa.sha256", url: "https://github.com/a/two.sha256")
+        ]
+        #expect(UpdateChecker.sha256DownloadURL(from: assets) == nil)
+    }
+
+    @Test
+    func untrustedSHA256AssetIsFilteredBeforeCounting() {
+        let assets = [asset(name: "Seal.ipa.sha256", url: "https://evil.example.com/Seal.ipa.sha256")]
+        #expect(UpdateChecker.sha256DownloadURL(from: assets) == nil)
+    }
+
+    @Test
+    func expectedSHA256ReadsTheShasumToken() {
+        let hex = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        #expect(UpdateChecker.expectedSHA256(from: "\(hex)  Seal.ipa\n") == hex)
+        #expect(UpdateChecker.expectedSHA256(from: "\(hex.uppercased())\tSeal.ipa") == hex)
+    }
+
+    @Test
+    func malformedChecksumYieldsNil() {
+        #expect(UpdateChecker.expectedSHA256(from: "abc123  Seal.ipa") == nil)
+        #expect(UpdateChecker.expectedSHA256(from: "\(String(repeating: "g", count: 64))  Seal.ipa") == nil)
+        #expect(UpdateChecker.expectedSHA256(from: "") == nil)
+    }
+
+    @Test
+    func hashComparisonIgnoresCase() {
+        let lower = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        #expect(UpdateChecker.hashMatches(expected: lower, actual: lower.uppercased()))
+        #expect(UpdateChecker.hashMatches(expected: lower, actual: String(repeating: "0", count: 64)) == false)
+    }
+
+    @Test
+    func streamingSHA256MatchesTheKnownDigest() throws {
+        let payload = Data("hello world".utf8)
+        let url = FileManager.default.temporaryDirectory
+            .appending(path: "seal-test-\(UUID().uuidString).bin")
+        try payload.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        #expect(
+            try AppFileStore.streamingSHA256(url: url)
+                == "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        )
+    }
+
     private func asset(name: String, url: String) -> [String: Any] {
         ["name": name, "browser_download_url": url]
     }

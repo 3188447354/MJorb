@@ -45,6 +45,49 @@ struct SigningCertificateMaterialPolicyTests {
         ) == .invalidValidity)
     }
 
+    /// 快速路径列表命中支：serial 在生效列表 && 剩余寿命 ≥ 7 天才复用（序列号归一化去前导零）。
+    @Test
+    func fastPathReusesOnlyWhenSerialIsInActiveListAndLifetimeCoversProfile() {
+        #expect(SigningCertificateMaterialPolicy.fastPathReuseDecision(
+            remoteSerials: ["0AA11", "BB22"], targetSerialNumber: "AA11", reuseStatus: .reusable
+        ) == .reuseFromActiveList)
+        // 列表里没有目标 serial ⇒ 落慢速路径（不能拿一张没备案的证书配新描述文件）。
+        #expect(SigningCertificateMaterialPolicy.fastPathReuseDecision(
+            remoteSerials: ["CC33"], targetSerialNumber: "AA11", reuseStatus: .reusable
+        ) == .fallThroughToSlowPath)
+    }
+
+    /// 列表命中支的 7 天门槛：serial 在列表但寿命不足/日期无效，仍不得复用。
+    @Test
+    func fastPathListHitStillRequiresFullLifetime() {
+        #expect(SigningCertificateMaterialPolicy.fastPathReuseDecision(
+            remoteSerials: ["AA11"], targetSerialNumber: "AA11", reuseStatus: .insufficientLifetime
+        ) == .fallThroughToSlowPath)
+        #expect(SigningCertificateMaterialPolicy.fastPathReuseDecision(
+            remoteSerials: ["AA11"], targetSerialNumber: "AA11", reuseStatus: .invalidValidity
+        ) == .fallThroughToSlowPath)
+    }
+
+    /// 网络回退支：列表拉取失败（remoteSerials == nil），只要本地过 7 天校验就回退复用，
+    /// 否则落慢速路径 —— 免费账号临近到期的证书丢给 iOS 会判「尚未验证」闪退。
+    @Test
+    func fastPathNetworkFallbackStillPassesThroughLifetimeGate() {
+        #expect(SigningCertificateMaterialPolicy.fastPathReuseDecision(
+            remoteSerials: nil, targetSerialNumber: "AA11", reuseStatus: .reusable
+        ) == .reuseLocalWithoutList)
+        #expect(SigningCertificateMaterialPolicy.fastPathReuseDecision(
+            remoteSerials: nil, targetSerialNumber: "AA11", reuseStatus: .insufficientLifetime
+        ) == .fallThroughToSlowPath)
+    }
+
+    /// 空列表也视作「不在生效列表」⇒ 落慢速路径，不能拿空列表当网络回退。
+    @Test
+    func fastPathEmptyListIsNotAFallback() {
+        #expect(SigningCertificateMaterialPolicy.fastPathReuseDecision(
+            remoteSerials: [], targetSerialNumber: "AA11", reuseStatus: .reusable
+        ) == .fallThroughToSlowPath)
+    }
+
     @Test
     func capacityRecoveryRotatesOnlyCertificatesThatCannotCoverANewProfile() {
         let candidates = SigningCertificateMaterialPolicy.rotationCandidates(

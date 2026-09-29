@@ -248,6 +248,23 @@ struct UpdateNoticeView: View {
                     phase = .failed("更新包内容与版本 \(notice.version) 不符，已中止安装")
                     return
                 }
+                // SHA256 完整性校验：走应用内直链安装必须有配套校验和，缺失或对不上都 fail closed。
+                // 版本串校验只能挡住「换成旧包」，挡不住「同版本内容被替换」——同一合法域名下的
+                // 资产仍可能被调包，只有与 Release 附带的 `.sha256` 逐字节比对才可信。
+                guard let checksumURL = notice.sha256DownloadURL else {
+                    try? FileManager.default.removeItem(at: localURL)
+                    phase = .failed("更新包缺少校验信息，已中止安装")
+                    return
+                }
+                let actual = try AppFileStore.streamingSHA256(url: localURL)
+                let (checksumData, _) = try await URLSession.shared.data(from: checksumURL)
+                guard let checksumText = String(data: checksumData, encoding: .utf8),
+                      let expected = UpdateChecker.expectedSHA256(from: checksumText),
+                      UpdateChecker.hashMatches(expected: expected, actual: actual) else {
+                    try? FileManager.default.removeItem(at: localURL)
+                    phase = .failed("更新包校验不通过，已中止安装")
+                    return
+                }
                 onInstall(localURL)
             } catch is CancellationError {
                 phase = .idle

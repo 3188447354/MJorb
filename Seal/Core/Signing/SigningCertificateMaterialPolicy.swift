@@ -7,6 +7,17 @@ enum SigningCertificateReuseStatus: Equatable, Sendable {
     case insufficientLifetime
 }
 
+/// 快速路径两支的复用判定结果。抽成独立类型，让 `signingIdentity`（actor private + 含网络）
+/// 无法单测的分支选择落成可单测的纯函数（见 `fastPathReuseDecision`，R102）。
+enum FastPathCertificateReuseDecision: Equatable, Sendable {
+    /// 证书仍在 Apple 生效列表 && 剩余有效期覆盖 7 天 profile 寿命 → 复用。
+    case reuseFromActiveList
+    /// Apple 证书列表拉取失败（限流/超时/网络）→ 退回本地证书，但仍须过 7 天校验。
+    case reuseLocalWithoutList
+    /// 落回慢速路径（重新申请证书）。
+    case fallThroughToSlowPath
+}
+
 enum SigningCertificateRotationReason: Equatable, Sendable {
     case missingPrivateKey
     case insufficientLifetime
@@ -61,6 +72,26 @@ enum SigningCertificateMaterialPolicy {
         }
         return validity.notAfter.timeIntervalSince(now) > minimumRemainingLifetime
             ? .reusable : .insufficientLifetime
+    }
+
+    /// 快速路径两支的复用判定（纯函数，供单测 + R102 守卫钉住）。
+    /// - `remoteSerials == nil`：列表拉取失败 → 只要本地证书可复用就回退复用（保留提速）。
+    /// - `remoteSerials != nil`：列表拉到了 → 必须「serial 仍在生效列表」**且**「可复用」才复用。
+    /// 两条路都不能只判「当下未过期」—— 剩余寿命须覆盖免费 profile 的 7 天（见 `reuseStatus`）。
+    static func fastPathReuseDecision(
+        remoteSerials: [String]?,
+        targetSerialNumber: String,
+        reuseStatus: SigningCertificateReuseStatus
+    ) -> FastPathCertificateReuseDecision {
+        guard reuseStatus == .reusable else { return .fallThroughToSlowPath }
+        if let remoteSerials {
+            let normalized = SigningCertificateSelectionPolicy.normalizedSerialNumber(targetSerialNumber)
+            let inActiveList = remoteSerials.contains {
+                SigningCertificateSelectionPolicy.normalizedSerialNumber($0) == normalized
+            }
+            return inActiveList ? .reuseFromActiveList : .fallThroughToSlowPath
+        }
+        return .reuseLocalWithoutList
     }
 
     /// Apple 明确返回证书名额上限后，只轮换已经不能覆盖一份新 7 天描述文件的证书。

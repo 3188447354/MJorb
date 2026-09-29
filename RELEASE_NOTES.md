@@ -1,3 +1,41 @@
+# 1.3.36 内建更新加 SHA256 完整性校验 + 证书复用快速路径抽纯函数补单测
+
+发版前收尾的两处硬化：一是**内建更新**这条「远程代码投递通道」补上 SHA256 逐字节校验，堵住
+「同一合法域名下资产被调包」；二是把证书复用的**快速路径判定抽成纯函数**并补上单测，让
+`signingIdentity`（actor private + 含网络）里原本无法单测的判据从此可测、可守。
+
+## 一、内建更新 → SHA256 完整性校验（供应链安全）
+
+- **现象**：应用内更新此前只校验 `tag_name` 与 IPA 版本串是否一致、下载域名是否在白名单。版本串
+  只能挡住「换成旧包」，挡不住「**同版本内容被替换**」—— 只要攻击者能在同一合法域名下替换资产，
+  旧校验完全看不出。
+- **修复**：发布侧已随 IPA 生成 `.sha256` 校验和；Seal 下载 IPA 后，从 Release 资产里挑出唯一一个
+  `.sha256` 直链（同样过域名白名单），下载校验和、对本地 IPA 流式算 SHA256，再逐字节比对。**缺校验和
+  或比对不符一律 fail closed（中止安装）**，不落盘、不覆盖。
+- **实现**：`UpdateChecker` 新增 `sha256DownloadURL` / `expectedSHA256` / `hashMatches` 三个纯函数，
+  `UpdateNotice` 携带校验和地址；`AppFileStore.streamingSHA256` 由 private 提为可复用的静态方法
+  （大文件流式算，不整块入内存）；`UpdateNoticeView` 在 `onInstall` 前插入校验步骤。
+- **测试**：`UpdateCheckerAssetTests` 覆盖「挑唯一 `.sha256`」「解析 shasum token」「大小写无关比对」
+  「流式算 SHA256 已知摘要」及「恶意/多份资产 fail closed」。守卫 **R107**（3 断言 + 2 变异）。
+
+## 二、证书复用快速路径抽纯函数 + 补单测（测试覆盖缺口）
+
+- **背景**（AGENTS.md §3 早已记）：`signingIdentity` 的两个快速路径分支（Apple 生效列表命中 /
+  列表拉取失败回退本地）都要求本地证书**剩余有效期覆盖免费 profile 的 7 天寿命**，否则会把
+  「次日到期的证书」签进新包、次日被 iOS 判「尚未验证」闪退。但这支判据此前困在 actor 私有方法 +
+  网络调用里，**既无单测、退化也编译照过**。
+- **修复**：把两支的分支选择抽成纯函数 `SigningCertificateMaterialPolicy.fastPathReuseDecision`，
+  返回 `.reuseFromActiveList` / `.reuseLocalWithoutList` / `.fallThroughToSlowPath` 三态；先过
+  `reuseStatus == .reusable` 的 7 天门，再归一化（去前导零）比对 serial。`signingIdentity` 改调纯函数，
+  行为不变、日志保留（列表拉取失败仍记原因 + 耗时）。
+- **测试/守卫**：`SigningCertificateMaterialPolicyTests` 新增 4 条用例，覆盖「列表命中需 serial + 7 天」
+  「列表命中仍要过 7 天门」「网络回退也要过 7 天门」「空列表不算回退」；守卫 **R102** 由钉两处
+  `certificateReusable` 调用改为钉纯函数调用点 + 纯函数本体（2 断言 + 2 变异）。
+
+- 【验证】纯函数有满覆盖单测；内建更新 SHA256 为纯函数 + 单测 + 守卫，逻辑不涉真机安装路径，交 CI 编译与守卫。
+
+---
+
 # 1.3.35 签后校验不再误报 401/402：只保留可提交的能力、App Group ID 与描述文件对齐
 
 1.3.34 修掉了 3001/1200，但签含 App Group 的应用仍会在「描述文件逐 bundle 校验」关卡被

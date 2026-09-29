@@ -5,6 +5,32 @@
 
 ---
 
+## 2026-09-29 后台保活只有音频一路：被打断的窗口里锁屏续签被挂起（1.3.39，用户「按最牛的方式来」）
+
+- **现象**：锁屏/后台的自动续签只靠「静音音频无限循环」（`BackgroundKeepAliveService`）保活。
+  对照 6 个依赖 LocalDevVPN 通道的同类 IPA（AirCard / Eagle / Husk / LocalDevVPN / StikDebug / 定位）
+  逐包拆包，稳定者普遍声明 `audio + location` 双后台模式；Seal 当年按「跟」只做了 `audio`，但音频
+  会被来电/闹钟/插拔耳机/连断蓝牙/媒体服务重置停掉，自愈之间有窗口，进程一旦被挂起、续签就半途而废。
+- **根因**：只有一路保活，且它的失效模式单一。上游 SideStore 自己就有备选的
+  `BackgroundLocationService`（`Info.plist` 声明 `location`），Seal 没跟这一路。
+- **修复**（按上游 + 同类 App 对齐，双保险）：新增 `LocationKeepAliveService` ——
+  ① `UIBackgroundModes` 加 `location` + 两项定位权限描述（缺 `AlwaysAndWhenInUse` 会让
+  `requestAlwaysAuthorization()` 因缺失描述被 iOS 强制终止）；② 关键开关
+  `allowsBackgroundLocationUpdates = true`、`pausesLocationUpdatesAutomatically = false`
+  （后者默认 true，不显式置 false 会被系统在定位静止时静默暂停）；③ 授权分级
+  （notDetermined 请求 / 已授权启动 / 被拒降级仅音频），纯判据 `LocationKeepAliveAction`
+  可单测；④ 启动点与音频保活一致（`SealApp.init()` + `RefreshAllAppsIntent`）；⑤ 注入进
+  `AppContainer`；⑥ 新码 `SEAL-BACKGROUND-017`/`-018` 登记。
+- **涉及文件**：`Seal/Infrastructure/Background/LocationKeepAliveService.swift`（新增）、
+  `Seal/Application/AppContainer.swift`、`Seal/App/SealApp.swift`、
+  `Seal/Features/Intents/SealRenewalIntent.swift`、`SealTests/Background/LocationKeepAliveTests.swift`（新增）、
+  `project.yml`、`Scripts/verify-release-safety.py`（守卫 R110 6 断言 + 4 变异）、
+  `docs/qa/log-code-index.md`。
+- **验证状态**：`py_compile` 通过；守卫 R110 + 单测交 CI。真机验收：授予「始终允许」后锁屏快捷指令
+  续签 `SEAL-BACKGROUND-017` 出现、多一层活保障；权限被拒时降级 `SEAL-BACKGROUND-018`、仅音频保活。
+
+---
+
 ## 2026-09-29 RemotePairing 端口未持久化：续签/安装冷启动先撞默认端口再 Bonjour 重查（1.3.38）
 
 - **现象**（用户，1.3.37）：每次进 Seal 续签/安装，通道先撞一下默认端口才连上，进来那一下卡顿

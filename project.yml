@@ -87,16 +87,21 @@ targets:
         LSSupportsOpeningDocumentsInPlace: true
         UIFileSharingEnabled: true
         # 后台保活（「不打开 App 的后台自动续签」三层里的第 ① 层）。
-        # 🔴 只有 `audio`：靠 `BackgroundKeepAliveService` 的静音音频无限循环让 Seal
-        #    在后台**不被挂起**，否则 iOS 只给约 30 秒，大包续签（抖音 658 MB）必然半途而废。
-        # ⚠️ **刻意不加 `fetch`** —— 那是「系统自己找机会刷」那条路（需要
+        # 🔴 `audio + location`：`BackgroundKeepAliveService`（静音音频）＋
+        #    `LocationKeepAliveService`（后台定位）双保险。音频会被来电/闹钟/路由变更/媒体重置
+        #    打断，自愈之间有窗口；后台定位是 iOS 上仅次于 VoIP 的持久保活，与音频的失效模式正交。
+        #    上游 SideStore 自己也声明 `location`（有备选 BackgroundLocationService）；
+        #    Locus / StikDebug 等依赖 LocalDevVPN 的同类 App 同样 `audio + location`。
+        #    ⚠️ `location` 首次会弹定位权限（用户点「始终允许」后无需再干预）。
+        # ⚠️ **仍不加 `fetch`** —— 那是「系统自己找机会刷」那条路（需要
         #    `UIApplicationDelegate.performFetchWithCompletionHandler`），本项目**还没有**
         #    AppDelegate；声明了却不处理只会让系统白唤醒、并让排查时误以为有这条路径。
-        #    要加时**两件事一起做**（声明 ＋ 处理回调）。
+        #    要加时**两件事一起做**（声明 ＋ 处理回调）。`processing` 同理（需 BGTaskScheduler）。
         # ⚠️ `UIBackgroundModes` 是 **Info.plist 键、不是 entitlement** ⇒ 侧载签名拿得到
         #    （上游 SideStore 自己就是侧载 App，一直用它）。
         UIBackgroundModes:
           - audio
+          - location
         UTImportedTypeDeclarations:
           - UTTypeIdentifier: com.apple.itunes.ipa
             UTTypeDescription: iOS App Archive
@@ -111,6 +116,10 @@ targets:
                 - application/x-itunes-ipa
         ITSAppUsesNonExemptEncryption: false
         NSLocalNetworkUsageDescription: Seal 通过本地通道连接此设备并安装应用。
+        # 后台定位保活（`LocationKeepAliveService`）用。⚠️ 缺 `AlwaysAndWhenInUse` 这一项，
+        # `requestAlwaysAuthorization()` 会直接崩溃（权限描述缺失 = iOS 强制终止）。
+        NSLocationWhenInUseUsageDescription: Seal 需要定位权限在后台保持活跃，以便不打开 App 也能自动续签应用。
+        NSLocationAlwaysAndWhenInUseUsageDescription: Seal 需要「始终允许」定位，在锁屏 / 后台时保持活跃，完成自动续签。
         # 🔴 浏览 Bonjour 服务**必须**声明服务类型（iOS 14+）。缺了它 `NWBrowser`
         #    不报错、只是**永远没有结果** —— 端口自愈会静默失效，日志上也看不出来。
         #    这里只列 `RemotePairingPortDiscovery` 真正会浏览的三个
@@ -128,7 +137,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.mjorb.seal
         PRODUCT_NAME: Seal
         TARGETED_DEVICE_FAMILY: "1,2"
-        MARKETING_VERSION: 1.3.38
+        MARKETING_VERSION: 1.3.39
         CURRENT_PROJECT_VERSION: 3
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_STYLE: Automatic

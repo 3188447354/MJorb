@@ -3588,6 +3588,49 @@ def violations(load=read):
           "R109: RemotePairing 端口必须持久化（冷启动恢复 / 采纳写回 / 换设备清除）✗ —— "
           "只在内存记端口会让每次冷启动从 49152 撞一遍再 Bonjour 重查，续签/安装进来的那一下卡顿")
 
+    # ── R110：后台保活双保险 —— 后台定位保活（2026-09-29）──
+    #
+    # 静音音频那一路会被来电/闹钟/路由变更/媒体重置打断，自愈之间有窗口，进程一旦被系统
+    # 挂起、锁屏续签就跑一半停掉。补第二路「后台定位」（`UIBackgroundModes: location`），
+    # 它与音频的失效模式正交：只要定位持续回调，进程就不被挂起（上游 SideStore 有备选的
+    # `BackgroundLocationService`，Locus / StikDebug 等依赖 LocalDevVPN 的同类 App 也声明
+    # `audio + location`）。
+    #
+    # ⚠️ 这路**静默失效**的形态正是「已声明 / 已 start 但没用」：缺
+    # `allowsBackgroundLocationUpdates` 切后台定位立刻停；`pausesLocationUpdatesAutomatically`
+    # 默认是 **true**，定位长时间不动时系统会自动暂停（编译照过、日志可能一行都没有）。
+    # 所以必须四件事同时成立：① Info.plist 声明 location + 两项权限描述；② 两个关键开关；
+    # ③ 两个启动点（App 启动 + 快捷指令后台唤起）都 start；④ 容器真正注入。
+    r110_yml = load("project.yml")
+    r110_service = load("Seal/Infrastructure/Background/LocationKeepAliveService.swift")
+    r110_app = load("Seal/App/SealApp.swift")
+    r110_intent = load("Seal/Features/Intents/SealRenewalIntent.swift")
+    r110_container = load("Seal/Application/AppContainer.swift")
+    r110_index = load("docs/qa/log-code-index.md")
+    check("- location" in r110_yml
+          and "NSLocationWhenInUseUsageDescription" in r110_yml
+          and "NSLocationAlwaysAndWhenInUseUsageDescription" in r110_yml,
+          "R110①: `project.yml` 必须声明 `UIBackgroundModes: location` + 两项定位权限描述 ✗ —— "
+          "缺 `location` 后台模式则切后台定位立刻停；缺 `AlwaysAndWhenInUse` 描述则 "
+          "`requestAlwaysAuthorization()` 会因缺失权限描述被 iOS 强制终止")
+    check("pausesLocationUpdatesAutomatically = false" in r110_service
+          and "allowsBackgroundLocationUpdates = true" in r110_service,
+          "R110②: 定位保活两个关键开关必须同时成立 ✗ —— "
+          "缺 `allowsBackgroundLocationUpdates` 切后台定位立刻停；"
+          "`pausesLocationUpdatesAutomatically` 默认 true，不显式置 false 会被系统在定位静止时"
+          "静默暂停（正是「已启用了却没用」的形态）")
+    check("container.locationKeepAlive.start()" in r110_app,
+          "R110③: `SealApp.init()` 必须启动定位保活 ✗ —— 正常启动这条路径漏了，双保险只剩快捷指令那一侧")
+    check("container.locationKeepAlive.start()" in r110_intent,
+          "R110④: 快捷指令后台唤起必须启动定位保活 ✗ —— 不打开 App 的续签就靠这一路兜底")
+    check("locationKeepAlive: LocationKeepAliveService" in r110_container
+          and "LocationKeepAliveService(logStore:" in r110_container,
+          "R110⑤: `AppContainer` 必须注入 `LocationKeepAliveService` ✗ —— 不注入则两处 start 都是空引用")
+    check("`SEAL-BACKGROUND-017`" in r110_index
+          and "`SEAL-BACKGROUND-018`" in r110_index,
+          "R110⑥: 定位保活两个日志码必须登记进 `docs/qa/log-code-index.md` ✗ —— "
+          "「保活到底起没起 / 为什么只有音频一路」全靠这两条码判读")
+
     # Fast IPA 的产物由 build-unsigned-ipa.sh 按版本命名为 Seal_<version>.ipa。
     # 验证/上传若退回旧的 Seal.ipa 固定名，会在编译成功后误报文件不存在。
     ios_fast = load(".github/workflows/ios-fast.yml")
@@ -10029,6 +10072,27 @@ def main():
          "UserDefaults.standard.set(Int(port), forKey: remotePairingPortDefaultsKey)",
          "UserDefaults.standard.set(Int(MuxerConstants.rsdPort), forKey: remotePairingPortDefaultsKey)",
          "R109:"),
+        # ── R110：后台保活双保险 —— 后台定位保活 ──
+        # ① 后台模式从 location 退成 fetch（切后台定位立刻停）⇒ R110① 报红。
+        ("project.yml",
+         "- location",
+         "- fetch",
+         "R110①:"),
+        # ② 允许系统自动暂停（定位静止就被暂停，保活静默失效）⇒ R110② 报红。
+        ("Seal/Infrastructure/Background/LocationKeepAliveService.swift",
+         "pausesLocationUpdatesAutomatically = false",
+         "pausesLocationUpdatesAutomatically = true",
+         "R110②:"),
+        # ③ `SealApp.init()` 里第二路被退成重复音频 start（正常启动丢一路）⇒ R110③ 报红。
+        ("Seal/App/SealApp.swift",
+         "container.locationKeepAlive.start()",
+         "container.backgroundKeepAlive.start()",
+         "R110③:"),
+        # ④ 快捷指令后台唤起里第二路被退成重复音频 start（后台续签丢兜底）⇒ R110④ 报红。
+        ("Seal/Features/Intents/SealRenewalIntent.swift",
+         "container.locationKeepAlive.start()",
+         "container.backgroundKeepAlive.start()",
+         "R110④:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

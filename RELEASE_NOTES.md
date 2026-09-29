@@ -1,3 +1,28 @@
+# 1.3.39 后台保活双保险：新增后台定位，锁屏续签不再只靠静音音频
+
+锁屏/后台的自动续签，此前只靠一路「静音音频无限循环」让进程不被系统挂起。但音频会被来电、
+闹钟、插拔耳机、连断蓝牙、媒体服务重置等场景停掉，自愈之间有空窗 —— 一旦刚好卡在续签途中，
+续签就做到一半被 iOS 挂起，日志里往往一行异常都没有。
+
+## 修复
+
+- 新增第二路保活 `LocationKeepAliveService`：声明 `UIBackgroundModes: location`，通过后台持续
+  定位让进程保持活跃。两个关键开关缺一不可 —— `allowsBackgroundLocationUpdates = true`（缺了
+  切后台定位立刻停）、`pausesLocationUpdatesAutomatically = false`（默认是 true，定位静止时会被
+  系统静默暂停，正是「已启用却没用」的形态）。
+- 与音频形成双保险：两路的失效模式正交，哪一路先死、另一路兜底。对齐上游 SideStore 备选的
+  `BackgroundLocationService`（其 Info.plist 同样声明 `location`），Locus / StikDebug 等依赖
+  LocalDevVPN 的同类 App 也声明 `audio + location`。
+- 授权分级处置：首次请求「始终允许」；被拒/受管控则自动降级回仅音频并留 `SEAL-BACKGROUND-018`，
+  不影响续签本身。定位启动成功留 `SEAL-BACKGROUND-017`。
+- 启动点与音频保活一致：`SealApp.init()` + 快捷指令后台唤起（`RefreshAllAppsIntent`）。
+- 守卫 **R110**（6 断言 + 4 变异）钉住「声明 / 双开关 / 双启动点 / 注入 / 码登记」五件事，
+  防再次退化成「已声明已 start 但没用」。
+
+- 【验证】真机授予「始终允许」后锁屏快捷指令续签多一层活保障；权限被拒时仅音频保活、不影响续签。
+
+---
+
 # 1.3.38 RemotePairing 端口持久化：冷启动不再先撞死端口再 Bonjour 重查
 
 之前每次冷启动，设备通道端口都从默认 49152 起步；设备 `_remotepairing._tcp` 不挂固定端口时，

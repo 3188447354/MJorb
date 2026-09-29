@@ -11,6 +11,8 @@ struct AppContainer {
     /// ⚠️ UI 测试与「存储初始化失败」两条分支传的是**不带日志**的实例：前者不该在测试里
     /// 真的放音频，后者连日志文件都没建起来。保活失败不影响续签本身（见该类的 `start()`）。
     let backgroundKeepAlive: BackgroundKeepAliveService
+    /// 后台保活第二路（后台定位），与 `backgroundKeepAlive` 形成双保险。启动点与它相同。
+    let locationKeepAlive: LocationKeepAliveService
     /// 迁移/启动类日志用。UI 测试与「存储初始化失败」两条分支为 `nil`（那时日志文件都没建起来）。
     let logStore: SealLogStore?
 
@@ -45,6 +47,7 @@ struct AppContainer {
                     signingPreferenceStore: SigningPreferenceStore()
                 ),
                 backgroundKeepAlive: BackgroundKeepAliveService(logStore: nil),
+                locationKeepAlive: LocationKeepAliveService(logStore: nil),
                 logStore: nil
             )
         }
@@ -258,6 +261,7 @@ struct AppContainer {
                 ),
                 certificateExportHandler: certificateExportHandler,
                 backgroundKeepAlive: BackgroundKeepAliveService(logStore: logStore),
+                locationKeepAlive: LocationKeepAliveService(logStore: logStore),
                 logStore: logStore
             )
         } catch {
@@ -275,6 +279,7 @@ struct AppContainer {
                     signingPreferenceStore: SigningPreferenceStore()
                 ),
                 backgroundKeepAlive: BackgroundKeepAliveService(logStore: nil),
+                locationKeepAlive: LocationKeepAliveService(logStore: nil),
                 logStore: nil
             )
         }

@@ -41,6 +41,7 @@ struct RefreshAllAppsIntent: AppIntent {
             // 先起保活、再点火：反过来的话，点火之后进程可能立刻被系统挂起，
             // 续签任务还没跑到第一次网络往返就停了（后台没有界面，用户看不到）。
             container.backgroundKeepAlive.start()
+            container.locationKeepAlive.start()
             container.appsViewModel.refreshAllFromBackgroundTrigger()
             return .started
         }

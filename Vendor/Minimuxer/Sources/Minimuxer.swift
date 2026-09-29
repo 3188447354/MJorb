@@ -29,7 +29,19 @@ public struct Minimuxer {
     /// **同时**改这里（探测用）与 Rust 侧（真正建连用），否则会出现
     /// 「探测说不通、实际能通」这类错判。
     private static let remotePairingPortLock = NSLock()
-    private static var _remotePairingPort: UInt16 = MuxerConstants.rsdPort
+    private static let remotePairingPortDefaultsKey = "Minimuxer.lastDiscoveredRemotePairingPort"
+    /// 冷启动不要把端口死回 49152：设备不保证 `_remotepairing._tcp` 挂固定端口，
+    /// 把上次 Bonjour 发现的端口持久化下来、冷启动直接恢复，能省掉「撞默认端口 →
+    /// 就绪失败 → Bonjour 重查 → 换端口」这一轮（平日常见「续签/安装一进来先卡一下」）。
+    private static var _remotePairingPort: UInt16 = restoredRemotePairingPort()
+
+    /// 从 UserDefaults 恢复上次发现的端口；读不到 / 非法值则回落默认端口。
+    /// 对齐上游 SideStore `lastDiscoveredRemotePairingPort`（`MinimuxerWrapper`）。
+    private static func restoredRemotePairingPort() -> UInt16 {
+        let persisted = UserDefaults.standard.integer(forKey: remotePairingPortDefaultsKey)
+        guard persisted > 0, persisted <= Int(UInt16.max) else { return MuxerConstants.rsdPort }
+        return UInt16(persisted)
+    }
 
     public static var remotePairingPort: UInt16 {
         remotePairingPortLock.lock()
@@ -46,6 +58,8 @@ public struct Minimuxer {
         _remotePairingPort = port
         remotePairingPortLock.unlock()
         guard changed else { return }
+        UserDefaults.standard.set(Int(port), forKey: remotePairingPortDefaultsKey)
+        UserDefaults.standard.synchronize()
         RustIdevice.setRemotePairingPort(port)
     }
 
@@ -53,6 +67,9 @@ public struct Minimuxer {
     /// 发现的端口对新设备无效，留着它会让新设备第一笔操作白撞一次。
     public static func resetRemotePairingPort() {
         setRemotePairingPort(MuxerConstants.rsdPort)
+        // 换设备 / 重新导入配对后，上一台设备的端口对新设备无效 —— 同时清掉持久化，
+        // 否则下次冷启动又会把一个死端口恢复上来（靠自愈才能纠正）。
+        UserDefaults.standard.removeObject(forKey: remotePairingPortDefaultsKey)
     }
     
     public static func bindTunnelConfig(_ binding: TunnelConfigBinding) {

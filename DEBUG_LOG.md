@@ -5,6 +5,28 @@
 
 ---
 
+## 2026-09-29 RemotePairing 端口未持久化：续签/安装冷启动先撞默认端口再 Bonjour 重查（1.3.38）
+
+- **现象**（用户，1.3.37）：每次进 Seal 续签/安装，通道先撞一下默认端口才连上，进来那一下卡顿
+  （「续签慢」）。
+- **根因**：`Minimuxer.remotePairingPort` 冷启动恒为 `MuxerConstants.rsdPort`（49152，仅内存
+  `private static var`）；`setRemotePairingPort` 只写内存 + 通知 Rust（作废旧端口 RSD 缓存），
+  **从不落 UserDefaults**；Bonjour 发现端口（`adoptDiscoveredRemotePairingPort`）只在失败后触发、
+  采纳后也不持久化。设备 `_remotepairing._tcp` 不挂固定端口时，每次冷启动都要「撞 49152 →
+  就绪失败 710 → Bonjour 重查（浏览 1.8s + 解析 1.2s）→ 换端口」这一整轮。
+- **修复**（对齐上游 SideStore `lastDiscoveredRemotePairingPort`）：`Minimuxer.swift` 把端口持久化到
+  UserDefaults —— ① 冷启动由 `restoredRemotePairingPort()` 恢复上次端口（非法值回落默认）；
+  ② `setRemotePairingPort` 采纳新端口后写回 + `synchronize`（后台进程被回收也不丢）；
+  ③ `resetRemotePairingPort` 换设备 / 重新导入配对时 `removeObject` 清掉，避免残留上一台设备的死端口。
+  换设备时序天然正确：恢复在任何 `start` 之前，`Muxer.start` 内 `pairingIdentityChanged` 会把错误端口
+  reset 回默认；同一设备端口未变时冷启动第一下即通。
+- **涉及文件**：`Vendor/Minimuxer/Sources/Minimuxer.swift`（恢复/写回/清除）、
+  `Scripts/verify-release-safety.py`（守卫 R109 1 断言 + 2 变异）。
+- **验证状态**：`py_compile` 通过；守卫 R109 交 CI。真机验收：同一设备、端口未变的连续两次冷启动，
+  第二次省掉 Bonjour 重查、进来的卡顿消失；换设备后不残留旧端口。
+
+---
+
 ## 2026-09-29 快捷指令续签成功但进 Seal 结果抽屉有延迟：非自替换结果不落盘（1.3.37）
 
 - **现象**（用户真机，1.3.36）：锁屏/后台用快捷指令续签，系统通知已报「已续签成功」，之后进 Seal

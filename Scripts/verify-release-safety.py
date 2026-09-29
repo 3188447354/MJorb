@@ -3574,6 +3574,20 @@ def violations(load=read):
           "只保留 `awaitingConfirmation > 0` 分支会随手丢「快捷指令后台续签成功」的结果，"
           "下次启动恢复不出成功抽屉")
 
+    # ── R109：RemotePairing 端口必须持久化（2026-09-29）──
+    #
+    # 冷启动如果死回 49152，设备端口一变，续签/安装进来的第一下就要「撞默认端口 →
+    # 就绪失败 710 → Bonjour 重查（浏览 + 解析）→ 换端口」，平白卡一下。
+    # 必须三件事同时成立：① 冷启动恢复上次发现的端口；② 采纳新端口时写回 UserDefaults；
+    # ③ 换设备 / 重新导入配对（reset）时清掉持久化，避免残留上一台设备的死端口。
+    minimuxer_port_code = load("Vendor/Minimuxer/Sources/Minimuxer.swift")
+    check("_remotePairingPort: UInt16 = restoredRemotePairingPort()" in minimuxer_port_code
+          and "Minimuxer.lastDiscoveredRemotePairingPort" in minimuxer_port_code
+          and "UserDefaults.standard.set(Int(port), forKey: remotePairingPortDefaultsKey)" in minimuxer_port_code
+          and "UserDefaults.standard.removeObject(forKey: remotePairingPortDefaultsKey)" in minimuxer_port_code,
+          "R109: RemotePairing 端口必须持久化（冷启动恢复 / 采纳写回 / 换设备清除）✗ —— "
+          "只在内存记端口会让每次冷启动从 49152 撞一遍再 Bonjour 重查，续签/安装进来的那一下卡顿")
+
     # Fast IPA 的产物由 build-unsigned-ipa.sh 按版本命名为 Seal_<version>.ipa。
     # 验证/上传若退回旧的 Seal.ipa 固定名，会在编译成功后误报文件不存在。
     ios_fast = load(".github/workflows/ios-fast.yml")
@@ -10004,6 +10018,17 @@ def main():
          "persistPendingBatchResult(forceSealAwaiting: false)",
          "persistPendingBatchResult(forceSealAwaiting: true)",
          "R108:"),
+        # ── R109：RemotePairing 端口持久化 ──
+        # ① 冷启动死回默认（不再从 UserDefaults 恢复上次端口）⇒ R109 报红。
+        ("Vendor/Minimuxer/Sources/Minimuxer.swift",
+         "_remotePairingPort: UInt16 = restoredRemotePairingPort()",
+         "_remotePairingPort: UInt16 = MuxerConstants.rsdPort",
+         "R109:"),
+        # ② 采纳后不再写回真实端口（写成固定默认）⇒ R109 报红。
+        ("Vendor/Minimuxer/Sources/Minimuxer.swift",
+         "UserDefaults.standard.set(Int(port), forKey: remotePairingPortDefaultsKey)",
+         "UserDefaults.standard.set(Int(MuxerConstants.rsdPort), forKey: remotePairingPortDefaultsKey)",
+         "R109:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

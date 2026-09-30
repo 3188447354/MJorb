@@ -17,6 +17,10 @@ struct LocalDevVPNSettingsView: View {
         .navigationTitle("LocalDevVPN")
         .navigationBarTitleDisplayMode(.inline)
         .sealScreenBackground()
+        .task {
+            // 进入此页即以真实通道状态刷新，不把上一次手动检测的结果当作当前状态。
+            await viewModel.testLocalDevVPN()
+        }
     }
 
     private var hero: some View {

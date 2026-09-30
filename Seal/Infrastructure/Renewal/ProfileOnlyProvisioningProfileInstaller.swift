@@ -104,8 +104,7 @@ actor ProfileOnlyProvisioningProfileInstaller {
                     cancelsWorkOnTimeout: false
                 ) {
                     await DeviceProfileInspector.containsProfile(
-                        bundleIdentifier: material.binding.bundleIdentifier,
-                        profileUUID: material.binding.profileUUID ?? "",
+                        matching: material.binding,
                         certificateSerialNumber: certificateSerialNumber
                     )
                 }

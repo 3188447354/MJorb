@@ -82,6 +82,46 @@ struct DeviceProfileInspector: Sendable {
         return parsed > 0 ? false : nil
     }
 
+    /// 安装后从设备端读回的 profile 必须与本轮门户结果逐项一致。
+    /// UUID/证书一致还不足以证明 UI 所展示的创建与到期时间属于本轮文件。
+    static func containsProfile(
+        matching binding: ProvisioningProfileBinding,
+        certificateSerialNumber: String
+    ) async -> Bool? {
+        guard let profileUUID = binding.profileUUID, profileUUID.isEmpty == false else { return false }
+        let fileManager = FileManager.default
+        let workingDir = fileManager.temporaryDirectory
+            .appendingPathComponent("seal-profile-verify-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: workingDir) }
+
+        guard let dumpDir = try? Provision.dumpProfiles(docsPath: workingDir.path),
+              let profileURLs = try? fileManager.contentsOfDirectory(
+                at: URL(fileURLWithPath: dumpDir),
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+              ) else { return nil }
+
+        let expectedSerial = SigningCertificateSelectionPolicy.normalizedSerialNumber(certificateSerialNumber)
+        let reader = ProvisioningProfileReader()
+        var parsed = 0
+        var handledUUIDs = Set<String>()
+        for fileURL in profileURLs {
+            guard let data = try? Data(contentsOf: fileURL),
+                  let details = try? reader.details(from: data) else { continue }
+            if let uuid = details.uuid, handledUUIDs.insert(uuid).inserted == false { continue }
+            parsed += 1
+            guard details.bundleIdentifier?.caseInsensitiveCompare(binding.bundleIdentifier) == .orderedSame,
+                  details.uuid?.caseInsensitiveCompare(profileUUID) == .orderedSame,
+                  details.creationDate == binding.creationDate,
+                  details.expirationDate == binding.expirationDate,
+                  details.certificateSerialNumbers.contains(where: {
+                      SigningCertificateSelectionPolicy.normalizedSerialNumber($0) == expectedSerial
+                  }) else { continue }
+            return true
+        }
+        return parsed > 0 ? false : nil
+    }
+
     /// 设备端全部描述文件引用的证书序列号集合（已归一化，见 DEBUG_LOG 坑位 1）。
     ///
     /// 返回 `nil` 表示**无法核验**（未连接设备/隧道不可用/dump 或解析失败），

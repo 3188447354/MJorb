@@ -2494,6 +2494,15 @@ final class SettingsViewModel: ObservableObject {
             return
         }
         await runInstallChannelCheck(successMessage: "LocalDevVPN 正常")
+        // VPN 回调和设置页自动探测都走这里；直接推进 iOS 27 配对阶段，
+        // 不能依赖稍后的启动检查才让界面从“待连接”变为“完成”。
+        if PhonePairingPresentationPolicy(
+            majorOSVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        ).usesPhonePairing {
+            phonePairingState = Self.phonePairingStateAfterAutomaticCheck(
+                diagnosticState: diagnosticState
+            )
+        }
     }
 
     private func validateImportedPairingWhenTunnelAvailable(

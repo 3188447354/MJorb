@@ -5,6 +5,17 @@
 
 ---
 
+## 2026-10-01 profile-only 日期必须来自本轮设备端文件，配对与 LocalDevVPN 状态自动同步（本地修复，待 CI）
+
+- **现象**：用户要求“续签成功”必须代表本轮新描述文件已生效，不能因历史文件仍存在而显示成功；旧构建 `1.3.44 (88)` 日志还显示，Seal 的 profile-only 刚写入新文件后，延迟结算的自替换事务可能把包内旧 profile 的日期展示回来。iOS 27 配对完成后，LocalDevVPN 状态有时需手动点击才能让阶段页更新。
+- **真机证据**：日志在 `2026-10-01 04:51:15` 记录 Seal profile 创建并到期于 `2026-10-08 04:51:15`；另一轮在 `2026-09-30 19:00:32` 写入新 profile，`19:01:03` 的自替换结算仍读到 `18:33:49` 的包内 profile。
+- **根因**：设备端回读只比较 Bundle ID、UUID 和证书序列号，未比较 CreationDate / ExpirationDate，无法证明 UI 的日期属于本轮文件。LocalDevVPN 回调虽触发诊断，但 iOS 27 配对阶段依赖后续启动检查才刷新；VPN 设置页也会显示上次诊断结果。
+- **修复**：新增设备端完整 profile 身份匹配：Bundle ID、UUID、创建时间、到期时间和证书必须与本轮门户返回值一致，否则 profile-only 失败且不更新记录。进入 LocalDevVPN 页立即检测真实通道；VPN 回调后直接同步配对阶段状态。
+- **涉及文件**：`DeviceProfileInspector.swift`、`ProfileOnlyProvisioningProfileInstaller.swift`、`SettingsViewModel.swift`、`LocalDevVPNSettingsView.swift`、`DEBUG_LOG.md`。
+- **验证状态**：已按旧版真机日志定位并完成静态差异检查；Windows 无 Xcode，待云端 CI 与真机验证。Seal 自替换的“包内旧 profile 覆盖已确认设备 profile”来源优先级仍在继续修复；未提交、未推送、未触发 CI。
+
+---
+
 ## 2026-10-01 快捷指令结果占住列表，旧自替换会话遗留“安装中”（本地修复，待 CI）
 
 - **现象**：导入 1.3.44 后首次续签会发生 Seal 覆盖安装；新包已实际落盘后，下一次续签界面仍可能停在“安装中”。快捷指令续签成功后，从通知进入 Seal 时应用列表有时无法点击，强制结束并重开才出现结果抽屉。

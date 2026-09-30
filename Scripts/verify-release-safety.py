@@ -5378,9 +5378,11 @@ def violations(load=read):
 
     check("AppSigningPresentationHelpers.localCertificateCompactNote(" in r85_progress
           and "AppSigningPresentationHelpers.localCertificateNote(" in r85_detail
-          and "AppSigningPresentationHelpers.localCertificateNote(" in r85_sheet,
-          "R85⑥: **三处**落点都要接上（进度卡片用紧凑版、详情页与操作抽屉用完整版）✗ —— "
-          "漏一处就是「同一个状态在一个界面说、另一个界面不说」")
+          and 'metadataRow("Apple 证书", certificateStatus' in r85_sheet
+          and 'case .needsFullResign: "需重签"' in r85_sheet,
+          "R85⑥: 进度卡片必须给紧凑原因、详情页必须给完整原因；操作抽屉只保留五项事实摘要时，"
+          "至少要把 Apple 证书明确标成「需重签」✗ —— "
+          "恢复抽屉里的长篇技术说明会违背已确认的精简设计，但隐藏「需重签」又会让用户不知为何走完整签名")
 
     r85_gate = section_or_empty(
         r85_coord,
@@ -5690,13 +5692,13 @@ def violations(load=read):
           "用户发来日志时第一件事就是查码表")
 
     check("AppSigningPresentationHelpers.pendingUpdateNote(" in r89_detail
-          and "AppSigningPresentationHelpers.pendingUpdateNote(" in r89_sheet
+          and 'Text("v\\(app.version) · \\(app.size.sealFormattedByteCount)")' in r89_sheet
           and "static func pendingUpdateNote(" in r89_present
           and "ProfileOnlyRenewalPolicy.hasPendingUpdateSource(" in r89_present
           and "guard app.isSeal," in r89_present,
-          "R89⑧: 界面必须说清「列表上的版本号是**待安装的源包**」"
-          "（详情页 ＋ 操作抽屉都要接上），且判据与准入**同源**、只对 Seal 生效 ✗ —— "
-          "界面说「要重装」而准入走快路径（或反过来）都会让用户白等一次；"
+          "R89⑧: 详情页必须说清「列表上的版本号是**待安装的源包**」，操作抽屉仍须展示"
+          "该源包版本；判据与准入必须同源、且只对 Seal 生效 ✗ —— "
+          "操作抽屉按已确认设计只保留五项签名事实，完整的安装解释不能恢复到那里；"
           "拿 Seal 的运行版本去比第三方应用的记录版本则必然误报")
 
     check("func liveIdentityRefusesProfileOnlyWhileAnImportedUpdateIsNotInstalledYet()"
@@ -6180,7 +6182,7 @@ def violations(load=read):
     check(r92_import_codes == [
         "SEAL-INSTALL-701", "SEAL-INSTALL-705", "SEAL-INSTALL-706b",
         "SEAL-INSTALL-706t", "SEAL-INSTALL-708", "SEAL-INSTALL-709",
-        "SEAL-INSTALL-710", "SEAL-VPN-001",
+        "SEAL-INSTALL-710", "SEAL-VPN-001", "SEAL-PROFILE-356",
     ],
           "R92⑩: 「安装提交之前」的通道失败码必须**逐条显式列出**（且不得混入安装阶段 / "
           "确定性拒绝 / 配对类码）✗ —— 这张表是「词表同源」的落点：安装链路归类出的通道码"
@@ -6220,7 +6222,7 @@ def violations(load=read):
     #   毒掉本进程后续全部续签，直到用户重启 Seal（正是用户报的「续签有问题」）。
     # 判据：① 污染标记必须是**可一次性消费**的纯状态机（actor 私有 `Bool` 测不到）；
     #   ② 调用点必须在注入**之前**消费，为真时**重置设备通道**（且不是裸 `Minimuxer.reset()`）；
-    #   ③ 两个超时码必须纳入续签重试（同一项才能自愈），并与「安装提交前」那批**分开**。
+    #   ③ 三个超时码必须纳入续签重试（同一项才能自愈），并与「安装提交前」那批**分开**。
     r93_installer = strip_comments(load(
         "Seal/Infrastructure/Renewal/ProfileOnlyProvisioningProfileInstaller.swift"))
     r93_gate = section_or_empty(
@@ -6270,13 +6272,13 @@ def violations(load=read):
           "（只靠外层重试兜回来）—— 设置页导入配对文件 / 恢复连接的既有模式同样是 **reset 后必 start**")
 
     r93_codes = re.findall(r'"(SEAL-[A-Za-z0-9\-]+)"', r93_policy_set)
-    check(r93_codes == ["SEAL-PROFILE-352", "SEAL-PROFILE-353"]
+    check(r93_codes == ["SEAL-PROFILE-355t", "SEAL-PROFILE-352", "SEAL-PROFILE-353"]
           and "transientChannelFailureCodes.contains(failure.code)\n"
               "            || profileOperationTimeoutCodes.contains(failure.code)" in r92_policy,
-          "R93③: 两个描述文件超时码必须纳入续签重试、且与「安装提交前」那批**分开** ✗ —— "
+          "R93③: 三个描述文件超时码必须纳入续签重试、且与「安装提交前」那批**分开** ✗ —— "
           "不纳入 ⇒ 同一项不会自愈（只靠下一项救场）；"
           "混进 `transientChannelFailureCodes` ⇒ 丢掉「重试前要不要先重置传输」这条区别"
-          "（那批不需要重置，这两个**必须**重置）—— 那正是 R05「超时 ≠ 失败」的落点")
+          "（那批不需要重置，这三个**必须**重置）—— 那正是 R05「超时 ≠ 失败」的落点")
 
     check('code: "SEAL-PROFILE-355"' in r93_profile
           and "`SEAL-PROFILE-355`" in r92_index,
@@ -6287,7 +6289,7 @@ def violations(load=read):
     check("struct ProfileOnlyTaintGateTests" in r93_gate_tests
           and "func consumeIsOneShot()" in r93_gate_tests
           and "func profileTimeoutCodesAreRetryable()" in r93_gate_tests,
-          "R93⑤: 污染标记与两个超时码必须有单测 ✗ —— "
+          "R93⑤: 污染标记与三个超时码必须有单测 ✗ —— "
           "它们的错法只在真机上表现为「白重置一次通道」或「本该自愈却没有」，"
           "不崩、不报错、日志里也看不出来")
 
@@ -7006,8 +7008,8 @@ def main():
          "            guard await self.refreshSigningChannel() else { return }\n            await self.runBatchRefresh(appIDs: appIDs)",
          "R06: batch renewal must not block"),
         ("Seal/Core/Installation/InstallChannel.swift",
-         "    func clearFailureCooldown() async\n    func pushIpa",
-         "    func pushIpa",
+         "    func clearFailureCooldown() async\n",
+         "",
          "R06: clearFailureCooldown must be a protocol requirement"),
         ("Seal/Features/Apps/SigningProgressView.swift",
          "        UIControl().sendAction(selector, to: app, for: nil)\n    }",

@@ -5,13 +5,13 @@
 
 ---
 
-## 2026-09-30 完整 CI 未获 macOS runner，尚未开始构建（本地修复，待推送）
+## 2026-09-30 完整 CI 的 macOS runner 排队与守卫清单漂移（本地修复，待推送）
 
-- **现象**：`ios.yml` 的两次完整 CI（run `36727963492` 的 attempt 1/2）中，`build-package`、`swift-regression`、`signer-tests` 都只停在 queued，约 15 分钟后被取消；job 没有 steps、runner ID 为 0，因而没有 Swift、Rust 或测试输出，也没有 IPA。
-- **根因**：失败发生在 GitHub 分配 `macos-26` runner 之前。此前同一分支的 run `36697417653` 已在同一 `macos-26` / Xcode 26.5 配置下通过，故不是当前代码、Xcode 版本或源码编译错误；三个 job 同时申请稀缺 macOS runner 放大了本次排队风险。
-- **修复**：签名内核 `CodeSignKit` 单测改为 `ubuntu-latest`：其 Package 在非 Darwin 平台不拉 OpenSSL xcframework，源与测试仅使用跨平台的 Foundation、Swift Crypto、Swift ASN.1（网络代码已有 `FoundationNetworking` 分支）。移除这条 job 无意义的 Xcode 选择步骤；IPA 构建与 Swift/UI 回归仍固定 `macos-26` + Xcode 26.5，未降级平台或削弱 iOS 门禁。
-- **涉及文件**：`.github/workflows/ios.yml`、`DEBUG_LOG.md`。
-- **验证状态**：Windows 无 Swift；待推送后由 CI 验证 Linux 的 CodeSignKit 单测和两个 macOS iOS job。未创建或触发 GitHub Release。
+- **现象**：`ios.yml` 的两次完整 CI（run `36727963492` 的 attempt 1/2）中，三个 macOS job 都只停在 queued，约 15 分钟后被取消；job 没有 steps、runner ID 为 0。迁出签名器单测后的 run `36737305564` 已使 Linux 单测和两个 macOS job 真正启动，但 `build-package` 先被发布安全守卫拦住。
+- **根因**：前两次失败发生在 GitHub 分配 `macos-26` runner 之前；此前同一分支的 run `36697417653` 已在同一 `macos-26` / Xcode 26.5 配置下通过。守卫失败则是两个独立漂移：新增 profile 服务方法令旧的协议变异锚点失配；新增 `SEAL-PROFILE-356` / `SEAL-PROFILE-355t` 尚未写入守卫的精确白名单。此前产品改版将操作抽屉收敛为五项事实摘要，也与旧守卫要求在抽屉重复长说明冲突。
+- **修复**：签名内核 `CodeSignKit` 单测改为 `ubuntu-latest`：其 Package 在非 Darwin 平台不拉 OpenSSL xcframework，源与测试仅使用跨平台依赖；IPA 构建与 Swift/UI 回归仍固定 `macos-26` + Xcode 26.5。守卫更新为精确校验新 profile 码，协议锚点收窄为被守护的要求本身；操作抽屉继续只显示五项事实，并强制检查「需重签」状态，完整解释留在详情页/进度页。
+- **涉及文件**：`.github/workflows/ios.yml`、`Scripts/verify-release-safety.py`、`DEBUG_LOG.md`。
+- **验证状态**：run `36737305564` 的 Linux `signer-tests` 与 macOS `swift-regression` 已通过；`build-package` 在守卫阶段失败、尚未产生 IPA。Windows 无 Swift；修正后待重新推送完整 CI。未创建或触发 GitHub Release。
 
 ---
 

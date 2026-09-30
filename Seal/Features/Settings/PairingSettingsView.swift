@@ -79,7 +79,9 @@ struct PairingSettingsView: View {
         }
         .sealScreenBackground()
         .task {
-            if presentationPolicy.showsDesktopAssistant {
+            if presentationPolicy.usesPhonePairing {
+                await viewModel.refreshPhonePairingStatus()
+            } else if presentationPolicy.showsDesktopAssistant {
                 _ = await viewModel.importPairingAssistantInboxIfPresent()
             }
         }

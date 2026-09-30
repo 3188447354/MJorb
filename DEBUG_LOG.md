@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-09-30 iOS 27 设备页把已验证的配对错误显示为 LocalDevVPN 待验证（1.3.44，未发布）
+
+- **现象**：我的页按持久化配对记录显示“已配对”，进入 iOS 27 的设备页却回到“准备配对 / LocalDevVPN 待验证”，迫使用户误以为每次快捷指令续签后都必须手动点“验证 LocalDevVPN”。真机日志已记录后台续签会先自动确认 `LocalDevVPN 正常`。
+- **根因**：顶部摘要读取 `PairingRecord.validationStatus`，手机配对页面读取进程内 `phonePairingState`；后者初始化恒为 `.idle`，启动的轻量通道检查完成后又没有把诊断结果回写给它。两个展示面没有收敛到同一检查结果。
+- **修复**：新增唯一的“通道检查结果 → 手机配对页面状态”映射；启动检查及 iOS 27 设备页打开都会复用它自动复核通道。通道准备好显示“已验证”，未取得通道结论才显示等待状态；已验证的持久化配对关系仍由 `PairingStore` 保持，瞬时通道状态不会降级它。
+- **涉及文件**：`SettingsViewModel.swift`、`PairingSettingsView.swift`、`PhonePairingPresentationPolicyTests.swift`、`project.yml`、`RELEASE_NOTES.md`。
+- **验证状态**：新增“自动检查成功 → 完成阶段”“无结论 → LocalDevVPN 等待阶段”两条测试；Windows 无 Xcode，待完整 CI 编译及真机“快捷指令续签完成 → 打开设备页”回归。
+
+---
+
 ## 2026-09-30 快捷指令续签完成后，通知进入结果抽屉延迟到用户点击应用才出现（1.3.43，未发布）
 
 - **现象**：快捷指令的 profile-only 批量续签已成功、通知也已发出；用户点击通知回到 Seal 后，结果抽屉有时立即出现，有时需点击两三个已安装应用才出现。

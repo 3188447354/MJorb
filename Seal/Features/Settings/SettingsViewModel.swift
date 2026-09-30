@@ -184,6 +184,7 @@ final class SettingsViewModel: ObservableObject {
     private let selfReplacementStore: SelfReplacementTransactionStore?
     private var phonePairingHost: PhonePairingHost?
     private var phonePairingLease: OperationCoordinator.Lease?
+    private var isPhonePairingAutomaticCheckRunning = false
     private var hasLoaded = false
     private var loadGeneration = 0
     private static let pairingAssistantInboxFileName = "SealPairing.mobiledevicepairing"
@@ -405,12 +406,38 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func performLightweightLaunchCheck() async {
+        await refreshPhonePairingStatus()
+    }
+
+    /// 在启动和 iOS 27 设备页打开时自动复核当前通道；已验证的配对凭据不会因瞬时不可达被降级。
+    func refreshPhonePairingStatus() async {
+        guard isPhonePairingAutomaticCheckRunning == false else { return }
+        isPhonePairingAutomaticCheckRunning = true
+        defer { isPhonePairingAutomaticCheckRunning = false }
+
         await load(force: true)
         guard pairingRecord != nil, diagnosticState != .running else { return }
+        phonePairingState = .validating
         await validateImportedPairingWhenTunnelAvailable(
             successMessage: "LocalDevVPN 正常",
             waitingMessage: "配对信息已导入，等待 LocalDevVPN 连接后验证"
         )
+        phonePairingState = Self.phonePairingStateAfterAutomaticCheck(
+            diagnosticState: diagnosticState
+        )
+    }
+
+    static func phonePairingStateAfterAutomaticCheck(
+        diagnosticState: DiagnosticState
+    ) -> PhonePairingState {
+        switch diagnosticState {
+        case .ready:
+            return .completed
+        case let .failed(failure):
+            return .failed(failure)
+        case .idle, .running:
+            return .waitingForLocalDevVPN
+        }
     }
 
     var activeAccount: AppleAccountRecord? {
@@ -2125,14 +2152,9 @@ final class SettingsViewModel: ObservableObject {
         }
         phonePairingState = .validating
         await testPairingConnection()
-        switch diagnosticState {
-        case .ready:
-            phonePairingState = .completed
-        case let .failed(failure):
-            phonePairingState = .failed(failure)
-        case .idle, .running:
-            phonePairingState = .waitingForLocalDevVPN
-        }
+        phonePairingState = Self.phonePairingStateAfterAutomaticCheck(
+            diagnosticState: diagnosticState
+        )
     }
 
     private func handlePhonePairingEvent(_ event: PhonePairingHost.Event) {
@@ -2183,14 +2205,9 @@ final class SettingsViewModel: ObservableObject {
             }
 
             await runInstallChannelCheck(successMessage: "设备配对和 LocalDevVPN 验证完成")
-            switch diagnosticState {
-            case .ready:
-                phonePairingState = .completed
-            case let .failed(failure):
-                phonePairingState = .failed(failure)
-            case .idle, .running:
-                phonePairingState = .waitingForLocalDevVPN
-            }
+            phonePairingState = Self.phonePairingStateAfterAutomaticCheck(
+                diagnosticState: diagnosticState
+            )
         } catch let failure as ImportFailure {
             phonePairingState = .failed(failure)
             alertFailure = failure

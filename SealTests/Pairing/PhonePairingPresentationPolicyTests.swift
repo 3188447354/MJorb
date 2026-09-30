@@ -3,6 +3,24 @@ import Testing
 @testable import Seal
 
 struct PhonePairingPresentationPolicyTests {
+    @Test @MainActor
+    func automaticChannelCheckRestoresTheCompletedPhonePairingStage() {
+        #expect(
+            SettingsViewModel.phonePairingStateAfterAutomaticCheck(
+                diagnosticState: .ready(deviceIdentifier: "device-123")
+            ) == .completed
+        )
+    }
+
+    @Test @MainActor
+    func automaticChannelCheckKeepsTheVPNStagePendingWhenNoVerdictExists() {
+        #expect(
+            SettingsViewModel.phonePairingStateAfterAutomaticCheck(
+                diagnosticState: .idle
+            ) == .waitingForLocalDevVPN
+        )
+    }
+
     @Test
     func iOS27UsesPhoneOnlyAcquisitionWithoutDesktopFallback() {
         let policy = PhonePairingPresentationPolicy(majorOSVersion: 27)

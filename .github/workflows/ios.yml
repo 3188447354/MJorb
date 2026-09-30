@@ -295,16 +295,13 @@ jobs:
   # **Seal 完全不用 `SideSign.Archive`** ✓ ⇒ 零价值 ✓。
   # 按「**不要打补丁**」⇒ 删掉那一步（连同它的测试 target ✓），不给它加 `import` ✓。
   signer-tests:
-    runs-on: macos-26
+    # CodeSignKit 的测试仅依赖 Foundation / Swift Crypto / Swift ASN.1；
+    # 不构建 IPA，也不调用 Xcode。放到 Linux 可让两个真正依赖 Xcode 26.5 的
+    # iOS job 优先获得 macOS runner，同时保留独立的签名内核回归门。
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6.0.2
-
-      - name: Select pinned Xcode 26.5
-        run: |
-          test -d /Applications/Xcode_26.5.app
-          sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
-          swift --version
 
       - name: Cache signer SwiftPM artifacts
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5

@@ -115,7 +115,7 @@ targets:
                 - application/octet-stream
                 - application/x-itunes-ipa
         ITSAppUsesNonExemptEncryption: false
-        NSLocalNetworkUsageDescription: Seal 通过本地通道连接此设备并安装应用。
+        NSLocalNetworkUsageDescription: Seal 使用本地网络发布设备配对服务，并连接此设备安装应用。
         # 后台定位保活（`LocationKeepAliveService`）用。⚠️ 缺 `AlwaysAndWhenInUse` 这一项，
         # `requestAlwaysAuthorization()` 会直接崩溃（权限描述缺失 = iOS 强制终止）。
         NSLocationWhenInUseUsageDescription: Seal 需要定位权限在后台保持活跃，以便不打开 App 也能自动续签应用。
@@ -137,7 +137,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.mjorb.seal
         PRODUCT_NAME: Seal
         TARGETED_DEVICE_FAMILY: "1,2"
-        MARKETING_VERSION: 1.3.41
+        MARKETING_VERSION: 1.3.42
         CURRENT_PROJECT_VERSION: 3
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_STYLE: Automatic

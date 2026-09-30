@@ -121,6 +121,17 @@ final class SettingsViewModel: ObservableObject {
         case failed(ImportFailure)
     }
 
+    enum PhonePairingState: Equatable {
+        case idle
+        case requestingLocalNetwork
+        case waitingForSystemConfirmation
+        case showingCode(String)
+        case validating
+        case waitingForLocalDevVPN
+        case completed
+        case failed(ImportFailure)
+    }
+
     @Published private(set) var accounts: [AppleAccountRecord] = []
     @Published private(set) var activeAccountID: UUID?
     @Published private(set) var fullAccountEmails: [UUID: String] = [:]
@@ -128,6 +139,7 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var pairingRecord: PairingRecord?
     @Published private(set) var accountPhase: AccountPhase = .idle
     @Published private(set) var diagnosticState: DiagnosticState = .idle
+    @Published private(set) var phonePairingState: PhonePairingState = .idle
     @Published private(set) var installDiagnostics: InstallChannelDiagnostics = .empty
     @Published private(set) var logs: [SealLogEntry] = []
     @Published private(set) var signingHistory: [SigningHistoryRecord] = []
@@ -170,6 +182,8 @@ final class SettingsViewModel: ObservableObject {
     private let signingPreferenceStore: SigningPreferenceStore?
     private let operationCoordinator: OperationCoordinator?
     private let selfReplacementStore: SelfReplacementTransactionStore?
+    private var phonePairingHost: PhonePairingHost?
+    private var phonePairingLease: OperationCoordinator.Lease?
     private var hasLoaded = false
     private var loadGeneration = 0
     private static let pairingAssistantInboxFileName = "SealPairing.mobiledevicepairing"
@@ -2069,6 +2083,151 @@ final class SettingsViewModel: ObservableObject {
             refreshLogExportText()
             return false
         }
+    }
+
+    /// iOS 27+ starts Remote Pairing on the phone itself. The host only creates
+    /// a candidate credential; the normal channel diagnostic still decides
+    /// whether it becomes the verified pairing used by install and renewal.
+    func startPhonePairing() async {
+        guard PhonePairingPresentationPolicy(
+            majorOSVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        ).usesPhonePairing else {
+            return
+        }
+        guard pairingStore != nil, installChannel != nil else {
+            let failure = Self.failure(
+                title: "配对服务未就绪",
+                reason: "Seal 的设备配对组件尚未准备好。",
+                recovery: "重新打开 Seal 后重试",
+                code: "SEAL-PAIR-215"
+            )
+            phonePairingState = .failed(failure)
+            alertFailure = failure
+            return
+        }
+        guard phonePairingHost == nil,
+              let operationLease = await acquireOperation(.resettingPairing) else {
+            return
+        }
+
+        phonePairingLease = operationLease
+        let host = PhonePairingHost()
+        phonePairingHost = host
+        host.start { [weak self] event in
+            self?.handlePhonePairingEvent(event)
+        }
+    }
+
+    func validatePhonePairing() async {
+        guard pairingRecord != nil else {
+            await startPhonePairing()
+            return
+        }
+        phonePairingState = .validating
+        await testPairingConnection()
+        switch diagnosticState {
+        case .ready:
+            phonePairingState = .completed
+        case let .failed(failure):
+            phonePairingState = .failed(failure)
+        case .idle, .running:
+            phonePairingState = .waitingForLocalDevVPN
+        }
+    }
+
+    private func handlePhonePairingEvent(_ event: PhonePairingHost.Event) {
+        switch event {
+        case .requestingLocalNetwork:
+            phonePairingState = .requestingLocalNetwork
+        case .waitingForSystemConfirmation:
+            phonePairingState = .waitingForSystemConfirmation
+        case let .showingCode(code):
+            phonePairingState = .showingCode(code)
+        case let .completed(fileURL):
+            phonePairingHost = nil
+            Task { await finishPhonePairing(at: fileURL) }
+        case let .failed(message):
+            phonePairingHost = nil
+            let failure = Self.phonePairingHostFailure(message: message)
+            phonePairingState = .failed(failure)
+            alertFailure = failure
+            releasePhonePairingLease()
+        }
+    }
+
+    private func finishPhonePairing(at fileURL: URL) async {
+        defer { releasePhonePairingLease() }
+        guard let pairingStore else { return }
+        do {
+            pairingRecord = try await pairingStore.importFile(at: fileURL)
+            await installChannel?.reset()
+            installDiagnostics = .empty
+            phonePairingState = .validating
+            try? await logStore?.append(
+                category: .pairing,
+                message: "已在系统设置完成与 Seal 的设备配对，开始验证 LocalDevVPN 通道"
+            )
+            logs = (try? await logStore?.entries()) ?? logs
+            refreshLogExportText()
+
+            guard await pairingTunnelProbe.probeTunnel() else {
+                diagnosticState = .idle
+                phonePairingState = .waitingForLocalDevVPN
+                try? await logStore?.append(
+                    category: .pairing,
+                    message: "设备配对信息已保存，等待 LocalDevVPN 连接后验证"
+                )
+                logs = (try? await logStore?.entries()) ?? logs
+                refreshLogExportText()
+                return
+            }
+
+            await runInstallChannelCheck(successMessage: "设备配对和 LocalDevVPN 验证完成")
+            switch diagnosticState {
+            case .ready:
+                phonePairingState = .completed
+            case let .failed(failure):
+                phonePairingState = .failed(failure)
+            case .idle, .running:
+                phonePairingState = .waitingForLocalDevVPN
+            }
+        } catch let failure as ImportFailure {
+            phonePairingState = .failed(failure)
+            alertFailure = failure
+        } catch {
+            let failure = Self.failure(
+                title: "无法保存配对信息",
+                reason: "系统已完成设备配对，但 Seal 无法安全保存凭据。",
+                recovery: "重新配对",
+                code: "SEAL-PAIR-216"
+            )
+            phonePairingState = .failed(failure)
+            alertFailure = failure
+        }
+    }
+
+    private func releasePhonePairingLease() {
+        guard let phonePairingLease else { return }
+        self.phonePairingLease = nil
+        releaseOperation(phonePairingLease)
+    }
+
+    private static func phonePairingHostFailure(message: String) -> ImportFailure {
+        let normalized = message.lowercased()
+        if normalized.contains("permission") || normalized.contains("network") {
+            return failure(
+                title: "未允许本地网络",
+                reason: "Seal 无法在本机发布设备配对服务。",
+                recovery: "在系统设置中允许 Seal 使用本地网络后重试",
+                code: "SEAL-PAIR-217"
+            )
+        }
+        return failure(
+            title: "未完成设备配对",
+            reason: "系统未完成与 Seal 的配对确认。",
+            recovery: "在开发者模式中选择 Seal，完成确认后重试",
+            code: "SEAL-PAIR-218"
+        )
     }
 
     /// 手动导入用户选择的配对文件。

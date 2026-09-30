@@ -16,6 +16,7 @@ use crate::idevice_support::{
     },
 };
 use crate::post17::shared_runtime;
+use crate::phone_pairing::{self, PairResult, PinCb, ReadyCb};
 use crate::IdeviceFfiError;
 
 fn to_char(value: String) -> *mut c_char {
@@ -50,6 +51,40 @@ fn invalid_argument_error() -> *mut IdeviceFfiError {
 
 fn runtime_error() -> *mut IdeviceFfiError {
     crate::errors::internal_ffi_error("RustBridge async runtime is unavailable")
+}
+
+/// iOS 27 手机端 Remote Pairing Host。这个调用会阻塞直到用户在系统设置中
+/// 确认配对或会话结束，因此 Swift 必须在专用后台队列调用它。
+#[no_mangle]
+pub unsafe extern "C" fn rust_bridge_phone_pairing_run_host(
+    bind_addr: *const c_char,
+    port: u16,
+    name: *const c_char,
+    model: *const c_char,
+    out_path: *const c_char,
+    host_alt_irk_hex: *const c_char,
+    ready_cb: ReadyCb,
+    pin_cb: PinCb,
+    ctx: *mut std::ffi::c_void,
+    result: *mut PairResult,
+) -> i32 {
+    phone_pairing::run_host(
+        bind_addr,
+        port,
+        name,
+        model,
+        out_path,
+        host_alt_irk_hex,
+        ready_cb,
+        pin_cb,
+        ctx,
+        result,
+    )
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rust_bridge_phone_pairing_result_free(result: *mut PairResult) {
+    phone_pairing::result_free(result);
 }
 
 #[no_mangle]

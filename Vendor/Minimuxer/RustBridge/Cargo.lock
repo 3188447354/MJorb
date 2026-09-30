@@ -1169,6 +1169,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "idevice"
+version = "0.1.63"
+dependencies = [
+ "aes",
+ "async-stream",
+ "base64 0.22.1",
+ "cbc",
+ "chacha20poly1305",
+ "ed25519-dalek",
+ "futures",
+ "hkdf",
+ "hmac",
+ "idevice-srp",
+ "indexmap",
+ "libc",
+ "plist",
+ "plist-macro",
+ "rand 0.10.0",
+ "rsa",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "siphasher",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "uuid",
+ "x25519-dalek",
+]
+
+[[package]]
 name = "idevice-srp"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1930,7 +1964,8 @@ name = "rust_bridge"
 version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
- "idevice",
+ "idevice 0.1.56",
+ "idevice 0.1.63",
  "log",
  "once_cell",
  "plist",
@@ -2128,6 +2163,12 @@ name = "simd-adler32"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
+
+[[package]]
+name = "siphasher"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 
 [[package]]
 name = "slab"

@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-09-30 iOS 27 只能靠电脑导入配对文件，已装 Seal 不能自行完成首次配对（1.3.42，未发布）
+
+- **现象**：iOS 27 已把配对入口放进“设置 > 隐私与安全性 > 开发者模式”的系统流程，但 Seal 仍要求电脑端配对助手或手动导入文件；手机已装 Seal 时无法独立完成首次配对。
+- **根因**：项目只有 Remote Pairing 客户端连接实现（LocalDevVPN 后的 `MinimuxerInstallChannel`），没有作为 Pairable Host 的监听、Bonjour 广播、系统 PIN 回调和候选凭据交接。
+- **修复**：引入经上游 SideInstaller 实现逐行对照的 `idevice` Remote Pairing Host（与现有客户端依赖隔离，避免升级旧 `idevice` 破坏签名/安装）；Swift 侧发布 `_remotepairing-pairable-host._tcp`，显示系统 PIN，并把生成文件交给现有 `PairingStore` 导入和 `MinimuxerInstallChannel` 验证。iOS 27+ 只展示手机配对；较低系统保留电脑文件路径。验证失败仍走原有备份恢复，不让失败候选永久覆盖可用记录。
+- **涉及文件**：`Vendor/Minimuxer/RustBridge/src/phone_pairing.rs`、`Vendor/Minimuxer/RustBridge/MinimuxerBridgeIdevice.swift`、`Seal/Infrastructure/Pairing/PhonePairingHost.swift`、`Seal/Features/Settings/SettingsViewModel.swift`、`Seal/Features/Settings/PairingSettingsView.swift`、`PairingStore` 既有事务接口。
+- **验证状态**：新增 Rust Host 已通过 `cargo check`；Swift 6 / 完整 iOS 构建与真机“开发者模式 → 与 Seal 配对 → LocalDevVPN 验证”尚未运行。按用户指示，不推送或发布给用户。
+
+---
+
 ## 2026-09-29 续签慢复用完整签名两条白做功：解压 IPA + 重复能力写请求（1.3.41，用户「续签必须快」）
 
 - **现象**（用户）：同样本地通道，SideStore 续签几秒就成功，Seal 续签要几十秒到一两分钟。

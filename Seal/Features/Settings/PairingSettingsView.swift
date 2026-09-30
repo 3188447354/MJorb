@@ -11,19 +11,23 @@ struct PairingSettingsView: View {
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(spacing: 20) {
-                hero
-                if let pairing = viewModel.pairingRecord {
-                    details(pairing)
-                    if pairing.validationStatus == .fileUnreadable || pairing.validationStatus == .deviceMismatch {
+            if presentationPolicy.usesPhonePairing {
+                phonePairingContent
+            } else {
+                VStack(spacing: 20) {
+                    hero
+                    if let pairing = viewModel.pairingRecord {
+                        details(pairing)
+                        if pairing.validationStatus == .fileUnreadable || pairing.validationStatus == .deviceMismatch {
+                            acquisitionGuide
+                        }
+                    } else {
                         acquisitionGuide
                     }
-                } else {
-                    acquisitionGuide
+                    actions
                 }
-                actions
+                .padding(20)
             }
-            .padding(20)
         }
         .navigationTitle("设备")
         .navigationBarTitleDisplayMode(.inline)
@@ -75,7 +79,209 @@ struct PairingSettingsView: View {
         }
         .sealScreenBackground()
         .task {
-            _ = await viewModel.importPairingAssistantInboxIfPresent()
+            if presentationPolicy.showsDesktopAssistant {
+                _ = await viewModel.importPairingAssistantInboxIfPresent()
+            }
+        }
+    }
+
+    private var presentationPolicy: PhonePairingPresentationPolicy {
+        PhonePairingPresentationPolicy(
+            majorOSVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        )
+    }
+
+    private var phonePairingContent: some View {
+        VStack(spacing: 20) {
+            phonePairingHero
+            phonePairingProgress
+            phonePairingDetails
+            if case let .showingCode(code) = viewModel.phonePairingState {
+                pairingCode(code)
+            }
+            phonePairingAction
+        }
+        .padding(20)
+    }
+
+    private var phonePairingHero: some View {
+        let presentation = phonePresentation
+        return VStack(spacing: 10) {
+            Image(systemName: presentation.icon)
+                .font(.system(size: 42, weight: .medium))
+                .foregroundStyle(presentation.color)
+            Text(presentation.title)
+                .font(.title2.weight(.semibold))
+            Text(presentation.detail)
+                .font(.subheadline)
+                .foregroundStyle(Color.sealTextSecondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(24)
+        .glassSurface(cornerRadius: 24)
+    }
+
+    private var phonePairingProgress: some View {
+        HStack(spacing: 8) {
+            phoneStep("开发者模式", index: 0)
+            phoneStep("设备配对", index: 1)
+            phoneStep("LocalDevVPN", index: 2)
+            phoneStep("完成", index: 3)
+        }
+    }
+
+    private func phoneStep(_ title: String, index: Int) -> some View {
+        let current = phoneProgressIndex
+        return VStack(spacing: 8) {
+            Capsule()
+                .fill(index < current ? Color.sealSuccess : index == current ? Color.sealAccent : Color.sealHairline)
+                .frame(height: 6)
+            Text(title)
+                .font(.caption.weight(index == current ? .semibold : .regular))
+                .foregroundStyle(index <= current ? Color.primary : Color.sealTextSecondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var phonePairingDetails: some View {
+        VStack(spacing: 0) {
+            phoneDetailRow("设备配对", phonePairingStatusText)
+            Divider()
+            phoneDetailRow("LocalDevVPN", localDevVPNStatusText)
+            if let pairing = viewModel.pairingRecord {
+                Divider()
+                phoneDetailRow("设备 UDID", deviceIdentifierText(pairing))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .glassSurface(cornerRadius: 18)
+    }
+
+    private func phoneDetailRow(_ title: String, _ value: String) -> some View {
+        HStack(spacing: 12) {
+            Text(title)
+            Spacer(minLength: 12)
+            Text(value)
+                .foregroundStyle(Color.sealTextSecondary)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .font(.subheadline)
+        .frame(minHeight: 50)
+    }
+
+    private func pairingCode(_ code: String) -> some View {
+        VStack(spacing: 8) {
+            Text("配对码")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(Color.sealTextSecondary)
+            Text(code)
+                .font(.system(size: 34, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .tracking(5)
+            Text("在系统设置中确认此配对码")
+                .font(.caption)
+                .foregroundStyle(Color.sealTextSecondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 18)
+        .glassSurface(cornerRadius: 18)
+    }
+
+    @ViewBuilder
+    private var phonePairingAction: some View {
+        switch viewModel.phonePairingState {
+        case .idle:
+            if viewModel.pairingRecord?.isPaired == true {
+                Button("验证 LocalDevVPN") {
+                    Task { await viewModel.validatePhonePairing() }
+                }
+                .sealPrimaryAction(cornerRadius: 12)
+                Button("重新配对") {
+                    Task { await viewModel.startPhonePairing() }
+                }
+                .sealOutlineAction(cornerRadius: 12)
+            } else {
+                Button("开始设备配对") {
+                    Task { await viewModel.startPhonePairing() }
+                }
+                .sealPrimaryAction(cornerRadius: 12)
+            }
+        case .waitingForLocalDevVPN:
+            Button("验证 LocalDevVPN") {
+                Task { await viewModel.validatePhonePairing() }
+            }
+            .sealPrimaryAction(cornerRadius: 12)
+        case .completed:
+            Button("重新配对") {
+                Task { await viewModel.startPhonePairing() }
+            }
+            .sealOutlineAction(cornerRadius: 12)
+        case .failed:
+            Button("重新配对") {
+                Task { await viewModel.startPhonePairing() }
+            }
+            .sealPrimaryAction(cornerRadius: 12)
+        case .requestingLocalNetwork, .waitingForSystemConfirmation, .showingCode, .validating:
+            Button(phonePresentation.actionTitle) {}
+                .sealPrimaryAction(cornerRadius: 12)
+                .disabled(true)
+        }
+    }
+
+    private var phonePresentation: (title: String, detail: String, icon: String, color: Color, actionTitle: String) {
+        switch viewModel.phonePairingState {
+        case .idle:
+            return ("准备配对", "在开发者模式中与 Seal 配对，完成后即可签名、安装和续签。", "iphone.and.arrow.forward", .sealAccent, "开始设备配对")
+        case .requestingLocalNetwork:
+            return ("准备配对", "正在请求本地网络权限。", "network", .sealAccent, "正在准备")
+        case .waitingForSystemConfirmation:
+            return ("在系统中配对", "前往 设置 > 隐私与安全性 > 开发者模式，在“与 Seal 配对”中选择 Seal。", "gearshape.2", .sealAccent, "等待系统确认")
+        case .showingCode:
+            return ("确认配对码", "将下方配对码与系统设置中的提示核对后确认。", "number.square", .sealAccent, "等待系统确认")
+        case .validating:
+            return ("验证连接", "正在检查 LocalDevVPN 是否可用。", "arrow.triangle.2.circlepath", .sealAccent, "正在验证")
+        case .waitingForLocalDevVPN:
+            return ("等待 LocalDevVPN", "设备配对已保存。打开 LocalDevVPN 后继续验证。", "vpn", .sealWarning, "验证 LocalDevVPN")
+        case .completed:
+            return ("配对完成", "设备已准备好，可签名、安装和续签。", "checkmark.circle.fill", .sealSuccess, "重新配对")
+        case .failed:
+            return ("需要重新配对", "未完成系统确认或本地网络不可用。", "exclamationmark.triangle.fill", .sealDanger, "重新配对")
+        }
+    }
+
+    private var phoneProgressIndex: Int {
+        switch viewModel.phonePairingState {
+        case .idle, .requestingLocalNetwork: 0
+        case .waitingForSystemConfirmation, .showingCode: 1
+        case .validating, .waitingForLocalDevVPN: 2
+        case .completed: 3
+        case .failed: 1
+        }
+    }
+
+    private var phonePairingStatusText: String {
+        switch viewModel.phonePairingState {
+        case .completed: "已完成"
+        case .waitingForLocalDevVPN, .validating: "已保存，待验证"
+        case .failed: "未完成"
+        case .idle where viewModel.pairingRecord?.isPaired == true: "已完成"
+        default: "待配对"
+        }
+    }
+
+    private var localDevVPNStatusText: String {
+        switch viewModel.phonePairingState {
+        case .completed: "已验证"
+        case .validating: "验证中"
+        case .waitingForLocalDevVPN: "待连接"
+        default: "待验证"
         }
     }
 

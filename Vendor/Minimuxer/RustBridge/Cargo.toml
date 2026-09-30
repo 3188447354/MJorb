@@ -24,12 +24,15 @@ serde_json = "1"
 # <--- post17.rs -->
 # iOS 17+ async operations: CoreDeviceProxy, XPCDevice, DVT, DebugProxy, ImageMounter
 idevice = { git = "https://github.com/jkcoxson/idevice", rev = "a714d35d95dc16769f8a54a6168ccec6338b73c7", features = ["full"] }
+# iOS 27 的设备发起配对使用 responder / pairable-host 角色。它与现有的
+# `idevice` 客户端并存，避免升级旧安装通道的 API 表面。
+idevice_pairable = { package = "idevice", path = "Vendor/idevice", default-features = false, features = ["remote_pairing", "tcp", "ring"] }
 plist = "1.7.1"
 # on-device 安装对齐 SideStore/minimuxer：把签名后的 .app 逐文件铺到 PublicStaging。
 # IPA 本质是该 .app 的 zip，这里在内存流式解包（纯 Rust deflate，无 C 依赖，可交叉编译 iOS）。
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Async runtime: block_on for iOS 17+ JIT and DDI mount
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "sync"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "sync", "fs"] }
 # Lazy static RUNTIME
 once_cell = "1"
 # Logging
@@ -38,4 +41,3 @@ rcgen = "0.13.0"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 log = "0.4"
-

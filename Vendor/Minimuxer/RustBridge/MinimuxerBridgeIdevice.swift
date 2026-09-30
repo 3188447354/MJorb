@@ -14,6 +14,29 @@ internal struct RustIdeviceFfiError {
 	let message: UnsafePointer<Int8>?
 }
 
+internal struct RustPhonePairingResult {
+	var error: UnsafeMutablePointer<CChar>?
+	var deviceName: UnsafeMutablePointer<CChar>?
+	var deviceModel: UnsafeMutablePointer<CChar>?
+	var deviceUDID: UnsafeMutablePointer<CChar>?
+	var pairingFilePath: UnsafeMutablePointer<CChar>?
+	var hostAltIRKHex: UnsafeMutablePointer<CChar>?
+}
+
+internal typealias RustPhonePairingReadyCallback = @convention(c) (
+	UnsafeMutableRawPointer?,
+	UnsafePointer<CChar>?,
+	UInt16,
+	UnsafePointer<UnsafePointer<CChar>?>?,
+	UnsafePointer<UnsafePointer<CChar>?>?,
+	Int
+) -> Void
+
+internal typealias RustPhonePairingPINCallback = @convention(c) (
+	UnsafePointer<CChar>?,
+	UnsafeMutableRawPointer?
+) -> Void
+
 @_silgen_name("idevice_error_free")
 internal func _idevice_error_free(_ err: UnsafeMutablePointer<RustIdeviceFfiError>?)
 
@@ -128,6 +151,25 @@ internal func _rust_bridge_idevice_mount_personalized_ddi(
     _ manifest_ptr: UnsafePointer<UInt8>?, _ manifest_len: UInt32,
 ) -> Int32
 
+@_silgen_name("rust_bridge_phone_pairing_run_host")
+internal func _rust_bridge_phone_pairing_run_host(
+	_ bindAddress: UnsafePointer<CChar>?,
+	_ port: UInt16,
+	_ name: UnsafePointer<CChar>?,
+	_ model: UnsafePointer<CChar>?,
+	_ outputPath: UnsafePointer<CChar>?,
+	_ hostAltIRKHex: UnsafePointer<CChar>?,
+	_ readyCallback: RustPhonePairingReadyCallback?,
+	_ pinCallback: RustPhonePairingPINCallback?,
+	_ context: UnsafeMutableRawPointer?,
+	_ result: UnsafeMutablePointer<RustPhonePairingResult>?
+) -> Int32
+
+@_silgen_name("rust_bridge_phone_pairing_result_free")
+internal func _rust_bridge_phone_pairing_result_free(
+	_ result: UnsafeMutablePointer<RustPhonePairingResult>?
+)
+
 
 // MARK: - Error Handling
 
@@ -159,6 +201,20 @@ private func rustIdeviceCheckedLength(_ count: Int) throws -> UInt32 {
 
 // MARK: - Swift Wrappers
 public class RustIdevice {
+	public struct PhonePairingAdvertisement: Sendable, Equatable {
+		public let serviceIdentifier: String
+		public let port: UInt16
+		public let txtRecords: [String: String]
+	}
+
+	public struct PhonePairingResult: Sendable, Equatable {
+		public let deviceName: String
+		public let deviceModel: String
+		public let deviceUDID: String
+		public let pairingFilePath: String
+		public let hostAltIRKHex: String
+	}
+
 	public static func testDeviceConnection() -> Bool {
 		_rust_bridge_idevice_test_device_connection()
 	}
@@ -192,6 +248,120 @@ public class RustIdevice {
 
 		defer { _rust_bridge_idevice_free_string(pointer) }
 		return String(cString: pointer)
+	}
+
+	/// Runs the iOS Remote Pairing host on the caller's background thread. The
+	/// callbacks are synchronous and must return quickly; UI work belongs on the
+	/// main actor in the caller.
+	public static func runPhonePairingHost(
+		name: String,
+		model: String,
+		outputPath: String,
+		hostAltIRKHex: String,
+		onReady: @escaping (PhonePairingAdvertisement) -> Void,
+		onPIN: @escaping (String) -> Void
+	) throws -> PhonePairingResult {
+		let box = PhonePairingCallbackBox(onReady: onReady, onPIN: onPIN)
+		let context = Unmanaged.passRetained(box).toOpaque()
+		defer { Unmanaged<PhonePairingCallbackBox>.fromOpaque(context).release() }
+
+		var rawResult = RustPhonePairingResult(
+			error: nil,
+			deviceName: nil,
+			deviceModel: nil,
+			deviceUDID: nil,
+			pairingFilePath: nil,
+			hostAltIRKHex: nil
+		)
+		defer { _rust_bridge_phone_pairing_result_free(&rawResult) }
+
+		let status = "0.0.0.0".withCString { bindAddress in
+			name.withCString { name in
+				model.withCString { model in
+					outputPath.withCString { outputPath in
+						hostAltIRKHex.withCString { hostAltIRKHex in
+							_rust_bridge_phone_pairing_run_host(
+								bindAddress,
+								0,
+								name,
+								model,
+								outputPath,
+								hostAltIRKHex,
+								phonePairingReadyTrampoline,
+								phonePairingPINTrampoline,
+								context,
+								&rawResult
+							)
+						}
+					}
+				}
+			}
+		}
+
+		if status != 0 {
+			let message = rawResult.error.map { String(cString: $0) }
+				?? "Remote Pairing host stopped before producing a result."
+			throw NSError(domain: "minimuxer.phone-pairing", code: Int(status), userInfo: [
+				NSLocalizedDescriptionKey: message
+			])
+		}
+
+		guard let deviceName = rawResult.deviceName.map({ String(cString: $0) }),
+			  let deviceModel = rawResult.deviceModel.map({ String(cString: $0) }),
+			  let deviceUDID = rawResult.deviceUDID.map({ String(cString: $0) }),
+			  let pairingFilePath = rawResult.pairingFilePath.map({ String(cString: $0) }),
+			  let hostAltIRKHex = rawResult.hostAltIRKHex.map({ String(cString: $0) }) else {
+			throw NSError(domain: "minimuxer.phone-pairing", code: -1, userInfo: [
+				NSLocalizedDescriptionKey: "Remote Pairing completed without a complete result."
+			])
+		}
+
+		return PhonePairingResult(
+			deviceName: deviceName,
+			deviceModel: deviceModel,
+			deviceUDID: deviceUDID,
+			pairingFilePath: pairingFilePath,
+			hostAltIRKHex: hostAltIRKHex
+		)
+	}
+
+	private static let phonePairingReadyTrampoline: RustPhonePairingReadyCallback = {
+		context, serviceIdentifier, port, keys, values, count in
+		guard let context, let serviceIdentifier else { return }
+		let box = Unmanaged<PhonePairingCallbackBox>.fromOpaque(context).takeUnretainedValue()
+		var records: [String: String] = [:]
+		if let keys, let values, count > 0 {
+			for index in 0..<count {
+				guard let key = keys[index], let value = values[index] else { continue }
+				records[String(cString: key)] = String(cString: value)
+			}
+		}
+		box.onReady(.init(
+			serviceIdentifier: String(cString: serviceIdentifier),
+			port: port,
+			txtRecords: records
+		))
+	}
+
+	private static let phonePairingPINTrampoline: RustPhonePairingPINCallback = { pin, context in
+		guard let context, let pin else { return }
+		let box = Unmanaged<PhonePairingCallbackBox>.fromOpaque(context).takeUnretainedValue()
+		box.onPIN(String(cString: pin))
+	}
+
+	/// Rust calls these closures only while `runPhonePairingHost` retains the
+	/// context. The host invokes them serially, so no mutable state is shared.
+	private final class PhonePairingCallbackBox {
+		let onReady: (PhonePairingAdvertisement) -> Void
+		let onPIN: (String) -> Void
+
+		init(
+			onReady: @escaping (PhonePairingAdvertisement) -> Void,
+			onPIN: @escaping (String) -> Void
+		) {
+			self.onReady = onReady
+			self.onPIN = onPIN
+		}
 	}
 
 	/// 不吞掉底层错误的 UDID 获取：把 Rust 侧 IdeviceError 的 Debug 文本（PairVerifyFailed /

@@ -1,3 +1,18 @@
+# 1.3.42 iOS 27 手机端设备配对：无需电脑导入配对文件
+
+iOS 27 上，Seal 现在直接在手机内启动 Remote Pairing 服务。完成一次系统设置中的
+“与 Seal 配对”确认后，Seal 会保存配对信息并继续验证 LocalDevVPN；通过验证即可继续
+签名、安装和续签。iOS 27 不再显示电脑配对助手、配对文件导入或导出入口。
+
+## 修复
+
+- 使用系统 Remote Pairing Host + Bonjour 广播，系统配对码会在 Seal 内显示，用户不必使用电脑。
+- 新配对仍沿用 Seal 的事务保护：验证失败会自动恢复上一份可用配对信息，不让一次失败覆盖现有通道。
+- LocalDevVPN 被放在配对后的最后验证步骤；未连接时显示“待验证”，不会误报成功。
+- 增加 SideInstaller by FrizzleM 与 jkcoxson/idevice 的开源归属和许可证说明。
+
+---
+
 # 1.3.41 续签提速：profile-only 免解压 + 只换描述文件、不再重发能力写请求
 
 续签慢的根子在两处白做功：一是每次 profile-only 续签都**解压整个 IPA** 去读 Mach-O

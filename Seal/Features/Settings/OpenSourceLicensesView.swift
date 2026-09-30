@@ -28,6 +28,18 @@ struct OpenSourceLicensesView: View {
             url: Self.makeURL("https://github.com/SideStore/minimuxer")
         ),
         OpenSourceDependency(
+            name: "SideInstaller by FrizzleM",
+            purpose: "iOS 27 设备端 Remote Pairing Host",
+            license: "非商业源码许可（见仓库 LICENSE）",
+            url: Self.makeURL("https://github.com/FrizzleM/SideInstaller")
+        ),
+        OpenSourceDependency(
+            name: "idevice",
+            purpose: "Remote Pairing 协议实现",
+            license: "MIT",
+            url: Self.makeURL("https://github.com/jkcoxson/idevice")
+        ),
+        OpenSourceDependency(
             name: "ZIPFoundation",
             purpose: "IPA 解包、读取和重新打包",
             license: "MIT",

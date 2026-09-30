@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-09-30 快捷指令续签完成后，通知进入结果抽屉延迟到用户点击应用才出现（1.3.43，未发布）
+
+- **现象**：快捷指令的 profile-only 批量续签已成功、通知也已发出；用户点击通知回到 Seal 后，结果抽屉有时立即出现，有时需点击两三个已安装应用才出现。
+- **根因**：启动路径把维护作业、自替换对账、队列恢复和应用列表加载排在结果恢复前；已结算的后台结果本不依赖这些步骤，却被它们阻塞。后续列表交互触发 `load()` 才偶然恢复抽屉。
+- **修复**：增加纯判据 `PendingBatchResultPayload.isReadyForImmediatePresentation`；前台首次加载及每次回到 active 时优先恢复已结算载荷。含 `awaitingSealConfirmation` 的 Seal 自替换载荷不提前展示，继续等待新进程真实身份核验。
+- **涉及文件**：`PendingBatchResultPayload.swift`、`AppsViewModel.swift`、`AppsRootView.swift`、`PendingBatchResultPayloadTests.swift`、`project.yml`、`RELEASE_NOTES.md`。
+- **验证状态**：新增三条纯函数测试；待完整 CI 与真机“快捷指令完成 → 点通知 → 不点应用即出现结果抽屉”回归。
+
+---
+
 ## 2026-09-30 iOS 27 只能靠电脑导入配对文件，已装 Seal 不能自行完成首次配对（1.3.42，未发布）
 
 - **现象**：iOS 27 已把配对入口放进“设置 > 隐私与安全性 > 开发者模式”的系统流程，但 Seal 仍要求电脑端配对助手或手动导入文件；手机已装 Seal 时无法独立完成首次配对。

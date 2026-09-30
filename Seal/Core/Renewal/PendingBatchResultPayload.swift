@@ -69,6 +69,27 @@ enum PendingBatchResultPayload {
         )
     }
 
+    /// 快捷指令完成后，前台可以立即展示的结果必须已经完全结算。
+    ///
+    /// Seal 自替换留下的 `awaitingSealConfirmation` 仍要等新进程读取真实运行
+    /// 身份后结算；提前展示为成功会把「安装已提交」误报成「Seal 已更新」。
+    static func isReadyForImmediatePresentation(_ payload: [String: Any]) -> Bool {
+        guard let items = payload[Key.items] as? [[String: Any]],
+              items.isEmpty == false,
+              (payload["total"] as? Int ?? items.count) == items.count else {
+            return false
+        }
+
+        return items.allSatisfy { item in
+            switch BatchRefreshSession.Item.State(storageValue: item[Key.state] as? String) {
+            case .completed, .failed:
+                return true
+            case .waiting, .running, .preparingSealUpdate, .awaitingSealConfirmation:
+                return false
+            }
+        }
+    }
+
     /// 返回可稳定比较的载荷指纹，供界面识别「已恢复过一次」与「新进程刚写回结算」的区别。
     ///
     /// 不能只依赖时间戳：历史载荷不一定含时间戳，而条目终态才是决定抽屉分桶的真实来源。

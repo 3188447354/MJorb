@@ -2474,6 +2474,18 @@ final class AppsViewModel: ObservableObject {
         Task { try? await logStore?.append(category: .renewal, level: .info, message: "批量续签结果已从持久化载荷恢复（共 \(result.total)，成功 \(result.succeeded)，失败 \(result.failed)，等待 Seal 核验 \(result.awaitingConfirmation)，明细 \(restored.items.count) 项）", code: "SEAL-RENEW-024") }
     }
 
+    /// 快捷指令完成后，用户从系统通知回到 Seal 时应立即看到已经结算的结果。
+    ///
+    /// 这一步不依赖应用列表、设备探测或维护作业。若 Seal 自替换仍待新进程
+    /// 对账，保留启动流程的原有顺序，绝不提前显示成功。
+    func presentSettledBackgroundBatchResultIfNeeded() {
+        guard let payload = loadPendingBatchResultPayload(),
+              PendingBatchResultPayload.isReadyForImmediatePresentation(payload) else {
+            return
+        }
+        restorePendingBatchResultIfNeeded()
+    }
+
     private func schedulePendingBatchResultRecheckIfNeeded(_ result: BatchRefreshResult) {
         guard result.awaitingConfirmation > 0, pendingBatchResultRecheckTask == nil else { return }
         pendingBatchResultRecheckTask = Task { [weak self] in

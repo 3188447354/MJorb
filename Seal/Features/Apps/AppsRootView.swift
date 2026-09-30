@@ -129,6 +129,9 @@ struct AppsRootView: View {
                 standardAlert(failure)
             }
             .task {
+                // 后台续签已经得到终态时，通知进入必须先展示结果；不能被启动维护、
+                // 设备核验或列表加载拖住，造成用户得点几次应用才看到抽屉。
+                viewModel.presentSettledBackgroundBatchResultIfNeeded()
                 await settingsViewModel.load()
                 // 维护作业（记录恢复 / Seal 自注册 / 孤儿文件清理）只在空闲时执行；
                 // 启动瞬间没有前台操作，因此会正常跑。放在 load 之前，
@@ -144,6 +147,7 @@ struct AppsRootView: View {
             }
             .onChange(of: scenePhase) { phase in
                 guard phase == .active else { return }
+                viewModel.presentSettledBackgroundBatchResultIfNeeded()
                 Task {
                     await viewModel.refreshInstalledApps(userInitiated: false)
                     if mode == .unsigned {

@@ -160,6 +160,46 @@ struct PendingBatchResultPayloadTests {
         ))
     }
 
+    /// 快捷指令已完成的批次可在用户从通知进入时立即展示；不应等待列表加载。
+    @Test
+    func settledPayloadIsReadyForImmediatePresentation() {
+        let completed = UUID()
+        let completedPayload: [String: Any] = [
+            "total": 1,
+            "items": [
+                ["id": completed.uuidString, "name": "LiveContainer", "state": "completed"],
+            ]
+        ]
+        #expect(PendingBatchResultPayload.isReadyForImmediatePresentation(completedPayload))
+    }
+
+    /// Seal 自替换还没有由新进程对账时，不能把旧进程的候选结果当成成功抽屉展示。
+    @Test
+    func awaitingSealPayloadWaitsForIdentityVerification() {
+        let seal = UUID()
+        let awaitingPayload: [String: Any] = [
+            "total": 1,
+            "items": [
+                ["id": seal.uuidString, "name": "Seal", "isSeal": true, "state": "awaitingSealConfirmation"],
+            ]
+        ]
+        #expect(PendingBatchResultPayload.isReadyForImmediatePresentation(awaitingPayload) == false)
+    }
+
+    /// 写入中途的载荷不能因为“暂时没有 Seal 待核验项”就提前当作最终结果展示。
+    @Test
+    func runningPayloadWaitsForTheBatchToSettle() {
+        let runningPayload: [String: Any] = [
+            "total": 2,
+            "items": [
+                ["id": UUID().uuidString, "name": "A", "state": "completed"],
+                ["id": UUID().uuidString, "name": "B", "state": "running"],
+            ]
+        ]
+
+        #expect(PendingBatchResultPayload.isReadyForImmediatePresentation(runningPayload) == false)
+    }
+
     /// 启动时界面可能先恢复旧载荷，随后 `SelfAppRegistrar` 才把 Seal 写成终态。
     /// 此时不能因为已经恢复过一次就永远保留旧抽屉，必须识别出持久化载荷发生了变化。
     @Test

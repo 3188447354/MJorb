@@ -5329,7 +5329,7 @@ def violations(load=read):
     r85_coord = load("Seal/Core/Signing/SigningCoordinator.swift")
     r85_present = load("Seal/Features/Apps/AppPresentation.swift")
     r85_vm = load("Seal/Features/Apps/AppsViewModel.swift")
-    r85_progress = load("Seal/Features/Apps/SigningProgressView.swift")
+    r85_progress = strip_comments(load("Seal/Features/Apps/SigningProgressView.swift"))
     r85_detail = load("Seal/Features/Apps/AppDetailView.swift")
     r85_sheet = load("Seal/Features/Apps/InstalledAppActionSheet.swift")
     r85_policy_tests = load("SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift")
@@ -9284,7 +9284,7 @@ def main():
         ("Seal/Features/Apps/SigningProgressView.swift",
          "            if let note = AppSigningPresentationHelpers.localCertificateCompactNote(\n",
          "            if let note = AppSigningPresentationHelpers.localCertificateNote(\n",
-         "R85⑥: **三处**落点都要接上"),
+         "R85⑥: 进度卡片必须给紧凑原因"),
         # ⑥ 把 364 的码改成 363 ⇒ R85⑦ 报红（这条降级在日志里就没法归因了）。
         ("Seal/Core/Signing/SigningCoordinator.swift",
          '                code: "SEAL-PROFILE-364"',
@@ -9487,12 +9487,12 @@ def main():
          "                signingNoteRow(note)\n"
          "            }\n",
          "",
-         "R89⑧: 界面必须说清"),
+         "R89⑧: 详情页必须说清"),
         # ⑧b 界面自己另算一份判据（不再与准入同源）⇒ R89⑧ 报红。
         ("Seal/Features/Apps/AppPresentation.swift",
          "              ProfileOnlyRenewalPolicy.hasPendingUpdateSource(\n",
          "              app.hasPendingSelfUpdateSource ||\n",
-         "R89⑧: 界面必须说清"),
+         "R89⑧: 详情页必须说清"),
         # ⑨ 把「版本不一致 ⇒ 完整重签」那条单测改名 ⇒ R89⑨ 报红（不变量没人守）。
         ("SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift",
          "func liveIdentityRefusesProfileOnlyWhileAnImportedUpdateIsNotInstalledYet()",
@@ -9797,7 +9797,7 @@ def main():
          "R92⑩:"),
         # ⑩b 通道码表里混进安装阶段 / 超时码（重试会造并发 installd）⇒ R92⑩ 报红。
         ("Seal/Core/Renewal/DeviceChannelTransientPolicy.swift",
-         '        "SEAL-VPN-001"        // 签名完成后仍无法连接设备完成安装\n',
+         '        "SEAL-VPN-001",       // 签名完成后仍无法连接设备完成安装\n',
          '        "SEAL-VPN-001",\n        "SEAL-INSTALL-702t",\n',
          "R92⑩:"),
         # ⑩c `Error` 重载不再优先按 `ImportFailure` 的码判（安装链路的通道码静默落空）⇒ R92⑩b 报红。

@@ -37,6 +37,9 @@ actor ProfileOnlyProvisioningProfileInstaller {
 
     private var isBusy = false
     private var taint = ProfileOnlyTaintGate()
+    /// 门户请求期间预热的 profile 服务任务。写入会加入同一任务，避免 `dumpProfiles`
+    /// 与真实注入并发使用 misagent。
+    private var inFlightPreparation: Task<Void, Error>?
 
     /// 读取并清除「上一次设备操作超时」的污染标记（原子）。
     ///
@@ -56,9 +59,17 @@ actor ProfileOnlyProvisioningProfileInstaller {
         taint.consume()
     }
 
+    /// 与 Apple Portal 请求并行预热实际执行 profile 注入的设备服务。
+    /// 正在写入时不另起探测，避免和 `misagent` 的进程级传输竞争。
+    func prewarmProfileService(using channel: any InstallChannel) async throws {
+        guard isBusy == false else { return }
+        try await ensureProfileService(using: channel)
+    }
+
     func installAndVerify(
         _ materials: [ProfileOnlyProfileMaterial],
-        certificateSerialNumber: String
+        certificateSerialNumber: String,
+        channel: any InstallChannel
     ) async throws {
         guard taint.isTainted == false else {
             // **安全网**：调用方必须先 `consumeTaintIfAny()` 并在为真时重置设备通道。
@@ -78,19 +89,13 @@ actor ProfileOnlyProvisioningProfileInstaller {
         isBusy = true
         defer { isBusy = false }
 
+        // 这道门验证的是真正执行注入的 misagent 服务，不是 profile-only 的资格。
+        // 其短时租约让签名入口预热的结果可复用；过期或失效则在写入前重建一次。
+        try await ensureProfileService(using: channel)
+
         for material in materials {
             try Task.checkCancellation()
-            let injection = await BlockingCall.bounded(seconds: 30) {
-                try Minimuxer.installProvisioningProfile(profile: material.data)
-            }
-            guard let injection else {
-                taint.markTainted()
-                throw failure(
-                    reason: "注入 \(material.binding.bundleIdentifier) 的描述文件超过 30 秒未返回。",
-                    code: "SEAL-PROFILE-352"
-                )
-            }
-            try injection.get()
+            try await inject(material, using: channel)
 
             let installed: Bool?
             do {
@@ -116,6 +121,64 @@ actor ProfileOnlyProvisioningProfileInstaller {
                     reason: "设备端未能读回本轮注入的 \(material.binding.bundleIdentifier) 描述文件；本地到期日未更新。",
                     code: "SEAL-PROFILE-354"
                 )
+            }
+        }
+    }
+
+    private func ensureProfileService(using channel: any InstallChannel) async throws {
+        do {
+            if let inFlightPreparation {
+                try await inFlightPreparation.value
+                return
+            }
+
+            let task = Task<Void, Error> { try await channel.prepareProfileService() }
+            inFlightPreparation = task
+            defer { inFlightPreparation = nil }
+            try await task.value
+        } catch {
+            // `dumpProfiles` 的有界等待超时后，Rust FFI 仍可能占着 misagent。
+            // 复用既有污染闸门：下一轮先 reset + start，不能在旧传输上立即重试。
+            if let failure = error as? ImportFailure,
+               DeviceChannelTransientPolicy.profileOperationTimeoutCodes.contains(failure.code) {
+                taint.markTainted()
+            }
+            throw error
+        }
+    }
+
+    /// 注入所用的 misagent 服务可能在健康探测与真正写入之间瞬时掉线。
+    /// 同一 UUID 的 profile 注入是幂等的，因此只对明确的通道瞬时失败立即重建一次，
+    /// 避免把可恢复的冷 RSD 会话交给外层 8 秒退避；超时仍按污染路径处理。
+    private func inject(
+        _ material: ProfileOnlyProfileMaterial,
+        using channel: any InstallChannel
+    ) async throws {
+        var recoveredConnection = false
+
+        while true {
+            let injection = await BlockingCall.bounded(seconds: 30) {
+                try Minimuxer.installProvisioningProfile(profile: material.data)
+            }
+            guard let injection else {
+                taint.markTainted()
+                throw failure(
+                    reason: "注入 \(material.binding.bundleIdentifier) 的描述文件超过 30 秒未返回。",
+                    code: "SEAL-PROFILE-352"
+                )
+            }
+
+            do {
+                try injection.get()
+                return
+            } catch {
+                guard recoveredConnection == false,
+                      DeviceChannelTransientPolicy.isTransientChannelFailure(error) else {
+                    throw error
+                }
+                recoveredConnection = true
+                await channel.invalidateProfileServiceConnection()
+                try await channel.prepareProfileService()
             }
         }
     }

@@ -1,5 +1,22 @@
 import Foundation
 
+/// 一个 SwiftUI 层级同一时间只允许一张业务抽屉占据呈现。
+/// 后台续签结果优先于用户点开的应用操作，避免两个 `.sheet` 互相抢状态。
+enum BatchResultPresentationPolicy {
+    static func allowsInstalledAppAction(hasBatchResultSheet: Bool) -> Bool {
+        hasBatchResultSheet == false
+    }
+
+    /// 系统通知进入时，结果抽屉优先且独占当前呈现层。
+    /// 即使旧的应用操作选择尚未来得及清空，也不能先闪出应用操作抽屉。
+    static func shouldPresentInstalledAppAction(
+        hasBatchResultSheet: Bool,
+        hasInstalledAppAction: Bool
+    ) -> Bool {
+        hasBatchResultSheet == false && hasInstalledAppAction
+    }
+}
+
 /// 「待恢复的批量续签结果」载荷 → 续签队列状态的映射。
 ///
 /// ## 为什么单独成一个类型

@@ -295,6 +295,15 @@ public struct Minimuxer {
         }
     }
 
+    /// 只废弃 RemotePairing 的 Rust RSD 会话缓存。
+    ///
+    /// 描述文件服务瞬时不可用时，完整 `reset()` 会同时清空配对/provider 状态；这里保留
+    /// 已确认有效的配对身份，让下一次 misagent 调用仅重建底层 RSD 会话。
+    public static func invalidateRemotePairingConnection() {
+        guard Muxer.isrppairing else { return }
+        RustIdevice.invalidateConnection()
+    }
+
     public static func retargetUsbmuxdAddr() {
         Muxer.retargetUsbmuxdAddr()
     }

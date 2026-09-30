@@ -171,6 +171,15 @@ actor SigningCoordinator {
         }
     }
 
+    /// 与通道重试的固定退避并行预热新会话。
+    ///
+    /// `reset()` 只拆连接；旧实现随后纯等 8 秒，第二次签名才开始重建连接，白白把
+    /// 冷启动的 RSD 握手串行塞进用户等待。这里不把预热失败当作终态，下一次签名仍按
+    /// 原有路径做完整判定；调用方不额外等待它，下一次 `start()` 会单飞加入预热。
+    func prewarmInstallChannelForRetry() async {
+        _ = try? await installChannel.start()
+    }
+
     func signAndInstall(
         appID: UUID,
         accountID: UUID,
@@ -965,6 +974,14 @@ actor SigningCoordinator {
                 code: "SEAL-PROFILE-361"
             )
         }
+        // Apple Portal 的 profile 准备与设备 misagent 预热互不依赖，必须并行。
+        // 实际注入会加入这同一条预热任务，确保设备侧始终只有一项 profile 操作。
+        let profileServicePrewarm = Task { [installChannel] in
+            try? await ProfileOnlyProvisioningProfileInstaller.shared.prewarmProfileService(
+                using: installChannel
+            )
+        }
+        defer { profileServicePrewarm.cancel() }
         let result = try await portal.prepareProfileOnlyRenewal(
             app: app,
             account: account,
@@ -1023,7 +1040,8 @@ actor SigningCoordinator {
         }
         try await ProfileOnlyProvisioningProfileInstaller.shared.installAndVerify(
             result.materials,
-            certificateSerialNumber: result.certificateSerialNumber
+            certificateSerialNumber: result.certificateSerialNumber,
+            channel: installChannel
         )
 
         var renewedApp = app

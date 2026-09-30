@@ -5,6 +5,58 @@
 
 ---
 
+## 2026-09-30 profile 服务预热超时后可能与下一次 misagent 调用并发（本地修复，未推送）
+
+- **现象**：新增的 profile 服务预热以 8 秒有界等待执行 `dumpProfiles`。若超时，`BlockingCall` 会放弃等待但 Rust FFI 仍可能继续运行。
+- **根因**：初版把“服务调用报错”和“调用超时”都视为相同的探测失败，并立即窄重建 RSD 后再探测，可能令两个 `misagent` 调用同时占用设备传输；临时目录也可能在旧调用仍写入时被提前删除。
+- **修复**：探测结果明确区分成功、失败和超时。普通失败才立即窄重建一次；超时改标记进既有 `ProfileOnlyTaintGate`，本轮不再触发第二次设备调用，下一轮统一走既有“消费污染 → reset → start”流程。只在 FFI 确认结束后删除探测目录，并把 `SEAL-PROFILE-355t` 纳入描述文件超时集合，使外层重试不会重复 reset。
+- **涉及文件**：`DeviceProfileInspector.swift`、`MinimuxerInstallChannel.swift`、`ProfileOnlyProvisioningProfileInstaller.swift`、`DeviceChannelTransientPolicy.swift`、`ProfileOnlyTaintGateTests.swift`。
+- **验证状态**：补全超时代码集合测试；Windows 无 Xcode，尚未运行 Swift 编译、CI 或真机回归。按用户要求未提交、未推送、未触发 CI。
+
+---
+
+## 2026-09-30 首页导入 IPA 入口未适配系统液态玻璃（本地修改，未推送）
+
+- **现象**：首页右上角“+”仍是无容器的大号图标，与 iOS 27 的液态玻璃工具控件不一致，导入入口缺少按下反馈。
+- **根因**：首页入口没有复用项目已具备的 iOS 26+ `glassEffect` 能力，也没有为“降低透明度”和较低系统定义视觉回退。
+- **修复**：将入口收敛为 44pt 圆形玻璃工具按钮，图标按系统工具栏尺度调整；iOS 26+（含 iOS 27）使用 `glassEffect`，按下缩放提供直接反馈；降低透明度和较低系统回退到同尺寸的实色圆形与边框。文件选择器、导入流程、禁用条件和辅助功能标识不变。
+- **涉及文件**：`AppsRootView.swift`。
+- **验证状态**：已静态核对 API 与项目既有 `GlassSurfaceModifier` 的系统版本策略一致；Windows 无 Xcode，尚未运行 Swift 编译、CI 或真机视觉回归。按用户要求未提交、未推送、未触发 CI。
+
+---
+
+## 2026-09-30 应用操作抽屉暴露技术标识且可切换账户（本地修改，未推送）
+
+- **现象**：已安装应用的“应用操作”抽屉曾展示证书序列号、描述文件 UUID 等不需要用户判断的技术标识，并允许在抽屉内切换 Apple ID；这会让页面显示的账户与实际续签目标不一致，也增加阅读负担。
+- **根因**：抽屉把诊断详情、账户选择和日常续签操作放在同一层，缺少面向用户的固定摘要边界。
+- **修复**：抽屉仅保留真实签名账户、Apple 证书状态、描述文件状态、有效期至和完整 Bundle ID 五项；移除账户选择、序列号、描述文件 UUID、技术详情入口及附带技术说明。点击“立即续签”始终按该应用当前已解析的签名账户执行。
+- **涉及文件**：`InstalledAppActionSheet.swift`、`AppsRootView.swift`。
+- **验证状态**：已做静态差异与残留字段检查；Windows 无 Xcode，尚未运行 Swift 编译、CI 或真机回归。按用户要求未提交、未推送、未触发 CI。
+
+---
+
+## 2026-09-30 快捷指令结果抽屉错序与 profile-only 冷 misagent 通道（本地修复，未推送）
+
+- **现象**：快捷指令成功通知进入 Seal 后，先闪出不相关的“应用操作”抽屉，才显示续签结果；单项 profile-only 续签常比应用内体感慢。
+- **真机证据**：`Seal-log(22).txt` 中通知本身没有 URL action；每轮 `SEAL-BACKGROUND-008` 显示通道就绪后，首个 profile-only 仍在约 26–28 秒后抛 `MinimuxerError 1`，`SEAL-RENEW-503` 再固定退避 8 秒，成功落在触发后约 43–45 秒。
+- **根因**：应用操作、批量结果分别由同一 SwiftUI 层的独立 `.sheet` 驱动，启动恢复同一轮状态变更会让旧的应用操作选择先被呈现；更关键的是，`start()` 的 RSD/UDID 成功只证明连接层可达，不证明下一步 `misagent` 描述文件服务可立即处理写入。900 秒缓存使首个 profile-only 注入可能落在冷/失效服务上，再由外层固定 8 秒退避兜底。
+- **修复**：结果存在时从应用操作 sheet 的 Binding 读取侧强制返回 `nil`，结果抽屉独占呈现；profile-only 续签改为 Apple Portal 请求期间并行预热同一 `misagent` 服务（无副作用 `copy_all`），并在 20 秒健康租约内复用。预热与真实注入共享 `ProfileOnlyProvisioningProfileInstaller` 单飞，绝不并发占用设备服务；普通探测失败仅作废 Rust RSD 缓存、保留配对/provider 后立即重建一次，探测超时则交由既有污染闸门在下一轮全量重建。注入在极短窗口内仍遇明确瞬时通道错误时，同一份幂等 profile 立即窄恢复后重试一次；8/16 秒外层退避只保留为二次失败的最终兜底。
+- **涉及文件**：`AppsRootView.swift`、`PendingBatchResultPayload.swift`、`InstallChannel.swift`、`MinimuxerInstallChannel.swift`、`DeviceProfileInspector.swift`、`ProfileOnlyProvisioningProfileInstaller.swift`、`ProfileServiceLeasePolicy.swift`、`SigningCoordinator.swift`、`RenewalCoordinator.swift`、`AppsViewModel.swift`、`Vendor/Minimuxer/Sources/Minimuxer.swift` 及对应测试。
+- **验证状态**：已按日志与 RustBridge 实现定位、补健康租约纯策略测试；Windows 无 Xcode，本地无法编译或运行 Swift 测试。按用户要求未提交、未推送、未触发 CI；待 CI 与真机验证“快捷指令 profile-only 首项不走 8 秒退避”。
+
+---
+
+## 2026-09-30 后台续签结果抽屉与已安装应用操作抽屉争夺呈现层（本地修复，未推送）
+
+- **现象**：快捷指令续签成功并发送通知后，进入 Seal 有时不立刻看到结果；点击已安装应用后才出现续签结果。关闭结果抽屉后，该应用又无法再次点开。
+- **真机证据**：`Seal-log(21).txt`（构建 1.3.43）中每轮均为 `1/1 成功`，并记录 `SEAL-RENEW-024`（结果已恢复）和随后重复的 `SEAL-RENEW-021`（结果抽屉仍开/会话存在）。因此不是续签失败或 LocalDevVPN 未验证。
+- **根因**：`AppsRootView` 在同一视图层上独立维护“已安装应用操作”和“批量结果”两张 `.sheet`；后台结果已恢复时，列表点击仍可写入应用操作选择，两张 sheet 竞争呈现。应用操作 sheet 关闭也没有显式清空选择，竞争后可能保留旧 item，导致同一行后续点击没有新的状态变化。
+- **修复**：结果会话存在时优先恢复并独占呈现层，拒绝打开已安装应用操作；结果会话出现时清空已打开的应用操作/详情选择；应用操作 sheet 任意关闭后明确清空选择。纯策略 `BatchResultPresentationPolicy` 由回归测试固定。
+- **涉及文件**：`PendingBatchResultPayload.swift`、`AppsRootView.swift`、`PendingBatchResultPayloadTests.swift`。
+- **验证状态**：已按真机日志定位并写好回归测试；按用户要求，本地修改尚未提交、推送或触发 CI。
+
+---
+
 ## 2026-09-30 iOS 27 设备页把已验证的配对错误显示为 LocalDevVPN 待验证（1.3.44，未发布）
 
 - **现象**：我的页按持久化配对记录显示“已配对”，进入 iOS 27 的设备页却回到“准备配对 / LocalDevVPN 待验证”，迫使用户误以为每次快捷指令续签后都必须手动点“验证 LocalDevVPN”。真机日志已记录后台续签会先自动确认 `LocalDevVPN 正常`。

@@ -51,7 +51,7 @@ struct ProfileOnlyTaintGateTests {
     @Test("污染码必须被续签重试侧认出来（否则同一项不会自愈）")
     func profileTimeoutCodesAreRetryable() {
         #expect(DeviceChannelTransientPolicy.profileOperationTimeoutCodes
-            == Set(["SEAL-PROFILE-352", "SEAL-PROFILE-353"]))
+            == Set(["SEAL-PROFILE-355t", "SEAL-PROFILE-352", "SEAL-PROFILE-353"]))
         for code in DeviceChannelTransientPolicy.profileOperationTimeoutCodes {
             let failure = ImportFailure(title: "", reason: "", recovery: "", code: code)
             #expect(DeviceChannelTransientPolicy.isTransientChannelFailure(failure))

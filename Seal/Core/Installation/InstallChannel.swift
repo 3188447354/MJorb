@@ -17,6 +17,12 @@ protocol InstallChannel: Actor {
     /// `any InstallChannel` 会静态派发到默认实现，具体实现的覆写不会被调用
     ///（同类坑见下方 `install(onProgress:)` 的注释）。
     func clearFailureCooldown() async
+    /// 确认当前 RemotePairing 会话不仅能读取 UDID，也能连接描述文件使用的 misagent 服务。
+    /// 成功后实现可在短时健康租约内复用结果；此方法不读取结果内容来决定续签资格。
+    func prepareProfileService() async throws
+    /// 只废弃 Rust 的 RSD 会话缓存，保留当前配对文件与 provider 选择。
+    /// 用于 profile 服务出现瞬时失败后的立即自愈，避免全量 reset 配对状态。
+    func invalidateProfileServiceConnection() async
     func pushIpa(ipaData: Data, bundleID: String) async throws
     func installPushedIpa(bundleID: String, isSelfReplacement: Bool) async throws
     func install(ipaData: Data, bundleID: String, isSelfReplacement: Bool) async throws
@@ -36,6 +42,12 @@ extension InstallChannel {
     /// 默认空实现：供测试桩与不实现熔断的类型直接遵循。
     /// 真实实现见 `MinimuxerInstallChannel.clearFailureCooldown()`。
     func clearFailureCooldown() async {}
+
+    func prepareProfileService() async throws {
+        _ = try await start()
+    }
+
+    func invalidateProfileServiceConnection() async {}
 
     /// 带进度回调用法的默认实现：忽略进度，直接转发到无进度版本。
     /// `install(onProgress:)` 已声明为协议要求，`any InstallChannel` 会动态派发到

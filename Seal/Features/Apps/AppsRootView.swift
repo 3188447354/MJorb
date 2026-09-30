@@ -75,21 +75,17 @@ struct AppsRootView: View {
                 )
                 .presentationDetents(operationDetents(for: app))
             }
-            .sheet(item: $installedActionApp) { app in
+            .sheet(item: installedActionSheet, onDismiss: {
+                installedActionApp = nil
+            }) { app in
                 InstalledAppActionSheet(
                     app: app,
                     viewModel: viewModel,
-                    onRenew: { overrideAccountID in
+                    onRenew: {
                         operationAppID = app.id
                         Task { @MainActor in
                             try? await Task.sleep(for: .milliseconds(250))
-                            await viewModel.beginRenewalDirectly(for: app, overrideAccountID: overrideAccountID)
-                        }
-                    },
-                    onShowDetail: {
-                        Task { @MainActor in
-                            try? await Task.sleep(for: .milliseconds(200))
-                            detailApp = app
+                            await viewModel.beginRenewalDirectly(for: app, overrideAccountID: nil)
                         }
                     }
                 )
@@ -155,6 +151,12 @@ struct AppsRootView: View {
                     }
                 }
             }
+            .onChange(of: viewModel.batchRefreshSession?.id) { sessionID in
+                guard sessionID != nil else { return }
+                // 后台续签结果优先于任何已点开的应用操作，避免两个 sheet 争夺呈现层。
+                installedActionApp = nil
+                detailApp = nil
+            }
             .onChange(of: viewModel.importCompletionCount) { _ in
                 withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
                     mode = viewModel.lastImportCompletedInstalledApp ? .installed : .unsigned
@@ -176,10 +178,11 @@ struct AppsRootView: View {
                 viewModel.presentImporter()
             } label: {
                 Image(systemName: "plus")
-                    .font(.system(size: 32, weight: .regular))
+                    .font(.system(size: 21, weight: .semibold))
                     .foregroundStyle(Color.sealAccent)
                     .frame(width: 44, height: 44)
             }
+            .buttonStyle(ImportGlassButtonStyle())
             .accessibilityLabel("导入应用")
             .accessibilityIdentifier("import-toolbar-button")
             .disabled(viewModel.phase != .idle)
@@ -333,8 +336,36 @@ struct AppsRootView: View {
             operationAppID = app.id
             viewModel.presentOperation(for: app)
         case .installed:
+            // 通知进入时可能恰好还没有完成启动任务；先恢复已结算结果，不能让一次
+            // 列表点击把应用操作抽屉与结果抽屉并发打开。
+            viewModel.presentSettledBackgroundBatchResultIfNeeded()
+            guard BatchResultPresentationPolicy.allowsInstalledAppAction(
+                hasBatchResultSheet: viewModel.batchRefreshSession != nil
+            ) else {
+                return
+            }
             installedActionApp = app
         }
+    }
+
+    /// 批量结果（尤其是通知进入后的已结算结果）拥有抽屉优先级。
+    /// 这里在绑定读取侧再做一次门禁，而不只依赖点击时的 guard：SwiftUI 在同一轮
+    /// 状态更新里可能已经开始呈现旧的 `installedActionApp`，否则会出现“应用操作一闪，
+    /// 随后才显示续签结果”的错序。
+    private var installedActionSheet: Binding<AppRecord?> {
+        Binding(
+            get: {
+                BatchResultPresentationPolicy.shouldPresentInstalledAppAction(
+                    hasBatchResultSheet: viewModel.batchRefreshSession != nil,
+                    hasInstalledAppAction: installedActionApp != nil
+                ) ? installedActionApp : nil
+            },
+            set: { newValue in
+                if newValue == nil || viewModel.batchRefreshSession == nil {
+                    installedActionApp = newValue
+                }
+            }
+        )
     }
 
     private func operationSheetDismissed() {
@@ -458,6 +489,39 @@ struct AppsRootView: View {
         if viewModel.phase != .committing, viewModel.sheetDraft != nil {
             Task { await viewModel.cancelImport() }
         }
+    }
+}
+
+/// 首页导入入口在 iOS 26+ 使用系统液态玻璃；较低系统及“降低透明度”保留同尺寸、
+/// 同命中区域的实色回退，不能让视觉适配改变导入行为。
+private struct ImportGlassButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.isEnabled) private var isEnabled
+
+    @ViewBuilder
+    func makeBody(configuration: Configuration) -> some View {
+        if reduceTransparency {
+            fallbackBody(configuration)
+        } else if #available(iOS 26.0, *) {
+            configuration.label
+                .glassEffect(.regular, in: .circle)
+                .scaleEffect(configuration.isPressed ? 0.92 : 1)
+                .opacity(isEnabled ? 1 : 0.42)
+                .animation(.easeOut(duration: 0.14), value: configuration.isPressed)
+        } else {
+            fallbackBody(configuration)
+        }
+    }
+
+    private func fallbackBody(_ configuration: Configuration) -> some View {
+        configuration.label
+            .background(Color.sealSurface, in: Circle())
+            .overlay {
+                Circle().stroke(Color.sealHairline.opacity(0.72), lineWidth: 0.7)
+            }
+            .scaleEffect(configuration.isPressed ? 0.92 : 1)
+            .opacity(isEnabled ? 1 : 0.42)
+            .animation(.easeOut(duration: 0.14), value: configuration.isPressed)
     }
 }
 

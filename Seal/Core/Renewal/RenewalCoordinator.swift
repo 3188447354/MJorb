@@ -408,6 +408,13 @@ actor RenewalCoordinator {
                         if isChannelFailure {
                             await signingCoordinator.prepareInstallChannelForRetry(after: error)
                         }
+                        // 重建会话与既有退避并行：不能只 reset 后空等 8 秒，再让第二次
+                        // 签名从零开始建 RSD 会话。预热失败仍由下一次签名按原路径归类。
+                        let channelPrewarmTask: Task<Void, Never>? = isChannelFailure
+                            ? Task { [signingCoordinator] in
+                                await signingCoordinator.prewarmInstallChannelForRetry()
+                            }
+                            : nil
                         // 留痕：没有这一条时，批量的重试在日志上完全看不出来（这正是本次难定位的原因）。
                         try? await logStore?.append(
                             category: .renewal,
@@ -420,6 +427,12 @@ actor RenewalCoordinator {
                             code: "SEAL-RENEW-503"
                         )
                         try? await Task.sleep(nanoseconds: delay)
+                        if Task.isCancelled {
+                            channelPrewarmTask?.cancel()
+                            throw CancellationError()
+                        }
+                        // 不在这里等待预热完成：它的完整诊断最坏可达 75 秒，不能把
+                        // 原有 8 秒退避放大。下一次签名的 `start()` 会单飞加入同一任务。
                         continue
                     }
                     break

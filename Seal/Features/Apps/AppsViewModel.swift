@@ -2798,6 +2798,11 @@ final class AppsViewModel: ObservableObject {
                 // `SigningCoordinator.prepareInstallChannelForRetry(after:)` ——
                 // 两条链路各写一份必然漂移（本仓反复踩过的「两张表同源」坑）。
                 await signingCoordinator.prepareInstallChannelForRetry(after: error)
+                // 与批量续签保持同一策略：利用既有退避并行重建 RSD 会话，避免重试
+                // 开始后才冷启动连接，把 8 秒全耗在空等上。
+                let channelPrewarmTask = Task { [signingCoordinator] in
+                    await signingCoordinator.prewarmInstallChannelForRetry()
+                }
                 let delay = DeviceChannelTransientPolicy.retryDelayNanoseconds(forAttempt: attempt)
                 // 留痕：没有这一条时，重试在日志上完全看不出来（这正是本次难定位的原因）。
                 try? await logStore?.append(
@@ -2809,6 +2814,12 @@ final class AppsViewModel: ObservableObject {
                     code: "SEAL-SIGN-503"
                 )
                 try? await Task.sleep(nanoseconds: delay)
+                if Task.isCancelled {
+                    channelPrewarmTask.cancel()
+                    throw CancellationError()
+                }
+                // 不在这里等待预热完成：下一次签名会单飞加入同一条 `start()`；若通道
+                // 仍坏，沿用原有失败分类，不能把 8 秒退避扩大成诊断硬超时。
             }
         }
         // `maxAttempts >= 1` ⇒ 循环要么 return、要么在最后一次 `shouldRetry` 为假时抛出。

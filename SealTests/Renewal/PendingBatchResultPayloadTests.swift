@@ -9,6 +9,32 @@ import Testing
 /// 而结果抽屉同时显示 `succeeded: 2, failed: 0`。所以只能靠单测钉住。
 @Suite("待恢复载荷 → 队列状态的映射")
 struct PendingBatchResultPayloadTests {
+    @Test
+    func settledBatchResultKeepsTheInstalledAppActionSheetFromCompetingForPresentation() {
+        #expect(
+            BatchResultPresentationPolicy.allowsInstalledAppAction(
+                hasBatchResultSheet: true
+            ) == false
+        )
+        #expect(
+            BatchResultPresentationPolicy.allowsInstalledAppAction(
+                hasBatchResultSheet: false
+            )
+        )
+        #expect(
+            BatchResultPresentationPolicy.shouldPresentInstalledAppAction(
+                hasBatchResultSheet: true,
+                hasInstalledAppAction: true
+            ) == false
+        )
+        #expect(
+            BatchResultPresentationPolicy.shouldPresentInstalledAppAction(
+                hasBatchResultSheet: false,
+                hasInstalledAppAction: true
+            )
+        )
+    }
+
     private func payload(_ items: [[String: Any]]) -> [String: Any] {
         ["succeeded": 2, "failed": 0, "total": 2, "items": items]
     }

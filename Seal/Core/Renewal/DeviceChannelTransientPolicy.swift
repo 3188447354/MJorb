@@ -71,7 +71,8 @@ enum DeviceChannelTransientPolicy {
         "SEAL-INSTALL-708",   // 设备未响应
         "SEAL-INSTALL-709",   // 与设备的安全握手未完成
         "SEAL-INSTALL-710",   // 本地隧道端口暂时不可达
-        "SEAL-VPN-001"        // 签名完成后仍无法连接设备完成安装
+        "SEAL-VPN-001",       // 签名完成后仍无法连接设备完成安装
+        "SEAL-PROFILE-356"    // misagent 服务经一次会话重建后仍未就绪
     ]
 
     static func isTransientChannelFailure(_ failure: ImportFailure) -> Bool {
@@ -91,6 +92,7 @@ enum DeviceChannelTransientPolicy {
     /// ⚠️ 这两个码**只**在 `installAndVerify` 里抛出，都在「描述文件注入」这一步：
     /// 注入是幂等的（同一 UUID 覆盖安装）⇒ 重置通道后重试不会造成设备端重复安装。
     static let profileOperationTimeoutCodes: Set<String> = [
+        "SEAL-PROFILE-355t", // misagent 健康探测超时，底层 dumpProfiles 可能仍在运行
         "SEAL-PROFILE-352",   // 注入描述文件超过 30 秒未返回
         "SEAL-PROFILE-353"    // 设备端读回描述文件超过 30 秒未完成
     ]

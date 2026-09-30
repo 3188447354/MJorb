@@ -87,6 +87,9 @@ struct DeviceChannelTransientPolicyTests {
             ImportFailure(title: "", reason: "", recovery: "", code: "SEAL-INSTALL-706b")))
         #expect(RenewalCoordinator.isRetryable(
             ImportFailure(title: "", reason: "", recovery: "", code: "SEAL-VPN-001")))
+        // profile 服务已经即时窄重建过一次仍不可用，才交外层最终兜底。
+        #expect(RenewalCoordinator.isRetryable(
+            ImportFailure(title: "", reason: "", recovery: "", code: "SEAL-PROFILE-356")))
     }
 
     @Test("安装阶段 / 确定性拒绝 / 配对类码**不得**算瞬时（重试会造并发安装或纯白跑）")
@@ -175,6 +178,8 @@ struct DeviceChannelTransientPolicyTests {
             ImportFailure(title: "", reason: "", recovery: "", code: "SEAL-INSTALL-706b")))
         // 描述文件超时类 ⇒ 不重复拆（`renewProfilesOnly` 的 `ProfileOnlyTaintGate` 会自己
         // reset + start；这里再拆一次只是多付一轮诊断）
+        #expect(DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(
+            ImportFailure(title: "", reason: "", recovery: "", code: "SEAL-PROFILE-355t")) == false)
         #expect(DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(
             ImportFailure(title: "", reason: "", recovery: "", code: "SEAL-PROFILE-352")) == false)
         #expect(DeviceChannelTransientPolicy.requiresChannelResetBeforeRetry(

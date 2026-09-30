@@ -4,11 +4,9 @@ import UIKit
 struct InstalledAppActionSheet: View {
     let app: AppRecord
     @ObservedObject var viewModel: AppsViewModel
-    let onRenew: (UUID?) -> Void
-    let onShowDetail: () -> Void
+    let onRenew: () -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var selectedAccountID: UUID?
 
     var body: some View {
         SealDrawer(title: "应用操作") {
@@ -21,7 +19,7 @@ struct InstalledAppActionSheet: View {
             VStack(spacing: 10) {
                 Button(AppSigningPresentationHelpers.renewNowAction) {
                     dismiss()
-                    onRenew(selectedAccountID)
+                    onRenew()
                 }
                 .sealPrimaryAction(cornerRadius: 14)
 
@@ -50,24 +48,11 @@ struct InstalledAppActionSheet: View {
 
     private var signingSummaryCard: some View {
         VStack(spacing: 0) {
-            accountPickerRow
+            metadataRow("签名账户", accountSummary)
             Divider().padding(.leading, 14)
-            metadataValueRow("证书序列号", certificateSerialSummary)
-            if let note = AppSigningPresentationHelpers.localCertificateNote(
-                for: viewModel.localCertificateAvailability(for: app)
-            ) {
-                Divider().padding(.leading, 14)
-                signingNoteRow(note)
-            }
-            if let note = AppSigningPresentationHelpers.pendingUpdateNote(
-                for: app,
-                runningVersion: Version.current
-            ) {
-                Divider().padding(.leading, 14)
-                signingNoteRow(note)
-            }
+            metadataRow("Apple 证书", certificateStatus, valueColor: certificateStatusColor)
             Divider().padding(.leading, 14)
-            metadataValueRow("描述文件", AppSigningPresentationHelpers.profileUUIDText(for: app))
+            metadataRow("描述文件", profileStatusSummary, valueColor: profileStatusColor)
             Divider().padding(.leading, 14)
             metadataRow("有效期至", expirySummary, valueColor: expiryColor)
             Divider().padding(.leading, 14)
@@ -76,45 +61,6 @@ struct InstalledAppActionSheet: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
         .glassSurface(cornerRadius: 18)
-    }
-
-    /// 长标识（证书序列号 / 描述文件 UUID）专用行：值独占一行、灰色等宽、可长按选中。
-    /// 与「应用详情」页同一套呈现，避免同一信息在不同页面一个被截断、一个能看全。
-    /// 长值行（证书序列号 / 描述文件 UUID）：标题左、值右，同一行展示。
-    /// 超长时**中间省略**，保留头尾 —— 完整值仍可长按选中复制。
-    private func metadataValueRow(_ title: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 14) {
-            Text(title)
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-            Spacer(minLength: 12)
-            Text(value)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(Color.sealTextSecondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-        }
-        .padding(.vertical, 12)
-    }
-
-    /// 「证书序列号」行下面的说明：本机没有该证书私钥 ⇒ 下一次续签会**完整重签并安装**。
-    /// 与详情页同一份文案真源（`AppSigningPresentationHelpers.localCertificateRebuildDetail`），
-    /// 两处各写一句迟早会漂移成「一个说重签、一个说只更新描述文件」。
-    private func signingNoteRow(_ note: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "arrow.triangle.2.circlepath")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.sealWarning)
-                .padding(.top, 1)
-            Text(note)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Color.sealTextSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.vertical, 12)
     }
 
     private func metadataRow(
@@ -138,46 +84,6 @@ struct InstalledAppActionSheet: View {
                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.vertical, 12)
-    }
-
-    private var accountPickerRow: some View {
-        Menu {
-            Button("自动选择") { selectedAccountID = nil }
-            ForEach(selectableAccounts, id: \.id) { account in
-                Button {
-                    selectedAccountID = account.id
-                } label: {
-                    Label(
-                        title: { Text("\(viewModel.fullEmail(for: account)) · \(account.teamID)") },
-                        icon: { Image(systemName: selectedAccountID == account.id ? "checkmark" : "") }
-                    )
-                }
-            }
-        } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text("签名账户")
-                    .foregroundStyle(.primary)
-                    .layoutPriority(1)
-                Spacer(minLength: 12)
-                Text(accountSummary)
-                    .foregroundStyle(accountSummaryColor)
-                    .multilineTextAlignment(.trailing)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.68)
-                    .allowsTightening(true)
-                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.vertical, 12)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var selectableAccounts: [AppleAccountRecord] {
-        viewModel.accounts.filter { AccountAvailabilityPolicy.isSelectable($0) }
     }
 
     @ViewBuilder
@@ -215,10 +121,6 @@ struct InstalledAppActionSheet: View {
     }
 
     private var accountSummary: String {
-        if let selectedAccountID,
-           let account = viewModel.accounts.first(where: { $0.id == selectedAccountID }) {
-            return viewModel.fullEmail(for: account)
-        }
         switch resolution {
         case .resolved(let id):
             if let account = viewModel.accounts.first(where: { $0.id == id }) {
@@ -234,30 +136,20 @@ struct InstalledAppActionSheet: View {
         }
     }
 
-    private var accountSummaryColor: Color {
-        if selectedAccountID != nil { return .primary }
-        switch resolution {
-        case .resolved:
-            return Color.sealTextSecondary
-        case .recordedAccountNeedsVerification, .recordedAccountMissing:
-            // 这两种状态点「立即续签」一定会被拒 —— 用告警色，别再显示成正常状态。
-            return Color.sealWarning
-        case .noSelectableAccount:
-            return .secondary
+    private var certificateStatus: String {
+        switch viewModel.localCertificateAvailability(for: app) {
+        case .ready: "可用"
+        case .needsFullResign: "需重签"
+        case .undetermined: "待核验"
         }
     }
 
-    /// 完整证书序列号（不再用「可用」占位）：与详情页 / 签名进度页同源同 helper。
-    private var certificateSerialSummary: String {
-        if let serial = app.certificateSerialNumber, serial.isEmpty == false {
-            return AppSigningPresentationHelpers.certificateSerialText(serial: serial)
+    private var certificateStatusColor: Color {
+        switch viewModel.localCertificateAvailability(for: app) {
+        case .ready: .sealSuccess
+        case .needsFullResign: .sealWarning
+        case .undetermined: .sealTextSecondary
         }
-        if let serial = app.signingTargets
-            .flatMap(\.certificateSerialNumbers)
-            .first(where: { $0.isEmpty == false }) {
-            return AppSigningPresentationHelpers.certificateSerialText(serial: serial)
-        }
-        return "未准备"
     }
 
     private var bundleIDSummary: String {
@@ -266,6 +158,14 @@ struct InstalledAppActionSheet: View {
 
     private var profileStatus: ProfileDisplayStatus {
         AppSigningPresentationHelpers.profileStatus(for: app)
+    }
+
+    private var profileStatusSummary: String {
+        profileStatus == .available ? "有效" : profileStatus.title
+    }
+
+    private var profileStatusColor: Color {
+        color(for: profileStatus.tone)
     }
 
     private var expirySummary: String {

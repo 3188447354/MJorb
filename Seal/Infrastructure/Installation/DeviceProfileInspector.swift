@@ -11,6 +11,38 @@ import Foundation
 @preconcurrency import Minimuxer
 
 struct DeviceProfileInspector: Sendable {
+    enum ProfileServiceProbeOutcome: Sendable {
+        case ready
+        case failed
+        /// `BlockingCall` 超时并不表示 Rust FFI 已停止；调用方必须走污染闸门，
+        /// 不能在同一传输上立即发起第二次 misagent 调用。
+        case timedOut
+    }
+
+    /// 只验证 misagent 的 profile 服务可以完成 `copy_all`，不解析、判断或改动任何 profile。
+    ///
+    /// RemotePairing 下的 `dumpProfiles` 与 `installProvisioningProfile` 都通过 Rust 的
+    /// `connect_to_rsd_services::<MisagentClient>()`。因此这里是实际写入服务的无副作用预热，
+    /// 而不是仅凭 UDID/TCP 推断通道可用。
+    static func probeProfileService() async -> ProfileServiceProbeOutcome {
+        let fileManager = FileManager.default
+        let workingDir = fileManager.temporaryDirectory
+            .appendingPathComponent("seal-profile-probe-\(UUID().uuidString)", isDirectory: true)
+        let outcome = await BlockingCall.bounded(seconds: 8) {
+            _ = try Provision.dumpProfiles(docsPath: workingDir.path)
+        }
+        // 只有 FFI 确认结束后才能删目录。超时时底层仍可能写入，提前删除会让
+        // 原本只读的健康探测变成新的 I/O 竞争；残留临时目录由系统的临时目录清理。
+        guard let outcome else { return .timedOut }
+        defer { try? fileManager.removeItem(at: workingDir) }
+        do {
+            try outcome.get()
+            return .ready
+        } catch {
+            return .failed
+        }
+    }
+
     /// 安装后核对设备 profile 存储里是否出现本轮 Seal 的精确身份。
     /// `nil` 表示设备通道或解析不可用；`false` 表示成功枚举但目标身份不存在。
     static func containsProfile(

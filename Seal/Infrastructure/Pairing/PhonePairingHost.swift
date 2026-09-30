@@ -45,7 +45,7 @@ final class PhonePairingHost: NSObject {
         let storedAltIRK = UserDefaults.standard.string(forKey: Self.altIRKKey) ?? ""
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
-                let result = try RustIdevice.runPhonePairingHost(
+                let result = try Minimuxer.runPhonePairingHost(
                     name: Self.hostName,
                     model: Self.hostModel,
                     outputPath: outputPath,
@@ -75,7 +75,7 @@ final class PhonePairingHost: NSObject {
     }
 
     private func advertise(
-        _ advertisement: RustIdevice.PhonePairingAdvertisement,
+        _ advertisement: Minimuxer.PhonePairingAdvertisement,
         runID: UUID
     ) {
         guard activeRunID == runID else { return }

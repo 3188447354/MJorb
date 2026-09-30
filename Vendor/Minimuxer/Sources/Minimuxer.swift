@@ -15,6 +15,57 @@ import Glibc
 #endif
 
 public struct Minimuxer {
+    /// Bonjour data advertised while this device acts as an iOS Remote Pairing host.
+    /// Keep the Rust bridge detail inside Minimuxer so application targets do not
+    /// depend on its FFI implementation.
+    public struct PhonePairingAdvertisement: Sendable, Equatable {
+        public let serviceIdentifier: String
+        public let port: UInt16
+        public let txtRecords: [String: String]
+    }
+
+    /// The device credential material produced by a completed iOS Remote Pairing.
+    public struct PhonePairingResult: Sendable, Equatable {
+        public let deviceName: String
+        public let deviceModel: String
+        public let deviceUDID: String
+        public let pairingFilePath: String
+        public let hostAltIRKHex: String
+    }
+
+    /// Runs the iOS Remote Pairing host on the caller's background thread.
+    /// Callbacks are synchronous and should hand UI work back to the main actor.
+    public static func runPhonePairingHost(
+        name: String,
+        model: String,
+        outputPath: String,
+        hostAltIRKHex: String,
+        onReady: @escaping (PhonePairingAdvertisement) -> Void,
+        onPIN: @escaping (String) -> Void
+    ) throws -> PhonePairingResult {
+        let result = try RustIdevice.runPhonePairingHost(
+            name: name,
+            model: model,
+            outputPath: outputPath,
+            hostAltIRKHex: hostAltIRKHex,
+            onReady: { advertisement in
+                onReady(PhonePairingAdvertisement(
+                    serviceIdentifier: advertisement.serviceIdentifier,
+                    port: advertisement.port,
+                    txtRecords: advertisement.txtRecords
+                ))
+            },
+            onPIN: onPIN
+        )
+        return PhonePairingResult(
+            deviceName: result.deviceName,
+            deviceModel: result.deviceModel,
+            deviceUDID: result.deviceUDID,
+            pairingFilePath: result.pairingFilePath,
+            hostAltIRKHex: result.hostAltIRKHex
+        )
+    }
+
     public static func describeError(_ error: MinimuxerError) -> String {
         return error.description
     }

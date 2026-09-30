@@ -15,6 +15,16 @@
 
 ---
 
+## 2026-09-30 iOS 27 手机配对首轮 CI 直接引用 Rust 桥接内部类型，Swift Regression 编译失败（1.3.42，未发布）
+
+- **现象**：首轮 `swift-regression` 在 `PhonePairingHost.swift` 报 `cannot find type 'RustIdevice' in scope`，因此未产出 IPA。
+- **根因**：`RustIdevice` 是 `Minimuxer` 包内部的 FFI 实现；应用层既有安装、签名链路均经 `Minimuxer` 公共门面访问，新增手机配对却越过门面使用了桥接类型。
+- **修复**：把 Phone Pairing 的公开结果、Bonjour 广播数据和启动函数收敛到 `Minimuxer`，由门面在包内映射到 `RustIdevice`；`PhonePairingHost` 只依赖 `Minimuxer` 公共 API，保持业务层与 Rust FFI 隔离。
+- **涉及文件**：`Vendor/Minimuxer/Sources/Minimuxer.swift`、`Seal/Infrastructure/Pairing/PhonePairingHost.swift`。
+- **验证状态**：已基于 CI 编译错误修正，待重新推送完整 CI；未创建 Release，未向用户推送。
+
+---
+
 ## 2026-09-29 续签慢复用完整签名两条白做功：解压 IPA + 重复能力写请求（1.3.41，用户「续签必须快」）
 
 - **现象**（用户）：同样本地通道，SideStore 续签几秒就成功，Seal 续签要几十秒到一两分钟。

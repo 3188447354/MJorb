@@ -12,6 +12,18 @@ struct PendingBatchResultPayloadTests {
     @Test
     func settledBatchResultKeepsTheInstalledAppActionSheetFromCompetingForPresentation() {
         #expect(
+            BatchResultPresentationPolicy.shouldPresentBatchResultSheet(
+                isPresentationRequested: false,
+                hasBatchRefreshSession: true
+            ) == false
+        )
+        #expect(
+            BatchResultPresentationPolicy.shouldPresentBatchResultSheet(
+                isPresentationRequested: true,
+                hasBatchRefreshSession: true
+            )
+        )
+        #expect(
             BatchResultPresentationPolicy.allowsInstalledAppAction(
                 hasBatchResultSheet: true
             ) == false

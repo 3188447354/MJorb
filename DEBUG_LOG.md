@@ -5,6 +5,17 @@
 
 ---
 
+## 2026-10-01 快捷指令结果占住列表，旧自替换会话遗留“安装中”（本地修复，待 CI）
+
+- **现象**：导入 1.3.44 后首次续签会发生 Seal 覆盖安装；新包已实际落盘后，下一次续签界面仍可能停在“安装中”。快捷指令续签成功后，从通知进入 Seal 时应用列表有时无法点击，强制结束并重开才出现结果抽屉。
+- **真机证据**：`Seal-log.txt` 记录旧进程的自替换安装在 02:46:41 收到 `Swift.CancellationError`，但新进程在 02:47:44 已由 `[SEAL-SELF-113]` 以运行包身份确认新包落盘。其后每次快捷指令均记录 `[SEAL-RENEW-009]` 成功和 `[SEAL-RENEW-023]` 结果持久化，却紧接着反复出现 `[SEAL-RENEW-021]` 与 `[SEAL-RENEW-025]`；因此实际安装/续签已成功，卡住的是旧批量会话和前台抽屉状态。
+- **根因**：`batchRefreshSession` 同时承担后台任务进度、持久化恢复中间态和 SwiftUI `.sheet(item:)` 的呈现开关。快捷指令后台创建的会话被 SwiftUI 当成前台抽屉；覆盖安装杀掉旧进程时，其 `.preparingSealUpdate` 状态又可能被新界面继承。该会话既阻止应用操作 sheet，又可在错误时机被关闭，造成“列表点不动 / 结果晚出现 / 看似一直安装中”。
+- **修复**：将“批量会话内容”和“是否呈现抽屉”分离。快捷指令后台批次仅维护会话、持久化最终结果和通知，不呈现过程抽屉，并在收尾清掉旧进程会话；前台仅在已结算载荷恢复后显式打开结果抽屉。应用操作只在结果抽屉实际呈现时让位。新增纯策略测试，固定“后台会话存在但未请求呈现时不弹 sheet”。
+- **涉及文件**：`AppsViewModel.swift`、`AppsRootView.swift`、`PendingBatchResultPayload.swift`、`PendingBatchResultPayloadTests.swift`、`DEBUG_LOG.md`。
+- **验证状态**：已逐行对照真机日志与会话/抽屉控制流，新增纯函数回归测试；Windows 无 Xcode，待云端完整 CI 编译与真机回归。未发布 GitHub Release。
+
+---
+
 ## 2026-09-30 完整 CI 的 macOS runner 排队与守卫清单漂移（本地修复，待推送）
 
 - **现象**：`ios.yml` 的两次完整 CI（run `36727963492` 的 attempt 1/2）中，三个 macOS job 都只停在 queued，约 15 分钟后被取消；job 没有 steps、runner ID 为 0。迁出签名器单测后的 run `36737305564` 已使 Linux 单测和两个 macOS job 真正启动，但 `build-package` 先被发布安全守卫拦住。

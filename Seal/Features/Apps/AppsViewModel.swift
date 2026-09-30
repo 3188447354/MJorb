@@ -39,6 +39,8 @@ final class AppsViewModel: ObservableObject {
     @Published var selectedOperationApp: AppRecord?
     @Published var signingSession: SigningSession?
     @Published var batchRefreshSession: BatchRefreshSession?
+    /// 后台快捷指令也会建立批量会话以汇总结果，但它不能自动抢占前台抽屉。
+    @Published private(set) var isBatchRefreshSheetPresented = false
     @Published private(set) var importCompletionCount = 0
     @Published private(set) var lastImportCompletedInstalledApp = false
     @Published var shouldOpenSettings = false
@@ -84,6 +86,8 @@ final class AppsViewModel: ObservableObject {
     /// 标记会**跨轮存活** ⇒ 用户先跑一次失败的快捷指令、再手动点「续签全部」时
     /// 就会收到一条本不该有的通知（用户明确要求手动续签不通知）。
     private var backgroundTriggerRequested = false
+    /// 后台批次只持久化结果；用户回到 Seal 后再恢复为结果抽屉。
+    private var isBackgroundBatchRefresh = false
     /// 「撤销并继续签名」（SEAL-CERT-204e）确认后，因证书被撤而失效、待自动重签的已装 App。
     /// 仅本次签名重试成功后才会消费；重试失败时清空并提示手动续签。
     private var certificateSacrificeResignQueue: [UUID] = []
@@ -1759,7 +1763,7 @@ final class AppsViewModel: ObservableObject {
             // ⚠️ 放在让位 `guard` **之后**：被让位时本轮根本没跑，标记不该置位
             //    （让位那一档若确实需要通知，由上面那段**直接**发，不靠这个标记）。
             self.backgroundTriggerRequested = true
-            self.refreshAll()
+            self.startBatchRefresh(presentsSheet: false)
         }
     }
 
@@ -1892,6 +1896,7 @@ final class AppsViewModel: ObservableObject {
         let processed = batchRefreshSession?.currentIndex ?? 0
         let total = batchRefreshSession?.total ?? 0
         batchRefreshTask?.cancel()
+        isBatchRefreshSheetPresented = false
         batchRefreshSession = nil
         Task { [weak self] in
             try? await self?.logStore?.append(
@@ -1905,6 +1910,7 @@ final class AppsViewModel: ObservableObject {
     }
 
     func dismissBatchRefresh() {
+        isBatchRefreshSheetPresented = false
         guard let batchRefreshSession else { return }
         Task { try? await logStore?.append(category: .renewal, level: .info, message: "批量续签结果抽屉已关闭（\(batchRefreshSession.status)）", code: "SEAL-RENEW-025") }
         switch batchRefreshSession.status {
@@ -1916,7 +1922,10 @@ final class AppsViewModel: ObservableObject {
         }
     }
 
-    private func startBatchRefresh(appIDs: [UUID]? = nil) {
+    private func startBatchRefresh(
+        appIDs: [UUID]? = nil,
+        presentsSheet: Bool = true
+    ) {
         guard renewalCoordinator != nil else { return }
         guard batchRefreshTask == nil,
               signingTask == nil else {
@@ -1926,6 +1935,8 @@ final class AppsViewModel: ObservableObject {
             alertFailure = Self.operationInProgressFailure(blockedBy: activeOperationDescription)
             return
         }
+        isBackgroundBatchRefresh = presentsSheet == false
+        isBatchRefreshSheetPresented = presentsSheet
         batchRefreshSession = BatchRefreshSession()
         batchRefreshTask = Task { [weak self] in
             guard let self else { return }
@@ -2022,6 +2033,8 @@ final class AppsViewModel: ObservableObject {
         guard let operationLease = await acquireOperation(.renewing) else {
             batchRefreshSession = nil
             batchRefreshTask = nil
+            isBatchRefreshSheetPresented = false
+            isBackgroundBatchRefresh = false
             // 等不到锁（`beginWaiting` 默认 30 秒）说明确实有另一项操作长期占着通道 ——
             // 必须说出来（2026-09-27）：否则用户看到的是「点了续签、抽屉一闪就没了」，
             // 日志里也只有沉默，真机上会被误读成「被快捷指令的自动续签挡住」。
@@ -2125,7 +2138,12 @@ final class AppsViewModel: ObservableObject {
                 await notifyBackgroundRenewalSkipped(.roundFailed(title: "无法续签应用"))
             }
         }
+        if wasBackgroundTriggered {
+            // 旧进程的安装阶段绝不能遗留给新进程显示；最终结果已在上面持久化。
+            batchRefreshSession = nil
+        }
         batchRefreshTask = nil
+        isBackgroundBatchRefresh = false
     }
 
     /// 读一次并清位。**在 `runBatchRefresh` 入口处调用**（拿到 `result` 之前）——
@@ -2432,6 +2450,7 @@ final class AppsViewModel: ObservableObject {
     /// 把真实信号挤出了只保留 1000 条的环形缓冲。
     /// 唯一值得留痕的是「**确实有待恢复的数据、却被跳过**」—— 那才是「结果丢了」的征兆。
     private func restorePendingBatchResultIfNeeded(replacingRestoredSession: Bool = false) {
+        guard isBackgroundBatchRefresh == false else { return }
         let pendingPayload = loadPendingBatchResultPayload()
         let pendingFingerprint = pendingPayload.flatMap(PendingBatchResultPayload.restorationFingerprint(from:))
         let canReplaceRestoredSession = replacingRestoredSession
@@ -2468,6 +2487,7 @@ final class AppsViewModel: ObservableObject {
             }
         }
         batchRefreshSession = restored
+        isBatchRefreshSheetPresented = true
         hasRestoredPendingBatchResult = true
         restoredPendingBatchResultFingerprint = pendingFingerprint
         schedulePendingBatchResultRecheckIfNeeded(result)
@@ -2479,6 +2499,8 @@ final class AppsViewModel: ObservableObject {
     /// 这一步不依赖应用列表、设备探测或维护作业。若 Seal 自替换仍待新进程
     /// 对账，保留启动流程的原有顺序，绝不提前显示成功。
     func presentSettledBackgroundBatchResultIfNeeded() {
+        // 快捷指令尚在运行时不展示半成品；通知只会在它结算后发出。
+        guard isBackgroundBatchRefresh == false else { return }
         guard let payload = loadPendingBatchResultPayload(),
               PendingBatchResultPayload.isReadyForImmediatePresentation(payload) else {
             return

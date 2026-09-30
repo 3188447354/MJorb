@@ -3,6 +3,14 @@ import Foundation
 /// 一个 SwiftUI 层级同一时间只允许一张业务抽屉占据呈现。
 /// 后台续签结果优先于用户点开的应用操作，避免两个 `.sheet` 互相抢状态。
 enum BatchResultPresentationPolicy {
+    /// 后台任务也会保留会话来累计进度，但只有前台明确请求呈现时才能打开抽屉。
+    static func shouldPresentBatchResultSheet(
+        isPresentationRequested: Bool,
+        hasBatchRefreshSession: Bool
+    ) -> Bool {
+        isPresentationRequested && hasBatchRefreshSession
+    }
+
     static func allowsInstalledAppAction(hasBatchResultSheet: Bool) -> Bool {
         hasBatchResultSheet == false
     }

@@ -100,7 +100,7 @@ struct AppsRootView: View {
                 )
                 .presentationDetents([.medium, .large])
             }
-            .sheet(item: $viewModel.batchRefreshSession) { _ in
+            .sheet(item: batchRefreshSheet) { _ in
                 BatchRefreshView(viewModel: viewModel)
                     .presentationDetents([.height(620), .large])
             }
@@ -151,7 +151,12 @@ struct AppsRootView: View {
                     }
                 }
             }
-            .onChange(of: viewModel.batchRefreshSession?.id) { sessionID in
+            .onChange(of: viewModel.isBatchRefreshSheetPresented) { isPresented in
+                guard isPresented else { return }
+                installedActionApp = nil
+                detailApp = nil
+            }
+            .onChange(of: batchRefreshSheet.wrappedValue?.id) { sessionID in
                 guard sessionID != nil else { return }
                 // 后台续签结果优先于任何已点开的应用操作，避免两个 sheet 争夺呈现层。
                 installedActionApp = nil
@@ -340,7 +345,7 @@ struct AppsRootView: View {
             // 列表点击把应用操作抽屉与结果抽屉并发打开。
             viewModel.presentSettledBackgroundBatchResultIfNeeded()
             guard BatchResultPresentationPolicy.allowsInstalledAppAction(
-                hasBatchResultSheet: viewModel.batchRefreshSession != nil
+                hasBatchResultSheet: viewModel.isBatchRefreshSheetPresented
             ) else {
                 return
             }
@@ -356,13 +361,31 @@ struct AppsRootView: View {
         Binding(
             get: {
                 BatchResultPresentationPolicy.shouldPresentInstalledAppAction(
-                    hasBatchResultSheet: viewModel.batchRefreshSession != nil,
+                    hasBatchResultSheet: viewModel.isBatchRefreshSheetPresented,
                     hasInstalledAppAction: installedActionApp != nil
                 ) ? installedActionApp : nil
             },
             set: { newValue in
-                if newValue == nil || viewModel.batchRefreshSession == nil {
+                if newValue == nil || viewModel.isBatchRefreshSheetPresented == false {
                     installedActionApp = newValue
+                }
+            }
+        )
+    }
+
+    /// `.sheet(item:)` 不能直接观察后台批次的临时会话，否则它会把后台“安装中”
+    /// 当作前台抽屉。显式呈现开关只在用户回到 Seal、结果已结算后打开。
+    private var batchRefreshSheet: Binding<BatchRefreshSession?> {
+        Binding(
+            get: {
+                BatchResultPresentationPolicy.shouldPresentBatchResultSheet(
+                    isPresentationRequested: viewModel.isBatchRefreshSheetPresented,
+                    hasBatchRefreshSession: viewModel.batchRefreshSession != nil
+                ) ? viewModel.batchRefreshSession : nil
+            },
+            set: { session in
+                if session == nil {
+                    viewModel.dismissBatchRefresh()
                 }
             }
         )

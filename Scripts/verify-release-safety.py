@@ -85,6 +85,32 @@ def strip_comments(text):
         i += 1
     return "".join(out)
 
+def strip_yaml_comments(text):
+    """去掉 YAML 的 `#` 注释（引号内的 `#` 不是注释，例如 URL 片段 `#changelog`）。
+
+    为什么不能复用 `strip_comments()`：那个只认 `//` 与 `/* */`（Swift / Rust 用），
+    对 YAML **完全无效** —— 而 workflow 正是 YAML。
+
+    为什么非要去注释：直接对整份 YAML 做 `in` 断言时，**一句注释就能满足它** ✗
+    （R85⑦ / R89⑤ 都实测踩过：把代码注释掉、断言照样全绿，变异因此失去判别力）。
+    """
+    lines = []
+    for line in text.splitlines():
+        quote = None
+        for index, ch in enumerate(line):
+            if quote is not None:
+                if ch == quote:
+                    quote = None
+                continue
+            if ch in "\"'":
+                quote = ch
+                continue
+            if ch == "#":
+                line = line[:index]
+                break
+        lines.append(line)
+    return "\n".join(lines)
+
 _SIMULATOR_POSITIVE = re.compile(r"^targetEnvironment\s*\(\s*simulator\s*\)$")
 _SIMULATOR_NEGATIVE = re.compile(r"^!\s*targetEnvironment\s*\(\s*simulator\s*\)$")
 
@@ -4014,6 +4040,50 @@ def violations(load=read):
               workflow + ": publish job must stay gated to workflow_dispatch (never run on push)")
         check('${TAG#v}' in text and '!= "$VER"' in text,
               workflow + ": release tag must match built IPA version")
+
+    # ── R111：发布成功后必须自动同步官网（2026-09-30）────────────────────────────
+    # 官网 `ios.sealsign.eu.cc` 是**静态站**：前端只在清单加载失败时才调同步接口 ⇒
+    # 清单一旦存在就**永不自动刷新** ✗ —— 实测 2026-09-20 到 09-30 官网一直停在旧版本，
+    # 靠人工发现后手调接口才补上（用户 2026-09-30 问「为什么我这里面没有更新为最新的」）。
+    # ⇒ 两个发布档都必须在 `gh release create` **之后**自动调一次同步接口。
+    #
+    # ⚠️ 断言**不能**直接对整份 YAML 做 `in`：一句注释就能满足它 ✗
+    #（与 R85⑦ / R89⑤ 同族）⇒ 先 `strip_yaml_comments()` 再判，且判据写成「赋值语句」
+    # 这种代码形态（`SITE_SYNC_URL="…"`），不要只判裸 URL ✓。
+    # ⚠️ 判据还必须**逐个落在步骤体上**：`continue-on-error` / `sleep` 这类串在别处也可能
+    # 出现，对整份文件 `in` 会失去判别力（`step` 为空串时全部断言失败 ✓）。
+    site_sync_url = 'SITE_SYNC_URL="https://ios.sealsign.eu.cc/api/update.php?action=sync"'
+    for name in ("ios.yml", "ios-release.yml"):
+        body = strip_yaml_comments(load(".github/workflows/" + name))
+        # 先切出 `publish-release` job（两个发布档里它都是最后一个 job ⇒ 切到文件末尾即可）。
+        job = body.split("\n  publish-release:", 1)
+        publish_job = job[1] if len(job) == 2 else ""
+        parts = publish_job.split("- name: Sync official site changelog", 1)
+        step = parts[1] if len(parts) == 2 else ""
+        # 排序判据：同步调用必须在 `gh release create` **之后**、且在发布 job 里**只出现一次**
+        #（写在前面的形态实测过：会把「上一版」同步上去）。
+        before_create = publish_job.split('gh release create "$TAG"', 1)
+        check(len(job) == 2
+              and len(parts) == 2
+              and len(before_create) == 2
+              and site_sync_url not in before_create[0]
+              and before_create[1].count(site_sync_url) == 1,
+              "R111①: `" + name + "` 的官网同步步骤必须放在 `publish-release` 里、排在 "
+              "`gh release create` **之后** ✗ —— 排在前面会同步到上一版；"
+              "且步骤名必须叫 `Sync official site changelog`（守卫按步骤名定位）")
+        check(site_sync_url in step
+              and "curl --fail --silent --show-error --max-time 120 -X POST" in step,
+              "R111②: 官网同步必须真的 POST 同步接口 ✗ —— 官网是静态站，前端只在清单加载失败时"
+              "才同步 ⇒ 不显式调用就会一直停在旧版本（2026-09-20 → 09-30 实际发生过）")
+        check("continue-on-error: true" in step and "::warning::" in step,
+              "R111③: 官网同步失败必须**只告警、不阻断发布** ✗ —— 包已经发出去了，把 job 标红会让"
+              "「发布成功」看起来像「发布失败」；但也不能静默 ⇒ 必须留 `::warning::` 注解")
+        check("for attempt in 1 2 3; do" in step and "sleep 15" in step,
+              "R111④: 官网同步必须有重试与退避 ✗ —— 服务端要拉 GitHub **未认证** API"
+              "（60 次/小时/IP），限流属于**瞬时**失败，一次失败就放弃会让官网悄悄停在旧版本")
+        check('if [ "${PRERELEASE:-false}" = "true" ]; then' in step,
+              "R111⑤: 预发布必须跳过官网同步 ✗ —— 预发布不进 `releases/latest`，"
+              "同步只会白跑一趟")
 
     # UI 回归已从 build-package 拆成独立的 swift-regression job。它一旦脱离发布依赖，
     # 发布就可能在回归尚未跑完时把包发出去。测试失败原因必须能直接看到（GitHub 原始日志要登录，
@@ -10102,6 +10172,39 @@ def main():
          "container.locationKeepAlive.start()",
          "container.backgroundKeepAlive.start()",
          "R110④:"),
+        # ── R111：发布成功后必须自动同步官网 ──
+        # ① 把同步调用**挪到** `gh release create` 之前（注入一份）⇒ 会同步到上一版，R111① 报红。
+        #    ⚠️ 只「删掉」同步步骤的话 ①–⑤ 会一起红，测不出 ① 自己的判别力 ⇒ 用「挪位」形态。
+        (".github/workflows/ios-release.yml",
+         '          gh release create "$TAG" "${ARGS[@]}" --repo sunuannian1/Seal-Releases \\',
+         '          SITE_SYNC_URL="https://ios.sealsign.eu.cc/api/update.php?action=sync"\n'
+         '          gh release create "$TAG" "${ARGS[@]}" --repo sunuannian1/Seal-Releases \\',
+         "R111①:"),
+        # ② 同步接口路径写错（`action` 不是 `sync`）⇒ 接口不存在、官网永不刷新，R111② 报红。
+        (".github/workflows/ios-release.yml",
+         'SITE_SYNC_URL="https://ios.sealsign.eu.cc/api/update.php?action=sync"',
+         'SITE_SYNC_URL="https://ios.sealsign.eu.cc/api/update.php?action=noop"',
+         "R111②:"),
+        # ③ 去掉 `continue-on-error` ⇒ 官网抖动会把「发布成功」标成「发布失败」，R111③ 报红。
+        (".github/workflows/ios-release.yml",
+         "        continue-on-error: true\n",
+         "",
+         "R111③:"),
+        # ④ 重试塌成一次 ⇒ 服务端撞上 GitHub 未认证限流（60 次/小时/IP）就静默停在旧版本，R111④ 报红。
+        (".github/workflows/ios-release.yml",
+         "for attempt in 1 2 3; do",
+         "for attempt in 1; do",
+         "R111④:"),
+        # ⑤ 两个发布档**都要**钉住 —— 只给快速档加同步、完整档漏掉，是这仓库反复踩过的形态
+        #（R60 的注释里专门写过「两个发布档必须同时钉住」）。这里对 `ios.yml` 各留一条。
+        (".github/workflows/ios.yml",
+         'SITE_SYNC_URL="https://ios.sealsign.eu.cc/api/update.php?action=sync"',
+         'SITE_SYNC_URL="https://ios.sealsign.eu.cc/api/update.php?action=noop"',
+         "R111②:"),
+        (".github/workflows/ios.yml",
+         "        continue-on-error: true\n",
+         "",
+         "R111③:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

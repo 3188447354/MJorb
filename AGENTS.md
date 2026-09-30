@@ -267,6 +267,14 @@ Windows 本机**无法编译**，一切以云 CI 编译 + 真机回归为准。
 - 发布正文来自 `RELEASE_NOTES.md`；两份工作流的 publish 步骤已加存在性判空，缺文件直接失败并给注解。
 - 跨仓库发 Release（源 `sunuannian1/Trae-seal` → 目标 `sunuannian1/Seal-Releases`）**不传 `--target`**，
   否则用源仓库 SHA 会 422（`target_commitish invalid`）。
+- 🔴 **官网 `ios.sealsign.eu.cc` 不会自己刷新**：它是**静态站**，前端只在清单
+  （`./data/release.json`）加载**失败**时才调同步接口 ⇒ 清单一旦存在就永不自动同步 ✗。
+  2026-09-20 → 09-30 官网一直停在旧版本就是因此（用户 09-30 问「为什么我这里面没有更新为最新的」）。
+  ⇒ 两份发布档的 `publish-release` job 末尾都加了 `Sync official site changelog`
+  （`POST https://ios.sealsign.eu.cc/api/update.php?action=sync`，幂等、失败只告警不阻断发布），
+  由守卫 **R111** 钉住。⚠️ **手动 `gh release create` 发版不会走这条** ⇒ 手发之后必须自己调一次：
+  `curl -sS -X POST "https://ios.sealsign.eu.cc/api/update.php?action=sync"`
+  （⚠️ 服务端拉 GitHub **未认证** API，限流 60 次/小时/IP）。
 - ⚠️ 更新链路目前**只校验 `tag_name` 与 IPA 版本串相等**，不校验 `Seal_*.ipa.sha256` ——
   修它之前不要假设「下载到的包一定是自己发的」。
 

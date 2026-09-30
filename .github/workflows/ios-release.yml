@@ -180,3 +180,35 @@ jobs:
             release/Seal_*.ipa.sha256 \
             release/Seal-Info.plist
           echo "published $TAG"
+
+      # 官网（`ios.sealsign.eu.cc`）是**静态站**：前端只在清单加载失败时才调同步接口 ⇒
+      # 清单一旦存在就**永不自动刷新** ✗ —— 实测 2026-09-20 到 09-30 官网一直停在旧版本，
+      # 靠人工发现后手调接口才补上（用户 2026-09-30 问「为什么我这里面没有更新为最新的」）。
+      # 发布成功后在这里自动调一次，做到「发布即同步」✓。
+      # ⚠️ 接口**幂等**（版本没变返回 `changed:false`）⇒ 重复调用安全 ✓。
+      # ⚠️ 失败**只告警、不阻断发布** ✓：包已经发出去了，把 job 标红会让「发布成功」
+      #    看起来像「发布失败」✗；但也不能静默 ⇒ 留 `::warning::` 注解（守卫 R111 钉住）。
+      - name: Sync official site changelog
+        continue-on-error: true
+        env:
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          # 预发布不进 `releases/latest` ⇒ 同步只会白跑一趟，直接跳过。
+          if [ "${PRERELEASE:-false}" = "true" ]; then
+            echo "prerelease: 官网只索引 stable，跳过同步"
+            exit 0
+          fi
+          SITE_SYNC_URL="https://ios.sealsign.eu.cc/api/update.php?action=sync"
+          # 服务端要拉 GitHub **未认证** API（60 次/小时/IP）⇒ 限流属于**瞬时**失败，
+          # 必须重试；三次都失败才告警（守卫 R111 钉住「重试 + 告警」形态）。
+          for attempt in 1 2 3; do
+            echo "official site sync attempt ${attempt}"
+            if BODY="$(curl --fail --silent --show-error --max-time 120 -X POST "$SITE_SYNC_URL")"; then
+              echo "response: ${BODY}"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::warning::官网同步失败（已重试 3 次）。发布本身已成功，请手动执行：curl -X POST $SITE_SYNC_URL"
+          exit 1

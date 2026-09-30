@@ -86,6 +86,9 @@ final class AppsViewModel: ObservableObject {
     /// 标记会**跨轮存活** ⇒ 用户先跑一次失败的快捷指令、再手动点「续签全部」时
     /// 就会收到一条本不该有的通知（用户明确要求手动续签不通知）。
     private var backgroundTriggerRequested = false
+    /// `refreshAll()` 是所有批量续签唯一入口。后台快捷指令只通过这个瞬态标记
+    /// 告知入口不要展示 sheet，绝不绕过它的单飞/队列保护。
+    private var backgroundBatchPresentationRequested = false
     /// 后台批次只持久化结果；用户回到 Seal 后再恢复为结果抽屉。
     private var isBackgroundBatchRefresh = false
     /// 「撤销并继续签名」（SEAL-CERT-204e）确认后，因证书被撤而失效、待自动重签的已装 App。
@@ -1693,7 +1696,9 @@ final class AppsViewModel: ObservableObject {
     }
 
     func refreshAll() {
-        startBatchRefresh()
+        let presentsSheet = backgroundBatchPresentationRequested == false
+        backgroundBatchPresentationRequested = false
+        startBatchRefresh(presentsSheet: presentsSheet)
     }
 
     /// 「不打开 App」的续签入口：App Intent（快捷指令）走这里。
@@ -1763,7 +1768,8 @@ final class AppsViewModel: ObservableObject {
             // ⚠️ 放在让位 `guard` **之后**：被让位时本轮根本没跑，标记不该置位
             //    （让位那一档若确实需要通知，由上面那段**直接**发，不靠这个标记）。
             self.backgroundTriggerRequested = true
-            self.startBatchRefresh(presentsSheet: false)
+            self.backgroundBatchPresentationRequested = true
+            self.refreshAll()
         }
     }
 

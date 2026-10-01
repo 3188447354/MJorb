@@ -5,11 +5,22 @@
 
 ---
 
+## 2026-10-01 Seal 自替换对已满足 App ID 重复写能力导致失败（本地修复，未推送）
+
+- **现象**：安装最新 Seal 后为 Seal 自身完整重签，其他应用可以成功；日志显示目标 App ID 已存在、无需新注册且远端能力与本次请求一致，随后仍以 `SEAL-APPID-303` 失败。
+- **真机证据**：`QQ文件Seal-log(1).txt` 于 18:19–18:20 反复记录“本次需 1 个 / 可复用 1 个 / 需新注册 0 个”及“完全一致 1 个”，随后 Apple 返回 `An unexpected error occurred`。因此失败不在 App ID 新建、名额或通用签名器。
+- **根因**：`updateFeatures` 已能读到远端 `ALTAppID.features`，但只把相等性用于诊断，仍无条件调用 `updateAppId.action`。Seal 自身已有的 App ID 能力已经满足本轮请求，重复门户写入没有收益，且被 Apple 临时拒绝后又被外层统称为“App ID 创建失败”。
+- **修复**：新增 `ApplePortalAppIDFeatureUpdatePolicy`，按 SideStore 的已满足短路判据只补缺失或关闭的 feature；满足时跳过 `updateAppId`，保留 App Group 的读取、创建和关联步骤，以及首次签名和能力变更时的原有写入路径。
+- **涉及文件**：`ApplePortalSigningService.swift`、`ApplePortalSigningFailureTests.swift`、`SettingsRootView.swift`、`SigningAndRenewalGuideView.swift`、`RELEASE_NOTES.md`。
+- **验证状态**：新增“远端已满足则不写 / 未满足则写”纯函数回归测试；Windows 无 Xcode，待云端完整 CI 编译与真机验证 Seal 自替换。
+
+---
+
 ## 2026-10-01 正式版设置收束：关于入口、自动续签教程与证书页首开同步（本地修改，未推送）
 
 - **现象**：关于 Seal 中同时放置源码、问题反馈和组件许可入口，超出应用内必要信息；快捷指令自动续签混在批量续签说明末尾；每次进入“签名证书”都会强制请求 Apple 门户，即使已有可用本机缓存。
 - **根因**：关于页把外部链接与应用信息混在一起；自动续签没有独立入口；页面 `.task` 无条件调用 `load(force: true)` 与 `refreshCertificateInventory(force: true)`。此外，证书缓存被排在邮箱、图标等后台读取之后，首屏会与缓存加载竞争。
-- **修复**：关于页只保留版本、Bundle ID、系统、最低支持版本、更新检查和必要的组件许可。自动续签拆为“自动续签 > 快捷指令教程”独立分组；批量续签只说明批量操作。证书缓存前置到账号加载完成时读取，证书页首开改为本机状态与缓存优先：只有没有缓存、用户下拉刷新、切换账号没有缓存、创建或撤销证书时才同步 Apple。
+- **修复**：关于页只保留版本、Bundle ID、系统、最低支持版本、更新检查和必要的组件许可。快捷指令自动续签归入“使用指南”末尾；批量续签只说明批量操作。证书缓存前置到账号加载完成时读取，证书页首开改为本机状态与缓存优先：只有没有缓存、用户下拉刷新、切换账号没有缓存、创建或撤销证书时才同步 Apple。
 - **组件与许可**：核对 `project.yml` 后保留 AltSign、SideSign、AnisetteKit、Minimuxer、DeviceSupport、ZIPFoundation 与 swift-crypto；它们均为 Seal target 直接链接或随其静态依赖分发，不能仅为缩短页面而删除。AltSign 的许可证待确认状态保持可见，不能隐藏。
 - **补充**：应用详情的证书序列号和描述文件 UUID 改为完整换行显示，不再中间省略；应用操作抽屉继续只保留面向日常操作的五项摘要。
 - **涉及文件**：`AboutView.swift`、`SettingsRootView.swift`、`SigningAndRenewalGuideView.swift`、`SigningCertificateSettingsView.swift`、`RELEASE_NOTES.md`、`DEBUG_LOG.md`。

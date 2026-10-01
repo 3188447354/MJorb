@@ -32,6 +32,26 @@ struct ApplePortalSigningFailureTests {
     }
 
     @Test
+    func skipsPortalFeatureUpdateWhenExistingAppIDAlreadySatisfiesRequestedFeatures() {
+        #expect(
+            ApplePortalAppIDFeatureUpdatePolicy.needsPortalUpdate(
+                currentFeatureValues: ["APG3427HIY": "true"],
+                targetFeatureValues: ["APG3427HIY": "true"]
+            ) == false
+        )
+    }
+
+    @Test
+    func updatesPortalFeaturesWhenExistingAppIDDoesNotSatisfyRequestedFeatures() {
+        #expect(
+            ApplePortalAppIDFeatureUpdatePolicy.needsPortalUpdate(
+                currentFeatureValues: ["APG3427HIY": "false"],
+                targetFeatureValues: ["APG3427HIY": "true"]
+            )
+        )
+    }
+
+    @Test
     func certificateLimitFailureDoesNotAuthorizeAutomaticRevocation() {
         let failure = ApplePortalSigningFailure.make(
             stage: .certificate,

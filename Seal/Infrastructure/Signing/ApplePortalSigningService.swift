@@ -46,6 +46,22 @@ enum ApplePortalAppIDResolver {
     }
 }
 
+/// 已存在 App ID 的能力写入判据。
+///
+/// Apple 门户返回的 `features` 已经包含每个目标开关时，重复调用 `updateAppId` 没有任何
+/// 产物收益，却可能被 Apple 以临时服务错误拒绝。保持与 SideStore 的短路语义一致：
+/// 只补齐本次请求缺失或关闭的开关，不擅自关闭门户上已有的其他能力。
+enum ApplePortalAppIDFeatureUpdatePolicy {
+    static func needsPortalUpdate(
+        currentFeatureValues: [String: String],
+        targetFeatureValues: [String: String]
+    ) -> Bool {
+        targetFeatureValues.contains { feature, targetValue in
+            currentFeatureValues[feature] ?? "false" != targetValue
+        }
+    }
+}
+
 enum ApplePortalSigningFailure {
     static func make(stage: ApplePortalSigningStage, error: Error) -> ImportFailure {
         if AppleServiceFailurePolicy.isRateLimited(error) {
@@ -2798,10 +2814,25 @@ actor ApplePortalSigningService {
             features[.appGroups] = "true"
         }
 
+        let currentFeatureValues = Dictionary(
+            uniqueKeysWithValues: appID.features.map { feature, value in
+                (String(describing: feature), Self.featureValueText(value))
+            }
+        )
+        let targetFeatureValues = Dictionary(
+            uniqueKeysWithValues: features.map { feature, value in
+                (String(describing: feature), Self.featureValueText(value))
+            }
+        )
+
         // If there is nothing Apple needs to toggle, keep the existing App ID as-is.
         // This avoids sending empty or signer-managed entitlement payloads that Apple
         // rejects as "provided parameters are invalid" for free accounts.
-        guard features.isEmpty == false || filteredEntitlements.isEmpty == false else {
+        guard ApplePortalAppIDFeatureUpdatePolicy.needsPortalUpdate(
+            currentFeatureValues: currentFeatureValues,
+            targetFeatureValues: targetFeatureValues
+        ) else {
+            await diagnostic("签名：\(appID.bundleIdentifier) 的 App ID 能力已满足本次请求，跳过重复更新")
             return (appID, false)
         }
 
@@ -2931,6 +2962,19 @@ actor ApplePortalSigningService {
             return array.isEmpty == false
         }
         return true
+    }
+
+    private static func featureValueText(_ value: Any) -> String {
+        if let bool = value as? Bool {
+            return bool ? "true" : "false"
+        }
+        if let number = value as? NSNumber {
+            return number.boolValue ? "true" : "false"
+        }
+        if let string = value as? String {
+            return string.lowercased()
+        }
+        return String(describing: value).lowercased()
     }
 
     private func assignAppGroups(

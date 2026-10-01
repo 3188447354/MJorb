@@ -6,7 +6,7 @@ struct SigningAndRenewalGuideView: View {
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 12) {
-                ForEach(SigningGuideSection.allCases.filter { $0 != .automaticRenewal }) { section in
+                ForEach(SigningGuideSection.allCases) { section in
                     SigningGuideAccordionCard(
                         section: section,
                         isExpanded: expandedSection == section,
@@ -18,7 +18,7 @@ struct SigningAndRenewalGuideView: View {
             .padding(.top, 12)
             .padding(.bottom, 34)
         }
-        .navigationTitle("签名与续签")
+        .navigationTitle("使用指南")
         .navigationBarTitleDisplayMode(.inline)
         .sealScreenBackground(.secondary)
     }
@@ -105,38 +105,13 @@ private enum SigningGuideSection: String, CaseIterable, Identifiable {
             ]
         case .automaticRenewal:
             return [
-                "在“快捷指令”中添加“续签全部应用”",
+                "在“快捷指令”中添加群内提供的“Seal 自动续签”指令文件",
                 "创建个人自动化并设置执行时间",
                 "执行前保持 Wi-Fi 与 LocalDevVPN 可用",
-                "完成后查看系统通知；失败时打开 Seal 查看原因"
+                "续签成功时会有系统通知",
+                "续签失败时打开 Seal 查看原因"
             ]
         }
-    }
-}
-
-struct AutomaticRenewalGuideView: View {
-    @State private var isExpanded = true
-
-    var body: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 12) {
-                SigningGuideAccordionCard(
-                    section: .automaticRenewal,
-                    isExpanded: isExpanded,
-                    onTap: {
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            isExpanded.toggle()
-                        }
-                    }
-                )
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
-            .padding(.bottom, 34)
-        }
-        .navigationTitle("自动续签")
-        .navigationBarTitleDisplayMode(.inline)
-        .sealScreenBackground(.secondary)
     }
 }
 

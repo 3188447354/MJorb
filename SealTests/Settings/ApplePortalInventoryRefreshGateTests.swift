@@ -8,8 +8,8 @@ struct ApplePortalInventoryRefreshGateTests {
     func newerRefreshRejectsOlderResponse() {
         var gate = ApplePortalInventoryRefreshGate()
         let accountID = UUID()
-        let older = gate.begin(for: accountID)
-        let newer = gate.begin(for: accountID)
+        let older = gate.issueTicket(for: accountID)
+        let newer = gate.issueTicket(for: accountID)
 
         #expect(gate.accepts(older) == false)
         #expect(gate.accepts(newer))

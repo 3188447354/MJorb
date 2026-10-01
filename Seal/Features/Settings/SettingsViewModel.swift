@@ -1738,7 +1738,7 @@ final class SettingsViewModel: ObservableObject {
     private func beginCertificateInventoryRefresh(
         for accountID: UUID
     ) -> ApplePortalInventoryRefreshGate.Ticket {
-        let ticket = certificateInventoryRefreshGate.begin(for: accountID)
+        let ticket = certificateInventoryRefreshGate.issueTicket(for: accountID)
         certificateInventoryLoadingIDs.insert(accountID)
         return ticket
     }

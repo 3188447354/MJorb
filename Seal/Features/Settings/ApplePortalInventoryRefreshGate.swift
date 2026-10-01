@@ -10,7 +10,7 @@ struct ApplePortalInventoryRefreshGate: Sendable {
 
     private var generations: [UUID: Int] = [:]
 
-    mutating func begin(for accountID: UUID) -> Ticket {
+    mutating func issueTicket(for accountID: UUID) -> Ticket {
         let generation = (generations[accountID] ?? 0) &+ 1
         generations[accountID] = generation
         return Ticket(accountID: accountID, generation: generation)

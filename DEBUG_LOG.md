@@ -11,7 +11,7 @@
 - **根因**：证书同步以账号 ID 直接写入，没有请求代次判定；撤销只在本地列表移除，不会拒绝已在途的旧回包。存储操作只记录日志，设置文案没有与当前 iOS 27 配对、profile-only 续签链路一起维护。
 - **修复**：新增账号级同步代次门，撤销、换证书和新同步只接受最新回包；证书和本机管理首次读取显示同步状态。清理后在原提示位显示实际释放空间。保留原有设置布局，仅更新五段帮助、凭据安全、关于链接和精简的实际编译组件清单；正式版版本号更新为 `1.0.0`。
 - **涉及文件**：`ApplePortalInventoryRefreshGate.swift`、`SettingsViewModel.swift`、`SigningCertificateSettingsView.swift`、`StorageMaintenanceView.swift`、`StorageMaintenanceSummary.swift`、设置说明页面、`project.yml`、`RELEASE_NOTES.md`、`ThirdPartyNotices.txt`。
-- **验证状态**：新增代次门与存储反馈纯函数测试；首次云端守卫发现同步门的 `begin` 与既有非可变方法同名而产生名称级误报，已改为 `issueTicket`，待重新触发完整 CI。Windows 无 Xcode，仍需云端完整编译和真机回归。
+- **验证状态**：新增代次门与存储反馈纯函数测试；首次云端守卫发现同步门的 `begin` 与既有非可变方法同名而产生名称级误报，已改为 `issueTicket`；第二轮云端编译发现 `invalidate` 的内部调用遗漏改名，已补齐，待重新触发完整 CI。Windows 无 Xcode，仍需云端完整编译和真机回归。
 
 ---
 

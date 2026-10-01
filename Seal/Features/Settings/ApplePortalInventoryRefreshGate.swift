@@ -17,7 +17,7 @@ struct ApplePortalInventoryRefreshGate: Sendable {
     }
 
     mutating func invalidate(for accountID: UUID) {
-        _ = begin(for: accountID)
+        _ = issueTicket(for: accountID)
     }
 
     func accepts(_ ticket: Ticket) -> Bool {

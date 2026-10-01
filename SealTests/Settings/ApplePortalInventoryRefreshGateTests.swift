@@ -18,7 +18,7 @@ struct ApplePortalInventoryRefreshGateTests {
     @Test
     func revokeInvalidatesOutstandingResponse() {
         var gate = ApplePortalInventoryRefreshGate()
-        let ticket = gate.begin(for: UUID())
+        let ticket = gate.issueTicket(for: UUID())
 
         gate.invalidate(for: ticket.accountID)
 

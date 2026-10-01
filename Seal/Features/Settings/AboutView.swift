@@ -95,16 +95,6 @@ struct AboutView: View {
             Divider()
             checkUpdateRow
             Divider()
-            externalLinkRow(
-                "Seal 源码",
-                url: Self.makeURL("https://github.com/3188447354/MJorb")
-            )
-            Divider()
-            externalLinkRow(
-                "反馈问题",
-                url: Self.makeURL("https://github.com/3188447354/MJorb/issues")
-            )
-            Divider()
             NavigationLink { OpenSourceLicensesView() } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 16) {
                     Text("组件与许可")
@@ -164,28 +154,6 @@ struct AboutView: View {
         }
         .font(.system(size: 16, weight: .regular))
         .frame(minHeight: 54)
-    }
-
-    private func externalLinkRow(_ title: String, url: URL) -> some View {
-        Link(destination: url) {
-            HStack(alignment: .firstTextBaseline, spacing: 16) {
-                Text(title)
-                    .foregroundStyle(.primary)
-                Spacer(minLength: 12)
-                Image(systemName: "arrow.up.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .font(.system(size: 16, weight: .regular))
-            .frame(minHeight: 54)
-        }
-    }
-
-    private static func makeURL(_ string: String) -> URL {
-        guard let url = URL(string: string) else {
-            fatalError("编译期固定 URL 无效: \(string)")
-        }
-        return url
     }
 
     private func checkUpdate() {

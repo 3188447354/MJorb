@@ -63,11 +63,11 @@ struct SigningCertificateSettingsView: View {
             if selectedAccountID == nil {
                 selectedAccountID = viewModel.activeAccount?.id
             }
-            await viewModel.load(force: true)
+            await viewModel.load()
             await viewModel.refreshSelfManagementState()
             guard let account = activeAccount else { return }
             await viewModel.refreshCertificateHealthLocally(for: account)
-            await viewModel.refreshCertificateInventory(for: account, force: true)
+            await viewModel.refreshCertificateInventory(for: account, force: false)
         }
         .refreshable {
             await viewModel.load(force: true)
@@ -105,7 +105,8 @@ struct SigningCertificateSettingsView: View {
                             selectedAccountID = account.id
                             Task {
                                 await viewModel.selectActiveAccount(account)
-                                await viewModel.refreshCertificateInventory(for: account, force: true)
+                                await viewModel.refreshCertificateHealthLocally(for: account)
+                                await viewModel.refreshCertificateInventory(for: account, force: false)
                             }
                         } label: {
                             Text(viewModel.fullEmail(for: account))

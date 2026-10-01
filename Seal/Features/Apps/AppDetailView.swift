@@ -173,11 +173,9 @@ struct AppDetailView: View {
         .padding(.vertical, 15)
     }
 
-    /// 证书序列号行：标题左、值右，同一行展示（与下方 Bundle ID 行同一版式）。
-    /// 超长时**中间省略**：序列号头尾信息量最大（前缀标识厂商、尾部唯一性最高），
-    /// 掐掉中段比掐掉尾部更容易核对。完整值仍可长按选中复制。
+    /// 证书序列号行：标题左、值右。完整序列号允许换行，便于直接与证书页核对。
     private func serialDetailRow(_ title: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 14) {
+        HStack(alignment: .top, spacing: 14) {
             Text(title)
                 .foregroundStyle(.primary)
                 .lineLimit(1)
@@ -185,8 +183,8 @@ struct AppDetailView: View {
             Text(value)
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(Color.sealTextSecondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+                .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
@@ -195,7 +193,7 @@ struct AppDetailView: View {
 
     /// 「证书序列号」行下面的说明：本机没有该证书私钥 ⇒ 下一次续签会**完整重签并安装**。
     ///
-    /// 与 `serialDetailRow` 分开画的原因：序列号是**等宽长串**（中间省略、可选中），
+    /// 与 `serialDetailRow` 分开画的原因：序列号是**等宽长串**（完整显示、可选中），
     /// 而说明是一句需要**折行读全**的中文 —— 挤在同一行会让两者都读不清。
     /// 文案真源在 `AppSigningPresentationHelpers.localCertificateRebuildDetail`。
     private func signingNoteRow(_ note: String) -> some View {
@@ -213,14 +211,14 @@ struct AppDetailView: View {
         .padding(.vertical, 12)
     }
 
-    /// 描述文件行：标题左、UUID 右，同一行展示，超长中间省略。
+    /// 描述文件行：标题左、UUID 右；完整 UUID 允许换行，便于与设备端文件核对。
     /// 不再用「可用」占位，直接展示**该应用实际使用的描述文件 UUID**，
     /// 便于直接核对设备上装的到底是不是刚签出的那一份。
     /// 只有真正需要用户处理的异常状态（临期 / 已过期 / 不匹配 / 待校验 / 未记录）才在
     /// 标题右侧保留状态标签——「可用」这一档由「描述文件有效期至」的颜色承载，信息不丢。
     private func profileDetailRow(_ app: AppRecord) -> some View {
         let status = profileStatus(app)
-        return HStack(alignment: .firstTextBaseline, spacing: 14) {
+        return HStack(alignment: .top, spacing: 14) {
             Text("描述文件")
                 .foregroundStyle(.primary)
             if status != .available {
@@ -233,8 +231,8 @@ struct AppDetailView: View {
             Text(AppSigningPresentationHelpers.profileUUIDText(for: app))
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(Color.sealTextSecondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+                .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }

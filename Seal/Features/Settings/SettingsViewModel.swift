@@ -340,6 +340,9 @@ final class SettingsViewModel: ObservableObject {
             accounts = displayedAccounts
             pairingRecord = loadedPairing
             activeAccountID = resolvedAccountID
+            // 证书页会在这里之后立即出现。缓存必须先就绪，不能排在邮箱、图标等
+            // 非关键后台读取之后，否则“缓存优先”会因竞态退化为每次进入都联网同步。
+            loadCertificateInventoryCache(for: displayedAccounts)
             hasLoaded = true
 
             // 后台加载非关键数据
@@ -354,10 +357,6 @@ final class SettingsViewModel: ObservableObject {
                 let storedApps = (try? await self.appStore?.fetchAll()) ?? []
                 let appIcons = await self.loadAppIcons(for: storedApps)
                 await MainActor.run { self.appIconData = appIcons }
-
-                await MainActor.run {
-                    self.loadCertificateInventoryCache(for: displayedAccounts)
-                }
 
                 let loadedLogs = (try? await self.logStore?.entries()) ?? []
                 let loadedHistory = (try? await self.signingHistoryStore?.records()) ?? []

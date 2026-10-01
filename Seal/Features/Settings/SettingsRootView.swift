@@ -79,6 +79,18 @@ struct SettingsRootView: View {
                         }
                     }
 
+                    settingsSection("自动续签") {
+                        NavigationLink { AutomaticRenewalGuideView() } label: {
+                            settingsRow(
+                                title: "快捷指令教程",
+                                value: nil,
+                                icon: "clock.arrow.circlepath",
+                                showsChevron: true
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+
                     settingsSection("管理") {
                         Button { isAppearanceThemePresented = true } label: {
                             settingsRow(

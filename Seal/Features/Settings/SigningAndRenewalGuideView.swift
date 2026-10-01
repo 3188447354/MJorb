@@ -6,7 +6,7 @@ struct SigningAndRenewalGuideView: View {
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 12) {
-                ForEach(SigningGuideSection.allCases) { section in
+                ForEach(SigningGuideSection.allCases.filter { $0 != .automaticRenewal }) { section in
                     SigningGuideAccordionCard(
                         section: section,
                         isExpanded: expandedSection == section,
@@ -36,6 +36,7 @@ private enum SigningGuideSection: String, CaseIterable, Identifiable {
     case signingIPA
     case renewal
     case batchRenewal
+    case automaticRenewal
 
     var id: String { rawValue }
 
@@ -46,6 +47,7 @@ private enum SigningGuideSection: String, CaseIterable, Identifiable {
         case .signingIPA: return "签名 IPA"
         case .renewal: return "续签 App"
         case .batchRenewal: return "批量续签"
+        case .automaticRenewal: return "自动续签"
         }
     }
 
@@ -56,6 +58,7 @@ private enum SigningGuideSection: String, CaseIterable, Identifiable {
         case .signingIPA: return "app.badge"
         case .renewal: return "arrow.clockwise"
         case .batchRenewal: return "square.stack.3d.up"
+        case .automaticRenewal: return "clock.arrow.circlepath"
         }
     }
 
@@ -97,11 +100,43 @@ private enum SigningGuideSection: String, CaseIterable, Identifiable {
             return [
                 "打开已安装页",
                 "点击“续签全部”",
-                "Seal 最后续签自身，必要时会覆盖安装",
-                "自动续签：添加 Seal 自动续签快捷指令",
-                "在“自动化”中设置续签时间"
+                "确认本次续签结果",
+                "Seal 最后续签自身，必要时会覆盖安装"
+            ]
+        case .automaticRenewal:
+            return [
+                "在“快捷指令”中添加“续签全部应用”",
+                "创建个人自动化并设置执行时间",
+                "执行前保持 Wi-Fi 与 LocalDevVPN 可用",
+                "完成后查看系统通知；失败时打开 Seal 查看原因"
             ]
         }
+    }
+}
+
+struct AutomaticRenewalGuideView: View {
+    @State private var isExpanded = true
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 12) {
+                SigningGuideAccordionCard(
+                    section: .automaticRenewal,
+                    isExpanded: isExpanded,
+                    onTap: {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            isExpanded.toggle()
+                        }
+                    }
+                )
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .padding(.bottom, 34)
+        }
+        .navigationTitle("自动续签")
+        .navigationBarTitleDisplayMode(.inline)
+        .sealScreenBackground(.secondary)
     }
 }
 

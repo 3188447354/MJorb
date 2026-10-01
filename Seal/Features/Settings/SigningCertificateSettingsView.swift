@@ -150,7 +150,11 @@ struct SigningCertificateSettingsView: View {
     @ViewBuilder
     private var certificateContent: some View {
         if let account = activeAccount {
-            unifiedCertificateCard(account: account)
+            if viewModel.isCertificateInventoryLoading(accountID: account.id) {
+                certificateLoadingCard
+            } else {
+                unifiedCertificateCard(account: account)
+            }
         } else {
             noAccountCard
         }
@@ -159,8 +163,27 @@ struct SigningCertificateSettingsView: View {
     /// 自管理状态卡：当前真实签名者、本机可用身份、事务状态和下一步。
     /// View 只读 ViewModel 汇总好的展示模型，不自己猜状态。
     private var selfManagementCard: some View {
+        if viewModel.isSelfManagementLoading {
+            return AnyView(
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("正在读取本机签名身份")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer(minLength: 8)
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Text("正在核对当前 Seal 与本机证书。")
+                        .font(.caption)
+                        .foregroundStyle(Color.sealTextSecondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
+                .glassSurface(cornerRadius: 24)
+            )
+        }
         let presentation = viewModel.selfManagement
-        return VStack(alignment: .leading, spacing: 10) {
+        return AnyView(VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 8) {
                 Text(presentation.title)
                     .font(.subheadline.weight(.semibold))
@@ -201,6 +224,21 @@ struct SigningCertificateSettingsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
+        .glassSurface(cornerRadius: 24))
+    }
+
+    private var certificateLoadingCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("正在同步证书状态")
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 8)
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
         .glassSurface(cornerRadius: 24)
     }
 

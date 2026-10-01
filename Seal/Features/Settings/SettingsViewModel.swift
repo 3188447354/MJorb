@@ -153,12 +153,14 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var reminderHours = 24
     @Published private(set) var notificationStatus = NotificationScheduleStatus.disabled
     @Published private(set) var storageUsage: SettingsStorageUsage = .empty
+    @Published private(set) var storageMaintenanceSummary: String?
     @Published private(set) var logExportText = ""
     @Published var alertFailure: ImportFailure?
     @Published var requestedRoute: SettingsRoute?
     @Published private(set) var pendingTeamSelection: PendingTeamSelection?
     @Published private(set) var selfManagement: SelfManagementPresentation =
         .init(.externalBootstrap)
+    @Published private(set) var isSelfManagementLoading = true
     /// 当前运行 Seal 的真实 CMS 签名者；读不出来时为 nil（证书行据此打标签）。
     @Published private(set) var sealActualSignerSerialNumber: String?
 
@@ -185,6 +187,7 @@ final class SettingsViewModel: ObservableObject {
     private var phonePairingHost: PhonePairingHost?
     private var phonePairingLease: OperationCoordinator.Lease?
     private var isPhonePairingAutomaticCheckRunning = false
+    private var certificateInventoryRefreshGate = ApplePortalInventoryRefreshGate()
     private var hasLoaded = false
     private var loadGeneration = 0
     private static let pairingAssistantInboxFileName = "SealPairing.mobiledevicepairing"
@@ -452,6 +455,9 @@ final class SettingsViewModel: ObservableObject {
     func selectActiveAccount(_ account: AppleAccountRecord) async {
         guard AccountAvailabilityPolicy.isSelectable(account),
               accounts.contains(where: { $0.id == account.id }) else { return }
+        if activeAccountID != account.id {
+            invalidateCertificateInventoryRefresh(for: activeAccountID)
+        }
         activeAccountID = account.id
         await signingPreferenceStore?.setActiveAccountID(account.id)
     }
@@ -740,6 +746,7 @@ final class SettingsViewModel: ObservableObject {
                 account: account,
                 secret: originalSecret
             )
+            invalidateCertificateInventoryRefresh(for: account.id)
 
             // 撤销成功后重新拉清单确认出现空位，才创建 B；确认不了空位就不创建，
             // 避免在仍旧满员的账号上再撞一次确定性 3022/7460。
@@ -996,6 +1003,7 @@ final class SettingsViewModel: ObservableObject {
                         account: account,
                         secret: secret
                     )
+                    invalidateCertificateInventoryRefresh(for: account.id)
                     revokedSerials.append(certificate.serialNumber)
                 } catch {
                     // 单张失败不中断：其余候选继续撤，名额尽量释放；失败明细进最终结果。
@@ -1277,8 +1285,8 @@ final class SettingsViewModel: ObservableObject {
         guard let keychain, let applePortalInventoryService else { return }
         if certificateInventoryLoadingIDs.contains(account.id) { return }
 
-        certificateInventoryLoadingIDs.insert(account.id)
-        defer { certificateInventoryLoadingIDs.remove(account.id) }
+        let ticket = beginCertificateInventoryRefresh(for: account.id)
+        defer { finishCertificateInventoryRefresh(ticket) }
 
         do {
             guard let secret = try await keychain.load(accountID: account.id) else {
@@ -1294,13 +1302,16 @@ final class SettingsViewModel: ObservableObject {
                 secret: secret,
                 scope: .all
             )
+            guard acceptsCertificateInventoryRefresh(ticket) else { return }
             certificateInventories[account.id] = inventory
             certificateInventoryFailures[account.id] = nil
-            certificateHealthStatuses[account.id] = await makeCertificateHealthStatus(
+            let health = await makeCertificateHealthStatus(
                 account: account,
                 secret: secret,
                 inventory: inventory
             )
+            guard acceptsCertificateInventoryRefresh(ticket) else { return }
+            certificateHealthStatuses[account.id] = health
             saveCertificateInventoryCache(inventory)
             let appIDSummary = account.isFreeTeam == true
                 ? "已注册 \(inventory.usedBundleIDCount) / 10 个 App ID"
@@ -1312,11 +1323,14 @@ final class SettingsViewModel: ObservableObject {
         } catch is CancellationError {
             return
         } catch let failure as ImportFailure {
+            guard acceptsCertificateInventoryRefresh(ticket) else { return }
             certificateInventoryFailures[account.id] = failure
-            certificateHealthStatuses[account.id] = await localCertificateHealthStatus(
+            let health = await localCertificateHealthStatus(
                 account: account,
                 portalState: failure.code == "SEAL-AUTH-107" ? .invalid : .unknown
             )
+            guard acceptsCertificateInventoryRefresh(ticket) else { return }
+            certificateHealthStatuses[account.id] = health
             try? await logStore?.append(
                 category: .account,
                 level: .error,
@@ -1324,16 +1338,19 @@ final class SettingsViewModel: ObservableObject {
                 code: failure.code
             )
         } catch {
+            guard acceptsCertificateInventoryRefresh(ticket) else { return }
             certificateInventoryFailures[account.id] = Self.failure(
                 title: "Apple ID 同步失败",
                 reason: "App ID 与证书状态同步失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
                 recovery: "重新同步",
                 code: "SEAL-INVENTORY-900b"
             )
-            certificateHealthStatuses[account.id] = await localCertificateHealthStatus(
+            let health = await localCertificateHealthStatus(
                 account: account,
                 portalState: .unknown
             )
+            guard acceptsCertificateInventoryRefresh(ticket) else { return }
+            certificateHealthStatuses[account.id] = health
         }
         logs = (try? await logStore?.entries()) ?? logs
         refreshLogExportText()
@@ -1347,8 +1364,8 @@ final class SettingsViewModel: ObservableObject {
         if force == false, certificateInventories[account.id]?.appIDs.isEmpty == false { return }
         if certificateInventoryLoadingIDs.contains(account.id) { return }
 
-        certificateInventoryLoadingIDs.insert(account.id)
-        defer { certificateInventoryLoadingIDs.remove(account.id) }
+        let ticket = beginCertificateInventoryRefresh(for: account.id)
+        defer { finishCertificateInventoryRefresh(ticket) }
 
         do {
             guard let secret = try await keychain.load(accountID: account.id) else {
@@ -1374,6 +1391,7 @@ final class SettingsViewModel: ObservableObject {
                 certificates: certificateInventories[account.id]?.certificates ?? [],
                 fetchedAt: fetched.fetchedAt
             )
+            guard acceptsCertificateInventoryRefresh(ticket) else { return }
             certificateInventories[account.id] = merged
             certificateInventoryFailures[account.id] = nil
             saveCertificateInventoryCache(merged)
@@ -1390,8 +1408,10 @@ final class SettingsViewModel: ObservableObject {
             // 任务取消不是错误：不污染失败标记，静默返回。
             return
         } catch let failure as ImportFailure {
+            guard acceptsCertificateInventoryRefresh(ticket) else { return }
             certificateInventoryFailures[account.id] = failure
         } catch {
+            guard acceptsCertificateInventoryRefresh(ticket) else { return }
             certificateInventoryFailures[account.id] = Self.failure(
                 title: "Apple ID 同步失败",
                 reason: "App ID 状态同步失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
@@ -1406,6 +1426,8 @@ final class SettingsViewModel: ObservableObject {
     /// 汇总 Seal 自管理状态：真实签名身份 + 未结算事务 + 签名者是否持有本机私钥。
     /// 只依赖本地数据（运行包 / 事务文件 / keychain），不访问网络。
     func refreshSelfManagementState() async {
+        isSelfManagementLoading = true
+        defer { isSelfManagementLoading = false }
         let identity = SelfAppMetadata.current()?.installedIdentity
         let signer = (identity?.isComplete == true)
             ? identity?.mainTarget?.signerSerialNumber
@@ -1439,10 +1461,10 @@ final class SettingsViewModel: ObservableObject {
         // 证书清单刷新时同步自管理状态；本地数据即可判定，网络失败不影响。
         await refreshSelfManagementState()
         if force == false, certificateInventories[account.id] != nil { return }
-        if certificateInventoryLoadingIDs.contains(account.id) { return }
+        if force == false, certificateInventoryLoadingIDs.contains(account.id) { return }
 
-        certificateInventoryLoadingIDs.insert(account.id)
-        defer { certificateInventoryLoadingIDs.remove(account.id) }
+        let ticket = beginCertificateInventoryRefresh(for: account.id)
+        defer { finishCertificateInventoryRefresh(ticket) }
 
         do {
             guard let secret = try await keychain.load(accountID: account.id) else {
@@ -1467,27 +1489,33 @@ final class SettingsViewModel: ObservableObject {
                 certificates: fetched.certificates,
                 fetchedAt: fetched.fetchedAt
             )
+            guard acceptsCertificateInventoryRefresh(ticket) else { return }
             certificateInventories[account.id] = inventory
             certificateInventoryFailures[account.id] = nil
-            certificateHealthStatuses[account.id] = await makeCertificateHealthStatus(
+            let health = await makeCertificateHealthStatus(
                 account: account,
                 secret: secret,
                 inventory: inventory
             )
+            guard acceptsCertificateInventoryRefresh(ticket) else { return }
+            certificateHealthStatuses[account.id] = health
             saveCertificateInventoryCache(inventory)
             try? await logStore?.append(
                 category: .account,
                 message: "Apple 侧证书状态已同步"
             )
         } catch let failure as ImportFailure {
+            guard acceptsCertificateInventoryRefresh(ticket) else { return }
             certificateInventoryFailures[account.id] = failure
             // authToken失效(SEAL-AUTH-107)时证书标无效，避免显示"有效但实际用不了"的矛盾
             let portalState: CertificateHealthStatus.CheckState =
                 failure.code == "SEAL-AUTH-107" ? .invalid : .unknown
-            certificateHealthStatuses[account.id] = await localCertificateHealthStatus(
+            let health = await localCertificateHealthStatus(
                 account: account,
                 portalState: portalState
             )
+            guard acceptsCertificateInventoryRefresh(ticket) else { return }
+            certificateHealthStatuses[account.id] = health
             try? await logStore?.append(
                 category: .account,
                 level: .error,
@@ -1498,6 +1526,7 @@ final class SettingsViewModel: ObservableObject {
             // 任务取消不是错误：不污染证书健康状态/失败标记，静默返回。
             return
         } catch {
+            guard acceptsCertificateInventoryRefresh(ticket) else { return }
             let failure = Self.failure(
                 title: "Apple 侧同步失败",
                 reason: "证书状态同步失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
@@ -1505,10 +1534,12 @@ final class SettingsViewModel: ObservableObject {
                 code: "SEAL-INVENTORY-900a"
             )
             certificateInventoryFailures[account.id] = failure
-            certificateHealthStatuses[account.id] = await localCertificateHealthStatus(
+            let health = await localCertificateHealthStatus(
                 account: account,
                 portalState: .unknown
             )
+            guard acceptsCertificateInventoryRefresh(ticket) else { return }
+            certificateHealthStatuses[account.id] = health
             try? await logStore?.append(
                 category: .account,
                 level: .error,
@@ -1681,6 +1712,7 @@ final class SettingsViewModel: ObservableObject {
 
     /// 撤销成功后立即从内存与缓存清单中移除该证书，UI 无需等网络回读即可同步。
     private func removeRevokedCertificateFromInventory(serialNumber: String, accountID: UUID) {
+        invalidateCertificateInventoryRefresh(for: accountID)
         guard let inventory = certificateInventories[accountID] else { return }
         let normalized = SigningCertificateSelectionPolicy.normalizedSerialNumber(serialNumber)
         let remaining = inventory.certificates.filter {
@@ -1701,6 +1733,33 @@ final class SettingsViewModel: ObservableObject {
 
     private func certificateInventoryCacheKey(_ accountID: UUID) -> String {
         "settings.applePortalInventory.\(accountID.uuidString)"
+    }
+
+    private func beginCertificateInventoryRefresh(
+        for accountID: UUID
+    ) -> ApplePortalInventoryRefreshGate.Ticket {
+        let ticket = certificateInventoryRefreshGate.begin(for: accountID)
+        certificateInventoryLoadingIDs.insert(accountID)
+        return ticket
+    }
+
+    private func finishCertificateInventoryRefresh(
+        _ ticket: ApplePortalInventoryRefreshGate.Ticket
+    ) {
+        guard certificateInventoryRefreshGate.accepts(ticket) else { return }
+        certificateInventoryLoadingIDs.remove(ticket.accountID)
+    }
+
+    private func invalidateCertificateInventoryRefresh(for accountID: UUID?) {
+        guard let accountID else { return }
+        certificateInventoryRefreshGate.invalidate(for: accountID)
+        certificateInventoryLoadingIDs.remove(accountID)
+    }
+
+    private func acceptsCertificateInventoryRefresh(
+        _ ticket: ApplePortalInventoryRefreshGate.Ticket
+    ) -> Bool {
+        certificateInventoryRefreshGate.accepts(ticket)
     }
 
     private func replaceDisplayedAccount(_ account: AppleAccountRecord) {
@@ -2786,8 +2845,13 @@ final class SettingsViewModel: ObservableObject {
         guard let operationLease = await acquireOperation(.maintainingStorage) else { return }
         defer { releaseOperation(operationLease) }
         do {
+            await refreshStorageUsage()
+            let temporaryBefore = storageUsage.temporary
             try await fileStore.clearTemporaryFiles()
             await refreshStorageUsage()
+            storageMaintenanceSummary = StorageMaintenanceSummary.temporaryCacheCleared(
+                freedBytes: temporaryBefore - storageUsage.temporary
+            )
             try? await logStore?.append(
                 category: .system,
                 message: "临时缓存与签名工作区已清理"
@@ -2809,6 +2873,8 @@ final class SettingsViewModel: ObservableObject {
         guard let operationLease = await acquireOperation(.maintainingStorage) else { return }
         defer { releaseOperation(operationLease) }
         do {
+            await refreshStorageUsage()
+            let reclaimableBefore = storageUsage.temporary + storageUsage.orphaned
             let apps = try await appStore.fetchAll()
             try await fileStore.clearTemporaryFiles()
             // 这里是用户主动清理，且整个清理期间持有 .maintainingStorage 租约
@@ -2819,6 +2885,9 @@ final class SettingsViewModel: ObservableObject {
                 minimumAge: 0
             )
             await refreshStorageUsage()
+            storageMaintenanceSummary = StorageMaintenanceSummary.unusedFilesCleared(
+                freedBytes: reclaimableBefore - storageUsage.temporary - storageUsage.orphaned
+            )
             try? await logStore?.append(
                 category: .system,
                 message: "临时缓存和未使用文件已清理；签名缓存、Apple ID 凭据和设备配对信息已保留"
@@ -2871,6 +2940,7 @@ final class SettingsViewModel: ObservableObject {
         do {
             try await accountRepository.save(updated)
             try await keychain?.clearSigningMaterial(accountID: account.id)
+            invalidateCertificateInventoryRefresh(for: account.id)
             certificateInventories[account.id] = nil
             await load(force: true)
             try? await logStore?.append(

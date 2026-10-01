@@ -5,6 +5,26 @@
 
 ---
 
+## 2026-10-01 正式版收尾：证书旧回包、存储反馈与设置内容（本地修复，未推送）
+
+- **现象**：切换 Apple ID、撤销或更换证书后，之前发出的 Apple 门户请求可能稍后返回，短暂把旧证书重新写回页面；首次进入证书页时，本机接管状态也会先显示默认文案。存储清理完成没有反馈释放量，设置内签名流程和许可列表仍含过期或参考项目内容。
+- **根因**：证书同步以账号 ID 直接写入，没有请求代次判定；撤销只在本地列表移除，不会拒绝已在途的旧回包。存储操作只记录日志，设置文案没有与当前 iOS 27 配对、profile-only 续签链路一起维护。
+- **修复**：新增账号级同步代次门，撤销、换证书和新同步只接受最新回包；证书和本机管理首次读取显示同步状态。清理后在原提示位显示实际释放空间。保留原有设置布局，仅更新五段帮助、凭据安全、关于链接和精简的实际编译组件清单；正式版版本号更新为 `1.0.0`。
+- **涉及文件**：`ApplePortalInventoryRefreshGate.swift`、`SettingsViewModel.swift`、`SigningCertificateSettingsView.swift`、`StorageMaintenanceView.swift`、`StorageMaintenanceSummary.swift`、设置说明页面、`project.yml`、`RELEASE_NOTES.md`、`ThirdPartyNotices.txt`。
+- **验证状态**：新增代次门与存储反馈纯函数测试；`Scripts/verify-release-safety.py` 静态守卫已通过。Windows 无 Xcode，尚未提交、未推送、未触发 CI，仍需云端完整编译和真机回归。
+
+---
+
+## 2026-10-01 后台定位保活重复启动与续签中断队列不可追溯（本地修复，未推送）
+
+- **现象**：真机日志在同一秒连续出现多条 `SEAL-BACKGROUND-017`；`SEAL-RENEW-007` 只报“1 个应用结果未知”，无法判断是哪一个队列项遗留。
+- **根因**：`LocationKeepAliveService.start()` 标注为幂等，但授权已满足时每次调用都会再次执行 `startUpdatingLocation()` 并写日志。`RefreshQueueStore.RecoveryOutcome` 只保存降级数量，丢失了真正被从 `running` 降为 `unknown` 的应用 ID。
+- **修复**：定位服务分别记录已请求授权与已启动更新，重复调用直接返回；恢复结果保留降级队列项 ID，并在 `SEAL-RENEW-007` 写入该 ID，供下一次真机复现精确对照。
+- **涉及文件**：`LocationKeepAliveService.swift`、`RefreshQueueStore.swift`、`AppsViewModel.swift`、`RefreshQueueStoreTests.swift`、`project.yml`、`RELEASE_NOTES.md`、`DEBUG_LOG.md`。
+- **验证状态**：新增队列项 ID 断言；Windows 无 Xcode，未提交、未推送、未触发 CI。
+
+---
+
 ## 2026-10-01 profile-only 日期必须来自本轮设备端文件，配对与 LocalDevVPN 状态自动同步（本地修复，待 CI）
 
 - **现象**：用户要求“续签成功”必须代表本轮新描述文件已生效，不能因历史文件仍存在而显示成功；旧构建 `1.3.44 (88)` 日志还显示，Seal 的 profile-only 刚写入新文件后，延迟结算的自替换事务可能把包内旧 profile 的日期展示回来。iOS 27 配对完成后，LocalDevVPN 状态有时需手动点击才能让阶段页更新。

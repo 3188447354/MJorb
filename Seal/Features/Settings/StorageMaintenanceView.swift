@@ -98,7 +98,7 @@ struct StorageMaintenanceView: View {
     }
 
     private var dangerNote: some View {
-        Text("签名缓存、Apple ID 凭据、证书和设备配对信息不会在这里清理。")
+        Text(viewModel.storageMaintenanceSummary ?? "签名缓存、Apple ID 凭据、证书和设备配对信息不会在这里清理。")
             .font(.footnote)
             .foregroundStyle(Color.sealTextSecondary)
             .frame(maxWidth: .infinity, alignment: .leading)

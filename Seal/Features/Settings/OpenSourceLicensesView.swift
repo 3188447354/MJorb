@@ -10,57 +10,45 @@ struct OpenSourceLicensesView: View {
 
     private let dependencies: [OpenSourceDependency] = [
         OpenSourceDependency(
-            name: "SideStore",
-            purpose: "本机服务、Anisette 设计参考与设备连接链路",
-            license: "AGPL-3.0",
-            url: Self.makeURL("https://github.com/SideStore/SideStore")
+            name: "AltSign",
+            license: "许可证待确认",
+            url: Self.makeURL("https://github.com/sunuannian1/AltSign")
         ),
         OpenSourceDependency(
-            name: "AltSign",
-            purpose: "IPA 签名、证书与描述文件处理",
+            name: "SideSign",
+            license: "GPL-3.0",
+            url: Self.makeURL("https://github.com/SideStore/SideSign")
+        ),
+        OpenSourceDependency(
+            name: "AnisetteKit",
             license: "AGPL-3.0",
-            url: Self.makeURL("https://github.com/SideStore/AltSign")
+            url: Self.makeURL("https://github.com/mahee96/AnisetteKit")
         ),
         OpenSourceDependency(
             name: "Minimuxer",
-            purpose: "LocalDevVPN / SideStore 本机服务",
             license: "AGPL-3.0",
             url: Self.makeURL("https://github.com/SideStore/minimuxer")
         ),
         OpenSourceDependency(
-            name: "SideInstaller by FrizzleM",
-            purpose: "iOS 27 设备端 Remote Pairing Host",
-            license: "非商业源码许可（见仓库 LICENSE）",
-            url: Self.makeURL("https://github.com/FrizzleM/SideInstaller")
-        ),
-        OpenSourceDependency(
-            name: "idevice",
-            purpose: "Remote Pairing 协议实现",
-            license: "MIT",
-            url: Self.makeURL("https://github.com/jkcoxson/idevice")
-        ),
-        OpenSourceDependency(
             name: "ZIPFoundation",
-            purpose: "IPA 解包、读取和重新打包",
             license: "MIT",
             url: Self.makeURL("https://github.com/weichsel/ZIPFoundation")
         ),
         OpenSourceDependency(
             name: "DeviceSupport",
-            purpose: "设备支持文件与连接能力",
-            license: "开源许可见上游仓库",
+            license: "GPL-2.0 / LGPL-2.1",
             url: Self.makeURL("https://github.com/SideStore/DeviceSupport")
+        ),
+        OpenSourceDependency(
+            name: "swift-crypto",
+            license: "Apache-2.0",
+            url: Self.makeURL("https://github.com/apple/swift-crypto")
         )
     ]
 
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 18) {
-                Text("Seal 使用的开源组件仅用于本机 IPA 解析、签名、安装与设备连接。请以各上游仓库中的 LICENSE 文件为准。")
-                    .font(.system(size: 15, weight: .regular))
-                    .foregroundStyle(Color.sealTextSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
                 VStack(spacing: 0) {
                     ForEach(Array(dependencies.enumerated()), id: \.element.id) { index, dependency in
                         Link(destination: dependency.url) {
@@ -69,10 +57,6 @@ struct OpenSourceLicensesView: View {
                                     Text(dependency.name)
                                         .font(.system(size: 17, weight: .semibold))
                                         .foregroundStyle(.primary)
-                                    Text(dependency.purpose)
-                                        .font(.system(size: 14, weight: .regular))
-                                        .foregroundStyle(Color.sealTextSecondary)
-                                        .fixedSize(horizontal: false, vertical: true)
                                     Text(dependency.license)
                                         .font(.system(size: 13, weight: .medium))
                                         .foregroundStyle(Color.sealAccent)
@@ -101,7 +85,7 @@ struct OpenSourceLicensesView: View {
             }
             .padding(20)
         }
-        .navigationTitle("开源许可")
+        .navigationTitle("组件与许可")
         .navigationBarTitleDisplayMode(.inline)
         .sealScreenBackground()
     }
@@ -110,7 +94,6 @@ struct OpenSourceLicensesView: View {
 private struct OpenSourceDependency: Identifiable, Equatable {
     let id = UUID()
     let name: String
-    let purpose: String
     let license: String
     let url: URL
 }

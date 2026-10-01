@@ -87,6 +87,7 @@ actor RefreshQueueStore {
             } else if items[index].state == .running {
                 items[index].state = .unknown
                 outcome.downgraded += 1
+                outcome.downgradedAppIDs.append(items[index].appID)
             }
         }
         if outcome.changedAnything {
@@ -101,6 +102,8 @@ actor RefreshQueueStore {
     struct RecoveryOutcome: Equatable, Sendable {
         /// 降级为「结果未知」的条数（真的没有结论）。
         var downgraded = 0
+        /// 被降级的队列项，用于日志把异常精确关联到下一次要核验的应用。
+        var downgradedAppIDs: [UUID] = []
         /// 按持久化结果**结算**（而不是当未知）的条数。
         var settledFromResult = 0
 

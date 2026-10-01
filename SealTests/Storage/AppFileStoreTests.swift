@@ -199,6 +199,29 @@ struct AppFileStoreTests {
         #expect(try await store.exists(relativePath: signedPath))
     }
 
+    @Test
+    func clearingTemporaryFilesNeverDeletesCommittedOriginalIPAOrIcon() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let store = AppFileStore(
+            documentsDirectory: fixture.documents,
+            cacheDirectory: fixture.cache,
+            fileProtector: MarkerFileProtector()
+        )
+        let staged = try await store.stage(sourceURL: fixture.source)
+        let committed = try await store.commit(
+            staged: staged,
+            appID: UUID(),
+            iconData: Data("icon".utf8)
+        )
+
+        try await store.clearTemporaryFiles()
+
+        let iconPath = try #require(committed.iconRelativePath)
+        #expect(try await store.exists(relativePath: committed.ipaRelativePath))
+        #expect(try await store.exists(relativePath: iconPath))
+    }
+
 
     private func makeFixture() throws -> (
         root: URL,

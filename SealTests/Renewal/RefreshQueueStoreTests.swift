@@ -61,6 +61,7 @@ struct RefreshQueueStoreTests {
         let reloaded = try await store.load()
 
         #expect(outcome.downgraded == 1)
+        #expect(outcome.downgradedAppIDs == [interrupted.appID])
         #expect(outcome.settledFromResult == 0)
         #expect(reloaded.first(where: { $0.appID == interrupted.appID })?.state == .unknown)
         // 非 running 的项一律不许被碰

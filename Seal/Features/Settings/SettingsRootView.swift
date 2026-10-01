@@ -116,7 +116,7 @@ struct SettingsRootView: View {
                         .buttonStyle(.plain)
                     }
 
-                    settingsSection("帮助") {
+                    settingsSection("支持与关于") {
                         NavigationLink { SigningAndRenewalGuideView() } label: {
                             settingsRow(
                                 title: "签名与续签",
@@ -660,4 +660,3 @@ private extension Int64 {
         ByteCountFormatter.string(fromByteCount: self, countStyle: .file)
     }
 }
-

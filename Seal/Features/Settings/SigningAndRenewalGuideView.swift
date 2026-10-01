@@ -63,37 +63,43 @@ private enum SigningGuideSection: String, CaseIterable, Identifiable {
         switch self {
         case .requirements:
             return [
-                "确保连接 Wi-Fi",
-                "开启 LocalDevVPN",
+                "连接 Wi-Fi",
+                "打开 LocalDevVPN",
                 "添加 Apple ID",
-                "完成设备配对"
+                "完成设备配对后再签名"
             ]
         case .pairing:
             return [
-                "用数据线连接 iPhone 和电脑",
-                "从电脑打开 Seal 配对助手",
-                "按提示生成配对文件，并导入 Seal",
-                "在 iPhone 上信任这台电脑",
-                "在设备页刷新，确认配对成功"
+                "iOS 27：在 Seal 的“设备”页启动配对",
+                "前往“设置 > 隐私与安全性 > 开发者模式”",
+                "在“与 Seal 配对”中选择 Seal，核对配对码后确认",
+                "iOS 17.4–26：用电脑配对助手导入配对文件",
+                "回到“设备”页，确认 LocalDevVPN 已验证"
             ]
         case .signingIPA:
             return [
                 "导入 IPA",
                 "点开待签名 App",
-                "确认 App 名称、图标、Bundle ID 是否需要更改",
-                "点击“签名并安装”"
+                "确认名称、图标和 Bundle ID",
+                "点击“签名并安装”",
+                "首次签名会准备证书、App ID 和描述文件",
+                "免费账户受设备级 3 App 限制"
             ]
         case .renewal:
             return [
                 "打开已安装页",
                 "点开需要续签的 App",
-                "点击“立即续签”"
+                "点击“立即续签”",
+                "证书和设备身份匹配时只更新描述文件",
+                "无法确认时自动完整重签并安装"
             ]
         case .batchRenewal:
             return [
                 "打开已安装页",
                 "点击“续签全部”",
-                "Seal 会最后续签自身，并退出进行安装"
+                "Seal 最后续签自身，必要时会覆盖安装",
+                "自动续签：添加 Seal 自动续签快捷指令",
+                "在“自动化”中设置续签时间"
             ]
         }
     }

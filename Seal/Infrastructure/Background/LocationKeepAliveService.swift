@@ -53,6 +53,10 @@ final class LocationKeepAliveService: NSObject {
 
     /// 是否**被请求过**（一旦置位不再复位；本类无 `stop()`，对齐 `BackgroundKeepAliveService`）。
     private(set) var isEnabled = false
+    /// Core Location 已经在更新；重复 `start()` 不能再次启动或重复记日志。
+    private var isUpdating = false
+    /// 系统授权弹窗尚未回调前，重复请求没有意义。
+    private var hasRequestedAuthorization = false
 
     init(logStore: SealLogStore? = nil) {
         self.logStore = logStore
@@ -79,6 +83,8 @@ final class LocationKeepAliveService: NSObject {
         switch action {
         case .requestAuthorization:
             // 结果走 `locationManagerDidChangeAuthorization` 回调，那里再决定是否真正启动。
+            guard hasRequestedAuthorization == false else { return }
+            hasRequestedAuthorization = true
             manager.requestAlwaysAuthorization()
         case .start:
             beginUpdating()
@@ -93,6 +99,9 @@ final class LocationKeepAliveService: NSObject {
     }
 
     private func beginUpdating() {
+        guard isUpdating == false else { return }
+        // 先置位，防止授权回调与重复 start() 在同一主线程轮次内重复启动。
+        isUpdating = true
         // 只关心「进程不被挂起」，不关心坐标精度：中等精度 + 任何位移都回调，
         // 回调是保活的燃料，精度高只会多耗电。
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters

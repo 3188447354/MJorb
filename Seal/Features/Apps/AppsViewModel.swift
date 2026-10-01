@@ -2003,10 +2003,14 @@ final class AppsViewModel: ObservableObject {
                 )
             }
             guard outcome.downgraded > 0 else { return }
+            let identifiers = outcome.downgradedAppIDs
+                .map(\.uuidString)
+                .joined(separator: ", ")
             try? await logStore?.append(
                 category: .renewal,
                 level: .warning,
-                message: "上次续签被中断，\(outcome.downgraded) 个应用的结果未知，需要重新核验",
+                message: "上次续签被中断，\(outcome.downgraded) 个应用的结果未知，需要重新核验"
+                    + "（队列项：\(identifiers)）",
                 code: "SEAL-RENEW-007"
             )
         } catch {

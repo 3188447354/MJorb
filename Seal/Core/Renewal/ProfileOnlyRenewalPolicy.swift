@@ -332,15 +332,23 @@ enum ProfileOnlyRenewalPolicy {
         )
     }
 
-    /// 🔴 **唯一判据**：「记录里描述的那个源包」与「正在运行的那个包」是不是同一个版本。
+    /// 🔴 **唯一判据**：「记录里描述的那个源包」与「正在运行的那个包」是不是同一个版本，
+    /// 加上「有没有新导入但尚未安装的源包」（内容指纹）。
     ///
     /// `true` = 记录里有一条**已导入但尚未生效**的更新源。
     ///
     /// 为什么必须单独立出来（2026-09-26 用户实测）：这条判断有**两个**消费方 ——
-    /// ① 准入（`evaluate(app:liveIdentity:)`：版本不一致就回落完整重签）；
+    /// ① 准入（`evaluate(app:liveIdentity:)`：有待安装更新就回落完整重签）；
     /// ② 界面（`AppSigningPresentationHelpers.pendingUpdateNote(for:runningVersion:)`：
     ///    在详情页 / 操作抽屉里说明「本次续签会完整重签并安装」）。
     /// 两处各写一份必然漂移成「准入说要做、界面不说」或反过来（本项目最反复的坑）。
+    ///
+    /// 版本比较之外为什么还要指纹（2026-10-02 用户需求）：导入 Seal 自身的 IPA
+    /// 即使**版本号相同**也要能覆盖更新。只看版本会把「同版本重建的包」判成无更新 ⇒
+    /// 走 profile-only（只换描述文件、从不安装）⇒ 新包永远装不上。
+    /// 指纹是导入时算的源包 SHA256，自替换结算成功后清掉（`SelfAppRegistrar`），
+    /// 因此同样是**自愈**的：没有新导入时指纹为空 ⇒ 回落为纯版本比较，
+    /// 续签不导入新包就不会触发重装 —— 1.3.17「续签全都要重装」的坑不会回来。
     ///
     /// ⚠️ **不能用 `AppRecord.hasPendingSelfUpdateSource` 代替它**：那个标志对 Seal
     /// **永远清不掉** —— 自替换安装成功后进程被系统换掉，清标志的那行
@@ -355,11 +363,15 @@ enum ProfileOnlyRenewalPolicy {
     ///     那会把一次正常的续签说成必须重装（与 R85 的 `.undetermined` 同一条纪律）。
     static func hasPendingUpdateSource(
         recordedVersion: String?,
-        runningVersion: String?
+        runningVersion: String?,
+        pendingUpdateSourceFingerprint: String? = nil
     ) -> Bool {
         guard let recorded = nonBlank(recordedVersion),
               let running = nonBlank(runningVersion) else { return false }
-        return Version.compare(recorded, running) != .orderedSame
+        if Version.compare(recorded, running) != .orderedSame { return true }
+        // 版本一致时看指纹：用户显式导入了新源包（即使版本号相同）才算待安装更新；
+        // 指纹为空（老记录 / 已结算）时不声称有更新，行为与过去一致。
+        return nonBlank(pendingUpdateSourceFingerprint) != nil
     }
 
     /// 记录之外的**第二条准入通道**：以「运行产物的实时身份」为准（对齐上游 `refresh`）。
@@ -388,12 +400,14 @@ enum ProfileOnlyRenewalPolicy {
            liveIdentity.mainBundleIdentifier.caseInsensitiveCompare(mappedMainBundleIdentifier)
                == .orderedSame {
             // ⚠️ 比较的是**营销版本**（`CFBundleShortVersionString`）—— 那正是更新通道
-            // 判「有没有新版本」用的单位（见 `AGENTS.md` §6）。同版本重建（只换构建号）
-            // 不在这里拦：那种情况记录会被 `SelfAppRegistrar` 对齐回运行版本，
-            // 而「同版本重建也强制完整重装」会把 1.3.17 那个「续签全都要重装」的坑请回来。
+            // 判「有没有新版本」用的单位（见 `AGENTS.md` §6）。版本一致时再看
+            // `pendingUpdateSourceFingerprint`：只有用户**显式导入了新源包**
+            // （即使版本号相同）才回落完整重签；续签时没导入新包指纹为空 ⇒
+            // 仍走 profile-only —— 1.3.17「续签全都要重装」的坑不会回来。
             guard hasPendingUpdateSource(
                 recordedVersion: app.version,
-                runningVersion: liveIdentity.runningVersion
+                runningVersion: liveIdentity.runningVersion,
+                pendingUpdateSourceFingerprint: app.pendingUpdateSourceFingerprint
             ) == false else {
                 return .requiresFullResign(.pendingSelfUpdateSource)
             }

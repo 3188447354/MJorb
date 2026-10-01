@@ -387,6 +387,12 @@ actor SelfAppRegistrar {
             accounts: accounts,
             fallbackAccountID: existing.accountID
         )
+        // 自替换安装已确认生效 ⇒ 待安装的更新源指纹清掉：它是自愈的，
+        // 下一次续签准入不再把它当成「有待安装更新」（否则同版本更新会每次续签都重装）。
+        // 注意 `hasPendingSelfUpdateSource` 在这里刻意不清 —— 自替换走不到
+        // SigningCoordinator 的普通安装路径，那个标志的语义是「导入过自更新源」，
+        // 由 `SelfAppRegistrar` 的待安装分支按版本/文件存在性解读。
+        updated.pendingUpdateSourceFingerprint = nil
         try await appStore.save(updated)
     }
 

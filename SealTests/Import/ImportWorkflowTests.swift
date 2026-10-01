@@ -292,6 +292,75 @@ struct ImportWorkflowTests {
         #expect(try Data(contentsOf: oldIPA) != Data("old-seal".utf8))
     }
 
+    /// 同版本导入 Seal 自身 IPA 也要能覆盖更新（2026-10-02 用户需求）：
+    /// 导入时必须把源包指纹写进记录 —— 版本号相同时续签准入只能靠它
+    /// 认出「有待安装的更新源」（`ProfileOnlyRenewalPolicy.hasPendingUpdateSource`）。
+    @Test
+    func importingSealIPAWithSameVersionRecordsSourceFingerprint() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let sealID = UUID()
+        let previousOriginalPath = "Apps/\(sealID.uuidString)/Original.ipa"
+        let installedSeal = AppRecord(
+            id: sealID,
+            originalBundleIdentifier: "com.mjorb.seal",
+            mappedBundleIdentifier: "com.mjorb.seal.TEAM000001",
+            name: "Seal",
+            version: "1.0",
+            buildNumber: "1",
+            size: 10,
+            state: .installed,
+            ipaRelativePath: previousOriginalPath,
+            preferredBundleIdentifier: "com.mjorb.seal.TEAM000001",
+            isSeal: true,
+            isPinned: true,
+            importedAt: Date(timeIntervalSince1970: 100)
+        )
+        let oldIPA = environment.documents.appending(path: previousOriginalPath)
+        try FileManager.default.createDirectory(
+            at: oldIPA.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("old-seal".utf8).write(to: oldIPA)
+        try await environment.appStore.save(installedSeal)
+
+        // 导入包与运行中版本**相同**（1.0），只是内容不同。
+        let source = try IPAArchiveFixture.make(
+            apps: [
+                .init(
+                    directoryName: "Seal.app",
+                    bundleIdentifier: "com.mjorb.seal",
+                    name: "Seal",
+                    version: "1.0",
+                    buildNumber: "2"
+                )
+            ]
+        )
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let workflow = makeWorkflow(environment: environment, appID: UUID())
+
+        await workflow.prepare(sourceURL: source)
+        await workflow.confirm()
+
+        let imported = try requireCompleted(await workflow.state)
+        #expect(imported.id == sealID)
+        #expect(imported.version == "1.0")
+        #expect(imported.hasPendingSelfUpdateSource)
+        // 指纹 = 导入源包的 SHA256（流式算的，不整包进内存）。
+        let expectedFingerprint = try await environment.fileStore.sha256(
+            relativePath: imported.ipaRelativePath
+        )
+        #expect(imported.pendingUpdateSourceFingerprint == expectedFingerprint)
+        // 准入判据认得出这是待安装更新：版本一致 + 有指纹 ⇒ 回落完整重签。
+        #expect(
+            ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
+                recordedVersion: imported.version,
+                runningVersion: "1.0",
+                pendingUpdateSourceFingerprint: imported.pendingUpdateSourceFingerprint
+            )
+        )
+    }
+
     private func makeWorkflow(
         environment: Environment,
         appID: UUID = UUID(),

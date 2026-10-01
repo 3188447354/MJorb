@@ -365,6 +365,92 @@ struct SelfAppRegistrarTests {
         #expect(updated.expiryDate == storedExpiry)
     }
 
+    /// 2026-10-02：自替换结算成功后必须清除待安装源指纹（自愈）。
+    ///
+    /// 指纹是导入 Seal 自身 IPA 时写入的；不清掉的话，同版本导入的包会在**每次**
+    /// 续签时都被 `hasPendingUpdateSource` 判成「有待安装更新」⇒ 每次续签都完整重装
+    /// —— 1.3.17「续签全都要重装」的坑会回来。
+    ///
+    /// 注意 `hasPendingSelfUpdateSource` 在这里刻意不清：自替换走不到
+    /// `SigningCoordinator` 的普通安装路径，那个标志的语义是「导入过自更新源」，
+    /// 由启动时的待安装分支按版本/文件存在性解读。
+    @Test
+    func successfulSelfReplacementSettlementClearsPendingUpdateSourceFingerprint() async throws {
+        let fixture = try makeSealFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var seal = makeSealRecord(
+            fixture,
+            expiry: Date(timeIntervalSince1970: 1_700_000_000),
+            profileUUID: "OLD-PROFILE",
+            profileName: "Seal"
+        )
+        seal.hasPendingSelfUpdateSource = true
+        seal.pendingUpdateSourceFingerprint = "sha256-of-imported-update"
+        try await fixture.appStore.save(seal)
+
+        let newExpiry = Date(timeIntervalSince1970: 1_750_000_000)
+        let installedIdentity = InstalledIdentity(
+            bundleURL: fixture.currentBundle,
+            version: "1.0",
+            buildNumber: "1",
+            targets: [
+                SignedTargetIdentity(
+                    kind: .mainApp,
+                    bundleIdentifier: "com.mjorb.seal",
+                    teamIdentifier: "TEAM000001",
+                    applicationIdentifier: "TEAM000001.com.mjorb.seal",
+                    profileUUID: "NEW-PROFILE",
+                    profileExpirationDate: newExpiry,
+                    signerSerialNumber: "SERIAL",
+                    signerCertificateSHA256: "CERTSHA",
+                    status: .complete
+                )
+            ],
+            readErrors: []
+        )
+        let registrar = SelfAppRegistrar(
+            metadata: SelfAppMetadata(
+                bundleURL: fixture.currentBundle,
+                bundleIdentifier: "com.mjorb.seal",
+                originalBundleIdentifier: "com.mjorb.seal",
+                name: "Seal",
+                version: "1.0",
+                buildNumber: "1",
+                iconData: nil,
+                expirationDate: newExpiry,
+                signingTeamIdentifier: "TEAM000001",
+                signingApplicationIdentifier: nil,
+                provisioningProfileUUID: "NEW-PROFILE",
+                provisioningProfileName: "Seal Renewed",
+                provisioningProfileCreationDate: nil
+            ),
+            appStore: fixture.appStore,
+            accountRepository: EmptyAccountRepository(),
+            fileStore: fixture.fileStore,
+            selfReplacement: FakeSelfReplacing(
+                reconcileAction: .settle,
+                settled: SettledSelfReplacement(
+                    transactionID: UUID(),
+                    installedIdentity: installedIdentity,
+                    mainBundleIdentifier: "com.mjorb.seal",
+                    mainProfileUUID: "NEW-PROFILE",
+                    installedIdentityReadAt: Date()
+                )
+            )
+        )
+
+        try await registrar.ensureRegistered()
+
+        let updated = try #require(try await fixture.appStore.fetchAll().first)
+        // 指纹清掉 ⇒ 下一次续签准入不再把它当成待安装更新（自愈）。
+        #expect(updated.pendingUpdateSourceFingerprint == nil)
+        // 结算确认的真实身份仍然写入。
+        #expect(updated.provisioningProfileUUID == "NEW-PROFILE")
+        #expect(updated.expiryDate == newExpiry)
+        // `hasPendingSelfUpdateSource` 刻意保留（语义是「导入过自更新源」）。
+        #expect(updated.hasPendingSelfUpdateSource)
+    }
+
     // MARK: - 夹具
 
     private struct SealFixture {
@@ -442,4 +528,46 @@ private actor EmptyAccountRepository: AccountRepository {
     func fetchAll() throws -> [AppleAccountRecord] { [] }
     func save(_ account: AppleAccountRecord) throws {}
     func delete(id: UUID) throws {}
+}
+
+/// 只为结算测试服务的假自替换协调器：`reconcileAtLaunch` 返回预设动作，
+/// `settle` 返回预设的结算结果，其余方法测试里用不到。
+private actor FakeSelfReplacing: SelfReplacing {
+    let reconcileAction: SelfReplacementReconcileAction
+    let settled: SettledSelfReplacement
+
+    init(
+        reconcileAction: SelfReplacementReconcileAction,
+        settled: SettledSelfReplacement
+    ) {
+        self.reconcileAction = reconcileAction
+        self.settled = settled
+    }
+
+    func prepare(
+        app: AppRecord,
+        accountID: UUID,
+        signedIPARelativePath: String
+    ) async throws -> SelfReplacementTransaction {
+        throw SelfReplacementFailure.bundleShapeChanged
+    }
+
+    func submitPrepared(
+        transactionID: UUID,
+        progress: @escaping @Sendable (Double) async -> Void
+    ) async throws {}
+
+    func reconcileAtLaunch() async throws -> SelfReplacementReconcileAction {
+        reconcileAction
+    }
+
+    func settle() async throws -> SettledSelfReplacement {
+        settled
+    }
+
+    func closeAsNotInstalled() async throws {}
+
+    func requireRecovery(reason: String) async throws {}
+
+    func finishCleanup(_ summary: ProfileCleanupSummary) async throws {}
 }

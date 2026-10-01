@@ -230,6 +230,22 @@ struct AppPresentationTests {
             ) == nil
         )
 
+        // 同版本导入了新包（有源包指纹）⇒ 也要说话：准入与界面必须同源
+        // （2026-10-02 用户需求：导入 Seal 自身 IPA，版本号相同也要能覆盖更新）。
+        var sameVersionReimported = makeApp(
+            state: .installed,
+            expiryDate: now.addingTimeInterval(6 * 86_400),
+            version: "1.3.19",
+            isSeal: true
+        )
+        sameVersionReimported.pendingUpdateSourceFingerprint = "sha256-of-newly-imported-ipa"
+        #expect(
+            AppSigningPresentationHelpers.pendingUpdateNote(
+                for: sameVersionReimported,
+                runningVersion: "1.3.19"
+            ) == AppSigningPresentationHelpers.pendingUpdateDetail
+        )
+
         // 第三方应用不说话：只有 Seal 自己的运行包能被 `Bundle.main` 读到，
         // 拿 Seal 的版本去比第三方应用的记录版本必然误报。
         let thirdParty = makeApp(

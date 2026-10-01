@@ -5,6 +5,38 @@
 
 ---
 
+## 2026-10-02 “组件与许可”据实审计（用户要求：真实的、能不写的不写）
+
+- **现象**：旧列表 7 项中 `DeviceSupport` 的 URL（`SideStore/DeviceSupport`）已 404；随 SideSign 静态链接的 CodeSignKit、GSACryptoKit、libdeflate 被漏列；AnisetteKit 链接的 Unicorn 二进制、AltSign/CodeSignKit/GSACryptoKit 链接的 OpenSSL 二进制、CodeSignKit 依赖的 swift-asn1 均未列出。
+- **根因**：2026-10-01 的“核对”只看了 `project.yml` 直接依赖，没查 `Vendor/*/Package.swift` 的传递依赖，也没验证 URL 可访问性。
+- **修复**：逐个核对 Vendor 内 LICENSE 文件 / README 许可证声明并验证 URL。13 项：AltSign（许可证待确认——sunuannian1 fork 在锁定 revision 下确实无 LICENSE 文件，如实保留）、OpenSSL（Apache-2.0）、SideSign（GPL-3.0）、CodeSignKit（AGPL-3.0）、GSACryptoKit（AGPL-3.0）、libdeflate（MIT）、AnisetteKit（AGPL-3.0）、Unicorn Engine（GPL-2.0）、Minimuxer（AGPL-3.0）、libimobiledevice（GPL-2.0/LGPL-2.1，替换 404 的 DeviceSupport 条目）、ZIPFoundation（MIT）、swift-crypto（Apache-2.0）、swift-asn1（Apache-2.0）。不单列：CryptoExtras（属 swift-crypto）、RustBridge（属 Minimuxer 包内）、AltSign 树内 C 源码（属 AltSign 包内）；EMProxy 在 vendored Minimuxer 中不存在。
+- **涉及文件**：`Seal/Features/Settings/OpenSourceLicensesView.swift`。
+- **验证状态**：URL 与许可证声明均已逐项在线核实；待 CI 编译通过。
+
+---
+
+## 2026-10-02 导入 Seal 自身 IPA、版本号相同时无法覆盖更新
+
+- **现象**：用户需求 —— 导入 Seal 自身的 IPA 包，即使版本号与运行中一致也要能覆盖更新。旧行为：`ProfileOnlyRenewalPolicy.hasPendingUpdateSource` 只比较营销版本，版本一致即判「无待安装更新」⇒ 走 profile-only（只换描述文件、从不安装）⇒ 新导入的包永远装不上。
+- **根因**：版本比较是「有没有**新版本**」的判据，不是「有没有**新导入的包**」的判据。不能用 `AppRecord.hasPendingSelfUpdateSource` 代替 —— 那个标志对 Seal 恒为真（自替换走不到 `SigningCoordinator` 里清它的普通安装路径），用它会退化成「每次续签都完整重装」（1.3.17 的坑）。
+- **修复**：新增 `AppRecord.pendingUpdateSourceFingerprint`（源 IPA 的 SHA256）。导入 Seal 自身 IPA 时在 `ImportWorkflow.commit` 里流式计算并写入（失败不阻断导入，回落为纯版本比较）；`hasPendingUpdateSource` 在版本一致时再看指纹 —— 有指纹才算待安装更新；自替换结算成功后由 `SelfAppRegistrar.atomicallyApplyInstalledIdentity` 清掉（自愈）。准入（`evaluate`）与界面（`pendingUpdateNote`）共用同一判据，不漂移。`pendingUpdateDetail` 文案改为版本无关的「新包」。第三方应用不受影响（它们的覆盖更新本就靠清空签名产物强制完整重签，无版本门）。
+- **上游对照**：SideStore 的自更新是版本号驱动的更新通道，没有「导入同版本 IPA 覆盖安装」的概念 →「不跟（上游没有）」，Seal 自有机制。已记入 `docs/upstream-alignment.md` 对照台账。
+- **涉及文件**：`Seal/Core/Apps/AppRecord.swift`、`Seal/Infrastructure/Persistence/CoreDataModel.swift`、`Seal/Infrastructure/Persistence/CoreDataAppStore.swift`、`Seal/Core/Import/ImportWorkflow.swift`、`Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift`、`Seal/Core/Renewal/SelfAppRegistrar.swift`、`Seal/Features/Apps/AppPresentation.swift`、`SealTests/Renewal/ProfileOnlyRenewalPolicyTests.swift`、`SealTests/Apps/AppPresentationTests.swift`、`SealTests/Import/ImportWorkflowTests.swift`、`SealTests/Renewal/SelfAppRegistrarTests.swift`。
+- **验证状态**：新增 4 组回归测试（指纹判据 5 断言 / 界面同版本提示 / 导入写入指纹且等于源包 SHA256 / 结算清指纹且保留 `hasPendingSelfUpdateSource`）；本机无 Xcode，待云端 `swift-regression` 编译 + 真机验证「同版本导入→续签完整重签安装→下次续签回到 profile-only」。
+
+---
+
+## 2026-10-02 自续签 App Group ID 重复映射导致 Apple -1（续签幂等 bug）
+
+- **现象**：Seal 自续签在 `preparingAppID` 阶段报 `SEAL-APPID-303 App ID 创建失败`（Apple.APIError -1）。日志显示 App ID 已复用、无需新注册、能力一致且跳过 `updateFeatures`，错误实际发生在后续 App Group 步骤；每次重试都确定性复现。
+- **根因**：`BundleIDMapper.appGroupID` 不幂等。续签输入的是已签名二进制 entitlements 里的 group ID（已映射为 `group.com.mjorb.seal.seal.<teamID>`），再次映射追加出 `group.…seal.<teamID>.seal.<teamID>`；`fetchAppGroups` 查不到 → 误调 `addAppGroup` → Apple 回通用 -1，外层误包装成 SEAL-APPID-303。同文件的 `mainBundleID` 早有同类后缀保护，`appGroupID` 漏了。
+- **修复**：`appGroupID` 加当前 team 后缀大小写不敏感幂等判断（已映射则原样返回），与 `mainBundleID` 对齐；新增回归测试覆盖首次映射 / 已映射再映射不变 / team 大小写 / 跨 team 不误判。
+- **上游对照**：`.seal.<teamID>` 后缀是 Seal 自有映射，上游无对应做法 →「不跟」，属 Seal 自有 bug 修复。
+- **涉及文件**：`Seal/Core/Signing/BundleIDMapper.swift`、`SealTests/Signing/BundleIDMapperTests.swift`。
+- **验证状态**：本地等价逻辑断言通过；Windows 无 Xcode，待云端 CI 编译 + 真机自续签验证。
+
+---
+
 ## 2026-10-01 Seal 自替换对已满足 App ID 重复写能力导致失败（本地修复，未推送）
 
 - **现象**：安装最新 Seal 后为 Seal 自身完整重签，其他应用可以成功；日志显示目标 App ID 已存在、无需新注册且远端能力与本次请求一致，随后仍以 `SEAL-APPID-303` 失败。

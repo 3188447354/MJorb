@@ -61,6 +61,15 @@ struct BundleIDMapper: Sendable {
     func appGroupID(original: String, teamID: String) -> String {
         // 和 Bundle ID 格式对齐：group.<去掉group.前缀的原始ID>.seal.<teamID>
         // 保留完整原始标识，多 group 自然唯一，teamID 保证全局唯一
+        //
+        // 幂等：续签时输入的是已签名二进制 entitlements 里的 group ID（已映射过），
+        // 若再追加一次 .seal.<teamID> 会得到 group.x.seal.TEAM.seal.TEAM，
+        // fetchAppGroups 查不到 → 误调 addAppGroup → Apple 回 -1（曾被误报为 SEAL-APPID-303）。
+        // 对齐 mainBundleID 的同类保护：已带当前 team 后缀（大小写不敏感）则原样返回。
+        let suffix = ".seal.\(teamID)"
+        if original.lowercased().hasSuffix(suffix.lowercased()) {
+            return original
+        }
         let base = original.hasPrefix("group.") ? String(original.dropFirst(6)) : original
         return "group.\(base).seal.\(teamID)"
     }

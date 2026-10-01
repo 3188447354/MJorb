@@ -1,3 +1,11 @@
+# 1.0.1
+
+- 自续签 App Group 幂等修复：续签时不再重复追加 `.seal.<teamID>` 后缀，避免 Apple 返回 -1 导致 `SEAL-APPID-303`。
+- 导入 Seal 自身 IPA 即使版本号相同也能覆盖更新：导入时记录源包指纹，续签时识别到新包会完整重签安装；安装成功后自动恢复 profile-only 续签。
+- “组件与许可”据实更新：补上随包分发的 CodeSignKit、GSACryptoKit、libdeflate、Unicorn Engine、OpenSSL、swift-asn1，修正 libimobiledevice 的链接。
+
+---
+
 # 1.0.0 正式版
 
 - 证书页同步改为最新请求优先：切换 Apple ID、撤销或更换证书后，旧网络回包不会重新显示旧证书；本机管理身份首次读取时显示同步状态。

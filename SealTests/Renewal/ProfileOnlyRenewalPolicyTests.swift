@@ -249,6 +249,53 @@ struct ProfileOnlyRenewalPolicyTests {
         )
     }
 
+    /// 同版本导入 Seal 自身 IPA 也要能覆盖更新（2026-10-02 用户需求）：
+    /// 版本号一致时看源包指纹 —— 用户显式导入了新包才算待安装更新；
+    /// 指纹为空（老记录 / 结算已完成）时回落为纯版本比较，不改变既有行为。
+    @Test
+    func pendingUpdateSourceDetectedByFingerprintWhenVersionsMatch() {
+        // 版本一致 + 有指纹 ⇒ 有待安装更新（会回落完整重签并安装）
+        #expect(
+            ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
+                recordedVersion: "1.0.0",
+                runningVersion: "1.0.0",
+                pendingUpdateSourceFingerprint: "abc123"
+            )
+        )
+        // 版本一致 + 无指纹 ⇒ 无待安装更新（走 profile-only，行为与过去一致）
+        #expect(
+            ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
+                recordedVersion: "1.0.0",
+                runningVersion: "1.0.0",
+                pendingUpdateSourceFingerprint: nil
+            ) == false
+        )
+        // 空白指纹视同无指纹
+        #expect(
+            ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
+                recordedVersion: "1.0.0",
+                runningVersion: "1.0.0",
+                pendingUpdateSourceFingerprint: "   "
+            ) == false
+        )
+        // 版本不一致时指纹不影响判定
+        #expect(
+            ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
+                recordedVersion: "1.0.1",
+                runningVersion: "1.0.0",
+                pendingUpdateSourceFingerprint: nil
+            )
+        )
+        // 版本读不出来时不声称有待安装更新（即使有指纹也不猜）
+        #expect(
+            ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
+                recordedVersion: nil,
+                runningVersion: "1.0.0",
+                pendingUpdateSourceFingerprint: "abc123"
+            ) == false
+        )
+    }
+
     /// 版本不一致时，实时身份**仍然**必须能构造出来 —— 否则会退化成
     /// 「回落记录通道」，而记录通道对 Seal 恒判 `.missingInstalledArtifact`，
     /// 归因就从「有更新没装」变成「记录里缺少已安装产物」（日志会误导排查）。

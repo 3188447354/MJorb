@@ -191,13 +191,27 @@ actor ImportWorkflow {
             transaction = try await fileStore.markDatabaseCommitPending(transaction)
             fileTransaction = transaction
 
+            // 自更新源指纹：只有导入 Seal 自身 IPA 时才算 —— 续签准入靠它判断
+            // 「有没有待安装的更新源」。版本号相同时只能靠内容指纹区分
+            // （`ProfileOnlyRenewalPolicy.hasPendingUpdateSource`）。
+            // 流式哈希，不整包进内存；失败不阻断导入（回落为纯版本比较）。
+            let pendingUpdateSourceFingerprint: String?
+            if existingSeal != nil {
+                pendingUpdateSourceFingerprint = try? await fileStore.sha256(
+                    relativePath: transaction.storedFiles.ipaRelativePath
+                )
+            } else {
+                pendingUpdateSourceFingerprint = nil
+            }
+
             var record = Self.makeRecord(
                 draft: draft,
                 files: transaction.storedFiles,
                 importedAt: now(),
                 replacing: existing,
                 existingSeal: existingSeal,
-                preferenceSource: preferenceSource
+                preferenceSource: preferenceSource,
+                pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint
             )
             record.pendingFileTransactionID = transaction.id
             // 被替换的记录必须逐条记下来，回滚时按 id 恢复：
@@ -335,13 +349,15 @@ actor ImportWorkflow {
         importedAt: Date,
         replacing existing: AppRecord?,
         existingSeal: AppRecord?,
-        preferenceSource: AppRecord?
+        preferenceSource: AppRecord?,
+        pendingUpdateSourceFingerprint: String? = nil
     ) -> AppRecord {
         if let existingSeal {
             return makeSelfUpdateRecord(
                 draft: draft,
                 files: files,
-                existingSeal: existingSeal
+                existingSeal: existingSeal,
+                pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint
             )
         }
 
@@ -401,7 +417,8 @@ actor ImportWorkflow {
     private static func makeSelfUpdateRecord(
         draft: ImportDraft,
         files: StoredAppFiles,
-        existingSeal: AppRecord
+        existingSeal: AppRecord,
+        pendingUpdateSourceFingerprint: String? = nil
     ) -> AppRecord {
         let parsed = draft.parsedIPA
         return AppRecord(
@@ -441,6 +458,7 @@ actor ImportWorkflow {
             lastInstallFailureCode: nil,
             lastInstallFailureReason: nil,
             hasPendingSelfUpdateSource: true,
+            pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint,
             isSeal: true,
             isPinned: true,
             importedAt: existingSeal.importedAt,

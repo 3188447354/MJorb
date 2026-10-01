@@ -227,7 +227,7 @@ enum AppSigningPresentationHelpers {
     ///   · 后半句说**以后会怎样**（回到只更新描述文件）——
     ///     否则用户会以为「每次续签都要重装」。
     static let pendingUpdateDetail =
-        "已导入的新版本还没装上：本次续签会完整重签并安装，装完新版本才真正生效；"
+        "已导入的新包还没装上：本次续签会完整重签并安装，装完新包才真正生效；"
         + "之后续签回到只更新描述文件。"
 
     /// 该状态要不要说这句话；不需要时返回 `nil`。
@@ -245,7 +245,8 @@ enum AppSigningPresentationHelpers {
         guard app.isSeal,
               ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
                   recordedVersion: app.version,
-                  runningVersion: runningVersion
+                  runningVersion: runningVersion,
+                  pendingUpdateSourceFingerprint: app.pendingUpdateSourceFingerprint
               ) else {
             return nil
         }

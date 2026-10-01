@@ -33,6 +33,33 @@ struct BundleIDMapperTests {
     }
 
     @Test
+    func appGroupIDMappingIsIdempotentForCurrentTeam() {
+        // 回归：续签时输入的是已签名二进制 entitlements 里的 group ID（已映射过），
+        // appGroupID 必须幂等，否则得到 group.x.seal.TEAM.seal.TEAM，
+        // fetchAppGroups 查不到 → 误调 addAppGroup → Apple 回 -1（曾被误报为 SEAL-APPID-303）
+        let mapper = BundleIDMapper()
+        let teamID = "CT8QZ7352B"
+        let mapped = mapper.appGroupID(original: "group.com.mjorb.seal", teamID: teamID)
+        #expect(mapped == "group.com.mjorb.seal.seal.CT8QZ7352B")
+        // 已映射 ID 再次映射必须保持不变
+        #expect(mapper.appGroupID(original: mapped, teamID: teamID) == mapped)
+        // team 后缀匹配大小写不敏感
+        #expect(
+            mapper.appGroupID(original: mapped.lowercased(), teamID: teamID)
+                == mapped.lowercased()
+        )
+        // 无 group. 前缀的原始输入同样幂等
+        let noPrefix = mapper.appGroupID(original: "com.example.demo", teamID: teamID)
+        #expect(noPrefix == "group.com.example.demo.seal.CT8QZ7352B")
+        #expect(mapper.appGroupID(original: noPrefix, teamID: teamID) == noPrefix)
+        // 不同 team 不应被误判为已映射（保持与 mainBundleID 一致的跨 team 行为）
+        #expect(
+            mapper.appGroupID(original: mapped, teamID: "OTHERTEAM1")
+                == "group.com.mjorb.seal.seal.CT8QZ7352B.seal.OTHERTEAM1"
+        )
+    }
+
+    @Test
     func requestedMainBundleIdentifierHonoredWithinTeamSuffix() {
         let mapper = BundleIDMapper()
         // requested 不带当前 team 后缀 → 统一换算成当前团队的推荐 ID（自动补 .seal.<teamID>），

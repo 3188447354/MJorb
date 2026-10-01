@@ -36,6 +36,11 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
     var lastInstallFailureReason: String?
     var pendingFileTransactionID: UUID?
     var hasPendingSelfUpdateSource: Bool
+    /// 待安装的自更新源包指纹（源 IPA 的 SHA256，导入 Seal 自身 IPA 时写入）。
+    /// 续签准入用它判断「有没有待安装的更新源」：版本号相同时只能靠内容指纹区分。
+    /// 自替换安装成功、结算完成后清掉（`SelfAppRegistrar.atomicallyApplyInstalledIdentity`），
+    /// 因此它是自愈的 —— 不像 `hasPendingSelfUpdateSource` 那样装完还一直为真。
+    var pendingUpdateSourceFingerprint: String?
     let isSeal: Bool
     var isPinned: Bool
     let importedAt: Date
@@ -79,6 +84,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         lastInstallFailureReason: String? = nil,
         pendingFileTransactionID: UUID? = nil,
         hasPendingSelfUpdateSource: Bool = false,
+        pendingUpdateSourceFingerprint: String? = nil,
         isSeal: Bool = false,
         isPinned: Bool = false,
         importedAt: Date,
@@ -121,6 +127,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         self.lastInstallFailureReason = lastInstallFailureReason
         self.pendingFileTransactionID = pendingFileTransactionID
         self.hasPendingSelfUpdateSource = hasPendingSelfUpdateSource
+        self.pendingUpdateSourceFingerprint = pendingUpdateSourceFingerprint
         self.isSeal = isSeal
         self.isPinned = isPinned
         self.importedAt = importedAt
@@ -165,6 +172,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         case lastInstallFailureReason
         case pendingFileTransactionID
         case hasPendingSelfUpdateSource
+        case pendingUpdateSourceFingerprint
         case isSeal
         case isPinned
         case importedAt
@@ -219,6 +227,10 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
             Bool.self,
             forKey: .hasPendingSelfUpdateSource
         ) ?? false
+        pendingUpdateSourceFingerprint = try container.decodeIfPresent(
+            String.self,
+            forKey: .pendingUpdateSourceFingerprint
+        )
         isSeal = try container.decodeIfPresent(Bool.self, forKey: .isSeal) ?? false
         isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         importedAt = try container.decode(Date.self, forKey: .importedAt)

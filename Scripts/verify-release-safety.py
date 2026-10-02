@@ -9428,22 +9428,28 @@ def main():
 
         # ── R89：「记录里的源包版本 ≠ 正在运行的版本」⇒ 不得走 profile-only 快路径 ──
         # ① 把版本判据翻过来（相等才算「有待安装」）⇒ R89① 报红。
+        #    ⚠️ 2026-10-02：判据加了「同版本＋指纹」的第二分支（导入同版本 IPA 覆盖更新），
+        #    `return` 改成了 `if { return true }`，锚点同步更新；变异体保持「翻转比较符」。
         ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
-         "        return Version.compare(recorded, running) != .orderedSame\n",
-         "        return Version.compare(recorded, running) == .orderedSame\n",
+         "        if Version.compare(recorded, running) != .orderedSame { return true }\n",
+         "        if Version.compare(recorded, running) == .orderedSame { return true }\n",
          "R89①: 「有已导入的更新源」判据必须是**版本比较**"),
         # ② 算了版本却不据此回落（`_ =` 丢弃结果）⇒ R89② 报红。
         #    **这正是本次要修的 bug 的形态**：判据在、但不影响控制流。
+        #    ⚠️ 2026-10-02：调用点新增 `pendingUpdateSourceFingerprint` 参数
+        #    （同版本 IPA 覆盖更新），锚点与变异体同步更新。
         ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
          "            guard hasPendingUpdateSource(\n"
          "                recordedVersion: app.version,\n"
-         "                runningVersion: liveIdentity.runningVersion\n"
+         "                runningVersion: liveIdentity.runningVersion,\n"
+         "                pendingUpdateSourceFingerprint: app.pendingUpdateSourceFingerprint\n"
          "            ) == false else {\n"
          "                return .requiresFullResign(.pendingSelfUpdateSource)\n"
          "            }\n",
          "            _ = hasPendingUpdateSource(\n"
          "                recordedVersion: app.version,\n"
-         "                runningVersion: liveIdentity.runningVersion\n"
+         "                runningVersion: liveIdentity.runningVersion,\n"
+         "                pendingUpdateSourceFingerprint: app.pendingUpdateSourceFingerprint\n"
          "            )\n",
          "R89②: 实时身份通道必须比对"),
         # ③ 忘了归一化空串 ⇒ R89③ 报红（空串会被当成 0，与任何版本都不等 ⇒ 误判成有待安装）。

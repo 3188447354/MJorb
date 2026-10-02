@@ -5,6 +5,18 @@
 
 ---
 
+## 2026-10-02 CI `Check release safety invariants` 失败（R60b / R89① / R89② 变异锚点）
+
+- **现象**：run 36949196668 的 build-package 在守卫步骤失败，3 个 FAIL。
+- **根因**：
+  1. R60b 变异：我把补丁记成第二个 `# 1.0.0` 小节，变异把第一个 `# ` 降级成 `## ` 后解析出的第一节仍是 1.0.0，变异失去判别力。
+  2. R89①/② 变异锚点：`hasPendingUpdateSource` 加了指纹分支后，`return Version.compare…` 改成 `if … { return true }`、调用点多了 `pendingUpdateSourceFingerprint` 参数，守卫脚本里的硬编码锚点对不上了。
+- **修复**：RELEASE_NOTES 补丁条目并入唯一的 `# 1.0.0 正式版` 小节（不再有第二个 `# 1.0.0` 标题）；`Scripts/verify-release-safety.py` 里 R89①/② 的锚点与变异体同步更新（变异语义不变：①翻转比较符、②丢弃判据结果）。
+- **涉及文件**：`RELEASE_NOTES.md`、`Scripts/verify-release-safety.py`。
+- **验证状态**：锚点与源码逐字核对各命中 1 次；R60b 直接检查与变异模拟本地验证通过；待 CI。
+
+---
+
 ## 2026-10-02 “组件与许可”据实审计（用户要求：真实的、能不写的不写）
 
 - **现象**：旧列表 7 项中 `DeviceSupport` 的 URL（`SideStore/DeviceSupport`）已 404；随 SideSign 静态链接的 CodeSignKit、GSACryptoKit、libdeflate 被漏列；AnisetteKit 链接的 Unicorn 二进制、AltSign/CodeSignKit/GSACryptoKit 链接的 OpenSSL 二进制、CodeSignKit 依赖的 swift-asn1 均未列出。

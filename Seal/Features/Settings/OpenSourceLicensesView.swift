@@ -22,17 +22,12 @@ struct OpenSourceLicensesView: View {
     /// - DeviceSupport 改名 libimobiledevice 并修正 URL：旧 URL
     ///   `SideStore/DeviceSupport` 已 404；实际编进包的是 Vendor 里
     ///   libimobiledevice 全家桶源码（COPYING/COPYING.LESSER 为 GPL-2.0/LGPL-2.1）。
-    /// - AltSign 保持「许可证待确认」：sunuannian1 fork 在锁定 revision 下
-    ///   没有 LICENSE 文件，这是如实状态，不是漏填。
+    /// - AltSign 未列入：sunuannian1 fork 在锁定 revision 下没有 LICENSE 文件，
+    ///   许可证状态不明，不在此处展示（不影响其随包分发的事实）。
     /// - 不单列的：CryptoExtras（属 swift-crypto 同一条目）、RustBridge
     ///   （属 Minimuxer 包内）、AltSign 树内 C 源码（minizip-ng/ldid/corecrypto，
     ///   属 AltSign 包内）；EMProxy 在 vendored Minimuxer 里不存在，未链接。
     private let dependencies: [OpenSourceDependency] = [
-        OpenSourceDependency(
-            name: "AltSign",
-            license: "许可证待确认",
-            url: Self.makeURL("https://github.com/sunuannian1/AltSign")
-        ),
         OpenSourceDependency(
             name: "OpenSSL",
             license: "Apache-2.0",

@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-10-02 自更新源指纹算到了旧包头上（`importingSealIPAWithSameVersionRecordsSourceFingerprint` 失败）
+
+- **现象**：CI swift-regression 挂 1 个测试：`imported.pendingUpdateSourceFingerprint` 与 `imported.ipaRelativePath` 的实际 SHA256 不一致。
+- **根因**：`prepareImportCommit` 把新包先拷到 pending 目录（`Apps/.<appID>.pending-<tx>/`），`StoredAppFiles.ipaRelativePath` 指向的最终路径此时还是旧文件。指纹代码对最终路径做哈希，自更新场景（旧包存在）下算到的是**旧包**的指纹 —— 指纹本该标识新源包，错了就起不到“同版本区分新旧包”的作用。
+- **修复**：改对 `draft.stagedIPA.url` 做哈希（`AppFileStore.streamingSHA256(url:)`，内容与最终落盘文件一致），不再碰最终路径。
+- **涉及文件**：`Seal/Core/Import/ImportWorkflow.swift`。
+- **验证状态**：待 CI。
+
+---
+
 ## 2026-10-02 CI `Check release safety invariants` 失败（R60b / R89① / R89② 变异锚点）
 
 - **现象**：run 36949196668 的 build-package 在守卫步骤失败，3 个 FAIL。

@@ -194,12 +194,15 @@ actor ImportWorkflow {
             // 自更新源指纹：只有导入 Seal 自身 IPA 时才算 —— 续签准入靠它判断
             // 「有没有待安装的更新源」。版本号相同时只能靠内容指纹区分
             // （`ProfileOnlyRenewalPolicy.hasPendingUpdateSource`）。
+            //
+            // ⚠️ 必须对 `draft.stagedIPA`（用户选的源包）做哈希：
+            // `transaction.storedFiles.ipaRelativePath` 指向最终路径，而新包此时还在
+            // pending 目录里、尚未落盘 —— 对最终路径哈希会算到**旧包**头上
+            // （2026-10-02 CI 实测 `importingSealIPAWithSameVersionRecordsSourceFingerprint` 失败）。
             // 流式哈希，不整包进内存；失败不阻断导入（回落为纯版本比较）。
             let pendingUpdateSourceFingerprint: String?
             if existingSeal != nil {
-                pendingUpdateSourceFingerprint = try? await fileStore.sha256(
-                    relativePath: transaction.storedFiles.ipaRelativePath
-                )
+                pendingUpdateSourceFingerprint = try? AppFileStore.streamingSHA256(url: draft.stagedIPA.url)
             } else {
                 pendingUpdateSourceFingerprint = nil
             }

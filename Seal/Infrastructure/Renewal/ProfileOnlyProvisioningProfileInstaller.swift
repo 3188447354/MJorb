@@ -47,31 +47,13 @@ actor ProfileOnlyProvisioningProfileInstaller {
     /// 实现是标准 async mutex：每项把前一项的完成当门闩，挂到队尾。
     private var injectTail: Task<Void, Never>?
 
-    /// 读取并清除「上一次设备操作超时」的污染标记（原子）。
-    ///
-    /// 🔴 **为什么必须能消费**（2026-09-27 真机）：这个标记原来是**永久**闸门 ——
-    /// 一次 `SEAL-PROFILE-352`（注入超时）就把本进程后续**全部** profile-only 续签
-    /// 挡在 `SEAL-PROFILE-350` 上，直到用户重启 Seal。而批量续签与后台保活都让进程
-    /// **跨轮存活**（保活就是为此而设）⇒ 一次通道抖动 = **成片失败** ——
-    /// 这正是用户报的「续签有问题」。
-    ///
-    /// 调用方拿到 `true` 时**必须先重置设备通道、再重新 `start()`，然后才注入**
-    /// （见 `SigningCoordinator.renewProfilesOnly`）：超时的那次同步 FFI 无法取消、
-    /// 可能仍在后台跑，而 `Minimuxer.reset()` 会把它的传输作废 ⇒ 之后在**新**传输上
-    /// 注入才是安全的；而 `reset()` 同时把「远程配对」状态与描述文件 provider 一并清掉
-    /// ⇒ **不重新 `start()` 的话下一次注入会退回 USB 传输、必然连不上**。
-    /// 清标记、重置、重建三者必须成套出现（源码守卫 R93 钉住）。
-    func consumeTaintIfAny() -> Bool {
-        taint.consume()
-    }
-
     /// 标记通道已污染（供 `SigningCoordinator` 在 `SEAL-PROFILE-363` 为
     /// `.unavailable` 时调用）。
     ///
     /// 2026-10-03 真机：后台冷启动时设备枚举不可用（363），但代码仍拿这条坏通道
     /// 去注入 ⇒ 30 秒超时 ⇒ 8/16 秒退避 ⇒ 重试 ⇒ 一轮烧掉 59 秒。
-    /// 363 的 `.unavailable` 已经证明通道坏了，提前标记后 `renewProfilesOnly`
-    /// 会在**第一次注入前**就重置通道，省掉在坏通道上的无效尝试。
+    /// 363 的 `.unavailable` 已经证明通道坏了，提前标记后 `installAndVerify`
+    /// 会在**拿锁后、注入前**就重置通道，省掉在坏通道上的无效尝试。
     /// ⚠️ 只在 `.unavailable` 时调：`.mismatched`（设备上没有这份 profile）不是
     /// 通道问题，重置帮不上忙。
     func markTainted() {
@@ -110,10 +92,9 @@ actor ProfileOnlyProvisioningProfileInstaller {
         defer { isBusy = false }
 
         // ── 拿锁后自愈污染（2026-10-04）──
-        // 调用方的 `consumeTaintIfAny` 仍是主路径（R93② 钉住）；
-        // 这里是并行竞态的安全网：排队等待期间，另一项的注入可能失败并标记污染。
-        // 若此时抛 `SEAL-PROFILE-350`，那一项要白白走一轮重试；
-        // 直接在这里消费 + 重置通道，注入继续，不丢一轮。
+        // 「消费 + 重置 + 注入」在串行临界区里原子完成（R93② 钉住）：
+        // 排队等待期间，另一项的注入可能失败并标记污染，或 363 提前标记了污染。
+        // 在这里消费 + 重置通道，注入继续，不丢一轮。
         if taint.consume() {
             await channel.reset()
             _ = try await channel.start()

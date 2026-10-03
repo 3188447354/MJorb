@@ -6412,7 +6412,7 @@ def violations(load=read):
         "func prewarmProfileService("
     )
     r93_policy_set = section_or_empty(
-        r93_policy,
+        r92_policy,
         "static let profileOperationTimeoutCodes: Set<String> = [",
         "static func isTransientChannelFailure(_ error: Error) -> Bool {"
     )

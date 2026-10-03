@@ -311,17 +311,13 @@ actor RenewalCoordinator {
         var failed = 0
         var needsAction = 0
         var awaitingConfirmation = 0
-        func tally(_ outcome: ProcessItemOutcome) {
-            switch outcome {
-            case .succeeded: succeeded += 1
-            case .failed: failed += 1
-            case .needsAction: needsAction += 1
-            case .awaitingSealConfirmation: awaitingConfirmation += 1
-            }
-        }
 
         // 常规项并行：Portal 准备并发跑，注入在 actor 内排队。
         // 有一项抛关键错误（队列持久化失败 / 取消）时整组取消，与串行语义一致。
+        //
+        // ⚠️ 计数不用本地 `func tally`：Swift 6 下 actor 方法里的本地函数是
+        // actor-isolated 闭包，捕获 `succeeded` 等变量会被判数据竞态。
+        // 直接在循环里 switch 内联。
         try await withThrowingTaskGroup(of: ProcessItemOutcome.self) { group in
             for item in regularItems {
                 let offset = offsetsByAppID[item.appID] ?? 0
@@ -335,7 +331,12 @@ actor RenewalCoordinator {
                 }
             }
             for try await outcome in group {
-                tally(outcome)
+                switch outcome {
+                case .succeeded: succeeded += 1
+                case .failed: failed += 1
+                case .needsAction: needsAction += 1
+                case .awaitingSealConfirmation: awaitingConfirmation += 1
+                }
             }
         }
 
@@ -349,7 +350,12 @@ actor RenewalCoordinator {
                 total: queue.count,
                 progress: progress
             )
-            tally(outcome)
+            switch outcome {
+            case .succeeded: succeeded += 1
+            case .failed: failed += 1
+            case .needsAction: needsAction += 1
+            case .awaitingSealConfirmation: awaitingConfirmation += 1
+            }
         }
 
         do {

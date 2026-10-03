@@ -185,9 +185,12 @@ struct AppsRootView: View {
                 Image(systemName: "plus")
                     .font(.system(size: 21, weight: .semibold))
                     .foregroundStyle(Color.sealAccent)
-                    .frame(width: 44, height: 44)
+                    // ⚠️ 玻璃尺寸**不**在这里定：label 不加 frame，`.glass` 样式按内容
+                    // 自适应系统规范尺寸（约 36pt 圆）；44x44 的 frame 加在 Button 上
+                    // 只保证 HIG 最小触控目标，不撑大玻璃（2026-10-04 用户反馈玻璃太大）。
             }
             .modifier(ImportButtonGlassModifier())
+            .frame(width: 44, height: 44)
             .accessibilityLabel("导入应用")
             .accessibilityIdentifier("import-toolbar-button")
             .disabled(viewModel.phase != .idle)

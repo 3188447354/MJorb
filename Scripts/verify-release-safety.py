@@ -6129,6 +6129,15 @@ def violations(load=read):
           "R113②: 手贴 glassEffect 的旧 `ImportGlassButtonStyle` 必须删除 ✗ —— "
           "留着它等于留着「假玻璃」的模板，下次有人 copy-paste 又中招")
 
+    # R113③：label 段（plus 图标到玻璃 modifier 之间）不得有 44x44 frame。
+    r113_plus_section = r113_root_code.split('Image(systemName: "plus")')
+    r113_plus_section = r113_plus_section[1].split(".modifier(ImportButtonGlassModifier())")[0] \
+        if len(r113_plus_section) > 1 else ""
+    check(".frame(width: 44, height: 44)" not in r113_plus_section,
+          "R113③: 导入按钮的 label 不得带 44x44 frame ✗ —— "
+          "frame 加在 label 上会把玻璃撑到 44pt（用户反馈太大）；"
+          "玻璃按内容自适应系统规范尺寸，44x44 只加在 Button 上保证触控目标")
+
     # ── R115：2026-10-03 363 通道不可用时提前标记污染 ──
     #
     # 来源：真机日志 —— 后台冷启动时设备枚举不可用（363 `.unavailable`），
@@ -6145,6 +6154,20 @@ def violations(load=read):
           "只能等 30 秒超时后才走污染闸门；"
           "⚠️ 断言必须含函数体（`taint.markTainted()`），否则会误匹配 "
           "`ProfileOnlyTaintGate` 结构体的同名 `mutating` 方法")
+
+    # ── R116：2026-10-04 预热失败不标记污染 ──
+    #
+    # 来源：真机日志 —— 363 标记污染后、`renewProfilesOnly` 消费并重置通道，
+    # 但并行的预热任务在坏通道上失败又重新标记 ⇒ `installAndVerify` 误报
+    # `SEAL-PROFILE-350`（调用方明明已重置）。预热只是后台优化，
+    # 真正的注入失败仍由 `installAndVerify` 自己标记污染。
+    check("markTaintOnFailure: Bool = true" in r115_installer_code
+          and "ensureProfileService(using: channel, markTaintOnFailure: false)" in r115_installer_code
+          and "if markTaintOnFailure," in r115_installer_code,
+          "R116: 预热失败不得标记污染 ✗ —— "
+          "否则与污染消费竞态，`installAndVerify` 误报 `SEAL-PROFILE-350`；"
+          "注意 `ensureProfileService` 的默认参数必须保持 `true`，"
+          "真正的注入路径仍要标记")
 
     check("if identity == .unavailable" in r115_coordinator_code
           and "await ProfileOnlyProvisioningProfileInstaller.shared.markTainted()" in r115_coordinator_code,
@@ -9907,6 +9930,25 @@ def main():
          "                        // no taint marking\n"
          "                    }",
          "R115②:"),
+
+        # ── R116：预热失败不标记污染 ──
+        # 预热又开始标记（竞态回来，350 误报）⇒ R116 报红。
+        ("Seal/Infrastructure/Renewal/ProfileOnlyProvisioningProfileInstaller.swift",
+         "        try await ensureProfileService(using: channel, markTaintOnFailure: false)",
+         "        try await ensureProfileService(using: channel)",
+         "R116:"),
+        # R113③：label 又被加回 44x44 frame（玻璃撑大）⇒ R113③ 报红。
+        ("Seal/Features/Apps/AppsRootView.swift",
+         '                Image(systemName: "plus")\n'
+         '                    .font(.system(size: 21, weight: .semibold))\n'
+         '                    .foregroundStyle(Color.sealAccent)\n'
+         '                    // ⚠️',
+         '                Image(systemName: "plus")\n'
+         '                    .font(.system(size: 21, weight: .semibold))\n'
+         '                    .foregroundStyle(Color.sealAccent)\n'
+         '                    .frame(width: 44, height: 44)\n'
+         '                    // ⚠️',
+         "R113③:"),
 
         # ── R92：后台触发的通道时序 / 通道瞬时重试 / 未预期错误可观测 ──
         # ① 点火前不再等通道（退回「拿到容器就续签」）⇒ R92① 报红。

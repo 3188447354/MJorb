@@ -74,9 +74,14 @@ actor ProfileOnlyProvisioningProfileInstaller {
 
     /// 与 Apple Portal 请求并行预热实际执行 profile 注入的设备服务。
     /// 正在写入时不另起探测，避免和 `misagent` 的进程级传输竞争。
+    ///
+    /// ⚠️ 预热失败**不标记污染**（2026-10-04）：预热只是后台优化，跑在坏通道上
+    /// 失败是预期的；若它标记污染，会与 `renewProfilesOnly` 的污染消费竞态 ——
+    /// 消费后、注入前预热才标记 ⇒ `installAndVerify` 误报 `SEAL-PROFILE-350`
+    /// （调用方明明已重置通道）。真正的注入失败仍由 `installAndVerify` 自己标记。
     func prewarmProfileService(using channel: any InstallChannel) async throws {
         guard isBusy == false else { return }
-        try await ensureProfileService(using: channel)
+        try await ensureProfileService(using: channel, markTaintOnFailure: false)
     }
 
     func installAndVerify(
@@ -137,7 +142,7 @@ actor ProfileOnlyProvisioningProfileInstaller {
         }
     }
 
-    private func ensureProfileService(using channel: any InstallChannel) async throws {
+    private func ensureProfileService(using channel: any InstallChannel, markTaintOnFailure: Bool = true) async throws {
         do {
             if let inFlightPreparation {
                 try await inFlightPreparation.value
@@ -151,7 +156,9 @@ actor ProfileOnlyProvisioningProfileInstaller {
         } catch {
             // `dumpProfiles` 的有界等待超时后，Rust FFI 仍可能占着 misagent。
             // 复用既有污染闸门：下一轮先 reset + start，不能在旧传输上立即重试。
-            if let failure = error as? ImportFailure,
+            // ⚠️ 预热调用传 `markTaintOnFailure: false`（见 `prewarmProfileService`）。
+            if markTaintOnFailure,
+               let failure = error as? ImportFailure,
                DeviceChannelTransientPolicy.profileOperationTimeoutCodes.contains(failure.code) {
                 taint.markTainted()
             }

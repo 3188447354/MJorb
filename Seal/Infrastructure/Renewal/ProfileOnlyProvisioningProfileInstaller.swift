@@ -46,6 +46,36 @@ actor ProfileOnlyProvisioningProfileInstaller {
     /// `SEAL-PROFILE-351` 直接失败；并行后多项会同时到达 ⇒ 改为排队等待。
     /// 实现是标准 async mutex：每项把前一项的完成当门闩，挂到队尾。
     private var injectTail: Task<Void, Never>?
+    /// misagent 保活心跳任务（2026-10-04 通道优化）。
+    ///
+    /// `misagent` 空闲一段时间后会变冷，下次注入要重新建服务连接（~数秒）。
+    /// App 在前台存活时定期轻量 `prepareProfileService`，保持热状态。
+    /// 失败不标记污染（`prewarmProfileService` 已保证），不干扰注入（`isBusy` 保护）。
+    private var keepaliveTask: Task<Void, Never>?
+    /// 保活间隔：5 分钟。misagent 空闲超时是分钟级，这个频率足够保持热状态，
+    /// 又不会频繁唤醒设备。
+    private static let keepaliveIntervalNanoseconds: UInt64 = 300_000_000_000
+
+    /// 启动 misagent 保活心跳。App 回到前台时调用。
+    ///
+    /// 幂等：已在跑则直接返回。
+    func startKeepalive(using channel: any InstallChannel) {
+        guard keepaliveTask == nil else { return }
+        keepaliveTask = Task { [weak self] in
+            while true {
+                try? await Task.sleep(nanoseconds: Self.keepaliveIntervalNanoseconds)
+                guard let self else { return }
+                // 保活只是轻量预热：失败不抛、不标记污染、不干扰注入。
+                try? await self.prewarmProfileService(using: channel)
+            }
+        }
+    }
+
+    /// 停止 misagent 保活心跳。App 进后台时调用。
+    func stopKeepalive() {
+        keepaliveTask?.cancel()
+        keepaliveTask = nil
+    }
 
     /// 标记通道已污染（供 `SigningCoordinator` 在 `SEAL-PROFILE-363` 为
     /// `.unavailable` 时调用）。

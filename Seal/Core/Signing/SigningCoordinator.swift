@@ -180,6 +180,28 @@ actor SigningCoordinator {
         _ = try? await installChannel.start()
     }
 
+    /// 批量续签开始前的**一次性**通道健康预检（2026-10-04 通道优化）。
+    ///
+    /// 旧行为：N 个 App 各自在注入前做通道诊断，通道坏时每个都要付一遍诊断代价。
+    /// 现在整轮只查一次：`isReady()` 通过直接开工；不通过则 `reset()` + `start()`
+    /// 自愈一次；仍不行就快速失败 —— 用 `ChannelReadinessPolicy` 给出用户可执行的
+    /// 下一步（开 VPN / 重新配对），而不是让每个 App 轮流超时。
+    ///
+    /// - Returns: 通道就绪返回 `true`；返回 `false` 时调用方应整轮快速失败。
+    func ensureChannelReadyForBatch() async -> Bool {
+        if await installChannel.isReady() {
+            return true
+        }
+        // 一次自愈机会：拆掉重建。
+        await installChannel.reset()
+        do {
+            _ = try await installChannel.start()
+            return await installChannel.isReady()
+        } catch {
+            return false
+        }
+    }
+
     func signAndInstall(
         appID: UUID,
         accountID: UUID,
@@ -981,6 +1003,9 @@ actor SigningCoordinator {
                 code: "SEAL-PROFILE-361"
             )
         }
+        // ── 分阶段打点（2026-10-04 签名优化）──
+        // 先测量再优化：各阶段耗时进日志，真机验证时才能定位瓶颈。
+        let renewStart = ContinuousClock.now
         // Apple Portal 的 profile 准备与设备 misagent 预热互不依赖，必须并行。
         // 实际注入会加入这同一条预热任务，确保设备侧始终只有一项 profile 操作。
         let profileServicePrewarm = Task { [installChannel] in
@@ -989,6 +1014,7 @@ actor SigningCoordinator {
             )
         }
         defer { profileServicePrewarm.cancel() }
+        let portalStart = ContinuousClock.now
         let result = try await portal.prepareProfileOnlyRenewal(
             app: app,
             account: account,
@@ -1007,6 +1033,7 @@ actor SigningCoordinator {
             },
             onWorkUnits: onWorkUnits
         )
+        let portalElapsed = portalStart.duration(to: .now)
         await onCertificateResolved(result.certificateSerialNumber)
         // ── 污染自愈已搬进 actor（2026-10-04 并行续签）──
         //
@@ -1016,6 +1043,7 @@ actor SigningCoordinator {
         // `ProfileOnlyProvisioningProfileInstaller.installAndVerify` 的串行临界区里
         // 原子完成（拿锁后先消费，为真则 reset + start 再注入）。
         // R93② 的判据已同步改到查 actor（见 verify-release-safety.py）。
+        let injectStart = ContinuousClock.now
         try await ProfileOnlyProvisioningProfileInstaller.shared.installAndVerify(
             result.materials,
             certificateSerialNumber: result.certificateSerialNumber,
@@ -1031,6 +1059,16 @@ actor SigningCoordinator {
                     code: "SEAL-PROFILE-355"
                 )
             }
+        )
+        let injectElapsed = injectStart.duration(to: .now)
+        let totalElapsed = renewStart.duration(to: .now)
+        // 分阶段耗时进日志：Portal 准备 / 设备注入 / 总计。真机验证时定位瓶颈用。
+        try? await logStore?.append(
+            category: .renewal,
+            level: .info,
+            message: "profile-only 续签分阶段耗时：Portal 准备 \(portalElapsed.formatted(.units(allowed: [.seconds], fractionalPart: .show(length: 1))))"
+                + "，设备注入 \(injectElapsed.formatted(.units(allowed: [.seconds], fractionalPart: .show(length: 1))))"
+                + "，总计 \(totalElapsed.formatted(.units(allowed: [.seconds], fractionalPart: .show(length: 1))))：\(app.name)"
         )
 
         var renewedApp = app

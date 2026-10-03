@@ -65,9 +65,15 @@ struct RootTabView: View {
             appsViewModel.shouldOpenSettings = false
         }
         .onChange(of: scenePhase) { phase in
+            // 进后台停掉 misagent 保活心跳，省电。
+            if phase == .background {
+                appsViewModel.stopProfileServiceKeepalive()
+            }
             guard phase == .active else { return }
             // 此刻设备必然已解锁 ⇒ 是补做钥匙串迁移最可靠的时机（锁屏冷启动那次会被系统拒绝）。
             migrateKeychainAccessibility()
+            // 回到前台启动 misagent 保活：保持 profile 服务热状态，下次续签注入更快。
+            appsViewModel.startProfileServiceKeepalive()
             Task {
                 await performLaunchCheck()
                 await performUpdateCheck()

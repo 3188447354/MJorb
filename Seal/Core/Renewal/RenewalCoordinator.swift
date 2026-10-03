@@ -290,6 +290,17 @@ actor RenewalCoordinator {
     ) async throws -> BatchRefreshResult {
         await progress(.started(total: queue.count))
 
+        // ── 批量通道预检（2026-10-04 通道优化）──
+        // 整轮只做一次：通道不健康先自愈一次，仍不行整轮快速失败，
+        // 不让每个 App 各自付一遍诊断代价。
+        let channelReady = await signingCoordinator.ensureChannelReadyForBatch()
+        if channelReady == false {
+            throw Self.queuePersistenceFailure(
+                reason: "设备通道不可用，请检查 LocalDevVPN 是否开启、设备是否已配对后重试。",
+                code: "SEAL-RENEW-CHANNEL-001"
+            )
+        }
+
         // ── 并行续签（2026-10-04）──
         //
         // 每项耗时的大头是 Apple Portal 网络 I/O（取描述文件），多项并行；

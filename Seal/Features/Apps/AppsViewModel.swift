@@ -388,6 +388,24 @@ final class AppsViewModel: ObservableObject {
         channelTask = task
     }
 
+    /// 启动 misagent 保活心跳（2026-10-04 通道优化）。
+    ///
+    /// App 回到前台时调用：定期轻量预热 profile 服务，保持 misagent 热状态，
+    /// 下次续签注入不用重新建服务连接。进后台时 `stopProfileServiceKeepalive()` 停掉。
+    func startProfileServiceKeepalive() {
+        guard let installChannel else { return }
+        Task {
+            await ProfileOnlyProvisioningProfileInstaller.shared.startKeepalive(using: installChannel)
+        }
+    }
+
+    /// 停止 misagent 保活心跳。App 进后台时调用。
+    func stopProfileServiceKeepalive() {
+        Task {
+            await ProfileOnlyProvisioningProfileInstaller.shared.stopKeepalive()
+        }
+    }
+
     /// 加载应用列表。**只读**：不写 DB、不动文件。
     ///
     /// 记录恢复 / Seal 自注册 / 孤儿文件清理曾经挂在这里，会让「看列表」这种纯读取动作

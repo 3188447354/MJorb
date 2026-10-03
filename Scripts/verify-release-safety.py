@@ -8397,8 +8397,8 @@ def main():
          "            signedArtifactStatus: signedArtifactStatus,\n            ipaRelativePath: \"Apps/\\(appID.uuidString)/Original.ipa\",",
          "R09: AppRecord call-site labels must follow the declaration order"),
         ("Seal/Core/Renewal/RenewalCoordinator.swift",
-         "                        selectedCertificateSerialNumber: nil,\n                        forceResign: true,",
-         "                        forceResign: true,\n                        selectedCertificateSerialNumber: nil,",
+         "                    selectedCertificateSerialNumber: nil,\n                    forceResign: true,",
+         "                    forceResign: true,\n                    selectedCertificateSerialNumber: nil,",
          "R09: signAndInstall call-site labels must follow the declaration order"),
         ("Seal/Core/Signing/InstallStageBridge.swift",
          "uploadProgress > uploadCompletionSentinel",
@@ -8413,8 +8413,8 @@ def main():
          "                _ = progress\n            }\n            await onInstallProgress(installProgress)",
          "R10: the bridge must actually emit .installing"),
         ("Seal/Core/Renewal/RenewalCoordinator.swift",
-         "                        onInstallProgress: { installProgress in",
-         "                        onInstallProgressUnused: { installProgress in",
+         "                    onInstallProgress: { installProgress in",
+         "                    onInstallProgressUnused: { installProgress in",
          "R10: batch renewal must subscribe to the upload percentage"),
         # 把新事件「收编」回旧事件：编译通过、事件流还在，但抽屉重新变成没有分母的黑盒。
         ("Seal/Core/Renewal/RenewalCoordinator.swift",
@@ -10301,7 +10301,7 @@ def main():
         # ── R97：批量的通道恢复（与单签同源）──
         # ① 批量重试前不再恢复设备通道（重试撞同一个死会话）⇒ R97① 报红。
         ("Seal/Core/Renewal/RenewalCoordinator.swift",
-         "                            await signingCoordinator.prepareInstallChannelForRetry(after: error)\n",
+         "                        await signingCoordinator.prepareInstallChannelForRetry(after: error)\n",
          "",
          "R97①:"),
         # ③ `SEAL-RENEW-503` 不再登记进码索引 ⇒ R97③ 报红。

@@ -2071,18 +2071,36 @@ final class AppsViewModel: ObservableObject {
             let result: BatchRefreshResult
             if let appIDs {
                 result = try await renewalCoordinator.refresh(appIDs: appIDs, progress: progress)
+            } else if wasBackgroundTriggered {
+                // 🔴 预测式（2026-10-03）：后台触发只续「窗口内会过期」的，不每轮全量
+                // 重走 portal+设备 —— 又快又不给 Apple 限流添堵。手动「续签全部」
+                // 走下面的 `refreshAll`（全量），不受影响。
+                result = try await renewalCoordinator.refreshPredictive(progress: progress)
             } else {
                 result = try await renewalCoordinator.refreshAll(progress: progress)
             }
             // 拿到结果就发通知（标记已在函数入口读并清位，见那里的说明）。
             if result.total == 0 {
                 batchRefreshSession = nil
-                alertFailure = ImportFailure(
-                    title: "没有可续签的应用",
-                    reason: "当前没有已安装的应用记录",
-                    recovery: "知道了",
-                    code: "SEAL-RENEW-001"
-                )
+                if wasBackgroundTriggered {
+                    // 🔴 预测式后台轮「没有到期的应用」是**正常**的（说明大家都还健康），
+                    // 不是异常 —— 不能留一个「没有可续签的应用」的过期 alert，
+                    // 否则下次用户进 App 会看到一条莫名其妙的报错。
+                    // 通知也不发（`notifyBackgroundRenewalIfNeeded` 本来就只在 total > 0 时发）。
+                    try? await logStore?.append(
+                        category: .renewal,
+                        level: .info,
+                        message: "后台预测式续签：本轮没有需要续签的应用（都在有效期内），静默结束",
+                        code: "SEAL-RENEW-029"
+                    )
+                } else {
+                    alertFailure = ImportFailure(
+                        title: "没有可续签的应用",
+                        reason: "当前没有已安装的应用记录",
+                        recovery: "知道了",
+                        code: "SEAL-RENEW-001"
+                    )
+                }
             } else {
                 if result.awaitingConfirmation > 0 {
                     // 不能让旧进程关闭并清掉载荷。Seal 的结果只能由下一次启动中

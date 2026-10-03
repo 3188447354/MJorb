@@ -56,3 +56,32 @@ done
 | `MachOSignerTests.codeSignatureLoadCommandMatchesTheAppendedSuperBlob` | `LC_CODE_SIGNATURE` 的 `dataoff`/`datasize` 与实际追加的 SuperBlob 完全吻合 |
 | `MachOSignerTests.signingIsUnaffectedByHowTheInputDataWasLoaded` | mmap 读取与整块读取产出**完全相同的签名字节**（ad-hoc ⇒ 无签名时间 ⇒ 可比对） |
 | `CMSSignerTests.repeatedAccessIsStableAndKeepsTheOriginalError` | 缓存后行为不变：指纹稳定、坏 P12 恒 `nil`、`sign()` **仍抛解析器真实错误** |
+
+---
+
+## 2026-10-03 追加：`FastSHA256` 硬件加速（R112①②）
+
+> 1.3.23 那 6 处是「消灭浪费」（省掉不该做的功）；这一处是「加速必要功」——
+> 页哈希与资源哈希**省不掉**（签名语义的一部分），但可以算得更快。
+
+| 文件 | 改动 | 为什么 | 守卫 |
+| --- | --- | --- | --- |
+| `Sources/FastHash.swift`（新增） | `enum FastSHA256`：`#if canImport(CryptoKit)` 走 `CryptoKit.SHA256`（ARMv8 SHA 硬件指令），否则走 `Crypto.SHA256`（swift-crypto） | 全仓 `import Crypto` 的 SHA-256 是纯 Swift 实现；Apple 平台的 CryptoKit 快一个数量级。页哈希（每 16KB 一页）与资源哈希（全树文件）是签名里最大的两块 CPU，且与证书/平台无关 ⇒ 对**每次**签名都生效（比「签名缓存」更普适：缓存要命中率，加速不要） | R112① / R112② |
+| `CodeDirectoryBuilder.swift` | 页循环的 SHA-256 分支改调 `FastSHA256.hashPage(page)`（SHA-1 分支不动） | 同上 | R112① |
+| `CodeResourcesBuilder.swift` | `SHA256.hash(data:)` 改调 `FastSHA256.hash(data:)`（SHA-1 不动） | 同上 | R112① |
+
+### ⚠️ 三处刻意不动
+
+1. **SHA-1 分支不动** —— `CS_HASHTYPE_SHA1` 是 legacy 路径，真机几乎走不到；最小改动。
+2. **`setSpecialSlot` / `CMSSigner` 的小数据哈希不动** —— 都是字节级小数据，加速收益为零。
+3. **不改任何 public API** —— 只新增内部文件 + 替换两处内部调用 ⇒ 对上游向后兼容（仍可提 PR）。
+
+### 单测
+
+| 测试 | 钉住什么 |
+| --- | --- |
+| `FastSHA256Tests.hashMatchesReferenceForVariousInputs` | `hash(data:)` 与 `Crypto.SHA256` 参照输出逐字节一致（空/1 字节/整页/跨页/100KB） |
+| `FastSHA256Tests.hashPageMatchesReference` | `hashPage` 与参照一致（整页/1 字节/跨页/大块） |
+| `FastSHA256Tests.hashPageOfEmptyBufferMatchesEmptyHash` | 空缓冲行为一致 |
+
+在 macOS CI（`canImport(CryptoKit)` 为真）上测的是 CryptoKit 分支；在 Linux 上是 swift-crypto 分支（恒等，烟雾测试）。

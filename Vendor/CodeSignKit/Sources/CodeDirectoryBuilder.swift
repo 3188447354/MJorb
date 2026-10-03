@@ -187,6 +187,10 @@ public final class CodeDirectoryBuilder {
         // 算约 **1.2 万次** ✗ —— 而这份副本的每一个字节马上就被哈希器吃掉，没有任何用途 ✗。
         // ⇒ 改成在 `binaryData` 自己的裸缓冲区上**取切片**直接喂给哈希器 ✓（不复制）。
         //
+        // 🔴 **硬件加速**（2026-10-03）：`FastSHA256` 在 Apple 平台走 CryptoKit
+        //（ARMv8 SHA 指令），Linux 走 swift-crypto；输出逐字节一致
+        //（`FastSHA256Tests` 钉住与 `Crypto.SHA256` 的参照输出相等）。
+        //
         // 哈希值与原实现**逐字节相同**：同一段字节、同一个哈希函数、同样的页边界算式
         //（`pageStart` / `pageEnd` / `codeLimit` 一个字没动）✓。
         // 单测 `pageHashesMatchLegacySubdataImplementation` 逐页比对两者，
@@ -196,6 +200,8 @@ public final class CodeDirectoryBuilder {
         // `SHA256.hash(bufferPointer:)` —— 后者在 `HashFunction` 的**内部** extension 里
         //（`swift-crypto` 的 `HashFunctions.swift` 中它没有 `public`），
         // 而 `update(bufferPointer:)` 是**协议要求**，两边都保证可见 ✓。
+        // （2026-10-03：这段话描述的是 swift-crypto 分支；CryptoKit 分支走
+        // `FastSHA256.hashPage`，见 `FastHash.swift`。）
         for i in 0..<numPages {
             let pageStart = i * pageSize
             let pageEnd = min(pageStart + pageSize, codeLimit)
@@ -203,9 +209,7 @@ public final class CodeDirectoryBuilder {
             let pageHash: Data = binaryData.withUnsafeBytes { raw -> Data in
                 let page = UnsafeRawBufferPointer(rebasing: raw[pageStart..<pageEnd])
                 if hashType == CodeSigningConstants.CS_HASHTYPE_SHA256 {
-                    var hasher = SHA256()
-                    hasher.update(bufferPointer: page)
-                    return Data(hasher.finalize())
+                    return FastSHA256.hashPage(page)
                 } else {
                     var hasher = Insecure.SHA1()
                     hasher.update(bufferPointer: page)

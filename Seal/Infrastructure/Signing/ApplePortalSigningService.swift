@@ -351,6 +351,39 @@ actor ApplePortalSigningService {
     // 对齐 AltStore：防止并发签名时重复创建 App Group
     // App Group 操作通过 actor 串行化；批量签名为串行循环，无并发创建风险
 
+    // MARK: - 批量门户读缓存（2026-10-03，续签提速）
+    //
+    // 批量续签里 N 个 App 共享同一账号/Team：`fetchTeams` / `ensureDevice` / `fetchAppIDs`
+    // 的返回对它们**完全相同**，逐 App 重拉是纯浪费（每个 1 次 Apple RTT，3 个 App 就是
+    // 9 次冗余请求）。TTL 5 分钟 —— 一轮批量通常 1–2 分钟，覆盖它绰绰有余。
+    //
+    // ⚠️ 只缓存**读**：`fetchProvisioningProfile`（申请/重建描述文件）是写操作，
+    // 逐目标必须真发（R33：写操作不开超时重试、不许合并）。
+    // ⚠️ 写成功即失效：`addAppID` 成功后对应 Team 的 App ID 列表缓存立即清掉，
+    // 否则同一批量里后一个 App 会拿着缺新 App ID 的旧列表去匹配。
+    // ⚠️ `bundleIdentifierUnavailable` 的恢复性重拉必须 bypass —— 它就是要「再看一眼」
+    // 远端到底有没有，不能拿缓存糊弄（见调用点的注释）。
+    //
+    // 状态全是 actor 私有、可变访问全被 actor 串行化 ⇒ 不需要 Sendable 标注。
+    private static let portalReadCacheTTL: TimeInterval = 5 * 60
+    private var cachedTeamsByAccountIdentifier: [String: (teams: [ALTTeam], fetchedAt: Date)] = [:]
+    private var cachedAppIDsByTeamIdentifier: [String: (appIDs: [ALTAppID], fetchedAt: Date)] = [:]
+    private var cachedDevicesByTeamAndDeviceIdentifier: [String: (device: ALTDevice, fetchedAt: Date)] = [:]
+
+    /// 缓存条目是否仍新鲜 —— **纯函数**，判据与三处调用点同源（可单测）。
+    static func isPortalReadCacheFresh(
+        fetchedAt: Date,
+        now: Date = Date(),
+        ttl: TimeInterval = portalReadCacheTTL
+    ) -> Bool {
+        now.timeIntervalSince(fetchedAt) < ttl
+    }
+
+    /// App ID 写操作成功后调用：对应 Team 的列表缓存立即失效。
+    private func invalidateAppIDsCache(forTeamIdentifier teamIdentifier: String) {
+        cachedAppIDsByTeamIdentifier.removeValue(forKey: teamIdentifier)
+    }
+
     init(
         anisetteProvider: any AnisetteProvider = AnisetteV3Client(),
         signingWorkspace: SigningWorkspace = SigningWorkspace(),
@@ -1246,6 +1279,11 @@ actor ApplePortalSigningService {
         account: ALTAccount,
         session: ALTAppleAPISession
     ) async throws -> [ALTTeam] {
+        // 批量缓存：同一账号的团队列表一轮批量里不变（见文件头 MARK 注释）。
+        if let cached = cachedTeamsByAccountIdentifier[account.identifier],
+           Self.isPortalReadCacheFresh(fetchedAt: cached.fetchedAt) {
+            return cached.teams
+        }
         let box: LegacyBox<[ALTTeam]> = try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 continuation in
@@ -1255,6 +1293,7 @@ actor ApplePortalSigningService {
                 }
             }
         }
+        cachedTeamsByAccountIdentifier[account.identifier] = (box.value, Date())
         return box.value
     }
 
@@ -1264,6 +1303,13 @@ actor ApplePortalSigningService {
         team: ALTTeam,
         session: ALTAppleAPISession
     ) async throws -> ALTDevice {
+        // 批量缓存：同一 Team + 同一设备，一轮批量里 ensure 一次就够
+        //（`registerDevice` 是幂等的，设备已存在时直接返回；见文件头 MARK 注释）。
+        let cacheKey = team.identifier + "\n" + identifier
+        if let cached = cachedDevicesByTeamAndDeviceIdentifier[cacheKey],
+           Self.isPortalReadCacheFresh(fetchedAt: cached.fetchedAt) {
+            return cached.device
+        }
         let devicesBox: LegacyBox<[ALTDevice]> = try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 continuation in
@@ -1278,6 +1324,7 @@ actor ApplePortalSigningService {
             }
         }
         if let device = devicesBox.value.first(where: { $0.identifier == identifier }) {
+            cachedDevicesByTeamAndDeviceIdentifier[cacheKey] = (device, Date())
             return device
         }
         let deviceBox: LegacyBox<ALTDevice> = try await withAppleTimeout {
@@ -1295,6 +1342,7 @@ actor ApplePortalSigningService {
                 }
             }
         }
+        cachedDevicesByTeamAndDeviceIdentifier[cacheKey] = (deviceBox.value, Date())
         return deviceBox.value
     }
 
@@ -2311,8 +2359,14 @@ actor ApplePortalSigningService {
                             }
                         }
                         appID = createdBox.value
+                        // 批量缓存失效：新建的 App ID 已落地，同一批量里后一个 App
+                        // 不能拿着缺它的旧列表去匹配（见文件头 MARK 注释）。
+                        invalidateAppIDsCache(forTeamIdentifier: team.identifier)
                     } catch ALTAppleAPIError.bundleIdentifierUnavailable {
-                        let refreshed = try await fetchAppIDs(team: team, session: session)
+                        // 🔴 恢复性重拉必须 bypass 缓存：Apple 刚说这个 bundle ID 已被占用，
+                        // 说明远端有、而 `existing`（可能来自缓存）里没有 —— 此时读缓存
+                        // 只会把旧列表再还回来，恢复路径直接失效。
+                        let refreshed = try await fetchAppIDs(team: team, session: session, bypassCache: true)
                         guard let found = refreshed.first(where: {
                             ApplePortalAppIDResolver.matches(
                                 existingBundleIdentifier: $0.bundleIdentifier,
@@ -2638,10 +2692,19 @@ actor ApplePortalSigningService {
         )
     }
 
+    /// - Parameter bypassCache: `bundleIdentifierUnavailable` 的恢复性重拉传 `true` ——
+    ///   它就是要「再看一眼」远端到底有没有这个 App ID，不能拿缓存糊弄。
+    ///   其余调用点一律走批量缓存（见文件头 MARK 注释）。
     private func fetchAppIDs(
         team: ALTTeam,
-        session: ALTAppleAPISession
+        session: ALTAppleAPISession,
+        bypassCache: Bool = false
     ) async throws -> [ALTAppID] {
+        if bypassCache == false,
+           let cached = cachedAppIDsByTeamIdentifier[team.identifier],
+           Self.isPortalReadCacheFresh(fetchedAt: cached.fetchedAt) {
+            return cached.appIDs
+        }
         // ⚠️ 读操作（R33）：限流时 Apple 响应会变慢，超时重试最坏只多花时间（幂等），故开超时重试。
         let box: LegacyBox<[ALTAppID]> = try await withSessionRecovery("读取 App ID 列表", retriesOnTimeout: true) {
             try await withAppleTimeout {
@@ -2654,6 +2717,7 @@ actor ApplePortalSigningService {
                 }
             }
         }
+        cachedAppIDsByTeamIdentifier[team.identifier] = (box.value, Date())
         return box.value
     }
 

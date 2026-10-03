@@ -113,6 +113,51 @@ actor RenewalCoordinator {
         return try await run(queue: queue, progress: progress)
     }
 
+    /// 预测式后台续签（2026-10-03）：只处理「窗口内会过期」的，不每轮全量。
+    ///
+    /// 窗口自适应（见 `PredictiveRenewalPolicy.backgroundWindow`）：快捷指令每天跑时
+    /// 48h；低频触发时自动放宽到接近全量，避免「上周没到期被跳过、这周已过期」。
+    /// 手动「续签全部」走 `refreshAll`（全量），**不受影响**。
+    ///
+    /// `lastPredictiveRun` 只在成功跑完一轮后更新 —— 失败/抛错时保持旧值，
+    /// 下一轮窗口更大（包含更多应用），天然自愈。
+    func refreshPredictive(
+        progress: @escaping @Sendable (BatchRefreshEvent) async -> Void
+    ) async throws -> BatchRefreshResult {
+        let apps = try await appStore.fetchAll()
+        let now = Date()
+        let window = PredictiveRenewalPolicy.backgroundWindow(
+            lastRun: Self.lastPredictiveRun,
+            now: now
+        )
+        let queue = try await makeQueue(apps: apps, predictiveWindow: window)
+        let result = try await run(queue: queue, progress: progress)
+        Self.lastPredictiveRun = now
+        try? await logStore?.append(
+            category: .renewal,
+            level: .info,
+            message: "后台预测式续签：窗口 \(Int(window / 3600)) 小时，本轮纳入 \(result.total) 个应用",
+            code: "SEAL-RENEW-028"
+        )
+        return result
+    }
+
+    /// 上一次后台预测式续签跑完的时间（UserDefaults 持久化，进程重启不丢）。
+    private static let lastPredictiveRunKey = "seal.predictive.lastRenewalRun"
+    private static var lastPredictiveRun: Date? {
+        get {
+            let raw = UserDefaults.standard.double(forKey: lastPredictiveRunKey)
+            return raw > 0 ? Date(timeIntervalSince1970: raw) : nil
+        }
+        set {
+            if let date = newValue {
+                UserDefaults.standard.set(date.timeIntervalSince1970, forKey: lastPredictiveRunKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: lastPredictiveRunKey)
+            }
+        }
+    }
+
     /// 只重试上一轮失败的应用，避免对已成功应用重复签名/上传/安装。
     func refreshFailedItems(
         appIDs: [UUID],
@@ -156,7 +201,7 @@ actor RenewalCoordinator {
         try await queueStore.outstanding()
     }
 
-    private func makeQueue(apps: [AppRecord]) async throws -> [RefreshQueueItem] {
+    private func makeQueue(apps: [AppRecord], predictiveWindow: TimeInterval? = nil) async throws -> [RefreshQueueItem] {
         let fallbackAccountID: UUID?
         if let provider = defaultAccountIDProvider {
             fallbackAccountID = await provider()
@@ -172,7 +217,8 @@ actor RenewalCoordinator {
         return planner.makeQueue(
             apps: apps,
             fallbackAccountID: fallbackAccountID,
-            accounts: allAccounts
+            accounts: allAccounts,
+            predictiveWindow: predictiveWindow
         )
     }
 

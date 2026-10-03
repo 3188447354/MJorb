@@ -91,7 +91,9 @@ public final class CodeResourcesBuilder {
             let item = candidateFiles[i]
             let fileData = (try? Data(contentsOf: item.url, options: .alwaysMapped)) ?? (try? Data(contentsOf: item.url)) ?? Data()
             let sha1 = Data(Insecure.SHA1.hash(data: fileData))
-            let sha256 = Data(SHA256.hash(data: fileData))
+            // 🔴 硬件加速（2026-10-03）：Apple 平台走 CryptoKit，输出与 swift-crypto
+            // 逐字节一致（见 `FastHash.swift` 与 `FastSHA256Tests`）。
+            let sha256 = FastSHA256.hash(data: fileData)
             hashResults[i] = HashResult(relativePath: item.relativePath, sha1: sha1, sha256: sha256)
         }
 

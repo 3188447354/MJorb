@@ -6033,6 +6033,85 @@ def violations(load=read):
           "压缩策略错 ⇒ 体积或 installd 兼容性受损；`layoutOnly` 少跳一步 ⇒ "
           "目标集合对不上。这些**都不会在本地暴露**，只能靠 CI 里的新单测")
 
+    # ── R112：2026-10-03 签名/续签提速三件套 ──
+    #
+    # 三个改动都是「省时间」的，而它们的错法同样**不会崩、只在真机上错**：
+    #   · FastSHA256 输出与 swift-crypto 不一致 ⇒ 页哈希错 ⇒ 签名无效 ⇒ 装完秒退；
+    #   · 门户缓存把写操作也缓存了 / 恢复性重拉没 bypass ⇒ App ID 列表过期 ⇒
+    #     新 App ID 匹配不上 ⇒ profile-only 误报 SEAL-PROFILE-337；
+    #   · 后台预测式把手动路径也过滤了 ⇒ 用户点「续签全部」却只续了到期的；
+    #   · total == 0 的后台轮弹 SEAL-RENEW-001 ⇒ 下次进 App 看到莫名其妙的报错。
+    r112_fasthash = load("Vendor/CodeSignKit/Sources/FastHash.swift")
+    r112_fasthash_code = strip_comments(r112_fasthash)
+    r112_crbuilder_code = strip_comments(load("Vendor/CodeSignKit/Sources/CodeResourcesBuilder.swift"))
+    r112_fasthash_tests = load("Vendor/CodeSignKit/Tests/FastSHA256Tests.swift")
+    r112_portal_tests = load("SealTests/Signing/PortalReadCacheTests.swift")
+    r112_predictive_tests = load("SealTests/Renewal/PredictiveRenewalPolicyTests.swift")
+    r112_planner_code = strip_comments(load("Seal/Core/Renewal/RefreshPlanner.swift"))
+    r112_coordinator_code = strip_comments(load("Seal/Core/Renewal/RenewalCoordinator.swift"))
+    r112_vm_code = strip_comments(load("Seal/Features/Apps/AppsViewModel.swift"))
+
+    check("FastSHA256.hashPage(page)" in r91_cdb_code
+          and "let sha256 = FastSHA256.hash(data: fileData)" in r112_crbuilder_code,
+          "R112①: 页哈希与资源哈希必须走 `FastSHA256` ✗ —— "
+          "退回裸 `Crypto.SHA256` 等于丢掉 Apple 平台的 ARM SHA 硬件加速，"
+          "而这是签名里最大的两块 CPU 开销（页哈希每 16KB 一页、资源哈希全树文件）")
+
+    check("#if canImport(CryptoKit)" in r112_fasthash_code
+          and "CryptoKit.SHA256" in r112_fasthash_code
+          and "Crypto.SHA256" in r112_fasthash_code
+          and "func hashMatchesReferenceForVariousInputs()" in r112_fasthash_tests
+          and "func hashPageMatchesReference()" in r112_fasthash_tests,
+          "R112②: `FastSHA256` 必须有 CryptoKit 分支（Apple 平台加速）**且** "
+          "Linux 分支保持 swift-crypto（CI `signer-tests` 在 Linux 跑，一字不差）；"
+          "输出一致性单测必须存在 —— 哈希错一位 ⇒ 签名无效 ⇒ 真机秒退，本地不报错")
+
+    check("cachedTeamsByAccountIdentifier[account.identifier]" in r91_portal_code
+          and "cachedAppIDsByTeamIdentifier[team.identifier]" in r91_portal_code
+          and "cachedDevicesByTeamAndDeviceIdentifier[cacheKey]" in r91_portal_code,
+          "R112③a: 批量门户读缓存必须存在 ✗ —— "
+          "`fetchTeams` / `fetchAppIDs` / `ensureDevice` 逐 App 重拉是纯浪费 "
+          "（3 个 App = 9 次冗余 Apple RTT），一轮批量里它们对同一账号/Team 返回完全相同")
+
+    check("invalidateAppIDsCache(forTeamIdentifier: team.identifier)" in r91_portal_code
+          and "bypassCache: true" in r91_portal_code
+          and "func isPortalReadCacheFresh(" in r91_portal_code,
+          "R112③b: 缓存的**安全网**缺一不可 ✗ —— "
+          "`addAppID` 成功后必须失效对应 Team 的 App ID 列表缓存"
+          "（否则后一个 App 拿着缺新 App ID 的旧列表匹配）；"
+          "`bundleIdentifierUnavailable` 的恢复性重拉必须 bypass"
+          "（它就是要「再看一眼」远端，不能拿缓存糊弄）；"
+          "新鲜度判据必须是可单测的纯函数（`isPortalReadCacheFresh`）")
+
+    check("predictiveWindow: TimeInterval? = nil" in r112_planner_code
+          and "PredictiveRenewalPolicy.needsBackgroundRenewal(app: app, now: now, window: $0)" not in r112_planner_code
+          and "PredictiveRenewalPolicy.needsBackgroundRenewal" in r112_planner_code,
+          "R112④a: 预测式过滤必须只在后台路径生效 ✗ —— "
+          "`RefreshPlanner.makeQueue` 的 `predictiveWindow` 默认为 nil（不过滤），"
+          "手动「续签全部」照旧全量；把它改成默认过滤 ⇒ 用户点的全量续签被静默缩水")
+
+    check("result = try await renewalCoordinator.refreshPredictive(progress: progress)" in r112_vm_code
+          and "func refreshPredictive(" in r112_coordinator_code
+          and "func backgroundWindow(" in strip_comments(load("Seal/Core/Renewal/PredictiveRenewalPolicy.swift")),
+          "R112④b: 后台触发必须走 `refreshPredictive`（不是 `refreshAll`）✗ —— "
+          "否则预测式等于没接线，每轮后台还是全量重走 portal+设备；"
+          "窗口必须自适应（`backgroundWindow`）：低频触发时放宽到接近全量，"
+          "避免「上周没到期被跳过、这周已过期」")
+
+    check('code: "SEAL-RENEW-029"' in r112_vm_code
+          and 'code: "SEAL-RENEW-001"' in r112_vm_code,
+          "R112④c: 预测式后台轮「本轮无事可做」不能弹 SEAL-RENEW-001 ✗ —— "
+          "那是「没有可续签的应用」的异常 alert，留给下次进 App 的用户看是莫名其妙的报错；"
+          "后台 total == 0 必须静默（只写 SEAL-RENEW-029 日志），通知也不发")
+
+    check("func unknownExpiryFailsOpen()" in r112_predictive_tests
+          and "func windowWidensForWeeklyTrigger()" in r112_predictive_tests
+          and "func plannerFiltersByPredictiveWindow()" in r112_predictive_tests
+          and "func defaultTTLIsFiveMinutes()" in r112_portal_tests,
+          "R112⑤: 三件套的单测必须存在 ✗ —— "
+          "未知过期时间 fail open、低频触发窗口放宽、planner 接线、缓存 TTL，"
+          "这些判据错了**都不崩**，只在真机上表现为「该续的没续 / 不该续的续了」")
+
     # ── R92：后台触发的**设备通道时序** ＋ 通道瞬时错误重试 ＋ 未预期错误可观测 ──────
     # 来源：2026-09-26 构建 53 真机（用户导出 `Seal-log`）。
     #   21:10:37 `SEAL-BACKGROUND-006`（快捷指令触发）＋ 同秒 `-001`（保活）
@@ -9701,6 +9780,53 @@ def main():
          "func layoutOnlyKeepsMappingsAndExtensionSetIdenticalToSigning()",
          "func layoutOnlyLegacy()",
          "R91⑪:"),
+        # ── R112：2026-10-03 签名/续签提速三件套 ──
+        # ① 页哈希退回裸 swift-crypto（丢掉 CryptoKit 硬件加速）⇒ R112① 报红。
+        ("Vendor/CodeSignKit/Sources/CodeDirectoryBuilder.swift",
+         "                    return FastSHA256.hashPage(page)",
+         "                    var hasher = SHA256()\n"
+         "                    hasher.update(bufferPointer: page)\n"
+         "                    return Data(hasher.finalize())",
+         "R112①:"),
+        # ①b 资源哈希退回裸 swift-crypto ⇒ R112① 报红。
+        ("Vendor/CodeSignKit/Sources/CodeResourcesBuilder.swift",
+         "            let sha256 = FastSHA256.hash(data: fileData)",
+         "            let sha256 = Data(SHA256.hash(data: fileData))",
+         "R112①:"),
+        # ③b addAppID 成功后不再失效缓存（后一个 App 拿旧列表匹配）⇒ R112③b 报红。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "                        invalidateAppIDsCache(forTeamIdentifier: team.identifier)",
+         "                        // cache invalidation removed",
+         "R112③b:"),
+        # ③c 恢复性重拉不再 bypass（拿缓存糊弄「再看一眼」）⇒ R112③b 报红。
+        ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "let refreshed = try await fetchAppIDs(team: team, session: session, bypassCache: true)",
+         "let refreshed = try await fetchAppIDs(team: team, session: session)",
+         "R112③b:"),
+        # ④a planner 默认改成过滤（手动全量续签被静默缩水）⇒ R112④a 报红。
+        ("Seal/Core/Renewal/RefreshPlanner.swift",
+         "        predictiveWindow: TimeInterval? = nil",
+         "        predictiveWindow: TimeInterval? = PredictiveRenewalPolicy.baseWindow",
+         "R112④a:"),
+        # ④b 后台改回走 refreshAll（预测式没接线）⇒ R112④b 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "                result = try await renewalCoordinator.refreshPredictive(progress: progress)",
+         "                result = try await renewalCoordinator.refreshAll(progress: progress)",
+         "R112④b:"),
+        # ④c 后台 total == 0 改回弹 SEAL-RENEW-001（莫名其妙的过期 alert）⇒ R112④c 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         '                        code: "SEAL-RENEW-029"',
+         '                        code: "SEAL-RENEW-001"',
+         "R112④c:"),
+        # ⑤ 关键单测被改名（不变量没人守）⇒ R112⑤ 报红。
+        ("Vendor/CodeSignKit/Tests/FastSHA256Tests.swift",
+         "func hashPageMatchesReference()",
+         "func hashPageLegacy()",
+         "R112⑤:"),
+        ("SealTests/Renewal/PredictiveRenewalPolicyTests.swift",
+         "func windowWidensForWeeklyTrigger()",
+         "func windowLegacy()",
+         "R112⑤:"),
 
         # ── R92：后台触发的通道时序 / 通道瞬时重试 / 未预期错误可观测 ──
         # ① 点火前不再等通道（退回「拿到容器就续签」）⇒ R92① 报红。

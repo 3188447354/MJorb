@@ -8,10 +8,18 @@ struct RefreshPlanner: Sendable {
         apps: [AppRecord],
         fallbackAccountID: UUID? = nil,
         accounts: [AppleAccountRecord] = [],
-        now: Date = Date()
+        now: Date = Date(),
+        /// 预测式窗口（秒）：非 nil 时只保留「窗口内会过期」的（后台自动续签用，
+        /// 见 `PredictiveRenewalPolicy`）；nil = 不过滤（手动「续签全部」照旧全量）。
+        predictiveWindow: TimeInterval? = nil
     ) -> [RefreshQueueItem] {
         apps
             .filter { $0.belongsInInstalledList }
+            .filter { app in
+                predictiveWindow.map {
+                    PredictiveRenewalPolicy.needsBackgroundRenewal(app: app, now: now, window: $0)
+                } ?? true
+            }
             .sorted { lhs, rhs in
                 priority(for: lhs, now: now) < priority(for: rhs, now: now)
             }

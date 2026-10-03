@@ -5,6 +5,18 @@
 
 ---
 
+## 2026-10-03 签名/续签再提速三件套（用户需求「速度特别快」）
+
+- **背景**：用户问「Seal 如何做到签名安装和续签都能速度特别快」。此前已做两轮（1.3.23 签名内核去浪费、1.3.41 续签免解压），本轮是第三轮，三个都是「上游没有、本仓自研」。
+- **① 批量门户读缓存**：`RenewalCoordinator.process` 逐 App 串行，每项都走 `prepareProfileOnlyRenewal` ⇒ `fetchTeams`/`ensureDevice`/`fetchAppIDs` 对同一账号/Team 重拉 3 次（3 App=9 次冗余 RTT）。修法：`ApplePortalSigningService` actor 内 5 分钟 TTL 读缓存；`addAppID` 成功即失效对应 Team 条目；`bundleIdentifierUnavailable` 恢复性重拉 `bypassCache: true`。只缓存读——`fetchProvisioningProfile` 是写操作，逐目标真发。
+- **② `FastSHA256` 硬件加速**：`CodeSignKit` 全仓 `import Crypto`（swift-crypto 纯 Swift SHA-256）。新增 `FastSHA256`（`#if canImport(CryptoKit)` 走 ARM SHA 硬件指令，Linux 保持 swift-crypto），页哈希与资源哈希两处调用点替换，public API 零改动。SHA-1/小数据哈希刻意不动。
+- **③ 预测式后台续签**：快捷指令后台轮原来每轮全量续签。新增 `PredictiveRenewalPolicy`（纯函数）：后台轮只纳入 48h 内到期的；窗口按上次间隔自适应放宽（每周跑一次 ⇒ 约 8 天 ≈ 全量，避免漏续）；未知过期时间 fail open；手动「续签全部」照旧全量；后台 total==0 静默（不弹 `SEAL-RENEW-001`）。
+- **刻意不做的两项**（已记入 upstream-alignment）：页哈希缓存（无真机验证，命中率<40% 反而更慢）、ZIP 差量打包（`unzipItem` 替换风险大，无设备验证 installd 接受度）、批量 portal 并行（Apple 1100 限流，AGENTS.md 要求先收样本）。
+- **涉及文件**：`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、`Vendor/CodeSignKit/Sources/FastHash.swift`（新增）、`Vendor/CodeSignKit/Sources/CodeDirectoryBuilder.swift`、`Vendor/CodeSignKit/Sources/CodeResourcesBuilder.swift`、`Seal/Core/Renewal/PredictiveRenewalPolicy.swift`（新增）、`Seal/Core/Renewal/RefreshPlanner.swift`、`Seal/Core/Renewal/RenewalCoordinator.swift`、`Seal/Features/Apps/AppsViewModel.swift`、`Scripts/verify-release-safety.py`（R112，5 断言+11 变异）、`docs/upstream-alignment.md`、`docs/upstream/codesignkit-perf-1.3.23.md`。
+- **验证状态**：待 CI（`signer-tests` 跑 `FastSHA256Tests` 一致性，`swift-regression` 跑 `PredictiveRenewalPolicyTests`/`PortalReadCacheTests`；真机回归待 MJ 手机恢复后）。
+
+---
+
 ## 2026-10-02 自更新源指纹算到了旧包头上（`importingSealIPAWithSameVersionRecordsSourceFingerprint` 失败）
 
 - **现象**：CI swift-regression 挂 1 个测试：`imported.pendingUpdateSourceFingerprint` 与 `imported.ipaRelativePath` 的实际 SHA256 不一致。

@@ -9799,8 +9799,8 @@ def main():
          "R112③b:"),
         # ③c 恢复性重拉不再 bypass（拿缓存糊弄「再看一眼」）⇒ R112③b 报红。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "let refreshed = try await fetchAppIDs(team: team, session: session, bypassCache: true)",
-         "let refreshed = try await fetchAppIDs(team: team, session: session)",
+         "                        let refreshed = try await fetchAppIDs(team: team, session: session, bypassCache: true)",
+         "                        let refreshed = try await fetchAppIDs(team: team, session: session)",
          "R112③b:"),
         # ④a planner 默认改成过滤（手动全量续签被静默缩水）⇒ R112④a 报红。
         ("Seal/Core/Renewal/RefreshPlanner.swift",

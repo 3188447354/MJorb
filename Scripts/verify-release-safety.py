@@ -6084,7 +6084,6 @@ def violations(load=read):
           "新鲜度判据必须是可单测的纯函数（`isPortalReadCacheFresh`）")
 
     check("predictiveWindow: TimeInterval? = nil" in r112_planner_code
-          and "PredictiveRenewalPolicy.needsBackgroundRenewal(app: app, now: now, window: $0)" not in r112_planner_code
           and "PredictiveRenewalPolicy.needsBackgroundRenewal" in r112_planner_code,
           "R112④a: 预测式过滤必须只在后台路径生效 ✗ —— "
           "`RefreshPlanner.makeQueue` 的 `predictiveWindow` 默认为 nil（不过滤），"

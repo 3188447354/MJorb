@@ -35,19 +35,29 @@ struct RefreshAllAppsIntent: AppIntent {
     /// ⚠️ 改成 `true` 会让快捷指令自动化每次弹出 Seal 界面，等于这条链路白做。
     static let openAppWhenRun: Bool = false
 
+    /// 测试用强制开关：在快捷指令里打开后，本轮**跳过预测式过滤**、全量续签。
+    ///
+    /// 默认为关：自动跑的后台续签走预测式（只续 48h 内到期的），又快又不给
+    /// Apple 限流添堵。手动测试连点时打开它，每次点火都真干活。
+    /// ⚠️ 参数名与默认值被守卫 R114 钉住：默认值改成 true ⇒ 每次自动后台续签
+    /// 都变全量，预测式优化等于没做。
+    @Parameter(title: "强制续签全部", default: false)
+    var forceFullRenewal: Bool
+
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        let forceFull = forceFullRenewal
         let outcome = await MainActor.run { () -> SealRenewalIntentOutcome in
             guard let container = SealAppEnvironment.container else { return .notReady }
             // 先起保活、再点火：反过来的话，点火之后进程可能立刻被系统挂起，
             // 续签任务还没跑到第一次网络往返就停了（后台没有界面，用户看不到）。
             container.backgroundKeepAlive.start()
             container.locationKeepAlive.start()
-            container.appsViewModel.refreshAllFromBackgroundTrigger()
+            container.appsViewModel.refreshAllFromBackgroundTrigger(forceFullRenewal: forceFull)
             return .started
         }
         switch outcome {
         case .started:
-            return .result(dialog: "已在后台开始续签全部应用。")
+            return .result(dialog: forceFull ? "已在后台开始强制续签全部应用。" : "已在后台开始续签全部应用。")
         case .notReady:
             return .result(dialog: "Seal 还没准备好，请先打开一次 Seal 再试。")
         }

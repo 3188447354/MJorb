@@ -6131,6 +6131,37 @@ def violations(load=read):
           "R113②: 手贴 glassEffect 的旧 `ImportGlassButtonStyle` 必须删除 ✗ —— "
           "留着它等于留着「假玻璃」的模板，下次有人 copy-paste 又中招")
 
+    # ── R114：2026-10-03 快捷指令「强制续签全部」测试开关 ──
+    #
+    # 来源：用户测试反馈 —— 后台预测式（48h 窗口）让快捷指令连点时每轮 0 个纳入、
+    # 静默结束，没法测试。加 `@Parameter forceFullRenewal`，测试时手动打开。
+    # 它的错法同样**不崩、只在行为上错**：
+    #   · 默认值被改成 true ⇒ 每次自动后台续签都变全量，预测式优化等于没做，
+    #     Apple 限流风险回来；
+    #   · 标记跨轮存活 ⇒ 一次测试打开污染之后所有的自动后台续签；
+    #   · 后台默认路径被改成 refreshAll ⇒ 同上。
+    r114_intent_code = strip_comments(load("Seal/Features/Intents/SealRenewalIntent.swift"))
+    r114_vm_code = strip_comments(load("Seal/Features/Apps/AppsViewModel.swift"))
+
+    check("@Parameter(title: \"强制续签全部\", default: false)" in r114_intent_code
+          and "var forceFullRenewal: Bool" in r114_intent_code,
+          "R114①: 快捷指令必须有「强制续签全部」参数、默认关闭 ✗ —— "
+          "默认值改成 true ⇒ 每次自动后台续签都变全量重走 portal+设备，"
+          "预测式省下的 Apple 请求全回来，还多了限流风险")
+
+    check("func refreshAllFromBackgroundTrigger(forceFullRenewal: Bool = false)" in r114_vm_code
+          and "private var backgroundForceFullRenewal = false" in r114_vm_code
+          and "func consumeBackgroundForceFullRenewalFlag()" in r114_vm_code,
+          "R114②: 强制标记必须按轮消费、不能跨轮存活 ✗ —— "
+          "只在成功路径清位 ⇒ 一次测试打开会污染之后所有的自动后台续签；"
+          "必须与 `backgroundTriggerRequested` 同轮读并清位")
+
+    check("if forceFullRenewal" in r114_vm_code
+          and "result = try await renewalCoordinator.refreshPredictive(progress: progress)" in r114_vm_code,
+          "R114③: 后台默认路径必须仍是预测式 ✗ —— "
+          "强制开关只在打开时跳过过滤；默认路径被改成 `refreshAll` ⇒ "
+          "预测式优化名存实亡")
+
     # ── R92：后台触发的**设备通道时序** ＋ 通道瞬时错误重试 ＋ 未预期错误可观测 ──────
     # 来源：2026-09-26 构建 53 真机（用户导出 `Seal-log`）。
     #   21:10:37 `SEAL-BACKGROUND-006`（快捷指令触发）＋ 同秒 `-001`（保活）
@@ -9861,6 +9892,23 @@ def main():
          "private struct ImportGlassButtonStyle: ButtonStyle {\n"
          "    @Environment(\\.accessibilityReduceTransparency) private var reduceTransparency",
          "R113②:"),
+
+        # ── R114：快捷指令「强制续签全部」测试开关 ──
+        # ① 默认值被改成 true（每次自动后台都全量）⇒ R114① 报红。
+        ("Seal/Features/Intents/SealRenewalIntent.swift",
+         '@Parameter(title: "强制续签全部", default: false)',
+         '@Parameter(title: "强制续签全部", default: true)',
+         "R114①:"),
+        # ② 强制标记不再按轮清位（跨轮污染）⇒ R114② 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "        let forceFullRenewal = consumeBackgroundForceFullRenewalFlag()",
+         "        let forceFullRenewal = backgroundForceFullRenewal",
+         "R114②:"),
+        # ③ 后台默认路径改回全量（预测式名存实亡）⇒ R114③ 报红。
+        ("Seal/Features/Apps/AppsViewModel.swift",
+         "                    result = try await renewalCoordinator.refreshPredictive(progress: progress)",
+         "                    result = try await renewalCoordinator.refreshAll(progress: progress)",
+         "R114③:"),
 
         # ── R92：后台触发的通道时序 / 通道瞬时重试 / 未预期错误可观测 ──
         # ① 点火前不再等通道（退回「拿到容器就续签」）⇒ R92① 报红。

@@ -86,6 +86,9 @@ final class AppsViewModel: ObservableObject {
     /// 标记会**跨轮存活** ⇒ 用户先跑一次失败的快捷指令、再手动点「续签全部」时
     /// 就会收到一条本不该有的通知（用户明确要求手动续签不通知）。
     private var backgroundTriggerRequested = false
+    /// R114：快捷指令「强制续签全部」开关。只属于点火的那一轮，`runBatchRefresh`
+    /// 入口处读并清位 —— 不能跨轮存活，否则一次测试会污染之后所有的自动后台续签。
+    private var backgroundForceFullRenewal = false
     /// `refreshAll()` 是所有批量续签唯一入口。后台快捷指令只通过这个瞬态标记
     /// 告知入口不要展示 sheet，绝不绕过它的单飞/队列保护。
     private var backgroundBatchPresentationRequested = false
@@ -1725,12 +1728,13 @@ final class AppsViewModel: ObservableObject {
     /// 而同一构建、几分钟前的前台续签 2/2 成功。
     /// ⇒ 点火前改用**强判据**：`installChannel.start()` 会走完整个诊断
     /// （reset + RSD 握手 + 轮询；已就绪时 900 秒缓存秒回、失败熔断 60 秒、单飞合并并发启动）。
-    func refreshAllFromBackgroundTrigger() {
+    func refreshAllFromBackgroundTrigger(forceFullRenewal: Bool = false) {
         Task { [weak self] in
             guard let self else { return }
             try? await self.logStore?.append(
                 category: .renewal,
-                message: "快捷指令在后台触发「续签全部应用」（未打开 App）",
+                message: "快捷指令在后台触发「续签全部应用」（未打开 App）"
+                    + (forceFullRenewal ? "［强制全量］" : ""),
                 code: "SEAL-BACKGROUND-006"
             )
             await self.awaitDeviceChannelBeforeBackgroundRenewal()
@@ -1769,6 +1773,9 @@ final class AppsViewModel: ObservableObject {
             //    （让位那一档若确实需要通知，由上面那段**直接**发，不靠这个标记）。
             self.backgroundTriggerRequested = true
             self.backgroundBatchPresentationRequested = true
+            // R114：强制开关只影响**本轮**是否跳过预测式过滤，标记必须随轮清位，
+            // 不能长期存活 —— 否则一次测试打开会污染之后所有的自动后台续签。
+            self.backgroundForceFullRenewal = forceFullRenewal
             self.refreshAll()
         }
     }
@@ -2039,6 +2046,7 @@ final class AppsViewModel: ObservableObject {
         // 若只在成功路径清位，标记会**跨轮存活**：用户先跑一次失败的快捷指令续签、
         // 之后手动点「续签全部」时会收到一条本不该有的通知（用户明确要求手动续签不通知）。
         let wasBackgroundTriggered = consumeBackgroundTriggerFlag()
+        let forceFullRenewal = consumeBackgroundForceFullRenewalFlag()
         guard let renewalCoordinator else { return }
         guard let operationLease = await acquireOperation(.renewing) else {
             batchRefreshSession = nil
@@ -2075,7 +2083,21 @@ final class AppsViewModel: ObservableObject {
                 // 🔴 预测式（2026-10-03）：后台触发只续「窗口内会过期」的，不每轮全量
                 // 重走 portal+设备 —— 又快又不给 Apple 限流添堵。手动「续签全部」
                 // 走下面的 `refreshAll`（全量），不受影响。
-                result = try await renewalCoordinator.refreshPredictive(progress: progress)
+                //
+                // R114：快捷指令「强制续签全部」打开时跳过预测式过滤 —— 测试连点
+                // 需要每轮真干活。开关只属于点火那一轮（入口处已读并清位），
+                // 不会污染之后的自动后台续签。
+                if forceFullRenewal {
+                    try? await logStore?.append(
+                        category: .renewal,
+                        level: .info,
+                        message: "后台触发：强制开关已打开，本轮跳过预测式过滤、全量续签",
+                        code: "SEAL-RENEW-030"
+                    )
+                    result = try await renewalCoordinator.refreshAll(progress: progress)
+                } else {
+                    result = try await renewalCoordinator.refreshPredictive(progress: progress)
+                }
             } else {
                 result = try await renewalCoordinator.refreshAll(progress: progress)
             }
@@ -2181,6 +2203,15 @@ final class AppsViewModel: ObservableObject {
         let requested = backgroundTriggerRequested
         backgroundTriggerRequested = false
         return requested
+    }
+
+    /// R114：强制开关与触发标记**同轮消费** —— 在 `runBatchRefresh` 入口处读并清位，
+    /// 理由与 `consumeBackgroundTriggerFlag` 相同：三条不产生 result 的出口下，
+    /// 只在成功路径清位会让一次测试的强制标记污染之后所有的自动后台续签。
+    private func consumeBackgroundForceFullRenewalFlag() -> Bool {
+        let forced = backgroundForceFullRenewal
+        backgroundForceFullRenewal = false
+        return forced
     }
 
     /// 快捷指令后台续签结束后的**系统通知**（成功、部分失败、全失败都走这里）。

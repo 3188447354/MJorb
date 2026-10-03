@@ -4804,19 +4804,24 @@ def violations(load=read):
     # 其实**已经成功且进程没重启**，却仍会被记成「等待新进程核验」⇒ 启动时没有自替换事务
     # 可结算 ⇒ 又变成 `SEAL-RENEW-007`「1 个应用的结果未知」。
     # 这正是本项目反复出现的「**上游放行、下游又拦**」：改了一半、看起来改完了。
-    check("if updated.isSeal, currentRenewalExecutionPath != .profileOnly {"
+    check("if updated.isSeal, renewalExecutionPaths[item.appID] != .profileOnly {"
           in r82_renewal_coordinator,
           "R82⑤: 批量结算必须按**实际路径**判断 Seal 那一项要不要等新进程核验 ✗ —— "
           "只按 `updated.isSeal` 判断等于假定「Seal 续签必然是自替换」，"
           "会让已经成功的快路径项永远停在等待确认里（`SEAL-RENEW-007`）。"
           "判据用 `!= .profileOnly`：信号缺失时退回保守行为，不谎报成功")
-    check("await self.rememberRenewalExecutionPath(path)" in r82_renewal_coordinator,
+    check("await self.rememberRenewalExecutionPath(path, for: item.appID)" in r82_renewal_coordinator,
           "R82⑥: 结算要用的路径信号必须真的被**记录**下来 ✗ —— "
           "`onRenewalExecutionPath` 回调只推给界面（`progress(...)`）是不够的，"
           "协调器自己也得留住它，否则 R82⑤ 的判据恒为「非 profile-only」")
-    check("currentRenewalExecutionPath = nil" in r82_renewal_coordinator,
-          "R82⑦: 路径信号必须**按项重置** ✗ —— 上一项的 `.profileOnly` 泄漏到下一项，"
-          "就会把「其实换了进程」的 Seal 项误记成成功（静默丢一次核验）")
+    # R82⑦（2026-10-04 并行续签）：路径信号从「单变量 + 每项重置」改成
+    # 「按 appID 隔离的字典」—— 并行下单变量是竞态，字典天然按项隔离，
+    # 不需要重置也不会泄漏。
+    check("private var renewalExecutionPaths: [UUID: RenewalExecutionPath]" in r82_renewal_coordinator
+          and "currentRenewalExecutionPath" not in r82_renewal_coordinator,
+          "R82⑦: 路径信号必须**按项隔离** ✗ —— 上一项的 `.profileOnly` 泄漏到下一项，"
+          "就会把「其实换了进程」的 Seal 项误记成成功（静默丢一次核验）；"
+          "并行下单变量 + 重置是竞态，必须按 appID 隔离")
 
     # R71: 已安装列表设备核验 ＋ 安装重试路径的三条保护（2026-09-25 审查项 P1/P2/P4）。
     r71_verifier = load("Seal/Features/Apps/InstalledAppDeviceVerifier.swift")
@@ -6428,16 +6433,19 @@ def violations(load=read):
           "它原来是 actor 的私有 `Bool`：测试 target 看不到 Minimuxer ⇒ 判定测不到；"
           "而「没清标记」的错法不崩、不报错，只让**每一项**续签都白重置一次设备通道")
 
-    check("if taint.consume() {" in r93_actor_body
-          and "await channel.reset()" in r93_actor_body
-          and "_ = try await channel.start()" in r93_actor_body
-          and r93_actor_body.index("if taint.consume() {")
-              < r93_actor_body.index("await channel.reset()")
-          and r93_actor_body.index("await channel.reset()")
-              < r93_actor_body.index("_ = try await channel.start()")
-          and r93_actor_body.index("_ = try await channel.start()")
-              < r93_actor_body.index("try await ensureProfileService(using: channel)")
-          and "Minimuxer.reset()" not in r93_actor_body,
+    # R93②（2026-10-04 并行续签）：「消费 + 重置 + 注入」在 actor 串行临界区原子完成。
+    # 直接匹配代码块整体，不依赖 section 提取（section 边界在重构时易漂移）。
+    r93_heal_block = (
+        "if taint.consume() {\n"
+        "            await channel.reset()\n"
+        "            _ = try await channel.start()\n"
+        "            await onTaintHealed()\n"
+        "        }"
+    )
+    check(r93_heal_block in r93_installer
+          and r93_installer.index(r93_heal_block)
+              < r93_installer.index("try await ensureProfileService(using: channel)")
+          and "Minimuxer.reset()" not in r93_installer,
           "R93②: 「消费 + 重置 + 注入」必须在 actor 串行临界区里原子完成 ✗ —— "
           "消费漏了 ⇒ 一次超时毒掉后续全部续签；"
           "重置写在调用方 ⇒ 并行时另一项的 reset 会拆掉正在注入的通道（2026-10-04 真机竞态）；"
@@ -7399,7 +7407,7 @@ def main():
         # 删掉逐项成功日志：批量路径重新变成「日志里没有结论」，
         # 用户无法判断「某个 App 到底成没成、描述文件是不是新申请的」。
         ("Seal/Core/Renewal/RenewalCoordinator.swift",
-         '                    code: "SEAL-RENEW-020"',
+         '                code: "SEAL-RENEW-020"',
          '                    code: "SEAL-RENEW-020-REMOVED"',
          "R12: the batch renewal path must log a per-item success line"),
         # 日志还在，但不再带描述文件身份：看起来「有留痕」，
@@ -8410,8 +8418,8 @@ def main():
          "R10: batch renewal must subscribe to the upload percentage"),
         # 把新事件「收编」回旧事件：编译通过、事件流还在，但抽屉重新变成没有分母的黑盒。
         ("Seal/Core/Renewal/RenewalCoordinator.swift",
-         "                                .appInstallProgress(\n                                    index: offset + 1,\n                                    total: queue.count,\n                                    app: latestApp,\n                                    progress: installProgress\n                                )",
-         "                                .appProgress(\n                                    index: offset + 1,\n                                    total: queue.count,\n                                    app: latestApp,\n                                    stage: .pushing\n                                )",
+         "                            .appInstallProgress(\n                                index: offset + 1,\n                                total: total,\n                                app: latestApp,\n                                progress: installProgress\n                            )",
+         "                            .appProgress(\n                                index: offset + 1,\n                                total: total,\n                                app: latestApp,\n                                stage: .pushing\n                            )",
          "R10: batch renewal must forward the real upload percentage"),
         ("Seal/Features/Apps/BatchRefreshView.swift",
          "        SealDrawer(title: drawerTitle, showsFooter: true) {",
@@ -9282,19 +9290,19 @@ def main():
         # ⑥ 结算退回「只看身份」⇒ R82⑤ 报红。**这正是本轮修的真问题**：
         #    准入放行了，结算侧却仍假定「Seal 续签 = 自替换」⇒ 成功项永远停在等待确认。
         ("Seal/Core/Renewal/RenewalCoordinator.swift",
-         "if updated.isSeal, currentRenewalExecutionPath != .profileOnly {",
+         "if updated.isSeal, renewalExecutionPaths[item.appID] != .profileOnly {",
          "if updated.isSeal {",
          "R82⑤: 批量结算必须按**实际路径**判断"),
         # ⑦ 不再记录路径信号（只推给界面）⇒ R82⑥ 报红（判据恒为「非 profile-only」）。
         ("Seal/Core/Renewal/RenewalCoordinator.swift",
-         "await self.rememberRenewalExecutionPath(path)",
+         "await self.rememberRenewalExecutionPath(path, for: item.appID)",
          "_ = path",
          "R82⑥: 结算要用的路径信号必须真的被**记录**下来"),
-        # ⑧ 去掉按项重置 ⇒ R82⑦ 报红（上一项的 `.profileOnly` 泄漏到 Seal 那一项）。
+        # ⑧ 退回单变量（并行竞态回来）⇒ R82⑦ 报红。
         ("Seal/Core/Renewal/RenewalCoordinator.swift",
-         "            currentRenewalExecutionPath = nil\n",
-         "",
-         "R82⑦: 路径信号必须**按项重置**"),
+         "    private var renewalExecutionPaths: [UUID: RenewalExecutionPath] = [:]\n",
+         "    private var currentRenewalExecutionPath: RenewalExecutionPath?\n",
+         "R82⑦: 路径信号必须**按项隔离**"),
         # ── R83：安装失败归因不得按前缀一刀切（2026-09-25 用户诉求）──
         # ① 把「前缀 ⇒ `.localDevVPN`」加回路由 ⇒ R83① 报红（用户点「恢复」又跳到
         #    解决不了问题的 VPN 页）。
@@ -10136,13 +10144,13 @@ def main():
          "R93①:"),
         # ②a actor 内不再消费污染标记（一次超时毒掉后续全部续签）⇒ R93② 报红。
         ("Seal/Infrastructure/Renewal/ProfileOnlyProvisioningProfileInstaller.swift",
-         "        if taint.consume() {",
-         "        if false {",
+         "        if taint.consume() {\n            await channel.reset()",
+         "        if false {\n            await channel.reset()",
          "R93②:"),
         # ②b `reset()` 之后不再重新 `start()`（传输退回 Lockdown、自愈后第一次注入必失败）⇒ R93② 报红。
         ("Seal/Infrastructure/Renewal/ProfileOnlyProvisioningProfileInstaller.swift",
-         "            _ = try await channel.start()\n",
-         "",
+         "            _ = try await channel.start()\n            await onTaintHealed()",
+         "            await onTaintHealed()",
          "R93②:"),
 
         # ── R94：通道就绪原因可判读 + 掉线自愈 ──

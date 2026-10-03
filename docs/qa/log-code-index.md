@@ -79,8 +79,6 @@
 | `SEAL-PROFILE-363` | `profile-only`（只换描述文件）的设备端身份核验**没有确认**（带原因：记录缺字段 / 设备端没有该身份 / 设备端枚举不可用）。⚠️ **2026-09-26 起它只是诊断信号，不再回落完整重签** —— 按上游 SideStore 的做法继续只更新描述文件，由注入后的逐份读回（`SEAL-PROFILE-354`）兜底。出现它意味着记录与设备现实可能有偏差，但**仍会成功** —— 不是失败 | `SigningCoordinator.swift` |
 | `SEAL-PROFILE-364` | **本机没有该应用当前证书的私钥**（重装 Seal 清了 Keychain / 删过 Apple ID / 证书刚轮换）⇒ 本次**改为完整重签并安装**，重签后证书与本机匹配，后续续签会回到「只更新描述文件」。它是**降级而非失败**：出现它说明这一次会重装，但会成功。级别是 `警告` | `SigningCoordinator.swift` |
 | `SEAL-PROFILE-365` | **记录里有一条「已导入但尚未安装」的更新源**（覆盖更新把记录写成了新导入包的版本号）⇒ 本次**改为完整重签并安装**，装完新版本才真正生效，之后续签回到「只更新描述文件」。它是**降级而非失败**。看到它说明「已安装列表里显示的版本号」是**待安装的源包**、不是正在运行的版本（用户 2026-09-26 实测：导入 1.3.20 到 1.3.19，点续签「直接续签了」而「关于」里仍是 1.3.19）。级别是 `警告` | `SigningCoordinator.swift` |
-| `SEAL-PROFILE-350` | 描述文件注入的**安全网**：调用方未先解除「上次超时污染」就想注入（正常路径不会出现 —— 调用点总会先消费、重置并重建通道）。级别是 `错误` | `ProfileOnlyProvisioningProfileInstaller.swift` |
-| `SEAL-PROFILE-351` | 另一项描述文件续签仍在使用设备通道（`misagent` 是进程级传输 ⇒ 注入必须串行）。级别是 `错误` | `ProfileOnlyProvisioningProfileInstaller.swift` |
 | `SEAL-PROFILE-352` | 注入描述文件超过 30 秒未返回 —— **警告级**。会置「污染」标记：下一次注入前自动重置并重建设备通道（见 `SEAL-PROFILE-355`），并纳入续签重试 | `ProfileOnlyProvisioningProfileInstaller.swift` |
 | `SEAL-PROFILE-353` | 设备端读回描述文件超过 30 秒未完成 —— **警告级**。同样置污染标记 | `ProfileOnlyProvisioningProfileInstaller.swift` |
 | `SEAL-PROFILE-354` | 注入报成功但设备端**读不回**该描述文件 ⇒ 本地到期日未更新（终态失败，不重试） | `ProfileOnlyProvisioningProfileInstaller.swift` |
@@ -173,3 +171,5 @@
 | `SEAL-CERT-224` | 源码里已不存在（历史码） |
 | `SEAL-RECONCILE-001`、`SEAL-RECONCILE-003`、`SEAL-RECONCILE-005` | 旧的已安装列表对账日志；该对账实现已移除，旧日志仍可能出现这些码 |
 | `SEAL-PROFILE-362` | 「无法在设备端确认描述文件身份」的**终态失败**，已删除 —— 改为**回落完整重签**（新码登记在主表「批量续签」一节）。旧行为把「无法核验」与「身份不符」折成同一条死路，通道抖动一次应用就永久续签不了（2026-09-25 构建 39 真机） |
+| `SEAL-PROFILE-350` | 描述文件注入的**安全网**（调用方未先解除污染就想注入）。**2026-10-04 并行续签后已移除**：actor 拿锁后自愈污染（消费 + 重置 + 注入原子完成），不再抛错 |
+| `SEAL-PROFILE-351` | 「另一项续签仍在使用设备通道」错误。**2026-10-04 并行续签后已移除**：改为 task-chain 排队等待，不再直接抛错（`misagent` 仍是同一时间只有一项在写） |

@@ -6089,13 +6089,11 @@ def violations(load=read):
           "`RefreshPlanner.makeQueue` 的 `predictiveWindow` 默认为 nil（不过滤），"
           "手动「续签全部」照旧全量；把它改成默认过滤 ⇒ 用户点的全量续签被静默缩水")
 
-    check("result = try await renewalCoordinator.refreshPredictive(progress: progress)" in r112_vm_code
-          and "func refreshPredictive(" in r112_coordinator_code
-          and "func backgroundWindow(" in strip_comments(load("Seal/Core/Renewal/PredictiveRenewalPolicy.swift")),
-          "R112④b: 后台触发必须走 `refreshPredictive`（不是 `refreshAll`）✗ —— "
-          "否则预测式等于没接线，每轮后台还是全量重走 portal+设备；"
-          "窗口必须自适应（`backgroundWindow`）：低频触发时放宽到接近全量，"
-          "避免「上周没到期被跳过、这周已过期」")
+    check("result = try await renewalCoordinator.refreshAll(progress: progress)" in r112_vm_code
+          and "refreshPredictive" not in r112_vm_code,
+          "R112④b: 后台快捷指令触发必须走 `refreshAll`（全量），不得走预测式 ✗ —— "
+          "2026-10-03 用户明确要求：触发就走续签。预测式（48h 窗口）让测试连点时"
+          "每轮 0 个纳入、静默结束 —— 用户要的是「点了就有动作」")
 
     check('code: "SEAL-RENEW-029"' in r112_vm_code
           and 'code: "SEAL-RENEW-001"' in r112_vm_code,
@@ -6130,37 +6128,6 @@ def violations(load=read):
     check("struct ImportGlassButtonStyle" not in r113_root_code,
           "R113②: 手贴 glassEffect 的旧 `ImportGlassButtonStyle` 必须删除 ✗ —— "
           "留着它等于留着「假玻璃」的模板，下次有人 copy-paste 又中招")
-
-    # ── R114：2026-10-03 快捷指令「强制续签全部」测试开关 ──
-    #
-    # 来源：用户测试反馈 —— 后台预测式（48h 窗口）让快捷指令连点时每轮 0 个纳入、
-    # 静默结束，没法测试。加 `@Parameter forceFullRenewal`，测试时手动打开。
-    # 它的错法同样**不崩、只在行为上错**：
-    #   · 默认值被改成 true ⇒ 每次自动后台续签都变全量，预测式优化等于没做，
-    #     Apple 限流风险回来；
-    #   · 标记跨轮存活 ⇒ 一次测试打开污染之后所有的自动后台续签；
-    #   · 后台默认路径被改成 refreshAll ⇒ 同上。
-    r114_intent_code = strip_comments(load("Seal/Features/Intents/SealRenewalIntent.swift"))
-    r114_vm_code = strip_comments(load("Seal/Features/Apps/AppsViewModel.swift"))
-
-    check("@Parameter(title: \"强制续签全部\", default: false)" in r114_intent_code
-          and "var forceFullRenewal: Bool" in r114_intent_code,
-          "R114①: 快捷指令必须有「强制续签全部」参数、默认关闭 ✗ —— "
-          "默认值改成 true ⇒ 每次自动后台续签都变全量重走 portal+设备，"
-          "预测式省下的 Apple 请求全回来，还多了限流风险")
-
-    check("func refreshAllFromBackgroundTrigger(forceFullRenewal: Bool = false)" in r114_vm_code
-          and "private var backgroundForceFullRenewal = false" in r114_vm_code
-          and "func consumeBackgroundForceFullRenewalFlag()" in r114_vm_code,
-          "R114②: 强制标记必须按轮消费、不能跨轮存活 ✗ —— "
-          "只在成功路径清位 ⇒ 一次测试打开会污染之后所有的自动后台续签；"
-          "必须与 `backgroundTriggerRequested` 同轮读并清位")
-
-    check("if forceFullRenewal" in r114_vm_code
-          and "result = try await renewalCoordinator.refreshPredictive(progress: progress)" in r114_vm_code,
-          "R114③: 后台默认路径必须仍是预测式 ✗ —— "
-          "强制开关只在打开时跳过过滤；默认路径被改成 `refreshAll` ⇒ "
-          "预测式优化名存实亡")
 
     # ── R92：后台触发的**设备通道时序** ＋ 通道瞬时错误重试 ＋ 未预期错误可观测 ──────
     # 来源：2026-09-26 构建 53 真机（用户导出 `Seal-log`）。
@@ -9858,10 +9825,18 @@ def main():
          "        predictiveWindow: TimeInterval? = nil",
          "        predictiveWindow: TimeInterval? = PredictiveRenewalPolicy.baseWindow",
          "R112④a:"),
-        # ④b 后台改回走 refreshAll（预测式没接线）⇒ R112④b 报红。
+        # ④b 后台改回走 refreshPredictive（触发不再全量续签）⇒ R112④b 报红。
+        #    ⚠️ 锚点必须带上分支注释：本函数里手动分支也是 refreshAll，
+        #    裸换 `refreshAll`→`refreshPredictive` 会误伤手动分支。
         ("Seal/Features/Apps/AppsViewModel.swift",
-         "                result = try await renewalCoordinator.refreshPredictive(progress: progress)",
-         "                result = try await renewalCoordinator.refreshAll(progress: progress)",
+         "                // 触发就走续签，不做预测式过滤。之前预测式（48h 窗口）让测试连点时\n"
+         "                // 每轮 0 个纳入、静默结束 —— 用户要的是\"点了就有动作\"。\n"
+         "                result = try await renewalCoordinator.refreshAll(progress: progress)\n"
+         "            } else {",
+         "                // 触发就走续签，不做预测式过滤。之前预测式（48h 窗口）让测试连点时\n"
+         "                // 每轮 0 个纳入、静默结束 —— 用户要的是\"点了就有动作\"。\n"
+         "                result = try await renewalCoordinator.refreshPredictive(progress: progress)\n"
+         "            } else {",
          "R112④b:"),
         # ④c 后台 total == 0 改回弹 SEAL-RENEW-001（莫名其妙的过期 alert）⇒ R112④c 报红。
         ("Seal/Features/Apps/AppsViewModel.swift",
@@ -9892,23 +9867,6 @@ def main():
          "private struct ImportGlassButtonStyle: ButtonStyle {\n"
          "    @Environment(\\.accessibilityReduceTransparency) private var reduceTransparency",
          "R113②:"),
-
-        # ── R114：快捷指令「强制续签全部」测试开关 ──
-        # ① 默认值被改成 true（每次自动后台都全量）⇒ R114① 报红。
-        ("Seal/Features/Intents/SealRenewalIntent.swift",
-         '@Parameter(title: "强制续签全部", default: false)',
-         '@Parameter(title: "强制续签全部", default: true)',
-         "R114①:"),
-        # ② 强制标记不再按轮清位（跨轮污染）⇒ R114② 报红。
-        ("Seal/Features/Apps/AppsViewModel.swift",
-         "        let forceFullRenewal = consumeBackgroundForceFullRenewalFlag()",
-         "        let forceFullRenewal = backgroundForceFullRenewal",
-         "R114②:"),
-        # ③ 后台默认路径改回全量（预测式名存实亡）⇒ R114③ 报红。
-        ("Seal/Features/Apps/AppsViewModel.swift",
-         "                    result = try await renewalCoordinator.refreshPredictive(progress: progress)",
-         "                    result = try await renewalCoordinator.refreshAll(progress: progress)",
-         "R114③:"),
 
         # ── R92：后台触发的通道时序 / 通道瞬时重试 / 未预期错误可观测 ──
         # ① 点火前不再等通道（退回「拿到容器就续签」）⇒ R92① 报红。

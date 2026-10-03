@@ -9817,11 +9817,13 @@ def main():
          '                        code: "SEAL-RENEW-029"',
          '                        code: "SEAL-RENEW-001"',
          "R112④c:"),
-        # ⑤ 关键单测被改名（不变量没人守）⇒ R112⑤ 报红。
+        # ⑤ 关键单测被改名（不变量没人守）⇒ 对应断言报红。
+        # ⚠️ `hashPageMatchesReference` 是 R112② 断言的（一致性单测），不是 R112⑤ ⇒
+        # 期望前缀必须是 R112②:，写 R112⑤: 会让自检误报。
         ("Vendor/CodeSignKit/Tests/FastSHA256Tests.swift",
          "func hashPageMatchesReference()",
          "func hashPageLegacy()",
-         "R112⑤:"),
+         "R112②:"),
         ("SealTests/Renewal/PredictiveRenewalPolicyTests.swift",
          "func windowWidensForWeeklyTrigger()",
          "func windowLegacy()",

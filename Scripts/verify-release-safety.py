@@ -6129,6 +6129,28 @@ def violations(load=read):
           "R113②: 手贴 glassEffect 的旧 `ImportGlassButtonStyle` 必须删除 ✗ —— "
           "留着它等于留着「假玻璃」的模板，下次有人 copy-paste 又中招")
 
+    # ── R115：2026-10-03 363 通道不可用时提前标记污染 ──
+    #
+    # 来源：真机日志 —— 后台冷启动时设备枚举不可用（363 `.unavailable`），
+    # 但代码仍拿坏通道去注入 ⇒ 30 秒超时 ⇒ 8/16 秒退避 ⇒ 重试，一轮烧 59 秒。
+    # `.unavailable` 已经证明通道坏了，提前标记污染 ⇒ `renewProfilesOnly`
+    # 在第一次注入前就重置通道，省掉在坏通道上的无效尝试。
+    # 它的错法**不崩**：只是悄悄变慢，用户只会觉得"续签慢"，查不出原因。
+    r115_installer_code = strip_comments(load("Seal/Infrastructure/Renewal/ProfileOnlyProvisioningProfileInstaller.swift"))
+    r115_coordinator_code = strip_comments(load("Seal/Core/Signing/SigningCoordinator.swift"))
+
+    check("func markTainted()" in r115_installer_code,
+          "R115①: 污染标记必须有公开的 `markTainted()` ✗ —— "
+          "没有它，`SigningCoordinator` 在 363 时无法提前标记，"
+          "只能等 30 秒超时后才走污染闸门")
+
+    check("if identity == .unavailable" in r115_coordinator_code
+          and "await ProfileOnlyProvisioningProfileInstaller.shared.markTainted()" in r115_coordinator_code,
+          "R115②: 363 为 `.unavailable` 时必须标记污染 ✗ —— "
+          "否则坏通道上的第一次注入必超时，白烧 30 秒 + 退避；"
+          "注意只在 `.unavailable` 时标记，`.mismatched`（设备上没有 profile）"
+          "不是通道问题，重置帮不上忙")
+
     # ── R92：后台触发的**设备通道时序** ＋ 通道瞬时错误重试 ＋ 未预期错误可观测 ──────
     # 来源：2026-09-26 构建 53 真机（用户导出 `Seal-log`）。
     #   21:10:37 `SEAL-BACKGROUND-006`（快捷指令触发）＋ 同秒 `-001`（保活）
@@ -9867,6 +9889,22 @@ def main():
          "private struct ImportGlassButtonStyle: ButtonStyle {\n"
          "    @Environment(\\.accessibilityReduceTransparency) private var reduceTransparency",
          "R113②:"),
+
+        # ── R115：363 通道不可用时提前标记污染 ──
+        # ① 公开 markTainted 被删（363 处调不到）⇒ R115① 报红。
+        ("Seal/Infrastructure/Renewal/ProfileOnlyProvisioningProfileInstaller.swift",
+         "    func markTainted() {\n        taint.markTainted()\n    }",
+         "    // markTainted removed",
+         "R115①:"),
+        # ② 363 不再标记（坏通道上硬撞超时）⇒ R115② 报红。
+        ("Seal/Core/Signing/SigningCoordinator.swift",
+         "                    if identity == .unavailable {\n"
+         "                        await ProfileOnlyProvisioningProfileInstaller.shared.markTainted()\n"
+         "                    }",
+         "                    if identity == .unavailable {\n"
+         "                        // no taint marking\n"
+         "                    }",
+         "R115②:"),
 
         # ── R92：后台触发的通道时序 / 通道瞬时重试 / 未预期错误可观测 ──
         # ① 点火前不再等通道（退回「拿到容器就续签」）⇒ R92① 报红。

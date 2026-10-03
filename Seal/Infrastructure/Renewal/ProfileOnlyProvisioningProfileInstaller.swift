@@ -59,6 +59,19 @@ actor ProfileOnlyProvisioningProfileInstaller {
         taint.consume()
     }
 
+    /// 标记通道已污染（供 `SigningCoordinator` 在 `SEAL-PROFILE-363` 为
+    /// `.unavailable` 时调用）。
+    ///
+    /// 2026-10-03 真机：后台冷启动时设备枚举不可用（363），但代码仍拿这条坏通道
+    /// 去注入 ⇒ 30 秒超时 ⇒ 8/16 秒退避 ⇒ 重试 ⇒ 一轮烧掉 59 秒。
+    /// 363 的 `.unavailable` 已经证明通道坏了，提前标记后 `renewProfilesOnly`
+    /// 会在**第一次注入前**就重置通道，省掉在坏通道上的无效尝试。
+    /// ⚠️ 只在 `.unavailable` 时调：`.mismatched`（设备上没有这份 profile）不是
+    /// 通道问题，重置帮不上忙。
+    func markTainted() {
+        taint.markTainted()
+    }
+
     /// 与 Apple Portal 请求并行预热实际执行 profile 注入的设备服务。
     /// 正在写入时不另起探测，避免和 `misagent` 的进程级传输竞争。
     func prewarmProfileService(using channel: any InstallChannel) async throws {

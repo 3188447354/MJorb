@@ -474,6 +474,13 @@ actor SigningCoordinator {
                             + "按上游做法继续只更新描述文件（注入后会逐份读回确认）：\(app.name)",
                         code: "SEAL-PROFILE-363"
                     )
+                    // 🔴 `.unavailable` = 通道坏了（枚举超时/解析失败），不是"设备上没有"。
+                    // 提前标记污染 ⇒ `renewProfilesOnly` 在第一次注入前就重置通道，
+                    // 不拿坏通道去撞 30 秒超时 + 8/16 秒退避（2026-10-03 真机一轮烧 59 秒）。
+                    // `.mismatched` 不标记：那是记录与设备不符，重置通道帮不上忙。
+                    if identity == .unavailable {
+                        await ProfileOnlyProvisioningProfileInstaller.shared.markTainted()
+                    }
                 }
             }
             if isInstalledRenewal {

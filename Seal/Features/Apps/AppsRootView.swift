@@ -187,7 +187,7 @@ struct AppsRootView: View {
                     .foregroundStyle(Color.sealAccent)
                     .frame(width: 44, height: 44)
             }
-            .buttonStyle(ImportGlassButtonStyle())
+            .modifier(ImportButtonGlassModifier())
             .accessibilityLabel("导入应用")
             .accessibilityIdentifier("import-toolbar-button")
             .disabled(viewModel.phase != .idle)
@@ -515,28 +515,29 @@ struct AppsRootView: View {
     }
 }
 
-/// 首页导入入口在 iOS 26+ 使用系统液态玻璃；较低系统及“降低透明度”保留同尺寸、
-/// 同命中区域的实色回退，不能让视觉适配改变导入行为。
-private struct ImportGlassButtonStyle: ButtonStyle {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.isEnabled) private var isEnabled
-
+/// 首页导入按钮的玻璃适配：iOS 26+ 必须用系统 `.glass` 按钮样式（真液态玻璃，
+/// 自动适配“降低透明度”），**不能**在自定义 ButtonStyle 里手贴 `.glassEffect` ——
+/// 后者在 ButtonStyle 上下文里渲染不出玻璃，只剩一个白圈描边（2026-10-03 真机截图），
+/// 看着和 iOS 26 以下的回退一模一样，这就是“假玻璃”。
+/// iOS 26 以下保留同尺寸、同命中区域的实色回退，不改变导入行为。
+private struct ImportButtonGlassModifier: ViewModifier {
     @ViewBuilder
-    func makeBody(configuration: Configuration) -> some View {
-        if reduceTransparency {
-            fallbackBody(configuration)
-        } else if #available(iOS 26.0, *) {
-            configuration.label
-                .glassEffect(.regular, in: .circle)
-                .scaleEffect(configuration.isPressed ? 0.92 : 1)
-                .opacity(isEnabled ? 1 : 0.42)
-                .animation(.easeOut(duration: 0.14), value: configuration.isPressed)
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
         } else {
-            fallbackBody(configuration)
+            content
+                .buttonStyle(ImportFallbackButtonStyle())
         }
     }
+}
 
-    private func fallbackBody(_ configuration: Configuration) -> some View {
+private struct ImportFallbackButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .background(Color.sealSurface, in: Circle())
             .overlay {

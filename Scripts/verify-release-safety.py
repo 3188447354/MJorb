@@ -6111,6 +6111,26 @@ def violations(load=read):
           "未知过期时间 fail open、低频触发窗口放宽、planner 接线、缓存 TTL，"
           "这些判据错了**都不崩**，只在真机上表现为「该续的没续 / 不该续的续了」")
 
+    # ── R113：2026-10-03 导入按钮真液态玻璃 ──
+    #
+    # 来源：用户真机截图（iOS 27）—— 右上角 `+` 按钮是个白圈描边，玻璃根本没渲染。
+    # 根因：在自定义 ButtonStyle 里手贴 `.glassEffect(.regular, in: .circle)`，
+    # 系统在 ButtonStyle 上下文里渲染不出液态玻璃 ⇒ 看着和 iOS 26 以下的实色回退
+    # 一模一样（"假玻璃"）。iOS 26+ 的正确姿势是系统 `.glass` 按钮样式。
+    r113_root_code = strip_comments(load("Seal/Features/Apps/AppsRootView.swift"))
+
+    check("struct ImportButtonGlassModifier: ViewModifier" in r113_root_code
+          and ".buttonStyle(.glass)" in r113_root_code
+          and ".buttonBorderShape(.circle)" in r113_root_code
+          and "struct ImportFallbackButtonStyle: ButtonStyle" in r113_root_code,
+          "R113①: 导入按钮在 iOS 26+ 必须用系统 `.glass` 按钮样式 ✗ —— "
+          "手贴 `.glassEffect` 在 ButtonStyle 里渲染不出玻璃（真机白圈描边）；"
+          "iOS 26 以下保留实色回退 `ImportFallbackButtonStyle`，不改变导入行为")
+
+    check("struct ImportGlassButtonStyle" not in r113_root_code,
+          "R113②: 手贴 glassEffect 的旧 `ImportGlassButtonStyle` 必须删除 ✗ —— "
+          "留着它等于留着「假玻璃」的模板，下次有人 copy-paste 又中招")
+
     # ── R92：后台触发的**设备通道时序** ＋ 通道瞬时错误重试 ＋ 未预期错误可观测 ──────
     # 来源：2026-09-26 构建 53 真机（用户导出 `Seal-log`）。
     #   21:10:37 `SEAL-BACKGROUND-006`（快捷指令触发）＋ 同秒 `-001`（保活）
@@ -9828,6 +9848,19 @@ def main():
          "func windowWidensForWeeklyTrigger()",
          "func windowLegacy()",
          "R112⑤:"),
+
+        # ── R113：导入按钮真液态玻璃 ──
+        # ① 退回手贴 glassEffect（假玻璃又回来了）⇒ R113① 报红。
+        ("Seal/Features/Apps/AppsRootView.swift",
+         "                .buttonStyle(.glass)\n                .buttonBorderShape(.circle)",
+         "                .buttonStyle(ImportGlassButtonStyle())",
+         "R113①:"),
+        # ② 旧 ImportGlassButtonStyle 被恢复 ⇒ R113② 报红。
+        ("Seal/Features/Apps/AppsRootView.swift",
+         "private struct ImportFallbackButtonStyle: ButtonStyle {",
+         "private struct ImportGlassButtonStyle: ButtonStyle {\n"
+         "    @Environment(\\.accessibilityReduceTransparency) private var reduceTransparency",
+         "R113②:"),
 
         # ── R92：后台触发的通道时序 / 通道瞬时重试 / 未预期错误可观测 ──
         # ① 点火前不再等通道（退回「拿到容器就续签」）⇒ R92① 报红。

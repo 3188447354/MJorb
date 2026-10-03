@@ -6139,10 +6139,12 @@ def violations(load=read):
     r115_installer_code = strip_comments(load("Seal/Infrastructure/Renewal/ProfileOnlyProvisioningProfileInstaller.swift"))
     r115_coordinator_code = strip_comments(load("Seal/Core/Signing/SigningCoordinator.swift"))
 
-    check("func markTainted()" in r115_installer_code,
+    check("func markTainted() {\n        taint.markTainted()\n    }" in r115_installer_code,
           "R115①: 污染标记必须有公开的 `markTainted()` ✗ —— "
           "没有它，`SigningCoordinator` 在 363 时无法提前标记，"
-          "只能等 30 秒超时后才走污染闸门")
+          "只能等 30 秒超时后才走污染闸门；"
+          "⚠️ 断言必须含函数体（`taint.markTainted()`），否则会误匹配 "
+          "`ProfileOnlyTaintGate` 结构体的同名 `mutating` 方法")
 
     check("if identity == .unavailable" in r115_coordinator_code
           and "await ProfileOnlyProvisioningProfileInstaller.shared.markTainted()" in r115_coordinator_code,

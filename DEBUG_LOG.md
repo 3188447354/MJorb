@@ -5,6 +5,20 @@
 
 ---
 
+## 2026-10-04 并行续签 + 350 误报根因（用户需求「快捷指令和 App 内一样快」）
+
+- **背景**：用户问「能不能做到快捷指令和 Seal 内续签一样快」。两边走同一套代码，差距在后台冷启动（2-4 秒，系统级抹不掉），但大头是续签串行：2 个 App 要 16-20 秒。用户拍板做并行重构（此前「冒风险试试」）。
+- **350 误报根因**（真机日志 00:37:10）：363 标记污染 → `renewProfilesOnly` 消费并重置通道（355）→ 但**并行的预热任务**在坏通道上失败又重新标记污染 → `installAndVerify` 看到污染=true 抛 `SEAL-PROFILE-350`。明明已重置，是误报。修法（R116）：`ensureProfileService` 加 `markTaintOnFailure` 参数，预热传 `false`；真正的注入仍标记。
+- **并行设计**（R117）：
+  - ① `RenewalCoordinator.process()`：非 Seal 项用 `withThrowingTaskGroup` 并行（Portal 网络 I/O 并发），Seal 串行殿后（自替换杀进程）。`processItem()` 从旧串行循环体逐行抽取，`continue` 换 `return`。
+  - ② `ProfileOnlyProvisioningProfileInstaller.installAndVerify`：`isBusy` 抛 351 改为 task-chain 排队；拿锁后自愈污染（`taint.consume()` 为真则 `channel.reset()` + `start()` + 355 日志），替代 350 抛错。
+  - ③ 「消费 + 重置 + 注入」从 `SigningCoordinator.renewProfilesOnly` 搬进 actor 临界区：调用方先 consume 再等串行权，另一项可能在等待期间 reset ⇒ 拆掉正在用的通道（并行竞态）。
+  - ④ 路径信号 `currentRenewalExecutionPath` 单变量改按 `appID` 隔离的字典（并行下旧的是竞态）。
+- **涉及文件**：`Seal/Core/Renewal/RenewalCoordinator.swift`、`Seal/Infrastructure/Renewal/ProfileOnlyProvisioningProfileInstaller.swift`、`Seal/Core/Signing/SigningCoordinator.swift`、`Scripts/verify-release-safety.py`（R93② 改查 actor、R116、R117）。
+- **验证状态**：待 CI + 真机（MJ 用快捷指令连点，看总耗时与 363/355 日志）。
+
+---
+
 ## 2026-10-03 签名/续签再提速三件套（用户需求「速度特别快」）
 
 - **背景**：用户问「Seal 如何做到签名安装和续签都能速度特别快」。此前已做两轮（1.3.23 签名内核去浪费、1.3.41 续签免解压），本轮是第三轮，三个都是「上游没有、本仓自研」。

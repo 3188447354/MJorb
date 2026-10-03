@@ -40,6 +40,12 @@ actor ProfileOnlyProvisioningProfileInstaller {
     /// 门户请求期间预热的 profile 服务任务。写入会加入同一任务，避免 `dumpProfiles`
     /// 与真实注入并发使用 misagent。
     private var inFlightPreparation: Task<Void, Error>?
+    /// 设备注入的串行排队尾（2026-10-04 并行续签）。
+    ///
+    /// `misagent` 是进程级传输，多项续签的注入必须串行。旧实现用 `isBusy` 抛
+    /// `SEAL-PROFILE-351` 直接失败；并行后多项会同时到达 ⇒ 改为排队等待。
+    /// 实现是标准 async mutex：每项把前一项的完成当门闩，挂到队尾。
+    private var injectTail: Task<Void, Never>?
 
     /// 读取并清除「上一次设备操作超时」的污染标记（原子）。
     ///
@@ -87,25 +93,32 @@ actor ProfileOnlyProvisioningProfileInstaller {
     func installAndVerify(
         _ materials: [ProfileOnlyProfileMaterial],
         certificateSerialNumber: String,
-        channel: any InstallChannel
+        channel: any InstallChannel,
+        // 污染自愈时留痕（`SEAL-PROFILE-355`），由调用方传入日志闭包。
+        onTaintHealed: @Sendable () async -> Void = {}
     ) async throws {
-        guard taint.isTainted == false else {
-            // **安全网**：调用方必须先 `consumeTaintIfAny()` 并在为真时重置设备通道。
-            // 走到这里说明调用点漏了那一步（R93 钉住「消费必须排在注入之前」）。
-            // 宁可 fail closed 报错，也不在「传输可能仍被占用」时并发注入。
-            throw failure(
-                reason: "上一次描述文件设备操作超时留下的传输可能仍被占用，且调用方未先重置设备通道。",
-                code: "SEAL-PROFILE-350"
-            )
-        }
-        guard isBusy == false else {
-            throw failure(
-                reason: "另一项描述文件续签仍在使用设备通道。",
-                code: "SEAL-PROFILE-351"
-            )
-        }
+        // ── 串行排队（2026-10-04）──
+        // 旧行为：`isBusy` 为真直接抛 `SEAL-PROFILE-351`。
+        // 并行续签后多项的 Portal 准备会同时完成、同时到达注入 ⇒ 排队等待轮到自己，
+        // 而不是让第二项直接失败。`misagent` 仍是同一时间只有一项在写。
+        let predecessor = injectTail
+        let gate = Task<Void, Never> { _ = await predecessor?.value }
+        injectTail = gate
+        await gate.value
+        try Task.checkCancellation()
         isBusy = true
         defer { isBusy = false }
+
+        // ── 拿锁后自愈污染（2026-10-04）──
+        // 调用方的 `consumeTaintIfAny` 仍是主路径（R93② 钉住）；
+        // 这里是并行竞态的安全网：排队等待期间，另一项的注入可能失败并标记污染。
+        // 若此时抛 `SEAL-PROFILE-350`，那一项要白白走一轮重试；
+        // 直接在这里消费 + 重置通道，注入继续，不丢一轮。
+        if taint.consume() {
+            await channel.reset()
+            _ = try await channel.start()
+            await onTaintHealed()
+        }
 
         // 这道门验证的是真正执行注入的 misagent 服务，不是 profile-only 的资格。
         // 其短时租约让签名入口预热的结果可复用；过期或失效则在写入前重建一次。

@@ -70,11 +70,15 @@ actor RenewalCoordinator {
     /// ⚠️ 判据用 `!= .profileOnly`（**没有明确确认是快路径就按保守处理**）：
     /// 信号缺失时保持旧行为，只会多一次「等待新进程核验」，不会把可能已被换掉的进程
     /// 谎报成已完成。
-    private var currentRenewalExecutionPath: RenewalExecutionPath?
+    ///
+    /// 按 `appID` 隔离（2026-10-04 并行续签）：并行时上一项的 `.profileOnly`
+    /// 绝不能泄漏到下一项（泄漏的后果是 Seal 那一项被误记成成功，而它其实换了进程）。
+    /// 旧的单变量 + 每项重置在并行下是竞态。
+    private var renewalExecutionPaths: [UUID: RenewalExecutionPath] = [:]
 
     /// 记录本项续签实际走的路径。由 `@Sendable` 回调调用，故单独开一个 actor 方法。
-    private func rememberRenewalExecutionPath(_ path: RenewalExecutionPath) {
-        currentRenewalExecutionPath = path
+    private func rememberRenewalExecutionPath(_ path: RenewalExecutionPath, for appID: UUID) {
+        renewalExecutionPaths[appID] = path
     }
 
     /// 单个应用续签总尝试次数上限，仅临时网络故障允许重试。
@@ -85,6 +89,8 @@ actor RenewalCoordinator {
     /// 两个应用之间的间隔，给 Apple 服务器和本地安装通道缓冲。
     /// 应用内部本就含多段 Apple 往返（fetchTeams / App ID / profile），
     /// 此间隔仅兜底分批节奏；延续签优化从 1.5s 保守降至 0.75s，仍是「给服务器缓冲」语义。
+    /// ⚠️ 2026-10-04 并行续签后不再使用：并行任务同时启动，项间延迟已无意义；
+    /// Apple 限流由 `isRetryable` + 指数退避兜底。保留常量以备回退。
     private let interAppDelay: UInt64 = 750_000_000
 
     init(
@@ -270,287 +276,80 @@ actor RenewalCoordinator {
         )
     }
 
+    /// 单项续签的结果（并行聚合用）。
+    private enum ProcessItemOutcome: Sendable {
+        case succeeded
+        case failed
+        case needsAction
+        case awaitingSealConfirmation
+    }
+
     private func process(
         queue: [RefreshQueueItem],
         progress: @escaping @Sendable (BatchRefreshEvent) async -> Void
     ) async throws -> BatchRefreshResult {
         await progress(.started(total: queue.count))
+
+        // ── 并行续签（2026-10-04）──
+        //
+        // 每项耗时的大头是 Apple Portal 网络 I/O（取描述文件），多项并行；
+        // 设备注入由 `ProfileOnlyProvisioningProfileInstaller` 在 actor 内串行排队，
+        // `misagent` 同一时间仍只有一项在写。
+        //
+        // Seal 必须殿后：`fullResign` 自替换会杀掉当前进程，不能和别人同时跑。
+        // planner 已按 group 排序（Seal group=2 在最后），这里按 `isSeal` 分区。
+        let apps = try await appStore.fetchAll()
+        let sealAppIDs = Set(apps.filter(\.isSeal).map(\.id))
+        let regularItems = queue.filter { !sealAppIDs.contains($0.appID) }
+        let sealItems = queue.filter { sealAppIDs.contains($0.appID) }
+        // 原队列下标：日志里的「第 i/N 项」与串行时一致，不因并行重排。
+        let offsetsByAppID = Dictionary(
+            uniqueKeysWithValues: queue.enumerated().map { ($1.appID, $0) }
+        )
+
         var succeeded = 0
         var failed = 0
         var needsAction = 0
         var awaitingConfirmation = 0
-
-        for (offset, item) in queue.enumerated() {
-            try Task.checkCancellation()
-
-            // 本轮不执行的项（缺可用账号等）。**不静默跳过**：计入 needsAction，
-            // 并复用失败条目的呈现把原因摊给用户 —— 否则「批量续签完成」会掩盖
-            // 「有应用根本没被处理」这个事实。
-            guard item.isExecutable, let accountID = item.accountID else {
-                needsAction += 1
-                await emitFailure(
-                    progress: progress,
-                    offset: offset,
-                    total: queue.count,
-                    item: item,
-                    failure: Self.requiresActionFailure(reason: item.requiresActionReason)
-                )
-                continue
+        func tally(_ outcome: ProcessItemOutcome) {
+            switch outcome {
+            case .succeeded: succeeded += 1
+            case .failed: failed += 1
+            case .needsAction: needsAction += 1
+            case .awaitingSealConfirmation: awaitingConfirmation += 1
             }
+        }
 
-            // 应用之间留出缓冲，避免连续请求 Apple 服务器触发限流；第一个不用等
-            if offset > 0 {
-                try? await Task.sleep(nanoseconds: interAppDelay)
-            }
-
-            // 先确认记录存在；具体最新状态在每次尝试时重新读取（失败可能已改写 Bundle ID/证书）
-            let initialApps = try await appStore.fetchAll()
-            guard initialApps.contains(where: { $0.id == item.appID }) else {
-                // 本地记录确实不存在，无法续签
-                let failure = ImportFailure(
-                    title: "无法续签应用",
-                    reason: "续签时未找到应用（ID：\(item.appID)）的本地记录。",
-                    recovery: "重新导入 IPA 并签名安装",
-                    code: "SEAL-RENEW-404"
-                )
-                try? await queueStore.markFailed(appID: item.appID, errorCode: failure.code)
-                failed += 1
-                await emitFailure(progress: progress, offset: offset, total: queue.count, item: item, failure: failure)
-                continue
-            }
-
-            // —— 自动重试循环：最多 maxAttempts 次 ——
-            var lastError: Error?
-            var updatedRecord: AppRecord?
-            // 路径信号按项重置：上一项的 `.profileOnly` 绝不能泄漏到下一项
-            //（泄漏的后果是 Seal 那一项被误记成成功，而它其实换了进程）。
-            currentRenewalExecutionPath = nil
-
-            for attempt in 1...maxAttempts {
-                // 每次尝试都重新读取最新记录
-                guard let app = (try? await appStore.fetchAll())?.first(where: { $0.id == item.appID }) else {
-                    lastError = ImportFailure(
-                        title: "无法续签应用",
-                        reason: "续签时未找到应用（ID：\(item.appID)）的本地记录。",
-                        recovery: "重新导入 IPA 并签名安装",
-                        code: "SEAL-RENEW-404"
-                    )
-                    break
-                }
-                do {
-                    try Task.checkCancellation()
-                    try await queueStore.markRunning(appID: item.appID)
-                    let latestApp = app
-                    let updated = try await signingCoordinator.signAndInstall(
-                        appID: item.appID,
-                        accountID: accountID,
-                        requestedBundleIdentifier: latestApp.mappedBundleIdentifier ?? latestApp.preferredBundleIdentifier,
-                        selectedCertificateSerialNumber: nil,
-                        forceResign: true,
-                        // 续签是覆盖已装应用，不新增免费账号设备槽位；已绕过 3-app 上限
-                        // （设备级跨 team）装 6 个应用的用户，批量续签时必须跳过本机预检，
-                        // 交回 installd 裁决，否则全部被 SEAL-APPID-DEVICELIMIT 误拦。
-                        bypassFreeAccountDeviceLimit: true,
-                        // ⚠️ 证书轮换子流程也会走这个回调，而它推进的是**另一个** App 的阶段。
-                        // 批量链路**刻意仍用本项的 `latestApp` 当事件主体**：批量的
-                        // 「Seal 自替换 ⇒ 回主屏」由队列自己的 Seal 项驱动（Seal 恒排最后），
-                        // 若在这里改用信号主体，就会在队列中段交前台、把还没跑的项全丢掉。
-                        // ⇒ 只取 `update.stage`，主体保持 `latestApp`（单签链路才用信号主体）。
-                        progress: { update in
-                            // 自更新上传开始不代表安装成功。进程被终止时保留 running，
-                            // 下次启动恢复为 unknown；不能把仍运行旧包的续签记为完成。
-                            await progress(
-                                .appProgress(
-                                    index: offset + 1,
-                                    total: queue.count,
-                                    app: latestApp,
-                                    stage: update.stage
-                                )
-                            )
-                        },
-                        onRenewalExecutionPath: { path in
-                            // 先记进 actor（结算要用它判断「Seal 是否真的重新安装了自己」），
-                            // 再推给界面。顺序无关紧要，但两件事都必须做。
-                            await self.rememberRenewalExecutionPath(path)
-                            await progress(
-                                .appRenewalExecutionPath(
-                                    index: offset + 1,
-                                    total: queue.count,
-                                    app: latestApp,
-                                    path: path
-                                )
-                            )
-                        },
-                        // 上传百分比单独走 appInstallProgress：抽屉要显示真实百分比，
-                        // 否则「传输中」就是一个没有分母的黑盒（2026-09-16 真机反馈）。
-                        onInstallProgress: { installProgress in
-                            await progress(
-                                .appInstallProgress(
-                                    index: offset + 1,
-                                    total: queue.count,
-                                    app: latestApp,
-                                    progress: installProgress
-                                )
-                            )
-                        },
-                        // 上传完成的 1.01 哨兵在这里被补发成 `.installing` 阶段事件
-                        // （批量 progress 回调只承载 SigningStage，看不到 Double 哨兵）。
-                        // 覆盖本轮全部应用：Seal 靠它触发自动回主页，普通 App 靠它把抽屉
-                        // 文案从「传输中」推进到「安装中」，不再整段静止。
-                        //
-                        // 实参顺序必须与 signAndInstall 的声明一致（onInstallProgress
-                        // 在 broadcastsInstallStage 之前）—— 写反了是编译错误，
-                        // 而本机没有 Swift 工具链、build-package 又不编译测试 target，
-                        // 只有守卫 R09 能提前拦住（2026-09-16 实际踩到一次）。
-                        broadcastsInstallStage: true,
-                        // 阶段内部**可数**的完成量（注册第 i / N 个 Bundle ID、取第 i / N
-                        // 份描述文件）。批量抽屉的轨道用它把那两格从「按 τ 慢爬」变成
-                        // 「一格一格跳」；没有它的阶段仍走估算，界面上不报百分比。
-                        onWorkUnits: { units in
-                            await progress(
-                                .appWorkUnits(
-                                    index: offset + 1,
-                                    total: queue.count,
-                                    app: latestApp,
-                                    units: units
-                                )
-                            )
-                        }
-                    )
-                    updatedRecord = updated
-                    lastError = nil
-                    break
-                } catch is CancellationError {
-                    do {
-                        try await queueStore.markPending(appID: item.appID)
-                    } catch {
-                        throw Self.queuePersistenceFailure(
-                            reason: "取消续签后，队列状态未能保存。",
-                            code: "SEAL-RENEW-QUEUE-002"
-                        )
-                    }
-                    throw CancellationError()
-                } catch {
-                    lastError = error
-                    // 还能重试就等待后继续
-                    if attempt < maxAttempts && Self.isRetryable(error) {
-                        // 通道类失败用**更长**的退避：隧道恢复是秒级到十几秒级的事，
-                        // 2 秒退避几乎必然撞在还没恢复的窗口里，重试等于白跑
-                        //（见 `DeviceChannelTransientPolicy.channelRetryDelayNanoseconds`）。
-                        let isChannelFailure = DeviceChannelTransientPolicy.isTransientChannelFailure(error)
-                        let base = isChannelFailure
-                            ? DeviceChannelTransientPolicy.channelRetryDelayNanoseconds
-                            : baseRetryDelay
-                        let delay = base * UInt64(attempt)
-                        // 🔴 重试前必须先把设备通道恢复成「可重新建会话」的状态（2026-09-28）。
-                        //
-                        // 旧行为只 `Task.sleep` 后 `continue`：重试仍撞在**同一个**死会话上 ——
-                        // `MinimuxerInstallChannel.start()` 的 900 秒成功缓存会把已被隧道抖动顶掉的
-                        // 会话原样还回来，于是「重试三次全失败、用户以为续签坏了」。
-                        // 恢复动作与单签（`AppsViewModel.signWithChannelRetry`）**同源**，
-                        // 都走 `SigningCoordinator.prepareInstallChannelForRetry(after:)`。
-                        // 只在**通道类**失败时动通道：Apple 网络错误的通道本来是好的，
-                        // 清熔断只会白跑一轮 75 秒诊断。
-                        if isChannelFailure {
-                            await signingCoordinator.prepareInstallChannelForRetry(after: error)
-                        }
-                        // 重建会话与既有退避并行：不能只 reset 后空等 8 秒，再让第二次
-                        // 签名从零开始建 RSD 会话。预热失败仍由下一次签名按原路径归类。
-                        let channelPrewarmTask: Task<Void, Never>? = isChannelFailure
-                            ? Task { [signingCoordinator] in
-                                await signingCoordinator.prewarmInstallChannelForRetry()
-                            }
-                            : nil
-                        // 留痕：没有这一条时，批量的重试在日志上完全看不出来（这正是本次难定位的原因）。
-                        try? await logStore?.append(
-                            category: .renewal,
-                            level: .warning,
-                            message: "批量续签：第 \(offset + 1)/\(queue.count) 项"
-                                + (isChannelFailure ? "设备通道瞬时失败" : "临时错误")
-                                + "（第 \(attempt)/\(maxAttempts) 次尝试），"
-                                + "\(Int(delay / 1_000_000_000)) 秒后重试："
-                                + DeviceChannelTransientPolicy.diagnostic(error),
-                            code: "SEAL-RENEW-503"
-                        )
-                        try? await Task.sleep(nanoseconds: delay)
-                        if Task.isCancelled {
-                            channelPrewarmTask?.cancel()
-                            throw CancellationError()
-                        }
-                        // 不在这里等待预热完成：它的完整诊断最坏可达 75 秒，不能把
-                        // 原有 8 秒退避放大。下一次签名的 `start()` 会单飞加入同一任务。
-                        continue
-                    }
-                    break
-                }
-            }
-
-            if let updated = updatedRecord {
-                // ⚠️ 「Seal 续签」**不再必然**意味着自替换（2026-09-25）：准入判据放行后，
-                // Seal 与普通应用一样可以只换描述文件，**进程不受影响** ⇒ 这一项就是
-                // 一个正常的成功项，不需要「留给新进程核验」。
-                // 只有 `fullResign`（重新签名 + 覆盖安装自己）才会把当前进程换掉。
-                // ⇒ 判据是**实际路径**，不是应用身份；用 `!= .profileOnly` 让信号缺失时
-                //   退回保守行为（多等一次核验，而不是谎报成功）。
-                if updated.isSeal, currentRenewalExecutionPath != .profileOnly {
-                    // 自替换会杀掉当前进程；只有新进程读取运行包身份并与候选相符后，
-                    // 才能写 completed。队列保持 running，交给启动期对账结算。
-                    awaitingConfirmation += 1
-                    try? await logStore?.append(
-                        category: .renewal,
-                        message: "批量续签：Seal 覆盖安装已提交，等待新进程核验运行包身份",
-                        code: "SEAL-RENEW-027"
-                    )
-                    await progress(
-                        .appAwaitingSealConfirmation(
-                            index: offset + 1,
-                            total: queue.count,
-                            app: updated
-                        )
-                    )
-                    continue
-                }
-                try await queueStore.markCompleted(appID: item.appID)
-                succeeded += 1
-                // 逐项成功留痕（含描述文件身份）。
-                //
-                // 缺这条日志时，「批量续签到底成没成」在日志里**完全查不到**：
-                // 批量走 `SigningCoordinator.signAndInstall`，而「续签并安装成功」
-                // 只在**单签**的 `AppsViewModel.signAndInstall` 里写。
-                // 2026-09-17 真机实测 —— 用户续签 LiveContainer 时界面停在「安装中」，
-                // 取消后无从判断到底装没装上（实际成功了），就是因为这里静默。
-                //
-                // 带上描述文件 UUID + 创建/到期时间：这三个字段是**自证**用的，
-                // 用户可以在应用详情页对着看，确认记录指向的就是刚申请的那一份。
-                try? await logStore?.append(
-                    category: .renewal,
-                    message: "批量续签：第 \(offset + 1)/\(queue.count) 项成功 —— \(updated.mappedBundleIdentifier ?? updated.preferredBundleIdentifier ?? updated.originalBundleIdentifier)，描述文件 \(Self.describeProfile(updated))",
-                    code: "SEAL-RENEW-020"
-                )
-                await progress(
-                    .appSucceeded(
-                        index: offset + 1,
+        // 常规项并行：Portal 准备并发跑，注入在 actor 内排队。
+        // 有一项抛关键错误（队列持久化失败 / 取消）时整组取消，与串行语义一致。
+        try await withThrowingTaskGroup(of: ProcessItemOutcome.self) { group in
+            for item in regularItems {
+                let offset = offsetsByAppID[item.appID] ?? 0
+                group.addTask {
+                    try await self.processItem(
+                        item: item,
+                        offset: offset,
                         total: queue.count,
-                        app: updated
-                    )
-                )
-            } else if let lastError {
-                // 重试用尽，判失败
-                let failure = normalize(lastError)
-                do {
-                    try await queueStore.markFailed(
-                        appID: item.appID,
-                        errorCode: failure.code
-                    )
-                } catch {
-                    throw Self.queuePersistenceFailure(
-                        reason: "续签失败状态未能写入队列。",
-                        code: "SEAL-RENEW-QUEUE-003"
+                        progress: progress
                     )
                 }
-                failed += 1
-                await emitFailure(progress: progress, offset: offset, total: queue.count, item: item, failure: failure)
             }
+            for try await outcome in group {
+                tally(outcome)
+            }
+        }
+
+        // Seal 项串行殿后。
+        for item in sealItems {
+            try Task.checkCancellation()
+            let offset = offsetsByAppID[item.appID] ?? 0
+            let outcome = try await processItem(
+                item: item,
+                offset: offset,
+                total: queue.count,
+                progress: progress
+            )
+            tally(outcome)
         }
 
         do {
@@ -568,6 +367,282 @@ actor RenewalCoordinator {
             needsAction: needsAction,
             awaitingConfirmation: awaitingConfirmation
         )
+    }
+
+    /// 单项续签（可并行）。从旧 `process()` 的串行循环体抽取，
+    /// 逻辑逐行一致，只把 `continue` 换成 `return` 对应的结果。
+    ///
+    /// ⚠️ 路径信号按 `appID` 隔离（`renewalExecutionPaths[item.appID]`）：
+    /// 并行时上一项的 `.profileOnly` 绝不能泄漏到下一项
+    ///（泄漏的后果是 Seal 那一项被误记成成功，而它其实换了进程）。
+    private func processItem(
+        item: RefreshQueueItem,
+        offset: Int,
+        total: Int,
+        progress: @escaping @Sendable (BatchRefreshEvent) async -> Void
+    ) async throws -> ProcessItemOutcome {
+        try Task.checkCancellation()
+
+        // 本轮不执行的项（缺可用账号等）。**不静默跳过**：计入 needsAction，
+        // 并复用失败条目的呈现把原因摊给用户 —— 否则「批量续签完成」会掩盖
+        // 「有应用根本没被处理」这个事实。
+        guard item.isExecutable, let accountID = item.accountID else {
+            await emitFailure(
+                progress: progress,
+                offset: offset,
+                total: total,
+                item: item,
+                failure: Self.requiresActionFailure(reason: item.requiresActionReason)
+            )
+            return .needsAction
+        }
+
+        // 先确认记录存在；具体最新状态在每次尝试时重新读取（失败可能已改写 Bundle ID/证书）
+        let initialApps = try await appStore.fetchAll()
+        guard initialApps.contains(where: { $0.id == item.appID }) else {
+            // 本地记录确实不存在，无法续签
+            let failure = ImportFailure(
+                title: "无法续签应用",
+                reason: "续签时未找到应用（ID：\(item.appID)）的本地记录。",
+                recovery: "重新导入 IPA 并签名安装",
+                code: "SEAL-RENEW-404"
+            )
+            try? await queueStore.markFailed(appID: item.appID, errorCode: failure.code)
+            await emitFailure(progress: progress, offset: offset, total: total, item: item, failure: failure)
+            return .failed
+        }
+
+        // —— 自动重试循环：最多 maxAttempts 次 ——
+        var lastError: Error?
+        var updatedRecord: AppRecord?
+
+        for attempt in 1...maxAttempts {
+            // 每次尝试都重新读取最新记录
+            guard let app = (try? await appStore.fetchAll())?.first(where: { $0.id == item.appID }) else {
+                lastError = ImportFailure(
+                    title: "无法续签应用",
+                    reason: "续签时未找到应用（ID：\(item.appID)）的本地记录。",
+                    recovery: "重新导入 IPA 并签名安装",
+                    code: "SEAL-RENEW-404"
+                )
+                break
+            }
+            do {
+                try Task.checkCancellation()
+                try await queueStore.markRunning(appID: item.appID)
+                let latestApp = app
+                let updated = try await signingCoordinator.signAndInstall(
+                    appID: item.appID,
+                    accountID: accountID,
+                    requestedBundleIdentifier: latestApp.mappedBundleIdentifier ?? latestApp.preferredBundleIdentifier,
+                    selectedCertificateSerialNumber: nil,
+                    forceResign: true,
+                    // 续签是覆盖已装应用，不新增免费账号设备槽位；已绕过 3-app 上限
+                    // （设备级跨 team）装 6 个应用的用户，批量续签时必须跳过本机预检，
+                    // 交回 installd 裁决，否则全部被 SEAL-APPID-DEVICELIMIT 误拦。
+                    bypassFreeAccountDeviceLimit: true,
+                    // ⚠️ 证书轮换子流程也会走这个回调，而它推进的是**另一个** App 的阶段。
+                    // 批量链路**刻意仍用本项的 `latestApp` 当事件主体**：批量的
+                    // 「Seal 自替换 ⇒ 回主屏」由队列自己的 Seal 项驱动（Seal 恒排最后），
+                    // 若在这里改用信号主体，就会在队列中段交前台、把还没跑的项全丢掉。
+                    // ⇒ 只取 `update.stage`，主体保持 `latestApp`（单签链路才用信号主体）。
+                    progress: { update in
+                        // 自更新上传开始不代表安装成功。进程被终止时保留 running，
+                        // 下次启动恢复为 unknown；不能把仍运行旧包的续签记为完成。
+                        await progress(
+                            .appProgress(
+                                index: offset + 1,
+                                total: total,
+                                app: latestApp,
+                                stage: update.stage
+                            )
+                        )
+                    },
+                    onRenewalExecutionPath: { path in
+                        // 先记进 actor（按 appID 隔离，结算要用它判断「Seal 是否真的重新安装了自己」），
+                        // 再推给界面。顺序无关紧要，但两件事都必须做。
+                        await self.rememberRenewalExecutionPath(path, for: item.appID)
+                        await progress(
+                            .appRenewalExecutionPath(
+                                index: offset + 1,
+                                total: total,
+                                app: latestApp,
+                                path: path
+                            )
+                        )
+                    },
+                    // 上传百分比单独走 appInstallProgress：抽屉要显示真实百分比，
+                    // 否则「传输中」就是一个没有分母的黑盒（2026-09-16 真机反馈）。
+                    onInstallProgress: { installProgress in
+                        await progress(
+                            .appInstallProgress(
+                                index: offset + 1,
+                                total: total,
+                                app: latestApp,
+                                progress: installProgress
+                            )
+                        )
+                    },
+                    // 上传完成的 1.01 哨兵在这里被补发成 `.installing` 阶段事件
+                    // （批量 progress 回调只承载 SigningStage，看不到 Double 哨兵）。
+                    // 覆盖本轮全部应用：Seal 靠它触发自动回主页，普通 App 靠它把抽屉
+                    // 文案从「传输中」推进到「安装中」，不再整段静止。
+                    //
+                    // 实参顺序必须与 signAndInstall 的声明一致（onInstallProgress
+                    // 在 broadcastsInstallStage 之前）—— 写反了是编译错误，
+                    // 而本机没有 Swift 工具链、build-package 又不编译测试 target，
+                    // 只有守卫 R09 能提前拦住（2026-09-16 实际踩到一次）。
+                    broadcastsInstallStage: true,
+                    // 阶段内部**可数**的完成量（注册第 i / N 个 Bundle ID、取第 i / N
+                    // 份描述文件）。批量抽屉的轨道用它把那两格从「按 τ 慢爬」变成
+                    // 「一格一格跳」；没有它的阶段仍走估算，界面上不报百分比。
+                    onWorkUnits: { units in
+                        await progress(
+                            .appWorkUnits(
+                                index: offset + 1,
+                                total: total,
+                                app: latestApp,
+                                units: units
+                            )
+                        )
+                    }
+                )
+                updatedRecord = updated
+                lastError = nil
+                break
+            } catch is CancellationError {
+                do {
+                    try await queueStore.markPending(appID: item.appID)
+                } catch {
+                    throw Self.queuePersistenceFailure(
+                        reason: "取消续签后，队列状态未能保存。",
+                        code: "SEAL-RENEW-QUEUE-002"
+                    )
+                }
+                throw CancellationError()
+            } catch {
+                lastError = error
+                // 还能重试就等待后继续
+                if attempt < maxAttempts && Self.isRetryable(error) {
+                    // 通道类失败用**更长**的退避：隧道恢复是秒级到十几秒级的事，
+                    // 2 秒退避几乎必然撞在还没恢复的窗口里，重试等于白跑
+                    //（见 `DeviceChannelTransientPolicy.channelRetryDelayNanoseconds`）。
+                    let isChannelFailure = DeviceChannelTransientPolicy.isTransientChannelFailure(error)
+                    let base = isChannelFailure
+                        ? DeviceChannelTransientPolicy.channelRetryDelayNanoseconds
+                        : baseRetryDelay
+                    let delay = base * UInt64(attempt)
+                    // 🔴 重试前必须先把设备通道恢复成「可重新建会话」的状态（2026-09-28）。
+                    //
+                    // 旧行为只 `Task.sleep` 后 `continue`：重试仍撞在**同一个**死会话上 ——
+                    // `MinimuxerInstallChannel.start()` 的 900 秒成功缓存会把已被隧道抖动顶掉的
+                    // 会话原样还回来，于是「重试三次全失败、用户以为续签坏了」。
+                    // 恢复动作与单签（`AppsViewModel.signWithChannelRetry`）**同源**，
+                    // 都走 `SigningCoordinator.prepareInstallChannelForRetry(after:)`。
+                    // 只在**通道类**失败时动通道：Apple 网络错误的通道本来是好的，
+                    // 清熔断只会白跑一轮 75 秒诊断。
+                    if isChannelFailure {
+                        await signingCoordinator.prepareInstallChannelForRetry(after: error)
+                    }
+                    // 重建会话与既有退避并行：不能只 reset 后空等 8 秒，再让第二次
+                    // 签名从零开始建 RSD 会话。预热失败仍由下一次签名按原路径归类。
+                    let channelPrewarmTask: Task<Void, Never>? = isChannelFailure
+                        ? Task { [signingCoordinator] in
+                            await signingCoordinator.prewarmInstallChannelForRetry()
+                        }
+                        : nil
+                    // 留痕：没有这一条时，批量的重试在日志上完全看不出来（这正是本次难定位的原因）。
+                    try? await logStore?.append(
+                        category: .renewal,
+                        level: .warning,
+                        message: "批量续签：第 \(offset + 1)/\(total) 项"
+                            + (isChannelFailure ? "设备通道瞬时失败" : "临时错误")
+                            + "（第 \(attempt)/\(maxAttempts) 次尝试），"
+                            + "\(Int(delay / 1_000_000_000)) 秒后重试："
+                            + DeviceChannelTransientPolicy.diagnostic(error),
+                        code: "SEAL-RENEW-503"
+                    )
+                    try? await Task.sleep(nanoseconds: delay)
+                    if Task.isCancelled {
+                        channelPrewarmTask?.cancel()
+                        throw CancellationError()
+                    }
+                    // 不在这里等待预热完成：它的完整诊断最坏可达 75 秒，不能把
+                    // 原有 8 秒退避放大。下一次签名的 `start()` 会单飞加入同一任务。
+                    continue
+                }
+                break
+            }
+        }
+
+        if let updated = updatedRecord {
+            // ⚠️ 「Seal 续签」**不再必然**意味着自替换（2026-09-25）：准入判据放行后，
+            // Seal 与普通应用一样可以只换描述文件，**进程不受影响** ⇒ 这一项就是
+            // 一个正常的成功项，不需要「留给新进程核验」。
+            // 只有 `fullResign`（重新签名 + 覆盖安装自己）才会把当前进程换掉。
+            // ⇒ 判据是**实际路径**，不是应用身份；用 `!= .profileOnly` 让信号缺失时
+            //   退回保守行为（多等一次核验，而不是谎报成功）。
+            if updated.isSeal, renewalExecutionPaths[item.appID] != .profileOnly {
+                // 自替换会杀掉当前进程；只有新进程读取运行包身份并与候选相符后，
+                // 才能写 completed。队列保持 running，交给启动期对账结算。
+                try? await logStore?.append(
+                    category: .renewal,
+                    message: "批量续签：Seal 覆盖安装已提交，等待新进程核验运行包身份",
+                    code: "SEAL-RENEW-027"
+                )
+                await progress(
+                    .appAwaitingSealConfirmation(
+                        index: offset + 1,
+                        total: total,
+                        app: updated
+                    )
+                )
+                return .awaitingSealConfirmation
+            }
+            try await queueStore.markCompleted(appID: item.appID)
+            // 逐项成功留痕（含描述文件身份）。
+            //
+            // 缺这条日志时，「批量续签到底成没成」在日志里**完全查不到**：
+            // 批量走 `SigningCoordinator.signAndInstall`，而「续签并安装成功」
+            // 只在**单签**的 `AppsViewModel.signAndInstall` 里写。
+            // 2026-09-17 真机实测 —— 用户续签 LiveContainer 时界面停在「安装中」，
+            // 取消后无从判断到底装没装上（实际成功了），就是因为这里静默。
+            //
+            // 带上描述文件 UUID + 创建/到期时间：这三个字段是**自证**用的，
+            // 用户可以在应用详情页对着看，确认记录指向的就是刚申请的那一份。
+            try? await logStore?.append(
+                category: .renewal,
+                message: "批量续签：第 \(offset + 1)/\(total) 项成功 —— \(updated.mappedBundleIdentifier ?? updated.preferredBundleIdentifier ?? updated.originalBundleIdentifier)，描述文件 \(Self.describeProfile(updated))",
+                code: "SEAL-RENEW-020"
+            )
+            await progress(
+                .appSucceeded(
+                    index: offset + 1,
+                    total: total,
+                    app: updated
+                )
+            )
+            return .succeeded
+        } else if let lastError {
+            // 重试用尽，判失败
+            let failure = normalize(lastError)
+            do {
+                try await queueStore.markFailed(
+                    appID: item.appID,
+                    errorCode: failure.code
+                )
+            } catch {
+                throw Self.queuePersistenceFailure(
+                    reason: "续签失败状态未能写入队列。",
+                    code: "SEAL-RENEW-QUEUE-003"
+                )
+            }
+            await emitFailure(progress: progress, offset: offset, total: total, item: item, failure: failure)
+            return .failed
+        }
+        // 走到这里说明循环被 `break` 打断但既无成功也无错误（记录中途消失）——
+        // 按失败计，避免静默丢项（`SEAL-RENEW-009` 的计数分桶要求总数对得上）。
+        return .failed
     }
 
     /// `requiresAction` 项使用的错误码。

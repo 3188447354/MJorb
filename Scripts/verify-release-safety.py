@@ -6169,6 +6169,34 @@ def violations(load=read):
           "注意 `ensureProfileService` 的默认参数必须保持 `true`，"
           "真正的注入路径仍要标记")
 
+    # ── R117：2026-10-04 并行续签 ──
+    #
+    # 用户要求快捷指令与 App 内一样快。串行时 2 个 App 要 16-20 秒，
+    # 大头是 Apple Portal 网络 I/O。改法：
+    # ① `RenewalCoordinator.process()` 里非 Seal 项用 task group 并行，
+    #    Seal 殿后（自替换会杀进程，不能并行）；
+    # ② `ProfileOnlyProvisioningProfileInstaller.installAndVerify` 改排队
+    #    （替代 351 抛错），拿锁后自愈污染（替代 350 抛错）；
+    # ③ 路径信号按 appID 隔离（替代单变量 + 每项重置，并行下是竞态）。
+    r117_renewal = strip_comments(load("Seal/Core/Renewal/RenewalCoordinator.swift"))
+    check("withThrowingTaskGroup(of: ProcessItemOutcome.self)" in r117_renewal
+          and "private func processItem(" in r117_renewal
+          and "sealItems" in r117_renewal
+          and "regularItems" in r117_renewal,
+          "R117①: 批量续签必须并行（非 Seal 项 task group，Seal 串行殿后）✗ —— "
+          "串行时 2 个 App 要 16-20 秒，用户要求快捷指令与 App 内一样快；"
+          "Seal 绝不能进并行组：`fullResign` 自替换会杀掉进程")
+    check("private var renewalExecutionPaths: [UUID: RenewalExecutionPath]" in r117_renewal
+          and "currentRenewalExecutionPath" not in r117_renewal,
+          "R117②: 路径信号必须按 appID 隔离 ✗ —— "
+          "旧的单变量 + 每项重置在并行下是竞态，上一项的 `.profileOnly` 会泄漏到下一项，"
+          "Seal 那一项会被误记成成功而它其实换了进程")
+    check("let gate = Task<Void, Never> { _ = await predecessor?.value }" in r115_installer_code
+          and "SEAL-PROFILE-351" not in r115_installer_code,
+          "R117③: 设备注入必须排队而非抛 351 ✗ —— "
+          "并行后多项会同时到达注入，直接抛错等于让第二项白白失败；"
+          "`misagent` 仍是同一时间只有一项在写（排队保证）")
+
     check("if identity == .unavailable" in r115_coordinator_code
           and "await ProfileOnlyProvisioningProfileInstaller.shared.markTainted()" in r115_coordinator_code,
           "R115②: 363 为 `.unavailable` 时必须标记污染 ✗ —— "
@@ -6364,8 +6392,13 @@ def violations(load=read):
     # 根因：标记是**永久**闸门、没有解除路径；而保活让进程**跨轮存活** ⇒ 一次通道抖动
     #   毒掉本进程后续全部续签，直到用户重启 Seal（正是用户报的「续签有问题」）。
     # 判据：① 污染标记必须是**可一次性消费**的纯状态机（actor 私有 `Bool` 测不到）；
-    #   ② 调用点必须在注入**之前**消费，为真时**重置设备通道**（且不是裸 `Minimuxer.reset()`）；
+    #   ② 「消费 + 重置 + 注入」必须在**同一串行临界区**里原子完成；
     #   ③ 三个超时码必须纳入续签重试（同一项才能自愈），并与「安装提交前」那批**分开**。
+    #
+    # ⚠️ 2026-10-04 并行续签把 ② 从 `SigningCoordinator.renewProfilesOnly` 搬进
+    #   `ProfileOnlyProvisioningProfileInstaller.installAndVerify`：
+    #   调用方先 consume 再等串行权，另一项可能在等待期间 reset ⇒ 把正在用的通道拆掉。
+    #   现在拿锁后先消费，为真则 reset + start 再注入，三者原子。
     r93_installer = strip_comments(load(
         "Seal/Infrastructure/Renewal/ProfileOnlyProvisioningProfileInstaller.swift"))
     r93_gate = section_or_empty(
@@ -6373,18 +6406,16 @@ def violations(load=read):
         "struct ProfileOnlyTaintGate {",
         "actor ProfileOnlyProvisioningProfileInstaller {"
     )
-    r93_profile = section_or_empty(
-        r92_signing,
-        "        await onCertificateResolved(result.certificateSerialNumber)\n",
-        "        try await ProfileOnlyProvisioningProfileInstaller.shared.installAndVerify("
+    r93_actor_body = section_or_empty(
+        r93_installer,
+        "func installAndVerify(",
+        "func prewarmProfileService("
     )
     r93_policy_set = section_or_empty(
-        r92_policy,
+        r93_policy,
         "static let profileOperationTimeoutCodes: Set<String> = [",
         "static func isTransientChannelFailure(_ error: Error) -> Bool {"
     )
-    r93_consume_call = "if await ProfileOnlyProvisioningProfileInstaller.shared.consumeTaintIfAny() {"
-    r93_install_call = "try await ProfileOnlyProvisioningProfileInstaller.shared.installAndVerify("
     r93_gate_tests = load("SealTests/Renewal/ProfileOnlyTaintGateTests.swift")
 
     check("private(set) var isTainted = false" in r93_gate
@@ -6397,22 +6428,24 @@ def violations(load=read):
           "它原来是 actor 的私有 `Bool`：测试 target 看不到 Minimuxer ⇒ 判定测不到；"
           "而「没清标记」的错法不崩、不报错，只让**每一项**续签都白重置一次设备通道")
 
-    check(r93_consume_call in r92_signing
-          and r92_signing.index(r93_consume_call) < r92_signing.index(r93_install_call)
-          and "await installChannel.reset()" in r93_profile
-          and "await installChannel.start()" in r93_profile
-          and r93_profile.index("await installChannel.reset()")
-              < r93_profile.index("await installChannel.start()")
-          and "Minimuxer.reset()" not in r93_profile,
-          "R93②: 调用点必须在注入**之前**消费污染标记，为真时**重置 + 重新 start 设备通道** ✗ —— "
-          "消费漏了 ⇒ 一次超时毒掉后续全部续签（`-350` 成片）；"
-          "重置漏了 ⇒ 在「传输可能仍被占用」时并发注入；"
-          "而重置若写成裸 `Minimuxer.reset()` ⇒ 只拆 Rust 会话、留着通道的 Swift 缓存，"
-          "下一次 `start()` 仍会还回那个已作废的 UDID（见 `MinimuxerInstallChannel.reset()`）；"
-          "**reset 之后漏了 `start()`** ⇒ `Muxer.isrppairing` 已被归零、`Provision.resetProvider()` "
-          "已清 provider ⇒ 下一次注入会选 **Lockdown** 传输（`Device.getFirstDevice()` 走 usbmuxd），"
-          "而本环境是 RemotePairing（LocalDevVPN）⇒ 自愈反而造出一次「重置后第一次操作必失败」"
-          "（只靠外层重试兜回来）—— 设置页导入配对文件 / 恢复连接的既有模式同样是 **reset 后必 start**")
+    check("if taint.consume() {" in r93_actor_body
+          and "await channel.reset()" in r93_actor_body
+          and "_ = try await channel.start()" in r93_actor_body
+          and r93_actor_body.index("if taint.consume() {")
+              < r93_actor_body.index("await channel.reset()")
+          and r93_actor_body.index("await channel.reset()")
+              < r93_actor_body.index("_ = try await channel.start()")
+          and r93_actor_body.index("_ = try await channel.start()")
+              < r93_actor_body.index("try await ensureProfileService(using: channel)")
+          and "Minimuxer.reset()" not in r93_actor_body,
+          "R93②: 「消费 + 重置 + 注入」必须在 actor 串行临界区里原子完成 ✗ —— "
+          "消费漏了 ⇒ 一次超时毒掉后续全部续签；"
+          "重置写在调用方 ⇒ 并行时另一项的 reset 会拆掉正在注入的通道（2026-10-04 真机竞态）；"
+          "重置若写成裸 `Minimuxer.reset()` ⇒ 只拆 Rust 会话、留着通道的 Swift 缓存，"
+          "下一次 `start()` 仍会还回那个已作废的 UDID；"
+          "**reset 之后漏了 `start()`** ⇒ `Muxer.isrppairing` 已被归零 ⇒ "
+          "下一次注入会选 **Lockdown** 传输（走 usbmuxd），而本环境是 RemotePairing ⇒ "
+          "自愈反而造出一次「重置后第一次操作必失败」")
 
     r93_codes = re.findall(r'"(SEAL-[A-Za-z0-9\-]+)"', r93_policy_set)
     check(r93_codes == ["SEAL-PROFILE-355t", "SEAL-PROFILE-352", "SEAL-PROFILE-353"]
@@ -6423,7 +6456,7 @@ def violations(load=read):
           "混进 `transientChannelFailureCodes` ⇒ 丢掉「重试前要不要先重置传输」这条区别"
           "（那批不需要重置，这三个**必须**重置）—— 那正是 R05「超时 ≠ 失败」的落点")
 
-    check('code: "SEAL-PROFILE-355"' in r93_profile
+    check('code: "SEAL-PROFILE-355"' in r92_signing
           and "`SEAL-PROFILE-355`" in r92_index,
           "R93④: 自愈动作必须留痕 `SEAL-PROFILE-355` 并登记进 "
           "`docs/qa/log-code-index.md` ✗ —— 这条链路在批量 / 后台跑，"
@@ -9950,6 +9983,23 @@ def main():
          '                    // ⚠️',
          "R113③:"),
 
+        # ── R117：并行续签 ──
+        # ① 退回串行（task group 被删）⇒ R117① 报红。
+        ("Seal/Core/Renewal/RenewalCoordinator.swift",
+         "        try await withThrowingTaskGroup(of: ProcessItemOutcome.self) { group in",
+         "        // serial fallback",
+         "R117①:"),
+        # ② 路径信号退回单变量（并行竞态回来）⇒ R117② 报红。
+        ("Seal/Core/Renewal/RenewalCoordinator.swift",
+         "    private var renewalExecutionPaths: [UUID: RenewalExecutionPath] = [:]",
+         "    private var currentRenewalExecutionPath: RenewalExecutionPath?",
+         "R117②:"),
+        # ③ 注入排队被删（351 抛错回来）⇒ R117③ 报红。
+        ("Seal/Infrastructure/Renewal/ProfileOnlyProvisioningProfileInstaller.swift",
+         "        let gate = Task<Void, Never> { _ = await predecessor?.value }",
+         "        // no queue",
+         "R117③:"),
+
         # ── R92：后台触发的通道时序 / 通道瞬时重试 / 未预期错误可观测 ──
         # ① 点火前不再等通道（退回「拿到容器就续签」）⇒ R92① 报红。
         ("Seal/Features/Apps/AppsViewModel.swift",
@@ -10084,14 +10134,14 @@ def main():
          "        let wasTainted = isTainted",
          "        let wasTainted = true",
          "R93①:"),
-        # ②a 调用点不再消费污染标记（一次超时毒掉后续全部续签）⇒ R93② 报红。
-        ("Seal/Core/Signing/SigningCoordinator.swift",
-         "        if await ProfileOnlyProvisioningProfileInstaller.shared.consumeTaintIfAny() {",
+        # ②a actor 内不再消费污染标记（一次超时毒掉后续全部续签）⇒ R93② 报红。
+        ("Seal/Infrastructure/Renewal/ProfileOnlyProvisioningProfileInstaller.swift",
+         "        if taint.consume() {",
          "        if false {",
          "R93②:"),
         # ②b `reset()` 之后不再重新 `start()`（传输退回 Lockdown、自愈后第一次注入必失败）⇒ R93② 报红。
-        ("Seal/Core/Signing/SigningCoordinator.swift",
-         "            _ = try await installChannel.start()\n",
+        ("Seal/Infrastructure/Renewal/ProfileOnlyProvisioningProfileInstaller.swift",
+         "            _ = try await channel.start()\n",
          "",
          "R93②:"),
 

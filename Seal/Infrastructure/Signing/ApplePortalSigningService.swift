@@ -2772,15 +2772,16 @@ actor ApplePortalSigningService {
 
         await progress(.preparingProfiles)
         // 性能：并行拉取（2026-10-04），限 3 并发防限流。保序。
+        let appIDsForRenewalProfiles = preparedAppIDs
         let profiles: [ALTProvisioningProfile] = try await withThrowingTaskGroup(
             of: (Int, ALTProvisioningProfile).self
         ) { group in
-            var ordered = [ALTProvisioningProfile?](repeating: nil, count: preparedAppIDs.count)
+            var ordered = [ALTProvisioningProfile?](repeating: nil, count: appIDsForRenewalProfiles.count)
             var nextToStart = 0
             let maxConcurrent = 3
-            while nextToStart < min(maxConcurrent, preparedAppIDs.count) {
+            while nextToStart < min(maxConcurrent, appIDsForRenewalProfiles.count) {
                 let index = nextToStart
-                let prepared = appIDsForProfiles[index]
+                let prepared = appIDsForRenewalProfiles[index]
                 group.addTask {
                     try Task.checkCancellation()
                     let profile = try await self.fetchProvisioningProfile(
@@ -2799,11 +2800,11 @@ actor ApplePortalSigningService {
                 await onWorkUnits(SigningWorkUnits(
                     stage: .preparingProfiles,
                     done: completed,
-                    total: appIDsForProfiles.count
+                    total: appIDsForRenewalProfiles.count
                 ))
-                if nextToStart < appIDsForProfiles.count {
+                if nextToStart < appIDsForRenewalProfiles.count {
                     let index = nextToStart
-                    let prepared = appIDsForProfiles[index]
+                    let prepared = appIDsForRenewalProfiles[index]
                     group.addTask {
                         try Task.checkCancellation()
                         let profile = try await self.fetchProvisioningProfile(

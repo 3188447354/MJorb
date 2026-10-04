@@ -119,10 +119,10 @@ actor ImportWorkflow {
         } else {
             // 同版本：比较内容指纹
             let newFingerprint = try? AppFileStore.streamingSHA256(url: stagedURL)
-            // 找旧 IPA 文件路径
-            if let oldIPAPath = existing.ipaRelativePath,
+            // 找旧 IPA 文件路径（空壳记录的 ipaRelativePath 为空，直接跳过）
+            if !existing.ipaRelativePath.isEmpty,
                let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                let oldURL = docs.appendingPathComponent(oldIPAPath)
+                let oldURL = docs.appendingPathComponent(existing.ipaRelativePath)
                 let oldFingerprint = try? AppFileStore.streamingSHA256(url: oldURL)
                 if let newFP = newFingerprint, let oldFP = oldFingerprint, newFP == oldFP {
                     return .alreadyLatest(version: newVersion)

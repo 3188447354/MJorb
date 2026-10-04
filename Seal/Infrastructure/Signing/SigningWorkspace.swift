@@ -1,7 +1,6 @@
 import Foundation
 import UIKit
 import ZIPFoundation
-import SideSign
 
 struct SigningWorkspace: Sendable {
 
@@ -55,7 +54,7 @@ struct SigningWorkspace: Sendable {
     ) throws -> PreparedSigningWorkspace {
         // 大 IPA 优化：用系统 unzipItem 流式解压（ZIPFoundation extract 对 500MB+ 文件
         // 可能因内存/写入失败报 DataError）。仍用 ZIPFoundation Archive 只读条目元数据做安全验证。
-        let archive = try ZIPFoundation.Archive(url: ipaURL, accessMode: .read)
+        let archive = try Archive(url: ipaURL, accessMode: .read)
         let entries = Array(archive)
         let expandedBytes = try validate(entries)
 
@@ -245,50 +244,31 @@ struct SigningWorkspace: Sendable {
     /// 若它自己再抄一份 `zipItem` 调用，就会出现「两条打包链路、压缩策略不一致」✗ ——
     /// 这正是本项要修的病根（一条改了、另一条没改）。
     static func writeIPA(from payloadURL: URL, to outputURL: URL) throws {
-        // 2026-10-04: 改用 SideStore 的 Archive.Writer（libdeflate）。
-        // 输出仍是标准 deflate（installd 无感知）；Writer 在压缩后更大时自动回退 store。
-        // 按扩展名 store 的策略保留：已压缩格式直接 level 0，避免浪费 CPU。
         let fileManager = FileManager.default
         try? fileManager.removeItem(at: outputURL)
 
-        let writer = try SideSign.Archive.Writer.create(at: outputURL)
-        // libdeflate level 1 = 最快档。输出是标准 deflate 流，与 zlib 压缩的包格式兼容。
-        let fastLevel: Int16 = 1
-
+        let archive = try Archive(url: outputURL, accessMode: .create)
         var subPaths = try fileManager.subpathsOfDirectory(atPath: payloadURL.path)
-        // 与 `zipItem` 一致：为根目录本身补一条条目（保留它的文件属性）
+        // 与 `zipItem` 一致：为根目录本身补一条条目（保留它的文件属性）✓
         subPaths.append("")
 
         let directoryPrefix = payloadURL.lastPathComponent
         let finalBaseURL = payloadURL.deletingLastPathComponent()
         for entryPath in subPaths {
-            let zipPath = directoryPrefix + "/" + entryPath
-            let fileURL = finalBaseURL.appendingPathComponent(zipPath)
-            var isDir: ObjCBool = false
-            guard fileManager.fileExists(atPath: fileURL.path, isDirectory: &isDir) else { continue }
-            if isDir.boolValue {
-                // 目录条目：Writer 用 writeFile 写空目录（路径以 / 结尾）
-                let dirPath = zipPath.hasSuffix("/") ? zipPath : zipPath + "/"
-                let attrs = (try? fileManager.attributesOfItem(atPath: fileURL.path)) ?? [:]
-                let perms = (attrs[.posixPermissions] as? NSNumber)?.uint32Value ?? 0o755
-                try writer.writeFile(path: dirPath, data: nil, permissions: perms)
-            } else {
-                // 已压缩格式直接 store（level 0），否则 libdeflate 快速压缩
-                let ext = (entryPath as NSString).pathExtension.lowercased()
-                writer.setCompressLevel(alreadyCompressedExtensions.contains(ext) ? 0 : fastLevel)
-                try writer.addFile(at: fileURL, pathInZip: zipPath)
-            }
+            try archive.addEntry(
+                with: directoryPrefix + "/" + entryPath,
+                relativeTo: finalBaseURL,
+                compressionMethod: compressionMethod(forRelativePath: entryPath)
+            )
         }
-        try writer.close()
     }
 
-    /// 该条目该用哪种压缩方法：**载荷本身已经是压缩格式 ⇒ store**，其余一律 deflate。
+    /// 该条目该用哪种压缩方法：**载荷本身已经是压缩格式 ⇒ store**，其余一律 deflate ✓。
     ///
     /// ⚠️ 名单只放**确定已压缩**的容器/编码 —— 宁可多压（浪费一点时间），
     /// 也不能漏压（漏压会把体积放大，而 IPA 体积直接决定上传与安装耗时）。
-    /// ⚠️ 判据只用**扩展名**（不看内容）。
-    /// （2026-10-04：writeIPA 改用 SideStore Archive.Writer 后，压缩策略直接在 writeIPA 里
-    /// 用 alreadyCompressedExtensions 判断；此函数保留供单测，语义与 writeIPA 一致。）
+    /// ⚠️ 判据只用**扩展名**（不看内容）：目录条目在 `addEntry` 里本来就是空载荷，
+    /// 走哪一支都一样 ✓。
     static func compressionMethod(forRelativePath path: String) -> CompressionMethod {
         let ext = (path as NSString).pathExtension.lowercased()
         return alreadyCompressedExtensions.contains(ext) ? .none : .deflate
@@ -412,7 +392,7 @@ struct SigningWorkspace: Sendable {
     /// 顺带跑一遍 `validate`（条目数 / 路径安全 / 8GB 上限）⇒ 这些限制也提前到 `prepare`
     /// 之前暴露。代价只是多开一次 zip 读中央目录（毫秒级，不解压）。
     func requiredTemporarySpace(forIPAAt ipaURL: URL) throws -> UInt64 {
-        let archive = try ZIPFoundation.Archive(url: ipaURL, accessMode: .read)
+        let archive = try Archive(url: ipaURL, accessMode: .read)
         let entries = Array(archive)
         let expandedBytes = try validate(entries)
         let ipaBytes = ((try? FileManager.default.attributesOfItem(atPath: ipaURL.path))?[.size]

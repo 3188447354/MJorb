@@ -5990,15 +5990,12 @@ def violations(load=read):
           "（改了一处、另一处照旧），这正是本项要修的病根")
 
     # 2026-10-04: writeIPA 改用 SideStore Archive.Writer（libdeflate）。
-    # 逐条目选压缩方法的语义保留：alreadyCompressedExtensions → level 0（store），
-    # 其余 → libdeflate level 1。Writer 另有"压完更大自动回退 store"兜底。
-    check("SideSign.Archive.Writer.create(at:" in r91_ws_code
-          and "alreadyCompressedExtensions.contains(ext)" in r91_ws_code
-          and "setCompressLevel" in r91_ws_code
+    check("try archive.addEntry(" in r91_ws_code
+          and "compressionMethod: compressionMethod(forRelativePath: entryPath)" in r91_ws_code
           and "static let alreadyCompressedExtensions: Set<String>" in r91_ws_code,
           "R91⑧b: 打包必须**逐条目**选压缩方法 ✗ —— "
           "`FileManager.zipItem` 把同一个 `compressionMethod` 透传给每个条目、"
-          "且旧 `Archive.addEntry` 没有「压完更大就退回 store」的自动回退，"
+          "且 `Archive.addEntry` 没有「压完更大就退回 store」的自动回退，"
           "对已压过的载荷（png / jpg / mp4 / `Assets.car`）再 deflate 一遍是纯浪费 CPU")
 
     check("if purpose == .signing {\n"
@@ -8217,8 +8214,8 @@ def main():
          "R66: 阶段日志必须写出**信号主体**的名字"),
         # 「重新安装已签名包」那条入口不再补发 `.installing`。
         ("Seal/Core/Signing/SigningCoordinator.swift",
-         "                broadcastsInstallStage: true\n            )",
-         "                broadcastsInstallStage: false\n            )",
+         "                    broadcastsInstallStage: true\n                )",
+         "                    broadcastsInstallStage: false\n                )",
          "R66: 「重新安装已签名包」这条入口也必须补发 `.installing`"),
         # ── R67：撤销之后必须有人负责（2026-09-24 构建 33 两轮真机）──
         # 把 `accountID` 过滤加回去：恢复在真机上**永远不触发**（本轮白跑一轮的根因）。
@@ -9202,11 +9199,8 @@ def main():
          '        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"',
          '        formatter.dateFormat = "yyyy-MM-dd HH:mm"',
          "SecondLevel/format:"),
-        # ⑲ 同格式副本没跟着改 ⇒ 同一天显示两种时间 ✓ 报红。
-        ("Seal/Features/Apps/AppSigningSheet.swift",
-         '        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"',
-         '        formatter.dateFormat = "yyyy-MM-dd HH:mm"',
-         "SecondLevel/copy:"),
+        # ⑲ 已删除（2026-10-04 死代码清理）：AppSigningSheet 里的 dateFormatter 零调用已删，
+        # 不再有"两处一起改"的约束。
         # ⑳ 取消不再判 Task.isCancelled ⇒ 「我点了取消」被记成「安装超时」失败 ✓ 报红。
         ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
          "                        if Task.isCancelled {\n                            await log(",
@@ -9426,11 +9420,11 @@ def main():
          "R84③: 准入必须**真的用上**双通道"),
         # ④ 把「核验未通过就回落」加回去 ⇒ R84④ 报红。**这正是本轮修的真问题。**
         ("Seal/Core/Signing/SigningCoordinator.swift",
-         "                if identity != .confirmed {\n"
-         "                    try? await logStore?.append(\n",
-         "                if identity != .confirmed {\n"
-         "                    useProfileOnlyRenewal = false\n"
-         "                    try? await logStore?.append(\n",
+         "                    if identity != .confirmed {\n"
+         "                        try? await logStore?.append(\n",
+         "                    if identity != .confirmed {\n"
+         "                        useProfileOnlyRenewal = false\n"
+         "                        try? await logStore?.append(\n",
          "R84④: `SEAL-PROFILE-363` 只能**留痕**"),
         # ⑤ 把设备绑定判据放松成「总是通过」⇒ R84⑤ 报红。
         ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
@@ -9875,10 +9869,9 @@ def main():
          "shouldKeepParent: true, compressionMethod: .deflate)",
          "R91⑧a:"),
         # ⑧b 逐条目选压缩方法退回「一律 deflate」⇒ R91⑧b 报红。
-        # 2026-10-04: writeIPA 改用 SideStore Writer，变异改为"已压缩扩展名也走压缩"。
         ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
-         "writer.setCompressLevel(alreadyCompressedExtensions.contains(ext) ? 0 : fastLevel)",
-         "writer.setCompressLevel(fastLevel)",
+         "                compressionMethod: compressionMethod(forRelativePath: entryPath)",
+         "                compressionMethod: .deflate",
          "R91⑧b:"),
         # ⑨a `layoutOnly` 不再跳过瘦身（开关失效，白花 30–35 秒）⇒ R91⑨a 报红。
         ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
@@ -10004,12 +9997,12 @@ def main():
          "R115①:"),
         # ② 363 不再标记（坏通道上硬撞超时）⇒ R115② 报红。
         ("Seal/Core/Signing/SigningCoordinator.swift",
-         "                    if identity == .unavailable {\n"
-         "                        await ProfileOnlyProvisioningProfileInstaller.shared.markTainted()\n"
-         "                    }",
-         "                    if identity == .unavailable {\n"
-         "                        // no taint marking\n"
-         "                    }",
+         "                        if identity == .unavailable {\n"
+         "                            await ProfileOnlyProvisioningProfileInstaller.shared.markTainted()\n"
+         "                        }",
+         "                        if identity == .unavailable {\n"
+         "                            // no taint marking\n"
+         "                        }",
          "R115②:"),
 
         # ── R116：预热失败不标记污染 ──

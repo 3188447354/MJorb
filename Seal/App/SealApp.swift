@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 @main
 @MainActor
@@ -25,6 +26,19 @@ struct SealApp: App {
         // 锁屏下的后台续签要现读账号密钥与 anisette，条目若还是 `WhenUnlocked` 就会失败
         // （真机表现：日志只剩一句 `Seal.KeychainError 1`）。见 `SealKeychainAccessibility`。
         container.migrateKeychainAccessibilityIfNeeded()
+        // 首次启动请求通知权限：快捷指令续签需要通过通知告知结果
+        requestNotificationPermissionIfNeeded()
+    }
+
+    /// 首次启动时直接调系统原生权限框（只弹一次）
+    private nonisolated func requestNotificationPermissionIfNeeded() {
+        let key = "SealNotificationPermissionRequested"
+        guard UserDefaults.standard.bool(forKey: key) == false else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        Task {
+            _ = try? await UNUserNotificationCenter.current()
+                .requestAuthorization(options: [.alert, .sound, .badge])
+        }
     }
 
     var body: some Scene {

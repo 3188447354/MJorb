@@ -2723,7 +2723,6 @@ actor ApplePortalSigningService {
         await progress(.preparingProfiles)
         var profiles: [ALTProvisioningProfile] = []
         for prepared in preparedAppIDs {
-        for prepared in preparedAppIDs {
             try Task.checkCancellation()
             let profile = try await fetchProvisioningProfile(
                 for: prepared.appID,

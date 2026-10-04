@@ -23,8 +23,7 @@ struct SealCommunityView: View {
     //   要抓落地页里的 `群号: <digits>` 或 `"groupcode":"<digits>"` 才知道 ✓。
     private let qqGroupNumber = "1051135067"
     private let qqJoinURL = URL(string: "https://qm.qq.com/q/8HfHpTmOzu")
-    private let telegramURL = URL(string: "https://t.me/addlist/vQ5-N-_q0qYzNWNl")
-    private let rewardTitle = "请作者喝杯奶茶"
+    private let rewardTitle = "赞赏支持"
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -34,7 +33,6 @@ struct SealCommunityView: View {
                     rewardCard
                     gzhCard
                     qqCard
-                    telegramCard
                 }
                 footerNote
             }
@@ -67,7 +65,7 @@ struct SealCommunityView: View {
             }
             Text("加入 Seal 社群")
                 .font(.system(size: 22, weight: .bold))
-            Text("在这里相遇，让 Seal 走得更远")
+            Text("反馈问题、获取更新、交流心得")
                 .font(.system(size: 14, weight: .regular))
                 .foregroundStyle(Color.sealTextSecondary)
         }
@@ -83,7 +81,7 @@ struct SealCommunityView: View {
                     Text(rewardTitle)
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(.white)
-                    Text("你的支持，是作者更新的动力")
+                    Text("你的每一份支持，都是更新的动力")
                         .font(.system(size: 13, weight: .regular))
                         .foregroundStyle(.white.opacity(0.82))
                 }
@@ -115,16 +113,6 @@ struct SealCommunityView: View {
             subtitle: "点击直接跳转 QQ 加群",
             value: nil,
             action: joinQQGroup
-        )
-    }
-
-    private var telegramCard: some View {
-        communityCard(
-            icon: "paperplane",
-            title: "加入 Telegram 频道",
-            subtitle: "国内需科学上网",
-            value: nil,
-            action: joinTelegram
         )
     }
 
@@ -362,12 +350,6 @@ struct SealCommunityView: View {
                     openURL(fallback)
                 }
             }
-        }
-    }
-
-    private func joinTelegram() {
-        if let url = telegramURL {
-            openURL(url)
         }
     }
 

@@ -141,7 +141,7 @@ struct SettingsRootView: View {
 
                         NavigationLink { LogViewerView() } label: {
                             settingsRow(
-                                title: "查看日志",
+                                title: "日志",
                                 value: nil,
                                 icon: "doc.text",
                                 showsChevron: true

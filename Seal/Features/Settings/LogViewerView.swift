@@ -7,6 +7,7 @@ struct LogViewerView: View {
     @State private var rounds: [LogRound] = []
     @State private var isExporting = false
     @State private var exportURL: URL?
+    @State private var showClearConfirm = false
 
     var body: some View {
         ScrollView {
@@ -27,15 +28,33 @@ struct LogViewerView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button(action: exportLogs) {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(.accentColor)
-                        .frame(width: 36, height: 36)
-                        .background(glassBackground)
-                        .clipShape(Circle())
+                HStack(spacing: 8) {
+                    Button(action: { showClearConfirm = true }) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.red)
+                            .frame(width: 36, height: 36)
+                            .background(glassBackground)
+                            .clipShape(Circle())
+                    }
+                    Button(action: exportLogs) {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.accentColor)
+                            .frame(width: 36, height: 36)
+                            .background(glassBackground)
+                            .clipShape(Circle())
+                    }
                 }
             }
+        }
+        .alert("清空日志？", isPresented: $showClearConfirm) {
+            Button("取消", role: .cancel) {}
+            Button("清空", role: .destructive) {
+                Task { await clearLogs() }
+            }
+        } message: {
+            Text("将删除所有本地日志，此操作不可恢复。")
         }
         .task {
             await loadRounds()
@@ -81,6 +100,17 @@ struct LogViewerView: View {
         if let url = logURL, FileManager.default.fileExists(atPath: url.path) {
             exportURL = url
             isExporting = true
+        }
+    }
+
+    private func clearLogs() async {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        let logURL = docs?.appendingPathComponent("Seal-log.txt")
+        if let url = logURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+        await MainActor.run {
+            rounds = []
         }
     }
 }

@@ -25,6 +25,10 @@ final class InstalledAppScanner: Sendable {
     }
 
     private static func scanSync() -> [ScannedApp] {
+        // 模拟器上跳过：私有 API 在模拟器上行为不可靠，且模拟器里不会有 Seal 装过的 App
+        #if targetEnvironment(simulator)
+        return []
+        #endif
         guard let workspaceClass = NSClassFromString("LSApplicationWorkspace") as? NSObject.Type else {
             return []
         }

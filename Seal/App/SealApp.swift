@@ -30,8 +30,13 @@ struct SealApp: App {
         requestNotificationPermissionIfNeeded()
     }
 
-    /// 首次启动时直接调系统原生权限框（只弹一次）
+    /// 首次启动时直接调系统原生权限框（只弹一次）。
+    /// 测试环境下跳过：单元测试 host 启动时弹框会导致测试崩溃，
+    /// UI 测试时弹框也会干扰用例（需 interruption handler 处理）。
     private nonisolated func requestNotificationPermissionIfNeeded() {
+        #if DEBUG
+        if NSClassFromString("XCTestCase") != nil { return }
+        #endif
         let key = "SealNotificationPermissionRequested"
         guard UserDefaults.standard.bool(forKey: key) == false else { return }
         UserDefaults.standard.set(true, forKey: key)

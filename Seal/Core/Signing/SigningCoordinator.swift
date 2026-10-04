@@ -482,18 +482,6 @@ actor SigningCoordinator {
             // ⚠️ 核验要等通道就绪（冷启动最长 75s），所以路径通知会晚于 `.waitingForChannel`
             // 阶段。这是刻意的：宁可晚说，也不先说错（旧行为是先说「仅更新描述文件」、
             // 再抛错，用户看到的是「说好只换描述文件，结果失败」）。
-            //
-            // ── 设备端核验与通道就绪并行（性能优化 2026-10-04）──
-            // verify 是 5 秒有界的设备 dump，只留痕（SEAL-PROFILE-363）+ 可能
-            // markTainted，不再决定路径 ⇒ 包进 Task，与下方的通道启动/isReady
-            // （冷启动最长 75s）并行；在 renewProfilesOnly（拿注入串行锁）之前 join，
-            // 保证 markTainted 先于 installAndVerify 的锁。
-            let identityVerificationTask: Task<ProfileOnlyIdentity, Never>? = useProfileOnlyRenewal ? Task {
-                await ProfileOnlyIdentityVerifier.verify(
-                    app: app,
-                    targetBundleIdentifier: targetBundleIdentifier
-                )
-            } : nil
             if useProfileOnlyRenewal {
                 if let channelStart {
                     _ = try await channelStart.value
@@ -522,24 +510,26 @@ actor SigningCoordinator {
                 // ⇒ 真正的安全网挪到**注入之后**：`ProfileOnlyProvisioningProfileInstaller
                 //   .installAndVerify` 会逐份读回设备确认（上游连这一步都没有）。
                 //   注入没落地就抛 `SEAL-PROFILE-354`，绝不会谎报成功。
-                if let task = identityVerificationTask {
-                    let identity = await task.value
-                    if identity != .confirmed {
-                        try? await logStore?.append(
-                            category: .renewal,
-                            level: .warning,
-                            message: "profile-only 续签的设备端核验未确认（\(identity.fallbackReason)），"
-                                + "按上游做法继续只更新描述文件（注入后会逐份读回确认）：\(app.name)",
-                            code: "SEAL-PROFILE-363"
-                        )
-                        // 🔴 `.unavailable` = 通道坏了（枚举超时/解析失败），不是"设备上没有"。
-                        // 提前标记污染 ⇒ `renewProfilesOnly` 在第一次注入前就重置通道，
-                        // 不拿坏通道去撞 30 秒超时 + 8/16 秒退避（2026-10-03 真机一轮烧 59 秒）。
-                        // `.mismatched` 不标记：那是记录与设备不符，重置通道帮不上忙。
-                        if identity == .unavailable {
-                            await ProfileOnlyProvisioningProfileInstaller.shared.markTainted()
-                        }
+                let identity = await ProfileOnlyIdentityVerifier.verify(
+                    app: app,
+                    targetBundleIdentifier: targetBundleIdentifier
+                )
+                if identity != .confirmed {
+                    try? await logStore?.append(
+                        category: .renewal,
+                        level: .warning,
+                        message: "profile-only 续签的设备端核验未确认（\(identity.fallbackReason)），"
+                            + "按上游做法继续只更新描述文件（注入后会逐份读回确认）：\(app.name)",
+                        code: "SEAL-PROFILE-363"
+                    )
+                    // 🔴 `.unavailable` = 通道坏了（枚举超时/解析失败），不是"设备上没有"。
+                    // 提前标记污染 ⇒ `renewProfilesOnly` 在第一次注入前就重置通道，
+                    // 不拿坏通道去撞 30 秒超时 + 8/16 秒退避（2026-10-03 真机一轮烧 59 秒）。
+                    // `.mismatched` 不标记：那是记录与设备不符，重置通道帮不上忙。
+                    if identity == .unavailable {
+                        await ProfileOnlyProvisioningProfileInstaller.shared.markTainted()
                     }
+                }
                 }
             }
             if isInstalledRenewal {

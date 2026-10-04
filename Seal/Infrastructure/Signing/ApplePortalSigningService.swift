@@ -2571,74 +2571,24 @@ actor ApplePortalSigningService {
         }
 
         // Phase 2: App IDs are settled; now fetch/generate real provisioning profiles.
-        // 性能：并行拉取（2026-10-04）。每份 profile 的 fetch 是独立网络请求，
-        // 串行 9 个 bundle 约 18-27 次顺序调用。限 3 并发防 Apple 1100 限流。
-        // 先并行取完、再按序处理失败（删扩展等副作用必须串行、保序）。
         await progress(.preparingProfiles)
-        let appIDsForProfiles = preparedAppIDs
-        let profileResults: [Result<ALTProvisioningProfile, Error>] = try await withThrowingTaskGroup(
-            of: (Int, Result<ALTProvisioningProfile, Error>).self
-        ) { group in
-            var ordered = [Result<ALTProvisioningProfile, Error>?](
-                repeating: nil, count: appIDsForProfiles.count)
-            var nextToStart = 0
-            let maxConcurrent = 3
-            // 启动首批
-            while nextToStart < min(maxConcurrent, appIDsForProfiles.count) {
-                let index = nextToStart
-                let prepared = appIDsForProfiles[index]
-                group.addTask {
-                    do {
-                        try Task.checkCancellation()
-                        let profile = try await self.fetchProvisioningProfile(
-                            for: prepared.appID,
-                            team: team,
-                            session: session
-                        )
-                        return (index, Result<ALTProvisioningProfile, Error>.success(profile))
-                    } catch {
-                        return (index, Result<ALTProvisioningProfile, Error>.failure(error))
-                    }
-                }
-                nextToStart += 1
-            }
-            var completed = 0
-            while let (index, result) = try await group.next() {
-                ordered[index] = result
-                completed += 1
-                await onWorkUnits(SigningWorkUnits(
-                    stage: .preparingProfiles,
-                    done: completed,
-                    total: appIDsForProfiles.count
-                ))
-                // 补一个，保持 3 并发
-                if nextToStart < appIDsForProfiles.count {
-                    let index = nextToStart
-                    let prepared = appIDsForProfiles[index]
-                    group.addTask {
-                        do {
-                            try Task.checkCancellation()
-                            let profile = try await self.fetchProvisioningProfile(
-                                for: prepared.appID,
-                                team: team,
-                                session: session
-                            )
-                            return (index, Result<ALTProvisioningProfile, Error>.success(profile))
-                        } catch {
-                            return (index, Result<ALTProvisioningProfile, Error>.failure(error))
-                        }
-                    }
-                    nextToStart += 1
-                }
-            }
-            return ordered.map { $0! }
-        }
         var profiles: [ALTProvisioningProfile] = []
-        for (i, preparedAppID) in preparedAppIDs.enumerated() {
+        for preparedAppID in preparedAppIDs {
             do {
                 try Task.checkCancellation()
-                let profile = try profileResults[i].get()
+                // 同上：9 个 bundle ID 连续申请描述文件同样会触发限流。
+                let profile = try await fetchProvisioningProfile(
+                    for: preparedAppID.appID,
+                    team: team,
+                    session: session
+                )
                 profiles.append(profile)
+                // 真实信号：描述文件也是一份一份取的，分母是 Phase 1 已就绪的个数。
+                await onWorkUnits(SigningWorkUnits(
+                    stage: .preparingProfiles,
+                    done: profiles.count,
+                    total: preparedAppIDs.count
+                ))
             } catch is CancellationError {
                 throw CancellationError()
             } catch let failure as ImportFailure {
@@ -2771,53 +2721,21 @@ actor ApplePortalSigningService {
         }
 
         await progress(.preparingProfiles)
-        // 性能：并行拉取（2026-10-04），限 3 并发防限流。保序。
-        let appIDsForRenewalProfiles = preparedAppIDs
-        let profiles: [ALTProvisioningProfile] = try await withThrowingTaskGroup(
-            of: (Int, ALTProvisioningProfile).self
-        ) { group in
-            var ordered = [ALTProvisioningProfile?](repeating: nil, count: appIDsForRenewalProfiles.count)
-            var nextToStart = 0
-            let maxConcurrent = 3
-            while nextToStart < min(maxConcurrent, appIDsForRenewalProfiles.count) {
-                let index = nextToStart
-                let prepared = appIDsForRenewalProfiles[index]
-                group.addTask {
-                    try Task.checkCancellation()
-                    let profile = try await self.fetchProvisioningProfile(
-                        for: prepared.appID,
-                        team: team,
-                        session: session
-                    )
-                    return (index, profile)
-                }
-                nextToStart += 1
-            }
-            var completed = 0
-            while let (index, profile) = try await group.next() {
-                ordered[index] = profile
-                completed += 1
-                await onWorkUnits(SigningWorkUnits(
-                    stage: .preparingProfiles,
-                    done: completed,
-                    total: appIDsForRenewalProfiles.count
-                ))
-                if nextToStart < appIDsForRenewalProfiles.count {
-                    let index = nextToStart
-                    let prepared = appIDsForRenewalProfiles[index]
-                    group.addTask {
-                        try Task.checkCancellation()
-                        let profile = try await self.fetchProvisioningProfile(
-                            for: prepared.appID,
-                            team: team,
-                            session: session
-                        )
-                        return (index, profile)
-                    }
-                    nextToStart += 1
-                }
-            }
-            return ordered.map { $0! }
+        var profiles: [ALTProvisioningProfile] = []
+        for prepared in preparedAppIDs {
+        for prepared in preparedAppIDs {
+            try Task.checkCancellation()
+            let profile = try await fetchProvisioningProfile(
+                for: prepared.appID,
+                team: team,
+                session: session
+            )
+            profiles.append(profile)
+            await onWorkUnits(SigningWorkUnits(
+                stage: .preparingProfiles,
+                done: profiles.count,
+                total: preparedAppIDs.count
+            ))
         }
 
         // 请求集 = 旧描述文件实授的 entitlements（键：实际目标 Bundle ID）。

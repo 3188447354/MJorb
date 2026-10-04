@@ -8214,8 +8214,8 @@ def main():
          "R66: 阶段日志必须写出**信号主体**的名字"),
         # 「重新安装已签名包」那条入口不再补发 `.installing`。
         ("Seal/Core/Signing/SigningCoordinator.swift",
-         "                    broadcastsInstallStage: true\n                )",
-         "                    broadcastsInstallStage: false\n                )",
+         "                broadcastsInstallStage: true,\n                preloadedData: cachedData",
+         "                broadcastsInstallStage: false,\n                preloadedData: cachedData",
          "R66: 「重新安装已签名包」这条入口也必须补发 `.installing`"),
         # ── R67：撤销之后必须有人负责（2026-09-24 构建 33 两轮真机）──
         # 把 `accountID` 过滤加回去：恢复在真机上**永远不触发**（本轮白跑一轮的根因）。

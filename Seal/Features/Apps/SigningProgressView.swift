@@ -348,7 +348,7 @@ struct SigningProgressView: View {
         case .failed(let failure):
             if failure.code == "SEAL-APPID-DEVICELIMIT" {
                 VStack(spacing: 10) {
-                    Button("已用 Lara 绕过，继续安装") {
+                    Button("已处理数量上限，继续安装") {
                         viewModel.continueBypassingDeviceLimit()
                     }
                     .sealPrimaryAction(cornerRadius: 14)
@@ -571,18 +571,18 @@ struct SigningProgressView: View {
     private func primaryRecoveryTitle(_ failure: ImportFailure) -> String {
         if isNonRetryableFailure(failure) { return "知道了" }
         if failure.code == "SEAL-CERT-204e" { return "撤销并继续签名" }
-        if failure.code.hasPrefix("SEAL-NET-") { return "重试" }
+        if failure.code.hasPrefix("SEAL-NET-") { return "重新签名" }
         if isResignRequired(failure) { return "重新签名" }
         if isInstallChannelFailure(failure) { return "重新安装" }
-        if isTeamFailure(failure) { return "选择 Team" }
+        if isTeamFailure(failure) { return "去「我的」选账号" }
         if isAuthFailure(failure) { return "重新验证 Apple ID" }
-        if isCertificateFailure(failure) { return "重新检查" }
+        if isCertificateFailure(failure) { return "重新签名" }
         if isAppIDLimitFailure(failure) { return "知道了" }
-        if isAppIDFailure(failure) || failure.code.hasPrefix("SEAL-BUNDLE-") { return "重试" }
+        if isAppIDFailure(failure) || failure.code.hasPrefix("SEAL-BUNDLE-") { return "返回修改" }
         if isPairingFailure(failure) { return "重新配对设备" }
-        if failure.code.hasPrefix("SEAL-VPN-") { return "重新检查" }
+        if failure.code.hasPrefix("SEAL-VPN-") { return "重新签名" }
         if failure.code == "SEAL-EXT-401" { return "移除扩展并重试" }
-        return "重试"
+        return "重新签名"
     }
 
     private func performPrimaryRecovery(_ failure: ImportFailure) {

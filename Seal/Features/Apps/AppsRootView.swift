@@ -491,11 +491,18 @@ struct AppsRootView: View {
     }
 
     private func standardAlert(_ failure: ImportFailure) -> Alert {
-        Alert(
+        // 2026-10-04：报错弹窗加"查看解决办法"，跳到 MJ 网站上的教程（带错误码参数）
+        let guideURL = "https://ios.sealsign.eu.cc/seal-error-guide.html?q=\(failure.code)"
+        return Alert(
             title: Text(failure.title),
             message: Text(failure.userMessage),
-            dismissButton: .default(Text(failure.recovery)) {
+            primaryButton: .default(Text(failure.recovery)) {
                 viewModel.performAlertRecovery(for: failure)
+            },
+            secondaryButton: .default(Text("查看解决办法")) {
+                if let url = URL(string: guideURL) {
+                    UIApplication.shared.open(url)
+                }
             }
         )
     }

@@ -68,7 +68,7 @@ struct PairingSettingsView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("文件包含设备配对私钥。仅保存到你信任的位置，勿发送给陌生人或上传到公共网盘。")
+            Text("文件里有连接你设备的密钥，只保存在你信任的位置，不要发给陌生人，也不要上传到公共网盘。")
         }
         .alert(item: $viewModel.alertFailure) { failure in
             Alert(
@@ -359,7 +359,7 @@ struct PairingSettingsView: View {
                 .sealOutlineAction(cornerRadius: 12)
             }
 
-            Button(viewModel.pairingRecord == nil ? "检查配对状态" : "重新检查") {
+            Button(viewModel.pairingRecord == nil ? "检查配对状态" : "重新检查配对") {
                 Task {
                     await viewModel.testPairingConnection()
                 }

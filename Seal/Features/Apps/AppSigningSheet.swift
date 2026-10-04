@@ -514,11 +514,17 @@ struct AppSigningSheet: View {
     }
 
     private func standardAlert(_ failure: ImportFailure) -> Alert {
-        Alert(
+        let guideURL = "https://ios.sealsign.eu.cc/seal-error-guide.html?q=\(failure.code)"
+        return Alert(
             title: Text(failure.title),
             message: Text(failure.userMessage),
-            dismissButton: .default(Text(failure.recovery)) {
+            primaryButton: .default(Text(failure.recovery)) {
                 viewModel.performAlertRecovery(for: failure)
+            },
+            secondaryButton: .default(Text("查看解决办法")) {
+                if let url = URL(string: guideURL) {
+                    UIApplication.shared.open(url)
+                }
             }
         )
     }
@@ -745,7 +751,7 @@ private struct BundleIDEditorSheet: View {
     }
 
     var body: some View {
-        SealDrawer(title: "修改 Bundle ID") {
+        SealDrawer(title: "修改应用 ID") {
             VStack(alignment: .leading, spacing: 10) {
                 HighlightedBundleIDTextField(text: $draft)
                     .padding(.horizontal, 12)

@@ -112,11 +112,12 @@ actor RenewalCoordinator {
     }
 
     func refreshAll(
+        triggerSource: RenewalTriggerSource = .manual,
         progress: @escaping @Sendable (BatchRefreshEvent) async -> Void
     ) async throws -> BatchRefreshResult {
         let apps = try await appStore.fetchAll()
         let queue = try await makeQueue(apps: apps)
-        return try await run(queue: queue, progress: progress)
+        return try await run(queue: queue, triggerSource: triggerSource, progress: progress)
     }
 
     /// 预测式后台续签（2026-10-03）：只处理「窗口内会过期」的，不每轮全量。
@@ -137,7 +138,7 @@ actor RenewalCoordinator {
             now: now
         )
         let queue = try await makeQueue(apps: apps, predictiveWindow: window)
-        let result = try await run(queue: queue, progress: progress)
+        let result = try await run(queue: queue, triggerSource: .background, progress: progress)
         Self.lastPredictiveRun = now
         try? await logStore?.append(
             category: .renewal,
@@ -164,24 +165,35 @@ actor RenewalCoordinator {
         }
     }
 
+    /// 续签轮次号（UserDefaults 持久化，进程重启不丢）。
+    /// 日志轮次头"第 N 轮"用。只增不减。
+    private static let roundNumberKey = "seal.renewal.roundNumber"
+    private static func nextRoundNumber() -> Int {
+        let n = UserDefaults.standard.integer(forKey: roundNumberKey) + 1
+        UserDefaults.standard.set(n, forKey: roundNumberKey)
+        return n
+    }
+
     /// 只重试上一轮失败的应用，避免对已成功应用重复签名/上传/安装。
     func refreshFailedItems(
         appIDs: [UUID],
+        triggerSource: RenewalTriggerSource = .manual,
         progress: @escaping @Sendable (BatchRefreshEvent) async -> Void
     ) async throws -> BatchRefreshResult {
-        try await refresh(appIDs: appIDs, progress: progress)
+        try await refresh(appIDs: appIDs, triggerSource: triggerSource, progress: progress)
     }
 
     /// 指定应用的续签入口。单项续签、失败项重试与“全部续签”都复用同一规划、排序、
     /// 持久化与 Seal-last 结算规则；调用方只决定选择哪几项。
     func refresh(
         appIDs: [UUID],
+        triggerSource: RenewalTriggerSource = .manual,
         progress: @escaping @Sendable (BatchRefreshEvent) async -> Void
     ) async throws -> BatchRefreshResult {
         let apps = try await appStore.fetchAll()
         let selectedIDs = Set(appIDs)
         let queue = try await makeQueue(apps: apps).filter { selectedIDs.contains($0.appID) }
-        return try await run(queue: queue, progress: progress)
+        return try await run(queue: queue, triggerSource: triggerSource, progress: progress)
     }
 
     /// 启动恢复：把上一轮被中断留下的 `running` 项降级为 `unknown`。
@@ -230,13 +242,14 @@ actor RenewalCoordinator {
 
     private func run(
         queue: [RefreshQueueItem],
+        triggerSource: RenewalTriggerSource,
         progress: @escaping @Sendable (BatchRefreshEvent) async -> Void
     ) async throws -> BatchRefreshResult {
         let apps = try await appStore.fetchAll()
         let queuedApps = queue.compactMap { item in apps.first(where: { $0.id == item.appID }) }
         await progress(.prepared(apps: queuedApps))
         try await queueStore.replace(with: queue)
-        return try await process(queue: queue, progress: progress)
+        return try await process(queue: queue, triggerSource: triggerSource, progress: progress)
     }
 
     /// Retry only classified transient network errors. Authentication, certificate,
@@ -266,12 +279,10 @@ actor RenewalCoordinator {
     /// 把任意错误归一化成 ImportFailure，同时保留原始错误描述，不再吞掉根因
     private func normalize(_ error: Error) -> ImportFailure {
         if let failure = error as? ImportFailure { return failure }
-        let nsError = error as NSError
-        let detail = "\(nsError.domain) \(nsError.code): \(nsError.localizedDescription)"
         return ImportFailure(
             title: "续签失败",
-            reason: "续签过程遇到临时错误（\(detail)），已自动重试仍未恢复。",
-            recovery: "检查网络后重试；如持续失败请导出日志反馈",
+            reason: "续签过程遇到错误，已自动重试仍未恢复。请检查网络和设备连接后，再重新发起续签；如果反复失败，把日志发给作者 MJorb。",
+            recovery: "检查网络和设备连接后，再重新发起续签",
             code: "SEAL-RENEW-500"
         )
     }
@@ -286,9 +297,14 @@ actor RenewalCoordinator {
 
     private func process(
         queue: [RefreshQueueItem],
+        triggerSource: RenewalTriggerSource,
         progress: @escaping @Sendable (BatchRefreshEvent) async -> Void
     ) async throws -> BatchRefreshResult {
         await progress(.started(total: queue.count))
+
+        // 轮次计时：首尾各取一次 Date()，约百纳秒，不增加续签耗时（要求 8）。
+        let roundStart = Date()
+        let roundNumber = Self.nextRoundNumber()
 
         // ── 批量通道预检（2026-10-04 通道优化）──
         // 整轮只做一次：通道不健康先自愈一次，仍不行整轮快速失败，
@@ -332,6 +348,9 @@ actor RenewalCoordinator {
         var failed = 0
         var needsAction = 0
         var awaitingConfirmation = 0
+        // 轮次明细：按原队列顺序收集，供轮次总结日志用。
+        // 并行完成顺序不定，用 offset 排序还原。
+        var roundItems: [(offset: Int, item: RenewalRoundItem)] = []
 
         // 常规项并行：Portal 准备并发跑，注入在 actor 内排队。
         // 有一项抛关键错误（队列持久化失败 / 取消）时整组取消，与串行语义一致。
@@ -339,25 +358,27 @@ actor RenewalCoordinator {
         // ⚠️ 计数不用本地 `func tally`：Swift 6 下 actor 方法里的本地函数是
         // actor-isolated 闭包，捕获 `succeeded` 等变量会被判数据竞态。
         // 直接在循环里 switch 内联。
-        try await withThrowingTaskGroup(of: ProcessItemOutcome.self) { group in
+        try await withThrowingTaskGroup(of: (Int, ProcessItemOutcome, RenewalRoundItem).self) { group in
             for item in parallelItems {
                 let offset = offsetsByAppID[item.appID] ?? 0
                 group.addTask {
-                    try await self.processItem(
+                    let (outcome, roundItem) = try await self.processItem(
                         item: item,
                         offset: offset,
                         total: queue.count,
                         progress: progress
                     )
+                    return (offset, outcome, roundItem)
                 }
             }
-            for try await outcome in group {
+            for try await (offset, outcome, roundItem) in group {
                 switch outcome {
                 case .succeeded: succeeded += 1
                 case .failed: failed += 1
                 case .needsAction: needsAction += 1
                 case .awaitingSealConfirmation: awaitingConfirmation += 1
                 }
+                roundItems.append((offset: offset, item: roundItem))
             }
         }
 
@@ -365,7 +386,7 @@ actor RenewalCoordinator {
         for item in serialLastItems {
             try Task.checkCancellation()
             let offset = offsetsByAppID[item.appID] ?? 0
-            let outcome = try await processItem(
+            let (outcome, roundItem) = try await processItem(
                 item: item,
                 offset: offset,
                 total: queue.count,
@@ -377,6 +398,7 @@ actor RenewalCoordinator {
             case .needsAction: needsAction += 1
             case .awaitingSealConfirmation: awaitingConfirmation += 1
             }
+            roundItems.append((offset: offset, item: roundItem))
         }
 
         do {
@@ -387,6 +409,28 @@ actor RenewalCoordinator {
                 code: "SEAL-RENEW-QUEUE-005"
             )
         }
+
+        // ── 轮次总结日志（双层呈现的人话层）──
+        // 按原队列顺序排好，拼字符串在后台做，不增加续签耗时。
+        // 技术层（诊断码/逐项日志）已由各处的 SEAL-RENEW-020/503 等单独记录，
+        // 这里只写人话总结；导出时两者同源（SealLogStore）。
+        let roundEnd = Date()
+        let sortedItems = roundItems.sorted { $0.offset < $1.offset }.map(\.item)
+        let summary = RenewalRoundSummary(
+            roundNumber: roundNumber,
+            triggerSource: triggerSource,
+            startedAt: roundStart,
+            endedAt: roundEnd,
+            items: sortedItems
+        )
+        let hasFailure = summary.failedCount > 0 || summary.needsActionCount > 0
+        try? await logStore?.append(
+            category: .renewal,
+            level: hasFailure ? .warning : .info,
+            message: summary.humanReadableMessage(),
+            code: "SEAL-RENEW-ROUND"
+        )
+
         return BatchRefreshResult(
             total: queue.count,
             succeeded: succeeded,
@@ -407,21 +451,35 @@ actor RenewalCoordinator {
         offset: Int,
         total: Int,
         progress: @escaping @Sendable (BatchRefreshEvent) async -> Void
-    ) async throws -> ProcessItemOutcome {
+    ) async throws -> (outcome: ProcessItemOutcome, roundItem: RenewalRoundItem) {
         try Task.checkCancellation()
+        // 单项计时：首尾各一次 Date()，约百纳秒（要求 8）。
+        let itemStart = Date()
+        // App 名：轮次总结人话层用。查不到时用占位，不阻塞流程。
+        let appName = (try? await appStore.fetchAll())?
+            .first(where: { $0.id == item.appID })?.name ?? "未知应用"
 
         // 本轮不执行的项（缺可用账号等）。**不静默跳过**：计入 needsAction，
         // 并复用失败条目的呈现把原因摊给用户 —— 否则「批量续签完成」会掩盖
         // 「有应用根本没被处理」这个事实。
         guard item.isExecutable, let accountID = item.accountID else {
+            let failure = Self.requiresActionFailure(reason: item.requiresActionReason)
             await emitFailure(
                 progress: progress,
                 offset: offset,
                 total: total,
                 item: item,
-                failure: Self.requiresActionFailure(reason: item.requiresActionReason)
+                failure: failure
             )
-            return .needsAction
+            let roundItem = RenewalRoundItem(
+                appName: appName,
+                outcome: .needsAction,
+                duration: Date().timeIntervalSince(itemStart),
+                failureCode: failure.code,
+                failureReason: failure.reason,
+                failureRecovery: failure.recovery
+            )
+            return (.needsAction, roundItem)
         }
 
         // 先确认记录存在；具体最新状态在每次尝试时重新读取（失败可能已改写 Bundle ID/证书）
@@ -430,13 +488,21 @@ actor RenewalCoordinator {
             // 本地记录确实不存在，无法续签
             let failure = ImportFailure(
                 title: "无法续签应用",
-                reason: "续签时未找到应用（ID：\(item.appID)）的本地记录。",
+                reason: "续签时未找到这个应用的本地记录，它可能已被删除。",
                 recovery: "重新导入 IPA 并签名安装",
                 code: "SEAL-RENEW-404"
             )
             try? await queueStore.markFailed(appID: item.appID, errorCode: failure.code)
             await emitFailure(progress: progress, offset: offset, total: total, item: item, failure: failure)
-            return .failed
+            let roundItem = RenewalRoundItem(
+                appName: appName,
+                outcome: .failed,
+                duration: Date().timeIntervalSince(itemStart),
+                failureCode: failure.code,
+                failureReason: failure.reason,
+                failureRecovery: failure.recovery
+            )
+            return (.failed, roundItem)
         }
 
         // —— 自动重试循环：最多 maxAttempts 次 ——
@@ -448,7 +514,7 @@ actor RenewalCoordinator {
             guard let app = (try? await appStore.fetchAll())?.first(where: { $0.id == item.appID }) else {
                 lastError = ImportFailure(
                     title: "无法续签应用",
-                    reason: "续签时未找到应用（ID：\(item.appID)）的本地记录。",
+                    reason: "续签时未找到这个应用的本地记录，它可能已被删除。",
                     recovery: "重新导入 IPA 并签名安装",
                     code: "SEAL-RENEW-404"
                 )
@@ -624,7 +690,15 @@ actor RenewalCoordinator {
                         app: updated
                     )
                 )
-                return .awaitingSealConfirmation
+                let roundItem = RenewalRoundItem(
+                    appName: updated.name,
+                    outcome: .awaitingConfirmation,
+                    duration: Date().timeIntervalSince(itemStart),
+                    failureCode: nil,
+                    failureReason: nil,
+                    failureRecovery: nil
+                )
+                return (.awaitingSealConfirmation, roundItem)
             }
             try await queueStore.markCompleted(appID: item.appID)
             // 逐项成功留痕（含描述文件身份）。
@@ -649,7 +723,15 @@ actor RenewalCoordinator {
                     app: updated
                 )
             )
-            return .succeeded
+            let roundItem = RenewalRoundItem(
+                appName: updated.name,
+                outcome: .succeeded,
+                duration: Date().timeIntervalSince(itemStart),
+                failureCode: nil,
+                failureReason: nil,
+                failureRecovery: nil
+            )
+            return (.succeeded, roundItem)
         } else if let lastError {
             // 重试用尽，判失败
             let failure = normalize(lastError)
@@ -665,11 +747,27 @@ actor RenewalCoordinator {
                 )
             }
             await emitFailure(progress: progress, offset: offset, total: total, item: item, failure: failure)
-            return .failed
+            let roundItem = RenewalRoundItem(
+                appName: appName,
+                outcome: .failed,
+                duration: Date().timeIntervalSince(itemStart),
+                failureCode: failure.code,
+                failureReason: failure.reason,
+                failureRecovery: failure.recovery
+            )
+            return (.failed, roundItem)
         }
         // 走到这里说明循环被 `break` 打断但既无成功也无错误（记录中途消失）——
         // 按失败计，避免静默丢项（`SEAL-RENEW-009` 的计数分桶要求总数对得上）。
-        return .failed
+        let roundItem = RenewalRoundItem(
+            appName: appName,
+            outcome: .failed,
+            duration: Date().timeIntervalSince(itemStart),
+            failureCode: "SEAL-RENEW-404",
+            failureReason: "续签时未找到这个应用的本地记录，它可能已被删除。",
+            failureRecovery: "重新导入 IPA 并签名安装"
+        )
+        return (.failed, roundItem)
     }
 
     /// `requiresAction` 项使用的错误码。

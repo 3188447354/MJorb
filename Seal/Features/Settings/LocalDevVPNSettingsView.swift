@@ -86,17 +86,17 @@ struct LocalDevVPNSettingsView: View {
     }
 
     private var statusTitle: String {
-        if case .ready = viewModel.diagnosticState { return "LocalDevVPN已连接" }
+        if case .ready = viewModel.diagnosticState { return "LocalDevVPN 已连接" }
         if case .running = viewModel.diagnosticState { return "正在检测连接" }
-        if installFailure != nil { return "LocalDevVPN未连接" }
+        if installFailure != nil { return "LocalDevVPN 未连接" }
         return "尚未检测"
     }
 
     private var statusSubtitle: String {
-        if case .ready = viewModel.diagnosticState { return "LocalDevVPN可用，可以签名和续签应用" }
+        if case .ready = viewModel.diagnosticState { return "LocalDevVPN 可用，可以签名和续签应用" }
         if case .running = viewModel.diagnosticState { return "正在检测设备响应和安装能力" }
         if let installFailure { return installFailure.userReason }
-        return "检测当前 VPN 和LocalDevVPN状态。"
+        return "检测当前 VPN 和 LocalDevVPN 状态。"
     }
 
     private var statusColor: Color {

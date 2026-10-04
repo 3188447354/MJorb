@@ -139,7 +139,7 @@ struct InstalledAppActionSheet: View {
     private var certificateStatus: String {
         switch viewModel.localCertificateAvailability(for: app) {
         case .ready: "可用"
-        case .needsFullResign: "需重签"
+        case .needsFullResign: "需重新签名"
         case .undetermined: "待核验"
         }
     }

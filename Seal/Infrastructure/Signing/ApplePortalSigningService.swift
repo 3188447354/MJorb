@@ -223,6 +223,11 @@ enum ApplePortalSigningFailure {
         let normalized = rawMessage.lowercased()
 
         if let failure = CertificateRequestFailurePolicy.requestFailure(error: error, limitCode: "SEAL-CERT-204a") {
+            try? await logStore?.append(
+                category: .signing, level: .error,
+                message: "SEAL-CERT-204a 底层诊断：\(CertificateRequestFailurePolicy.diagnostic(for: error))",
+                code: "SEAL-CERT-204a"
+            )
             return failure
         }
 
@@ -1772,7 +1777,14 @@ actor ApplePortalSigningService {
             }
             requested = created
         } catch {
-            if let failure = CertificateRequestFailurePolicy.requestFailure(error: error) { throw failure }
+            if let failure = CertificateRequestFailurePolicy.requestFailure(error: error) {
+                try? await logStore?.append(
+                    category: .signing, level: .error,
+                    message: "SEAL-CERT-204b 底层诊断：\(CertificateRequestFailurePolicy.diagnostic(for: error))",
+                    code: "SEAL-CERT-204b"
+                )
+                throw failure
+            }
             throw error
         }
 

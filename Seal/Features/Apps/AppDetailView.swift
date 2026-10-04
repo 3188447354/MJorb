@@ -47,11 +47,17 @@ struct AppDetailView: View {
             }
         }
         .alert(item: $viewModel.alertFailure) { failure in
-            Alert(
+            let guideURL = "https://ios.sealsign.eu.cc/seal-error-guide.html?q=\(failure.code)"
+            return Alert(
                 title: Text(failure.title),
                 message: Text(failure.userMessage),
-                dismissButton: .default(Text(failure.recovery)) {
+                primaryButton: .default(Text(failure.recovery)) {
                     viewModel.performAlertRecovery(for: failure)
+                },
+                secondaryButton: .default(Text("查看解决办法")) {
+                    if let url = URL(string: guideURL) {
+                        UIApplication.shared.open(url)
+                    }
                 }
             )
         }
@@ -95,11 +101,11 @@ struct AppDetailView: View {
                 signingNoteRow(note)
             }
             Divider()
-            detailRow("Team ID", app.signingTeamID ?? "未记录")
+            detailRow("团队 ID", app.signingTeamID ?? "未记录")
             Divider()
-            identifierDetailRow("签名 Bundle ID", signedBundleIdentifier(app), highlightSeal: true)
+            identifierDetailRow("签名 ID", signedBundleIdentifier(app), highlightSeal: true)
             Divider()
-            identifierDetailRow("原始 Bundle ID", app.originalBundleIdentifier, highlightSeal: false)
+            identifierDetailRow("原始 ID", app.originalBundleIdentifier, highlightSeal: false)
             Divider()
             profileDetailRow(app)
             Divider()
@@ -138,7 +144,7 @@ struct AppDetailView: View {
                     ) { extensionRecord in
                         Divider()
                         detailRow(
-                            "插件·\(extensionRecord.name)",
+                            "扩展·\(extensionRecord.name)",
                             extensionExpiryText(extensionRecord),
                             valueColor: extensionExpiryColor(extensionRecord)
                         )

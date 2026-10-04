@@ -83,18 +83,18 @@ private enum SigningGuideSection: String, CaseIterable, Identifiable {
             return [
                 "导入 IPA",
                 "点开待签名 App",
-                "确认名称、图标和 Bundle ID",
+                "确认名称、图标和包名",
                 "点击“签名并安装”",
-                "首次签名会准备证书、App ID 和描述文件",
-                "免费账户受设备级 3 App 限制"
+                "首次签名会自动准备好证书和应用信息",
+                "免费账号一台设备最多装 3 个自签 App"
             ]
         case .renewal:
             return [
                 "打开已安装页",
                 "点开需要续签的 App",
                 "点击“立即续签”",
-                "证书和设备身份匹配时只更新描述文件",
-                "无法确认时自动完整重签并安装"
+                "证书等信息没变时只快速更新签名",
+                "信息对不上时自动完整重新签名并安装"
             ]
         case .batchRenewal:
             return [

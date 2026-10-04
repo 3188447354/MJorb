@@ -28,7 +28,7 @@ struct IPAParserService: Sendable {
         } catch {
             throw failure(
                 title: "无法读取 IPA",
-                reason: "应用信息解析失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                reason: "应用信息解析失败。",
                 recovery: "选择其他 IPA",
                 code: "SEAL-IPA-102"
             )
@@ -192,7 +192,7 @@ struct IPAParserService: Sendable {
         guard let dictionary = value as? [String: Any] else {
             throw failure(
                 title: "无法读取 IPA",
-                reason: "无法解析 \(entry.path) 的 PropertyList。",
+                reason: "无法读取 \(entry.path) 里的应用信息。",
                 recovery: "选择其他 IPA",
                 code: "SEAL-IPA-102b"
             )

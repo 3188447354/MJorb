@@ -16,8 +16,8 @@ enum ProfileOnlyRenewalRecordUpdater {
               let mainBinding = resolvedBindings[mainBundleIdentifier] else {
             throw ImportFailure(
                 title: "描述文件不完整",
-                reason: "profile-only 续签缺少主应用的已核验描述文件。",
-                recovery: "执行完整重签以重新建立应用身份",
+                reason: "续签时缺少主应用的描述文件。",
+                recovery: "知道了",
                 code: "SEAL-PROFILE-340"
             )
         }
@@ -26,8 +26,8 @@ enum ProfileOnlyRenewalRecordUpdater {
               Set(installedTargets) == Set(resolvedBindings.keys) else {
             throw ImportFailure(
                 title: "描述文件不完整",
-                reason: "profile-only 续签没有覆盖当前应用的全部已安装目标。",
-                recovery: "执行完整重签以重新建立应用身份",
+                reason: "续签时缺少该应用或其扩展的描述文件。",
+                recovery: "知道了",
                 code: "SEAL-PROFILE-341"
             )
         }
@@ -55,8 +55,8 @@ enum ProfileOnlyRenewalRecordUpdater {
                   let binding = resolvedBindings[bundleIdentifier] else {
                 throw ImportFailure(
                     title: "描述文件不完整",
-                    reason: "profile-only 续签缺少扩展的已核验描述文件。",
-                    recovery: "执行完整重签以重新建立应用身份",
+                    reason: "续签时缺少扩展的描述文件。",
+                    recovery: "知道了",
                     code: "SEAL-PROFILE-342"
                 )
             }

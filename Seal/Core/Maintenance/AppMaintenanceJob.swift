@@ -283,10 +283,9 @@ final class AppMaintenanceJob {
     }
 
     private static func unexpectedFailure(stage: String, error: Error) -> ImportFailure {
-        let nsError = error as NSError
         return ImportFailure(
             title: "本地维护未完成",
-            reason: "\(stage)遇到未预期错误，已停止本轮维护，未完成的步骤下次启动会继续。\n[\(nsError.domain) \(nsError.code)]",
+            reason: "\(stage)遇到未预期错误，已停止本轮维护，未完成的步骤下次启动会继续。",
             recovery: "下次打开 Seal 会自动继续",
             code: "SEAL-STORAGE-007"
         )

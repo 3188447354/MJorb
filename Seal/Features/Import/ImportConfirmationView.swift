@@ -62,7 +62,7 @@ struct ImportConfirmationView: View {
                         .accessibilityIdentifier("import-confirmation-new-copy")
                 }
 
-                Button("取消", action: onCancel)
+                Button("取消导入", action: onCancel)
                     .sealOutlineAction(cornerRadius: 14)
                     .disabled(isCommitting)
             }
@@ -84,7 +84,7 @@ struct ImportConfirmationView: View {
 
     private var primaryActionTitle: String {
         if let recovery = failure?.recovery { return recovery }
-        return isOverwriteUpdate ? "覆盖更新" : "导入"
+        return isOverwriteUpdate ? "覆盖更新" : "导入应用"
     }
 
     private var header: some View {
@@ -118,7 +118,7 @@ struct ImportConfirmationView: View {
                 .accessibilityIdentifier("import-summary-bundle-id")
                 .accessibilityValue(draft.parsedIPA.bundleIdentifier)
             Divider().padding(.leading, 16)
-            summaryRow("扩展", extensionSummary)
+            summaryRow("附加组件", extensionSummary)
                 .accessibilityIdentifier("import-summary-extensions")
                 .accessibilityValue(extensionSummary)
             Divider().padding(.leading, 16)
@@ -209,6 +209,6 @@ struct ImportConfirmationView: View {
     }
 
     private var migrationSummary: String {
-        isOverwriteUpdate ? "将替换已安装记录" : "可导入"
+        isOverwriteUpdate ? "将替换已安装的应用" : "可导入"
     }
 }

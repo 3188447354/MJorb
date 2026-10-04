@@ -7,9 +7,9 @@ struct TeamSelectionView: View {
     @State private var isSaving = false
 
     var body: some View {
-        SealDrawer(title: "选择 Team") {
+        SealDrawer(title: "选择团队") {
             VStack(alignment: .leading, spacing: 14) {
-                Text("此 Apple ID 有多个 Team。后续 Serial、App ID 和描述文件都会固定使用你选择的同一个 Team。")
+                Text("这个 Apple ID 有多个团队。之后签名用的证书和应用信息都会固定使用你选的这个团队。")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -28,7 +28,7 @@ struct TeamSelectionView: View {
                                         .font(.caption.monospaced())
                                         .foregroundStyle(.secondary)
                                         .textSelection(.enabled)
-                                    Text(team.isFreeTeam ? "免费 Team" : "付费 Team")
+                                    Text(team.isFreeTeam ? "免费团队" : "付费团队")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -41,7 +41,7 @@ struct TeamSelectionView: View {
                             .background(Color.sealSurfaceElevated, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("\(TeamNameDisplayFormatter.string(from: team.name))，\(team.id)，\(team.isFreeTeam ? "免费 Team" : "付费 Team")")
+                        .accessibilityLabel("\(TeamNameDisplayFormatter.string(from: team.name))，\(team.id)，\(team.isFreeTeam ? "免费团队" : "付费团队")")
                         .accessibilityValue(selectedTeamID == team.id ? "已选择" : "未选择")
                     }
                 }
@@ -66,7 +66,7 @@ struct TeamSelectionView: View {
                     }
                 } label: {
                     if isSaving { ProgressView().frame(maxWidth: .infinity) }
-                    else { Text("保存") }
+                    else { Text("保存选择") }
                 }
                 .sealPrimaryAction(cornerRadius: 12)
                 .disabled(selectedTeamID == nil || isSaving)

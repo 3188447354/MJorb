@@ -4,6 +4,11 @@ struct BatchRefreshView: View {
     @ObservedObject var viewModel: AppsViewModel
     @Environment(\.dismiss) private var dismiss
 
+    /// 每 App 历史最高环填充（item.id → fill），保证重试也不回退。
+    /// 只在 View 内维护：key 是 App 的稳定 id，靠 fillSessionID 隔离不同轮次。
+    @State private var maxFillByItem: [UUID: Double] = [:]
+    @State private var fillSessionID: UUID?
+
     var body: some View {
         // footer 常显：运行中要给出「取消续签」退出通道，不能因为「没有主操作」就整段隐藏。
         SealDrawer(title: drawerTitle, showsFooter: true) {
@@ -50,7 +55,7 @@ struct BatchRefreshView: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(progressText)
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
+                        .font(.system(size: 22, weight: .bold, design: .rounded))
                     Text("已完成")
                         .font(.system(size: 14))
                         .foregroundStyle(Color.sealTextSecondary)
@@ -61,21 +66,6 @@ struct BatchRefreshView: View {
                 ProgressView(value: totalProgress)
                     .progressViewStyle(.linear)
                     .tint(Color.sealAccent)
-                // 阶段分布：所有并行项的实时状态汇总，文案无图标。
-                if !stageDistribution.isEmpty {
-                    HStack(spacing: 8) {
-                        ForEach(stageDistribution, id: \.self) { chip in
-                            Text(chip)
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(Color.sealAccent)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(Color.sealAccent.opacity(0.12))
-                                .clipShape(Capsule())
-                        }
-                    }
-                    .padding(.top, 4)
-                }
                 uploadProgressBlock
                 installWaitBlock
             }
@@ -163,7 +153,7 @@ struct BatchRefreshView: View {
                 VStack(spacing: 0) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         queueRow(item)
-                        if index < items.count - 1 { Divider().padding(.leading, 24) }
+                        if index < items.count - 1 { Divider().padding(.leading, 16) }
                     }
                 }
             }
@@ -173,22 +163,66 @@ struct BatchRefreshView: View {
         .glassSurface(cornerRadius: 18)
     }
 
+    /// 队列行（2026-10-04 小环设计）：App 名 + 右侧 26pt 状态小环。
+    /// 左侧 ✓/◌ 已删（和右环重复）；右侧状态文字换成小环：
+    /// 等待=灰空圈，运行=蓝环+填充%，完成=绿勾，失败=红叹号。
     private func queueRow(_ item: BatchRefreshSession.Item) -> some View {
-        HStack(spacing: 10) {
-            Text(symbol(for: item.state))
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(color(for: item.state))
-                .frame(width: 16)
+        HStack(spacing: 12) {
             Text(item.name)
-                .font(.system(size: 15, weight: .medium))
+                .font(.system(size: 16, weight: .medium))
                 .lineLimit(1)
             Spacer(minLength: 10)
-            Text(title(for: item.state, isSeal: item.isSeal, stage: item.stage))
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(color(for: item.state))
-                .lineLimit(1)
+            QueueStatusRing(state: item.state, fill: ringFill(for: item))
+                .accessibilityLabel(accessibilityLabel(for: item.state))
         }
-        .frame(minHeight: 38)
+        .frame(minHeight: 54)
+        .onAppear { recordMaxFill(for: item) }
+        .onChange(of: item.stage) { _, newStage in
+            recordMaxFill(stage: newStage, id: item.id)
+        }
+    }
+
+    /// Stage → 环填充映射（设计稿 spec）：只消费 item.stage，不测量、不走网络。
+    private func mappedFill(for stage: SigningStage?) -> Double {
+        switch stage {
+        case .preparingProfiles:
+            return 0.55
+        case .signing, .pushing, .installing, .verifying:
+            return 0.85
+        case .waitingForChannel, .preparingAccount, .preparingBundle,
+             .preparingCertificate, .preparingAppID, nil:
+            return 0.20
+        }
+    }
+
+    /// 单调不回退的环填充：取当前映射与历史最高值的最大值。
+    /// 新会话（session id 变了）还没建档时直接用当前映射，避免读到上一轮的旧值。
+    private func ringFill(for item: BatchRefreshSession.Item) -> Double {
+        let mapped = mappedFill(for: item.stage)
+        guard viewModel.batchRefreshSession?.id == fillSessionID else { return mapped }
+        return max(mapped, maxFillByItem[item.id] ?? 0)
+    }
+
+    private func recordMaxFill(for item: BatchRefreshSession.Item) {
+        recordMaxFill(stage: item.stage, id: item.id)
+    }
+
+    private func recordMaxFill(stage: SigningStage?, id: UUID) {
+        let sid = viewModel.batchRefreshSession?.id
+        if sid != fillSessionID {
+            fillSessionID = sid
+            maxFillByItem = [:]
+        }
+        maxFillByItem[id] = max(maxFillByItem[id] ?? 0, mappedFill(for: stage))
+    }
+
+    private func accessibilityLabel(for state: BatchRefreshSession.Item.State) -> String {
+        switch state {
+        case .waiting: return "等待中"
+        case .running, .preparingSealUpdate: return "进行中"
+        case .completed, .awaitingSealConfirmation: return "已完成"
+        case .failed: return "失败"
+        }
     }
 
     private func tipText(_ text: String) -> some View {
@@ -213,7 +247,7 @@ struct BatchRefreshView: View {
             }
         case .failed:
             VStack(spacing: 10) {
-                Button("重试") { viewModel.refreshAll() }
+                Button("重试全部") { viewModel.refreshAll() }
                     .sealPrimaryAction(cornerRadius: 14)
                 Button("完成") { viewModel.dismissBatchRefresh(); dismiss() }
                     .sealOutlineAction(cornerRadius: 14)
@@ -265,30 +299,6 @@ struct BatchRefreshView: View {
         return Double(completedCount) / Double(session.total)
     }
 
-    /// 阶段分布文案（2026-10-04 并行 UI）：所有运行中项按阶段收敛成 3 类。
-    /// profile-only 只有"拿描述文件"和"注入"两段耗时，10 个细分阶段收敛后不乱。
-    /// 文案无图标（用户要求）。
-    private var stageDistribution: [String] {
-        guard let session = viewModel.batchRefreshSession else { return [] }
-        var preparing = 0, fetchingProfiles = 0, updatingProfiles = 0
-        for item in session.items where item.state == .running {
-            switch item.stage {
-            case .preparingProfiles:
-                fetchingProfiles += 1
-            case .signing, .pushing, .installing, .verifying:
-                updatingProfiles += 1
-            case .waitingForChannel, .preparingAccount, .preparingBundle,
-                 .preparingCertificate, .preparingAppID, nil:
-                preparing += 1
-            }
-        }
-        var chips: [String] = []
-        if preparing > 0 { chips.append("\(preparing) 个准备中") }
-        if fetchingProfiles > 0 { chips.append("\(fetchingProfiles) 个申请描述文件中") }
-        if updatingProfiles > 0 { chips.append("\(updatingProfiles) 个更新描述文件中") }
-        return chips
-    }
-
     private var footerTip: String? {
         switch viewModel.batchRefreshSession?.status {
         case .preparing, .running:
@@ -319,42 +329,55 @@ struct BatchRefreshView: View {
             return false
         }
     }
+}
 
-    private func symbol(for state: BatchRefreshSession.Item.State) -> String {
-        switch state {
-        case .completed: return "✓"
-        case .running, .preparingSealUpdate, .awaitingSealConfirmation: return "●"
-        case .waiting: return "○"
-        case .failed: return "!"
-        }
+/// 队列行右侧 26pt 状态小环（2026-10-04 续签队列小环设计）。
+/// 只消费 item.state + 父视图算好的 fill：等待=灰空圈，运行=蓝环+填充%，
+/// 完成=绿底白勾，失败=红底白叹号。运行中带呼吸动画（设计稿），不旋转——
+/// 转会让填充弧的位置失去意义。
+private struct QueueStatusRing: View {
+    let state: BatchRefreshSession.Item.State
+    /// 0-1，仅 running 时有意义（已由父视图保证单调不回退）。
+    let fill: Double
+
+    @State private var breathing = false
+
+    private var isRunning: Bool {
+        state == .running || state == .preparingSealUpdate
     }
 
-    private func title(for state: BatchRefreshSession.Item.State, isSeal: Bool, stage: SigningStage? = nil) -> String {
-        switch state {
-        case .completed: return isSeal ? "已更新" : "已完成"
-        case .running: return runningStageTitle(stage)
-        case .preparingSealUpdate: return "即将更新"
-        case .awaitingSealConfirmation: return "等待新版本核验"
-        case .waiting: return "等待中"
-        case .failed: return "失败"
+    var body: some View {
+        ZStack {
+            switch state {
+            case .waiting:
+                Circle()
+                    .stroke(Color.sealTextSecondary.opacity(0.35), lineWidth: 3.5)
+            case .running, .preparingSealUpdate:
+                Circle()
+                    .stroke(Color.sealAccent.opacity(0.18), lineWidth: 3.5)
+                Circle()
+                    .trim(from: 0, to: max(0.03, min(1, fill)))
+                    .stroke(Color.sealAccent, style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            case .completed, .awaitingSealConfirmation:
+                Circle().fill(Color.sealSuccess)
+                Image(systemName: "checkmark")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.white)
+            case .failed:
+                Circle().fill(Color.sealDanger)
+                Image(systemName: "exclamationmark")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.white)
+            }
         }
-    }
-
-    private func runningStageTitle(_ stage: SigningStage?) -> String {
-        switch stage {
-        case .signing: return "重新签名中"
-        case .pushing: return "传输中"
-        case .installing, .verifying: return "安装中"
-        default: return "准备中"
-        }
-    }
-
-    private func color(for state: BatchRefreshSession.Item.State) -> Color {
-        switch state {
-        case .completed: return .sealSuccess
-        case .running, .preparingSealUpdate, .awaitingSealConfirmation: return .sealAccent
-        case .waiting: return .sealTextSecondary
-        case .failed: return .sealDanger
+        .frame(width: 26, height: 26)
+        .opacity(isRunning && breathing ? 0.55 : 1)
+        .onAppear {
+            guard isRunning else { return }
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                breathing = true
+            }
         }
     }
 }

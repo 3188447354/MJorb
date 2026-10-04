@@ -117,7 +117,7 @@ struct UpdateNoticeView: View {
                 // 底部双按钮：取消 + 下载更新 / 进度
                 HStack(spacing: 10) {
                     Button(action: onDismiss) {
-                        Text("取消")
+                        Text("取消更新")
                             .font(.headline.weight(.semibold))
                             .foregroundStyle(.primary)
                             .frame(maxWidth: .infinity)
@@ -159,7 +159,7 @@ struct UpdateNoticeView: View {
                                     }
                                 }
                             case .failed:
-                                Text("重试")
+                                Text("重新下载")
                             }
                         }
                         .font(.headline.weight(.semibold))
@@ -245,7 +245,7 @@ struct UpdateNoticeView: View {
                 // 只校验下载域名不够 —— 同一仓库、同一域名下的资产仍可能被替换。
                 let parsed = try IPAParserService().parse(url: localURL)
                 guard UpdateChecker.advertisedVersion(notice.version, matchesIPAVersion: parsed.version) else {
-                    phase = .failed("更新包内容与版本 \(notice.version) 不符，已中止安装")
+                    phase = .failed("下载的文件与版本 \(notice.version) 不符，已中止安装")
                     return
                 }
                 // SHA256 完整性校验：走应用内直链安装必须有配套校验和，缺失或对不上都 fail closed。
@@ -253,7 +253,7 @@ struct UpdateNoticeView: View {
                 // 资产仍可能被调包，只有与 Release 附带的 `.sha256` 逐字节比对才可信。
                 guard let checksumURL = notice.sha256DownloadURL else {
                     try? FileManager.default.removeItem(at: localURL)
-                    phase = .failed("更新包缺少校验信息，已中止安装")
+                    phase = .failed("下载的文件缺少安全校验信息，已中止安装")
                     return
                 }
                 let actual = try AppFileStore.streamingSHA256(url: localURL)
@@ -262,7 +262,7 @@ struct UpdateNoticeView: View {
                       let expected = UpdateChecker.expectedSHA256(from: checksumText),
                       UpdateChecker.hashMatches(expected: expected, actual: actual) else {
                     try? FileManager.default.removeItem(at: localURL)
-                    phase = .failed("更新包校验不通过，已中止安装")
+                    phase = .failed("下载的文件安全校验未通过，已中止安装")
                     return
                 }
                 onInstall(localURL)
@@ -271,7 +271,7 @@ struct UpdateNoticeView: View {
             } catch let error as UpdateDownloadError {
                 phase = .failed(error.errorDescription ?? "下载失败")
             } catch {
-                phase = .failed("下载失败，请稍后重试")
+                phase = .failed("下载失败，请检查网络后重试")
             }
             downloadTask = nil
         }

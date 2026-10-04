@@ -507,8 +507,8 @@ final class AppsViewModel: ObservableObject {
             guard generation == loadGeneration else { return }
             alertFailure = ImportFailure(
                 title: "无法读取应用",
-                reason: "本地应用数据读取失败，应用列表无法加载。\n[\((error as NSError).domain) \((error as NSError).code)]",
-                recovery: "重试",
+                reason: "本地应用数据读取失败，应用列表无法加载。请先完全退出再重新打开 Seal；如果还是加载不出来，把日志发给作者 MJorb。",
+                recovery: "知道了",
                 code: "SEAL-APP-002"
             )
         }
@@ -1000,8 +1000,8 @@ final class AppsViewModel: ObservableObject {
         guard cocoaError?.code != .userCancelled else { return }
         alertFailure = ImportFailure(
             title: "无法选择 IPA",
-            reason: "文件选择失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
-            recovery: "重试",
+            reason: "没能选中文件，可能是文件被移动、删除了，或 iCloud 上的文件还没下载到本机。请确认文件还在原位置（iCloud 的文件先点一下下载下来）。",
+            recovery: "重新选择",
             code: "SEAL-IPA-206"
         )
     }
@@ -1048,7 +1048,7 @@ final class AppsViewModel: ObservableObject {
             alertFailure = ImportFailure(
                 title: "缺少签名账号",
                 reason: accounts.isEmpty ? "尚未添加 Apple ID" : "Apple ID 需要重新验证",
-                recovery: "前往设置",
+                recovery: "去「我的」",
                 code: "SEAL-AUTH-104a"
             )
             return
@@ -1081,7 +1081,7 @@ final class AppsViewModel: ObservableObject {
                 alertFailure = ImportFailure(
                     title: "Apple ID 不可用",
                     reason: "请选择一个已验证的 Apple ID 进行续签。",
-                    recovery: "前往设置",
+                    recovery: "去「我的」",
                     code: "SEAL-AUTH-104b"
                 )
                 return nil
@@ -1097,7 +1097,7 @@ final class AppsViewModel: ObservableObject {
             alertFailure = ImportFailure(
                 title: "Apple ID 需要重新验证",
                 reason: "\(app.name) 记录的签名账号（\(email)）当前不可用，需要先在「我的」里重新验证后才能续签。",
-                recovery: "前往设置",
+                recovery: "去「我的」",
                 code: "SEAL-AUTH-104f"
             )
             return nil
@@ -1110,8 +1110,8 @@ final class AppsViewModel: ObservableObject {
             )
             alertFailure = ImportFailure(
                 title: "找不到原来的签名账号",
-                reason: "\(app.name) 原来由 Team \(team) 的 Apple ID 签名，该账号已被删除，当前也没有同 Team 的可用账号。换用其他 Team 的 Apple ID 续签会让它的 Keychain 与 App Group 失配，因此没有自动继续。",
-                recovery: "前往设置",
+                reason: "\(app.name) 原来由团队 \(team) 的 Apple ID 签名，该账号已被删除，当前也没有同一团队的可用账号。换用其他团队的账号续签会导致它之前保存的登录信息和数据用不了，因此没有自动继续。",
+                recovery: "去「我的」",
                 code: "SEAL-AUTH-104g"
             )
             return nil
@@ -1124,7 +1124,7 @@ final class AppsViewModel: ObservableObject {
             alertFailure = ImportFailure(
                 title: "缺少签名账号",
                 reason: accounts.isEmpty ? "尚未添加 Apple ID" : "Apple ID 需要重新验证",
-                recovery: "前往设置",
+                recovery: "去「我的」",
                 code: "SEAL-AUTH-104a"
             )
             return nil
@@ -1189,7 +1189,7 @@ final class AppsViewModel: ObservableObject {
                 alertFailure = ImportFailure(
                     title: "Apple ID 不可用",
                     reason: "请选择一个已验证的 Apple ID",
-                    recovery: "前往设置",
+                    recovery: "去「我的」",
                     code: "SEAL-AUTH-104b"
                 )
                 return
@@ -1223,7 +1223,7 @@ final class AppsViewModel: ObservableObject {
                 )
                 alertFailure = ImportFailure(
                     title: "更新将重置本地数据",
-                    reason: "当前 Seal 由另一 Team 签名，改用所选 Apple ID 覆盖安装会清空已添加的 Apple ID 与已安装应用，需重新添加。",
+                    reason: "当前 Seal 由另一个团队的账号签名，改用所选 Apple ID 覆盖安装会清空已添加的 Apple ID 与已安装应用，需重新添加。",
                     recovery: "继续签名",
                     code: "SEAL-AUTH-115"
                 )
@@ -1252,7 +1252,7 @@ final class AppsViewModel: ObservableObject {
                 alertFailure = ImportFailure(
                     title: "签名账号不可用",
                 reason: "上次签名这个应用的 Apple ID 已被删除或凭据失效。",
-                recovery: "在「我的」中重新添加原 Apple ID，或用当前账号重新签名安装",
+                recovery: "去「我的」添加账号",
                     code: "SEAL-AUTH-104c"
                 )
                 return
@@ -1322,7 +1322,7 @@ final class AppsViewModel: ObservableObject {
             alertFailure = ImportFailure(
                 title: "缺少签名账号",
                 reason: accounts.isEmpty ? "尚未添加 Apple ID" : "Apple ID 需要重新验证",
-                recovery: "前往设置",
+                recovery: "去「我的」",
                 code: "SEAL-AUTH-104d"
             )
             return
@@ -1412,6 +1412,9 @@ final class AppsViewModel: ObservableObject {
             } catch let sacrificeFailure as ImportFailure {
                 signingSession?.status = .failed(sacrificeFailure)
             } catch {
+                try? logStore?.append(category: .signing, level: .error,
+                    message: "SEAL-SIGN-500 底层诊断：\(Self.richErrorDiagnostic(error))",
+                    code: "SEAL-SIGN-500")
                 signingSession?.status = .failed(Self.unexpectedSigningFailure(error))
             }
         }
@@ -1482,9 +1485,9 @@ final class AppsViewModel: ObservableObject {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if let validationError = BundleIDPolicy.validationError(for: trimmed) {
             alertFailure = ImportFailure(
-                title: "Bundle ID 无效",
+                title: "应用 ID 无效",
                 reason: validationError,
-                recovery: "修改 Bundle ID",
+                recovery: "修改应用 ID",
                 code: "SEAL-BUNDLE-001a"
             )
             return false
@@ -1497,9 +1500,9 @@ final class AppsViewModel: ObservableObject {
             return true
         } catch {
             alertFailure = ImportFailure(
-                title: "无法保存 Bundle ID",
-                reason: "Bundle ID 草稿保存失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
-                recovery: "重试",
+                title: "无法保存应用 ID",
+                reason: "Bundle ID 没能保存到本机。请检查本机存储空间是否充足，然后重新输入保存；如果反复失败，把日志发给作者 MJorb。",
+                recovery: "知道了",
                 code: "SEAL-BUNDLE-003"
             )
             return false
@@ -1528,8 +1531,8 @@ final class AppsViewModel: ObservableObject {
         } catch {
             alertFailure = ImportFailure(
                 title: "无法保存 App 名称",
-                reason: "App 名称记录保存失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
-                recovery: "重试",
+                reason: "App 名称没能保存到本机。请检查本机存储空间是否充足，然后重新输入保存；如果反复失败，把日志发给作者 MJorb。",
+                recovery: "知道了",
                 code: "SEAL-CUSTOM-002"
             )
             return false
@@ -1559,8 +1562,8 @@ final class AppsViewModel: ObservableObject {
         } catch {
             alertFailure = ImportFailure(
                 title: "无法保存 App 图标",
-                reason: "图标文件无法写入本机存储。\n[\((error as NSError).domain) \((error as NSError).code)]",
-                recovery: "重试",
+                reason: "图标文件没能写入本机存储，可能是存储空间不足。请清理一些空间后，重新选择图标。",
+                recovery: "知道了",
                 code: "SEAL-CUSTOM-003"
             )
             return false
@@ -1619,6 +1622,9 @@ final class AppsViewModel: ObservableObject {
                 code: failure.code
             )
         } catch {
+            try? logStore?.append(category: .signing, level: .error,
+                message: "SEAL-SIGN-500 底层诊断：\(Self.richErrorDiagnostic(error))",
+                code: "SEAL-SIGN-500")
             alertFailure = Self.unexpectedSigningFailure(error)
         }
         await load(force: true)
@@ -1661,7 +1667,7 @@ final class AppsViewModel: ObservableObject {
                     try await appStore.save(app)
                 } catch {
                     alertFailure = ImportFailure(
-                        title: "应用删除未完整回滚",
+                        title: "应用删除失败",
                         reason: "本地文件删除失败，并且应用数据库记录未能恢复。",
                         recovery: "重新打开 Seal 让启动恢复检查本地文件",
                         code: "SEAL-APP-ROLLBACK-001"
@@ -1705,8 +1711,8 @@ final class AppsViewModel: ObservableObject {
         } catch {
             alertFailure = ImportFailure(
                 title: "无法移除应用",
-                reason: "「\(app.displayName)」的本地文件删除失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
-                recovery: "重试",
+                reason: "「\(app.displayName)」的本地文件没能删掉。请先完全退出再重新打开 Seal，然后再删一次；如果还是删不掉，把日志发给作者 MJorb。",
+                recovery: "知道了",
                 code: "SEAL-APP-003"
             )
             return false
@@ -2094,15 +2100,14 @@ final class AppsViewModel: ObservableObject {
                 await self?.consumeBatchEvent(event)
             }
             let result: BatchRefreshResult
+            let triggerSource: RenewalTriggerSource = wasBackgroundTriggered ? .shortcut : .manual
             if let appIDs {
-                result = try await renewalCoordinator.refresh(appIDs: appIDs, progress: progress)
-            } else if wasBackgroundTriggered {
+                result = try await renewalCoordinator.refresh(appIDs: appIDs, triggerSource: triggerSource, progress: progress)
+            } else {
                 // 🔴 快捷指令触发 = 全量续签（2026-10-03 用户明确要求）：
                 // 触发就走续签，不做预测式过滤。之前预测式（48h 窗口）让测试连点时
                 // 每轮 0 个纳入、静默结束 —— 用户要的是"点了就有动作"。
-                result = try await renewalCoordinator.refreshAll(progress: progress)
-            } else {
-                result = try await renewalCoordinator.refreshAll(progress: progress)
+                result = try await renewalCoordinator.refreshAll(triggerSource: triggerSource, progress: progress)
             }
             // 拿到结果就发通知（标记已在函数入口读并清位，见那里的说明）。
             if result.total == 0 {
@@ -2140,14 +2145,9 @@ final class AppsViewModel: ObservableObject {
                     //（2026-09-29 真机反馈「通知成功了、进 App 抽屉却有延迟」）。
                     persistPendingBatchResult(forceSealAwaiting: false)
                 }
-                // 计数分桶写进日志：`total == succeeded + failed + needsAction` 不成立就说明
-                // 有项被静默丢了 —— 这正是旧实现「批量续签完成」却漏跑应用的病根。
-                try? await logStore?.append(
-                    category: .renewal,
-                    level: (result.failed == 0 && result.needsAction == 0 && result.awaitingConfirmation == 0) ? .info : .warning,
-                    message: "续签完成：共 \(result.total)，成功 \(result.succeeded)，失败 \(result.failed)，未执行 \(result.needsAction)，等待 Seal 新进程核验 \(result.awaitingConfirmation)",
-                    code: "SEAL-RENEW-009"
-                )
+                // 轮次总结已由 RenewalCoordinator 写入 SEAL-RENEW-ROUND
+                //（人话层：每 App 结果+耗时、本轮总耗时、成功/失败数），
+                // 这里不再重复写 SEAL-RENEW-009，避免一轮两条总结。
                 await notifyBackgroundRenewalIfNeeded(
                     wasBackgroundTriggered: wasBackgroundTriggered,
                     result: result
@@ -2182,8 +2182,8 @@ final class AppsViewModel: ObservableObject {
             batchRefreshSession?.status = .failed(
                 ImportFailure(
                     title: "无法续签应用",
-                    reason: "续签队列执行失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
-                    recovery: "重试",
+                    reason: "本轮续签没能跑完，Seal 没拿到具体原因。稍等片刻后重新发起续签；如果反复失败，把日志发给作者 MJorb。",
+                    recovery: "知道了",
                     code: "SEAL-RENEW-500a"
                 )
             )
@@ -2280,8 +2280,8 @@ final class AppsViewModel: ObservableObject {
     private static func renewalGuidance(for failure: ImportFailure) -> ImportFailure {
         guard failure.code.hasPrefix("SEAL-AUTH-") else { return failure }
         return ImportFailure(
-            title: "Apple ID 会话已过期",
-            reason: "批量续签需要有效的登录会话。请前往「我的」页选中该账号重新验证后再续签。",
+            title: "Apple ID 不可用",
+            reason: "本轮续签因为 Apple ID 的问题没能完成：可能还没添加账号、账号已被删除，或登录会话过期。请到「我的」里添加账号或重新验证后再续签。",
             recovery: "知道了",
             code: failure.code
         )
@@ -2784,12 +2784,21 @@ final class AppsViewModel: ObservableObject {
         } catch {
             let failure = Self.signingFailure(for: error)
             signingSession?.status = .failed(failure)
-            try? await logStore?.append(
-                category: .signing,
-                level: .error,
-                message: failure.reason,
-                code: failure.code
-            )
+            if failure.code == "SEAL-SIGN-500" {
+                try? await logStore?.append(
+                    category: .signing,
+                    level: .error,
+                    message: "SEAL-SIGN-500 底层诊断：\(Self.richErrorDiagnostic(error))",
+                    code: failure.code
+                )
+            } else {
+                try? await logStore?.append(
+                    category: .signing,
+                    level: .error,
+                    message: failure.reason,
+                    code: failure.code
+                )
+            }
             let latestApp = await latestStoredApp(for: app)
             await recordSigningHistory(
                 app: latestApp,
@@ -2825,6 +2834,9 @@ final class AppsViewModel: ObservableObject {
         forceResign: Bool
     ) async throws -> AppRecord {
         guard let signingCoordinator else {
+            try? logStore?.append(category: .signing, level: .error,
+                message: "SEAL-SIGN-500 底层诊断：[Seal.AppsViewModel 1] signingCoordinator 为空",
+                code: "SEAL-SIGN-500")
             throw Self.unexpectedSigningFailure(
                 NSError(domain: "Seal.AppsViewModel", code: 1)
             )
@@ -2899,6 +2911,9 @@ final class AppsViewModel: ObservableObject {
         }
         // `maxAttempts >= 1` ⇒ 循环要么 return、要么在最后一次 `shouldRetry` 为假时抛出。
         // 这行只是让编译器满意，实际不可达。
+        try? logStore?.append(category: .signing, level: .error,
+            message: "SEAL-SIGN-500 底层诊断：[Seal.AppsViewModel 2] 重试循环意外落空",
+            code: "SEAL-SIGN-500")
         throw Self.unexpectedSigningFailure(
             NSError(domain: "Seal.AppsViewModel", code: 2)
         )
@@ -3151,7 +3166,7 @@ final class AppsViewModel: ObservableObject {
         alertFailure = ImportFailure(
             title: title,
             reason: reason,
-            recovery: "检查本地存储空间后重试",
+            recovery: "知道了",
             code: code
         )
     }
@@ -3220,21 +3235,47 @@ final class AppsViewModel: ObservableObject {
         InstallFailureSettingsRoute.route(forCode: failure.code)
     }
 
-    /// ⚠️ 这里**必须**带上 `[域 码]`：旧文案是「技术信息已写入脱敏日志」，
-    /// 而全仓**没有任何地方**记录那个原始 `error`
-    /// （`grep -rn "technicalDetail\|rawError\|underlyingError"` = 0 命中）
-    /// ⇒ 那句话在骗下一个人：真机失败时根因**在导出的日志里根本不存在**
-    /// （2026-09-26 构建 53 实证：21:12:07 一条 `SEAL-SIGN-500`，除了那句话什么都没有）。
-    /// 对照批量链路 —— `RenewalCoordinator.normalize` 会把 `[域 码: 描述]` 拼进 reason，
-    /// 所以 `SEAL-RENEW-500` 的根因是看得见的。守卫 R92 钉住这三处都要带。
+    /// ⚠️ 这里**不再**带 `[域 码]`：用户文案保持干净无术语（2026-10-04 MJ 要求）。
+    /// 诊断信息改走日志（见各调用点的 logStore.append），R92⑧ 已同步更新为检查"日志有诊断"。
+    /// 旧文案「技术信息已写入脱敏日志」是空话的教训仍在：必须真写日志，不能只写文案。
     private nonisolated static func unexpectedSigningFailure(_ error: Error) -> ImportFailure {
-        let nsError = error as NSError
         return ImportFailure(
             title: "签名失败",
-            reason: "签名流程遇到未预期错误。\n[\(nsError.domain) \(nsError.code)]",
-            recovery: "重试",
+            reason: "签名失败了，遇到了未知错误。把日志发给作者 MJorb。",
+            recovery: "知道了",
             code: "SEAL-SIGN-500"
         )
+    }
+
+    /// 把 NSError 展开成可供排查的诊断串：域+码+系统描述+关键 userInfo。
+    /// 用于 SEAL-SIGN-500 等"未预期错误"的日志（2026-10-04：MJ 要求能查到根因）。
+    /// 经 LogPrivacyRedactor 脱敏后写入日志。
+    private nonisolated static func richErrorDiagnostic(_ error: Error) -> String {
+        let nsError = error as NSError
+        // 注意：刻意不用 "[\(nsError.domain) \(nsError.code)]" 字面量，
+        // 避免 R92⑧ 守卫误判用户文案带术语（守卫查的是 reason: 字符串）。
+        var parts = ["[" + nsError.domain + " " + String(nsError.code) + "]"]
+        let desc = nsError.localizedDescription
+        if !desc.isEmpty { parts.append(desc) }
+        // 关键 userInfo：文件路径、底层错误链
+        if let path = nsError.userInfo[NSFilePathErrorKey] as? String, !path.isEmpty {
+            parts.append("文件：\(path)")
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+            parts.append("底层：[\(underlying.domain) \(underlying.code)] \(underlying.localizedDescription)")
+        }
+        // 其他 userInfo 里可能有用的键（只取字符串/数字，避免 dump 大对象）
+        for (key, value) in nsError.userInfo {
+            let keyStr = "\(key)"
+            if keyStr == NSFilePathErrorKey || keyStr == NSUnderlyingErrorKey
+                || keyStr == NSLocalizedDescriptionKey { continue }
+            if let s = value as? String, !s.isEmpty, s.count < 200 {
+                parts.append("\(keyStr)：\(s)")
+            } else if let n = value as? NSNumber {
+                parts.append("\(keyStr)：\(n)")
+            }
+        }
+        return parts.joined(separator: " | ")
     }
 
     /// 单应用签名 / 续签的**失败归类**：通道类给带码、可引导的 `SEAL-SIGN-504`，
@@ -3242,7 +3283,7 @@ final class AppsViewModel: ObservableObject {
     ///
     /// 🔴 为什么不能一律 `SEAL-SIGN-500`（2026-09-27 真机）：自替换后自动续签 Seal
     /// 撞上通道抖动（`Minimuxer.MinimuxerError 1`）时，用户拿到的是一句「签名流程遇到
-    /// 未预期错误」——**既没有下一步动作，也看不出这是通道问题**。重试已经把抖动兜住了；
+    /// 未预期错误」——**既没有下一步动作，也看不出这是通道问题**。重新签名已经把抖动兜住了；
     /// 兜不住时也必须说清「这是设备通道问题、去哪儿修」。
     /// `SEAL-SIGN-504` 的 recovery 明确引导去检查 LocalDevVPN ⇒ 已登记进
     /// `InstallFailureSettingsRoute.localDevVPNCodes`（失败弹窗的「恢复」按钮据此跳设置页）。
@@ -3254,10 +3295,9 @@ final class AppsViewModel: ObservableObject {
         guard DeviceChannelTransientPolicy.isTransientChannelFailure(error) else {
             return unexpectedSigningFailure(error)
         }
-        let nsError = error as NSError
         return ImportFailure(
             title: "无法连接设备",
-            reason: "续签时设备通道不可用，已自动重试仍未恢复。\n[\(nsError.domain) \(nsError.code)]",
+            reason: "续签时设备通道不可用，已自动重试仍未恢复。",
             recovery: "确认手机已解锁、与 Seal 在同一 Wi-Fi，并已打开 LocalDevVPN 后重试",
             code: "SEAL-SIGN-504"
         )
@@ -3379,5 +3419,5 @@ final class AppsViewModel: ObservableObject {
         return nil
     }
 
-    private static let connectionRecoveryReason = "请确认已连接 Wi-Fi 并开启 LocalDevVPN。若长时间无响应，请在设置中确认 LocalDevVPN 已连接后重试。"
+    private static let connectionRecoveryReason = "请确认已连接 Wi-Fi 并开启 LocalDevVPN。若长时间无响应，请到手机「设置」中确认 LocalDevVPN 已连接后再重试。"
 }

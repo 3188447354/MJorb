@@ -29,7 +29,7 @@ struct StorageMaintenanceView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("只会删除签名工作区、临时导入目录和失败后残留的临时文件。")
+            Text("只会删除签名时的临时文件、导入缓存和失败残留。")
         }
         .confirmationDialog(
             "清理未使用文件？",
@@ -41,7 +41,7 @@ struct StorageMaintenanceView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("会清理临时缓存和没有被本地记录引用的孤立文件。已安装 App 的签名缓存、Apple ID 凭据和设备配对信息不会删除。")
+            Text("会清理临时缓存和不再使用的多余文件。已安装 App 的签名缓存、账号密码和设备配对信息不会删除。")
         }
         .sealScreenBackground()
     }
@@ -78,7 +78,7 @@ struct StorageMaintenanceView: View {
             Divider()
             usageRow("临时缓存", viewModel.storageUsage.temporary)
             Divider()
-            usageRow("孤立文件", viewModel.storageUsage.orphaned)
+            usageRow("多余文件", viewModel.storageUsage.orphaned)
         }
         .padding(.horizontal, 16)
         .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -98,7 +98,7 @@ struct StorageMaintenanceView: View {
     }
 
     private var dangerNote: some View {
-        Text(viewModel.storageMaintenanceSummary ?? "签名缓存、Apple ID 凭据、证书和设备配对信息不会在这里清理。")
+        Text(viewModel.storageMaintenanceSummary ?? "签名缓存、账号密码、证书和设备配对信息不会在这里清理。")
             .font(.footnote)
             .foregroundStyle(Color.sealTextSecondary)
             .frame(maxWidth: .infinity, alignment: .leading)

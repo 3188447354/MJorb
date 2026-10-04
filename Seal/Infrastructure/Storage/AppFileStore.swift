@@ -162,7 +162,7 @@ actor AppFileStore {
             }
             throw ImportFailure(
                 title: "无法导入 IPA",
-                reason: "文件 \(sourceURL.lastPathComponent) 复制失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                reason: "文件 \(sourceURL.lastPathComponent) 复制失败。",
                 recovery: "重新选择 IPA",
                 code: "SEAL-IPA-202"
             )
@@ -260,7 +260,7 @@ actor AppFileStore {
         } catch {
             throw ImportFailure(
                 title: "无法导入构建产物",
-                reason: "本机文件 \(sourceURL.lastPathComponent) 无法读取。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                reason: "本机文件 \(sourceURL.lastPathComponent) 无法读取。",
                 recovery: "重新选择",
                 code: "SEAL-IPA-208"
             )
@@ -293,7 +293,7 @@ actor AppFileStore {
         } catch {
             throw ImportFailure(
                 title: "无法导入构建产物",
-                reason: "无法从压缩包中取出 IPA。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                reason: "无法从压缩包中取出 IPA。",
                 recovery: "先解压后再导入 IPA",
                 code: "SEAL-IPA-210"
             )
@@ -380,7 +380,7 @@ actor AppFileStore {
             }
             throw ImportFailure(
                 title: "无法保存 IPA",
-                reason: "本地存储准备失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                reason: "本地存储准备失败。",
                 recovery: "检查存储空间后重试",
                 code: "SEAL-IPA-203"
             )
@@ -456,7 +456,7 @@ actor AppFileStore {
         } catch {
             throw ImportFailure(
                 title: "无法保存 IPA",
-                reason: "文件提交失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                reason: "文件提交失败。",
                 recovery: "检查存储空间后重试",
                 code: "SEAL-IPA-212"
             )

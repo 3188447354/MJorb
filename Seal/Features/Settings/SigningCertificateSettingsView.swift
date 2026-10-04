@@ -51,7 +51,7 @@ struct SigningCertificateSettingsView: View {
             Alert(
                 title: Text("撤销这张证书？"),
                 message: Text(revocationWarning(for: certificate)),
-                primaryButton: .destructive(Text("撤销")) {
+                primaryButton: .destructive(Text("撤销证书")) {
                     if let account = activeAccount {
                         Task { await viewModel.revokeCertificate(serialNumber: certificate.serialNumber, for: account) }
                     }
@@ -139,7 +139,7 @@ struct SigningCertificateSettingsView: View {
 
                 if let account = activeAccount {
                     Divider()
-                    detailRow("Team ID", account.teamID.isEmpty ? "—" : account.teamID)
+                    detailRow("团队 ID", account.teamID.isEmpty ? "—" : account.teamID)
                 }
             }
         }
@@ -207,7 +207,7 @@ struct SigningCertificateSettingsView: View {
                 .font(.caption)
                 .foregroundStyle(Color.sealTextSecondary)
             HStack(spacing: 8) {
-                Text("当前真实签名者")
+                Text("当前实际签名者")
                     .font(.caption)
                     .foregroundStyle(Color.sealTextSecondary)
                 Spacer(minLength: 8)
@@ -218,7 +218,7 @@ struct SigningCertificateSettingsView: View {
                     .minimumScaleFactor(0.7)
             }
             if presentation.showsComputerRecovery {
-                Text("不要卸载 Seal。请用电脑按相同 Bundle ID、扩展标识和 Team 覆盖安装。")
+                Text("不要卸载 Seal。请用电脑按相同的包名（含扩展部分）和团队覆盖安装。")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(Color.sealDanger)
             }
@@ -300,7 +300,7 @@ struct SigningCertificateSettingsView: View {
                 )
                 Divider()
                 certificateHealthRow(
-                    "本机签名私钥",
+                    "本机证书密钥",
                     value: localPrivateKeyText(health),
                     state: health?.localPrivateKey
                 )
@@ -434,7 +434,7 @@ struct SigningCertificateSettingsView: View {
                 Button {
                     certificatePendingRevocation = certificate
                 } label: {
-                    Text("撤销")
+                    Text("撤销证书")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Color.sealDanger)
                         .padding(.horizontal, 12)
@@ -510,7 +510,7 @@ struct SigningCertificateSettingsView: View {
 
     private func expirationTitle(_ health: CertificateHealthStatus?) -> String {
         guard let health else { return "证书有效期" }
-        if health.portalPresence == .invalid { return "Apple 侧证书状态" }
+        if health.portalPresence == .invalid { return "Apple 服务器证书状态" }
         return health.expirationState == .invalid ? "证书已过期" : "证书有效期至"
     }
 

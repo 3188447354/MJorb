@@ -40,7 +40,7 @@ struct CertificatesRootView: View {
             titleVisibility: .visible,
             presenting: accountPendingDeletion
         ) { account in
-            Button("删除", role: .destructive) {
+            Button("删除账号", role: .destructive) {
                 Task { await viewModel.deleteAccount(account) }
                 accountPendingDeletion = nil
             }
@@ -59,10 +59,10 @@ struct CertificatesRootView: View {
             // 这里不值得为了排版去冒这个风险（本机无 Swift 工具链，编译只能等 CI）。
             Text(
                 count == 0
-                    ? "删除后将移除此账号，并一并清除本机保存的该账号签名凭据。"
-                    : "该账号关联过 \(count) 个应用。删除不会卸载应用，"
-                        + "但会一并清除本机保存的该账号签名凭据 —— 之后重新添加同一 Apple ID 时，"
-                        + "续签需要更换签名证书，这 \(count) 个应用会被自动重新签名安装一次。"
+                    ? "删除后会移除这个账号，并清除本机保存的账号密码。"
+                    : "这个账号关联过 \(count) 个应用。删除不会卸载应用，"
+                        + "但会清除本机保存的账号密码——之后重新添加同一个 Apple ID 时，"
+                        + "需要换一张签名证书，这 \(count) 个应用会自动重新签名安装一次。"
             )
         }
         .navigationDestination(
@@ -203,7 +203,7 @@ struct CertificatesRootView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Button("删除", role: .destructive) {
+            Button("删除账号", role: .destructive) {
                 accountPendingDeletion = account
             }
         }
@@ -244,6 +244,6 @@ struct CertificatesRootView: View {
             }
             return "已签名 \(inventory.usedBundleIDCount) 个"
         }
-        return account.isFreeTeam == true ? "已签名 — / 10" : "已签名 — 个"
+        return "暂未统计"
     }
 }

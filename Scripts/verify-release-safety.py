@@ -3581,8 +3581,9 @@ def violations(load=read):
     check("AppFileStore.streamingSHA256(url: localURL)" in update_view
           and "UpdateChecker.expectedSHA256(from: checksumText)" in update_view
           and "UpdateChecker.hashMatches(expected: expected, actual: actual)" in update_view
-          and 'phase = .failed("更新包缺少校验信息，已中止安装")' in update_view
-          and 'phase = .failed("更新包校验不通过，已中止安装")' in update_view,
+          # 2026-10-04 文案优化："更新包"→"下载的文件"（用户更易懂），安全语义不变
+          and 'phase = .failed("下载的文件缺少安全校验信息，已中止安装")' in update_view
+          and 'phase = .failed("下载的文件安全校验未通过，已中止安装")' in update_view,
           "R107②: 更新下载流程必须下载校验和、算本地哈希并比对，缺失/不符都 fail closed ✗ —— "
           "否则「同一合法域名下资产被调包」无法察觉")
     file_store = load("Seal/Infrastructure/Storage/AppFileStore.swift")
@@ -5393,7 +5394,8 @@ def violations(load=read):
     check("AppSigningPresentationHelpers.localCertificateCompactNote(" in r85_progress
           and "AppSigningPresentationHelpers.localCertificateNote(" in r85_detail
           and 'metadataRow("Apple 证书", certificateStatus' in r85_sheet
-          and 'case .needsFullResign: "需重签"' in r85_sheet,
+          # 2026-10-04 文案优化："需重签"→"需重新签名"（用户更易懂）
+          and 'case .needsFullResign: "需重新签名"' in r85_sheet,
           "R85⑥: 进度卡片必须给紧凑原因、详情页必须给完整原因；操作抽屉只保留五项事实摘要时，"
           "至少要把 Apple 证书明确标成「需重签」✗ —— "
           "恢复抽屉里的长篇技术说明会违背已确认的精简设计，但隐藏「需重签」又会让用户不知为何走完整签名")
@@ -6103,7 +6105,7 @@ def violations(load=read):
           "`RefreshPlanner.makeQueue` 的 `predictiveWindow` 默认为 nil（不过滤），"
           "手动「续签全部」照旧全量；把它改成默认过滤 ⇒ 用户点的全量续签被静默缩水")
 
-    check("result = try await renewalCoordinator.refreshAll(progress: progress)" in r112_vm_code
+    check("result = try await renewalCoordinator.refreshAll(triggerSource:" in r112_vm_code
           and "refreshPredictive" not in r112_vm_code,
           "R112④b: 后台快捷指令触发必须走 `refreshAll`（全量），不得走预测式 ✗ —— "
           "2026-10-03 用户明确要求：触发就走续签。预测式（48h 窗口）让测试连点时"
@@ -6194,7 +6196,7 @@ def violations(load=read):
     #    （替代 351 抛错），拿锁后自愈污染（替代 350 抛错）；
     # ③ 路径信号按 appID 隔离（替代单变量 + 每项重置，并行下是竞态）。
     r117_renewal = strip_comments(load("Seal/Core/Renewal/RenewalCoordinator.swift"))
-    check("withThrowingTaskGroup(of: ProcessItemOutcome.self)" in r117_renewal
+    check("withThrowingTaskGroup(of: (Int, ProcessItemOutcome, RenewalRoundItem).self)" in r117_renewal
           and "private func processItem(" in r117_renewal
           and "serialLastItems" in r117_renewal
           and "parallelItems" in r117_renewal
@@ -6344,21 +6346,27 @@ def violations(load=read):
           "隧道恢复是秒级到十几秒级的事；构建 53 真机两项失败相隔 30 秒以上 ⇒ "
           "2/4 秒的退避几乎必然撞在通道还没恢复的窗口里，重试等于白跑")
 
-    check('reason: "签名流程遇到未预期错误。\\n[\\(nsError.domain) \\(nsError.code)]"'
+    # R92⑧（2026-10-04 修订）：四处「未预期错误」的用户文案不再带 `[域 码]`
+    # （MJ 要求去术语），但诊断必须真进日志（不能回到「技术信息已写入脱敏日志」的空话）。
+    # 新不变量 = 用户文案干净 ＋ logStore 有底层诊断行。
+    check('reason: "签名失败了，遇到了未知错误。把日志发给作者 MJorb。"'
           in r92_view_model_code
-          and 'reason: "安装流程遇到未预期错误。\\n[\\(nsError.domain) \\(nsError.code)]"'
+          and 'reason: "安装失败了，遇到了未知错误。把日志发给作者 MJorb。"'
           in r92_signing
-          and 'app.lastInstallFailureReason = "安装流程遇到未预期错误。\\n[\\(nsError.domain) \\(nsError.code)]"'
+          and 'reason: "Seal 自更新安装失败了，遇到了未知错误。把日志发给作者 MJorb。"'
           in r92_signing
-          and 'reason: "Seal 自更新安装遇到未预期错误。\\n[\\(nsError.domain) \\(nsError.code)]"'
-          in r92_signing
+          and "[\\(nsError.domain) \\(nsError.code)]" not in r92_view_model_code
+          and "[\\(nsError.domain) \\(nsError.code)]" not in r92_signing
+          and "SEAL-SIGN-500 底层诊断" in r92_view_model_code
+          and "SEAL-INSTALL-500 底层诊断" in r92_signing
+          and "SEAL-SELF-109 底层诊断" in r92_signing
+          and "安装诊断（" in r92_signing
           and "技术信息已写入脱敏日志" not in r92_view_model_code
           and "技术信息已写入脱敏日志" not in r92_signing,
-          "R92⑧: 四处「未预期错误」的文案必须带 `[域 码]`，旧文案不得复活 ✗ —— "
-          "旧文案「技术信息已写入脱敏日志」是**空话**：那个原始 `error` 全仓没有任何地方记录"
-          "（`grep -rn \"technicalDetail\\|rawError\\|underlyingError\"` = 0 命中）"
-          "⇒ 真机失败时根因在导出的日志里根本不存在"
-          "（2026-09-26 构建 53：21:12:07 一条 `SEAL-SIGN-500`，除了那句话什么都没有）")
+          "R92⑧: 四处「未预期错误」用户文案去术语、诊断改走日志 ✗ —— "
+          "用户文案不得带 `[域 码]`（MJ 2026-10-04 要求）；"
+          "但 `SEAL-SIGN-500/INSTALL-500/SELF-109 底层诊断` 日志行必须存在，"
+          "否则真机失败时根因在导出的日志里不存在（2026-09-26 构建 53 教训）")
 
     check("func deviceAbsentAndConnectionLostAreTransient()" in r92_policy_tests
           and "func pairingFileIsDeliberatelyNotTransient()" in r92_policy_tests
@@ -10014,7 +10022,7 @@ def main():
         # ── R117：并行续签 ──
         # ① 退回串行（task group 被删）⇒ R117① 报红。
         ("Seal/Core/Renewal/RenewalCoordinator.swift",
-         "        try await withThrowingTaskGroup(of: ProcessItemOutcome.self) { group in",
+         "        try await withThrowingTaskGroup(of: (Int, ProcessItemOutcome, RenewalRoundItem).self) { group in",
          "        // serial fallback",
          "R117①:"),
         # ② 路径信号退回单变量（并行竞态回来）⇒ R117② 报红。
@@ -10107,15 +10115,15 @@ def main():
          "channelRetryDelayNanoseconds: UInt64 = 8_000_000_000",
          "channelRetryDelayNanoseconds: UInt64 = 2_000_000_000",
          "R92⑦:"),
-        # ⑧ `SEAL-SIGN-500` 的文案退回「技术信息已写入脱敏日志」（空话复活）⇒ R92⑧ 报红。
+        # ⑧ `SEAL-SIGN-500` 的用户文案带回 `[域 码]` 术语 ⇒ R92⑧ 报红。
         ("Seal/Features/Apps/AppsViewModel.swift",
-         'reason: "签名流程遇到未预期错误。\\n[\\(nsError.domain) \\(nsError.code)]"',
-         'reason: "签名流程遇到未预期错误，技术信息已写入脱敏日志。"',
+         'reason: "签名失败了，遇到了未知错误。把日志发给作者 MJorb。"',
+         'reason: "签名失败了，遇到了未知错误。\\n[\\(nsError.domain) \\(nsError.code)]"',
          "R92⑧:"),
-        # ⑧b `SEAL-SELF-109` 的文案退回旧写法 ⇒ R92⑧ 报红。
+        # ⑧b `SEAL-SELF-109` 的用户文案带回 `[域 码]` 术语 ⇒ R92⑧ 报红。
         ("Seal/Core/Signing/SigningCoordinator.swift",
-         'reason: "Seal 自更新安装遇到未预期错误。\\n[\\(nsError.domain) \\(nsError.code)]"',
-         'reason: "Seal 自更新安装遇到未预期错误。"',
+         'reason: "Seal 自更新安装失败了，遇到了未知错误。把日志发给作者 MJorb。"',
+         'reason: "Seal 自更新安装失败了，遇到了未知错误。\\n[\\(nsError.domain) \\(nsError.code)]"',
          "R92⑧:"),
         # ⑨ 关键单测被改名（不变量没人守）⇒ R92⑨ 报红。
         ("SealTests/Renewal/DeviceChannelTransientPolicyTests.swift",

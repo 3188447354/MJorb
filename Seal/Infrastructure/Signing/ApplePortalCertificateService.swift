@@ -11,9 +11,11 @@ struct CreatedCertificateMaterial: Sendable {
 
 actor ApplePortalCertificateService {
     private let anisetteProvider: any AnisetteProvider
+    private let logStore: SealLogStore?
 
-    init(anisetteProvider: any AnisetteProvider = AnisetteV3Client()) {
+    init(anisetteProvider: any AnisetteProvider = AnisetteV3Client(), logStore: SealLogStore? = nil) {
         self.anisetteProvider = anisetteProvider
+        self.logStore = logStore
     }
 
     func createLocalCertificate(
@@ -78,7 +80,15 @@ actor ApplePortalCertificateService {
                 )
             }
         } catch {
-            if let failure = CertificateRequestFailurePolicy.requestFailure(error: error, limitCode: "SEAL-CERT-204") { throw failure }
+            if let failure = CertificateRequestFailurePolicy.requestFailure(error: error, limitCode: "SEAL-CERT-204") {
+                // 诊断进日志（2026-10-04）：用户文案不再带"诊断："，根因查日志
+                try? await logStore?.append(
+                    category: .signing, level: .error,
+                    message: "SEAL-CERT-204 底层诊断：\(CertificateRequestFailurePolicy.diagnostic(for: error))",
+                    code: "SEAL-CERT-204"
+                )
+                throw failure
+            }
             // ⚠️ 1100（会话被掐断）此前会**原样上抛**，最终落到调用方的通用 catch，
             // 变成「无法完成证书处理 … **没有返回明确失败原因**」+「重新同步证书后确认当前状态」——
             // 既没说清这是限流（不是登录真的失效），也没说清**旧证书已经撤销、

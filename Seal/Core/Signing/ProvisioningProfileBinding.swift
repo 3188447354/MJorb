@@ -75,7 +75,7 @@ struct ProvisioningProfileBinding: Codable, Equatable, Sendable {
     ) throws {
         guard let creationDate else {
             throw Self.failure(
-                reason: "Apple 返回的描述文件缺少 CreationDate，无法证明它由本轮请求生成。",
+                reason: "Apple 返回的描述文件缺少生成时间信息，无法确认它是本轮新生成的。",
                 code: "SEAL-PROFILE-315"
             )
         }
@@ -159,7 +159,7 @@ struct ProvisioningProfileBinding: Codable, Equatable, Sendable {
         ImportFailure(
             title: title,
             reason: reason,
-            recovery: "重新获取描述文件；仍失败时检查 Apple ID、Team、证书和设备",
+            recovery: "重新签名一次（Seal 会自动拉取新的描述文件）；仍失败时先到「我的」→「签名证书」确认账号和证书状态，再把日志发给作者 MJorb",
             code: code
         )
     }

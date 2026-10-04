@@ -164,8 +164,8 @@ private struct AppleAccountAppListView: View {
         case .empty:
             AppleAccountEmptyCard(
                 icon: "app.dashed",
-                title: "暂无 App ID",
-                subtitle: "Apple 当前没有返回 App ID。"
+                title: "暂无签名应用",
+                subtitle: "这个 Apple ID 还没有签名过任何应用。"
             )
         case .loaded(let items):
             AppleAccountLoadedAppListView(items: items)

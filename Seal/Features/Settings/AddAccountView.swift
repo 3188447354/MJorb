@@ -59,7 +59,7 @@ struct AddAccountView: View {
             VStack(spacing: 10) {
                 Image(systemName: "person.badge.key").font(.system(size: 46)).foregroundStyle(Color.sealAccent)
                 Text("Apple ID").font(.title2.weight(.semibold))
-                Text("用于个人 IPA 签名。凭据仅保存在本机钥匙串。")
+                Text("用于个人 IPA 签名。账号密码只保存在这台手机上。")
                     .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity).padding(24).glassSurface(cornerRadius: 24)
@@ -73,7 +73,7 @@ struct AddAccountView: View {
                 startAuthentication()
             } label: {
                 if viewModel.accountPhase == .authenticating { ProgressView().frame(maxWidth: .infinity) }
-                else { Text(replacingAccount == nil ? "添加" : "重新验证") }
+                else { Text(replacingAccount == nil ? "添加账号" : "重新验证账号") }
             }
             .sealPrimaryAction()
             .disabled(primaryActionDisabled)
@@ -104,7 +104,7 @@ struct AddAccountView: View {
                 if verificationBroker.hasSubmittedCode {
                     ProgressView().frame(maxWidth: .infinity)
                 } else {
-                    Text("验证")
+                    Text("确认验证码")
                 }
             }
             .sealPrimaryAction()

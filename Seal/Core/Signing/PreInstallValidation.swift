@@ -66,7 +66,7 @@ enum PreInstallValidation {
             $0.bundleIdentifier.caseInsensitiveCompare(bundleIdentifier) == .orderedSame
         }) else {
             return .rejected(failure(
-                reason: "本机签名包的主 target 记录与安装目标不一致。",
+                reason: "本机签名包里主程序的记录和这次要安装的不一致。",
                 code: "SEAL-INSTALL-722"
             ))
         }

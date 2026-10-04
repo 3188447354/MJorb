@@ -373,7 +373,7 @@ struct SealCommunityView: View {
 
     private func saveCodeToAlbum(imageName: String) {
         guard let image = UIImage(named: imageName) else {
-            presentAlert("保存失败", "图片未加载，请稍后重试")
+            presentAlert("保存失败", "图片未加载，请检查网络后重试")
             return
         }
         let coordinator = AlbumSaveCoordinator { error in

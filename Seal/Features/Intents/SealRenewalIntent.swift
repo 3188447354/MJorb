@@ -49,7 +49,7 @@ struct RefreshAllAppsIntent: AppIntent {
         case .started:
             return .result(dialog: "已在后台开始续签全部应用。")
         case .notReady:
-            return .result(dialog: "Seal 还没准备好，请先打开一次 Seal 再试。")
+            return .result(dialog: "Seal 还没准备好，请先打开 Seal 再试一次。")
         }
     }
 }

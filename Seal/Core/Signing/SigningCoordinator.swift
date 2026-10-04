@@ -263,7 +263,7 @@ actor SigningCoordinator {
     ) async throws -> AppRecord {
         guard var app = try await appStore.fetchAll().first(where: { $0.id == appID }) else {
             throw Self.failure(
-                reason: "未找到要签名的应用记录（应用 ID：\(appID)）。",
+                reason: "未找到要签名的应用记录。",
                 recovery: "重新导入 IPA",
                 code: "SEAL-SIGN-404"
             )
@@ -487,7 +487,7 @@ actor SigningCoordinator {
                 }
                 guard try await installChannel.isReady() else {
                     throw Self.failure(
-                        reason: "描述文件续签前设备通道未就绪。",
+                        reason: "开始续签前，还没连上设备。",
                         recovery: "确认 LocalDevVPN 已连接、设备已配对后重试",
                         code: "SEAL-PROFILE-360"
                     )
@@ -864,13 +864,17 @@ actor SigningCoordinator {
             throw reported
         } catch {
             // 非 ImportFailure 的意外错误同样可能发生在撤销之后 ⇒ 也要如实告知。
-            // ⚠️ 文案里**必须**带 `[域 码]`：旧文案是「技术信息已写入脱敏日志」，
-            // 而那个原始 `error` 全仓没有任何地方记录 ⇒ 真机失败时根因查不到
-            //（2026-09-26 构建 53 实证）。守卫 R92 钉住。
-            let nsError = error as NSError
+            // ⚠️ 用户文案不再带 `[域 码]`（2026-10-04 MJ 要求去术语）；
+            // 诊断改走日志（下行 logStore.append），R92⑧ 已同步更新。
+            try? await logStore?.append(
+                category: .install,
+                level: .error,
+                message: "SEAL-INSTALL-500 底层诊断：\(Self.richErrorDiagnostic(error))",
+                code: "SEAL-INSTALL-500"
+            )
             let unexpected = Self.failure(
-                reason: "安装流程遇到未预期错误。\n[\(nsError.domain) \(nsError.code)]",
-                recovery: "重试",
+                reason: "安装失败了，遇到了未知错误。把日志发给作者 MJorb。",
+                recovery: "知道了",
                 code: "SEAL-INSTALL-500"
             )
             let reported = await failureWithRotationConsequence(
@@ -1024,7 +1028,7 @@ actor SigningCoordinator {
     ) async throws -> AppRecord {
         guard let certificateSerialNumber = app.certificateSerialNumber else {
             throw Self.failure(
-                reason: "已安装应用缺少当前签名证书身份，不能安全执行 profile-only 续签。",
+                reason: "已安装应用的签名身份不完整，无法安全地只更新描述文件来续签。",
                 recovery: "执行完整重签以重新建立应用身份",
                 code: "SEAL-PROFILE-361"
             )
@@ -1173,7 +1177,7 @@ actor SigningCoordinator {
         }
         return ImportFailure(
             title: "证书名额被占用",
-            reason: "Apple 账号下的旧证书因覆盖安装已丢失本机私钥，无法继续用于签名；但仍有应用靠它们运行。\(affected)。",
+            reason: "Apple 账号下的旧证书在本机没有对应的私钥，无法继续用于签名；但仍有应用靠它们运行。\(affected)。",
             recovery: "点「撤销并继续签名」将自动撤销旧证书（对应应用立即失效、需重新签名安装）、申请新证书并完成本次签名；受影响的已装应用会自动重签。证书状态可随时在「我的」→「签名证书」查看",
             code: "SEAL-CERT-204e"
         )
@@ -1269,7 +1273,7 @@ actor SigningCoordinator {
         let sealProtectedSerials: Set<String> = [
             SigningCertificateSelectionPolicy.normalizedSerialNumber(sealActualSigner)
         ]
-        let certificateService = ApplePortalCertificateService()
+        let certificateService = ApplePortalCertificateService(logStore: logStore)
         var revokedSerials: [String] = []
         for certificate in candidates {
             let serial = SigningCertificateSelectionPolicy.normalizedSerialNumber(certificate.serialNumber)
@@ -1301,7 +1305,7 @@ actor SigningCoordinator {
         }
         guard revokedSerials.isEmpty == false else {
             throw Self.failure(
-                reason: "撤销 \(nonSealCandidates.count) 张无钥匙证书全部失败，证书名额未释放。",
+                reason: "撤销 \(nonSealCandidates.count) 张本机没有私钥的旧证书全部失败，证书名额未释放。",
                 recovery: "稍后重试；仍失败请到「我的」→「签名证书」检查账号状态",
                 code: "SEAL-CERT-204f"
             )
@@ -1411,7 +1415,7 @@ actor SigningCoordinator {
             return .noCandidates
         }
 
-        let certificateService = ApplePortalCertificateService()
+        let certificateService = ApplePortalCertificateService(logStore: logStore)
         var revokedSerials: [String] = []
         for certificate in plan.revocable {
             try Task.checkCancellation()
@@ -1532,12 +1536,18 @@ actor SigningCoordinator {
             try await persistAppState(app)
             throw failure
         } catch {
-            let nsError = error as NSError
             app.state = app.state == .installed ? .installed : .signed
             app.signedArtifactStatus = .installFailed
             app.lastInstallFailureCode = "SEAL-INSTALL-500"
-            // ⚠️ 同 `:783`：文案里必须带 `[域 码]`，否则真机失败时根因无处可查。
-            app.lastInstallFailureReason = "安装流程遇到未预期错误。\n[\(nsError.domain) \(nsError.code)]"
+            // ⚠️ 用户文案不再带 `[域 码]`（2026-10-04 MJ 要求去术语）；
+            // 诊断改走日志（下行 logStore.append），R92⑧ 已同步更新。
+            try? await logStore?.append(
+                category: .install,
+                level: .error,
+                message: "SEAL-INSTALL-500 底层诊断：\(Self.richErrorDiagnostic(error))",
+                code: "SEAL-INSTALL-500"
+            )
+            app.lastInstallFailureReason = "安装失败了，遇到了未知错误。把日志发给作者 MJorb。"
             try await persistAppState(app)
             throw error
         }
@@ -1591,7 +1601,7 @@ actor SigningCoordinator {
             }
             if rollbackFailures.isEmpty == false {
                 throw Self.failure(
-                    reason: "证书保存失败，且本地补偿未完整完成（\(rollbackFailures.joined(separator: "、"))）。",
+                    reason: "证书保存失败，之前的修改也没能完全恢复原状（可能受影响：\(rollbackFailures.joined(separator: "、"))）。",
                     recovery: "重新验证 Apple ID 后检查证书状态",
                     code: "SEAL-CERT-215"
                 )
@@ -1735,11 +1745,10 @@ actor SigningCoordinator {
                     message: "证书轮换事务：受影响应用 \(candidate.name) 已重新签名安装"
                 )
             } catch {
-                let nsError = error as NSError
                 try? await logStore?.append(
                     category: .renewal,
                     level: .error,
-                    message: "证书轮换事务：受影响应用 \(candidate.name) 自动恢复失败 [\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)"
+                    message: "证书轮换事务：受影响应用 \(candidate.name) 自动恢复失败 \(Self.richErrorDiagnostic(error))"
                 )
             }
         }
@@ -1803,7 +1812,7 @@ actor SigningCoordinator {
         )
         return ImportFailure(
             title: failure.title,
-            reason: failure.reason + "\n\n另需注意：本轮已撤销 \(revokedSerials.count) 张旧证书，\(pending.count) 个受影响的已安装应用（\(names)\(overflow)）未能自动恢复，它们可能已无法打开。",
+            reason: failure.reason + "\n\n另需注意：本轮已撤销 \(revokedSerials.count) 张旧证书，\(pending.count) 个受影响的已安装应用（\(names)\(overflow)）未能自动恢复，它们可能已无法打开，请把这些应用重新签名安装一次。",
             recovery: failure.recovery,
             code: failure.code
         )
@@ -2016,7 +2025,7 @@ actor SigningCoordinator {
             guard let selfReplacement, let accountID = app.accountID else {
                 throw ImportFailure(
                     title: "Seal 自更新事务未就绪",
-                    reason: "自更新协调器或账号记录缺失，已停止安装并保留当前 Seal。",
+                    reason: "Seal 自更新需要的内部状态或账号记录缺失，已停止安装并保留当前 Seal。",
                     recovery: "重新启动 Seal 后再续签",
                     code: "SEAL-INSTALL-737"
                 )
@@ -2046,14 +2055,28 @@ actor SigningCoordinator {
             } catch let failure as ImportFailure {
                 throw failure
             } catch let failure as SelfReplacementFailure {
+                // SEAL-SELF-105 的 detail 进日志，用户文案保持干净
+                if case .runningIdentityUnknown(let readErrors) = failure {
+                    try? await logStore?.append(
+                        category: .install,
+                        level: .error,
+                        message: "SEAL-SELF-105 底层诊断：\(readErrors.isEmpty ? "主程序或网络扩展的签名身份读取不完整" : readErrors.joined(separator: " | "))",
+                        code: "SEAL-SELF-105"
+                    )
+                }
                 throw Self.selfReplacementFailure(failure)
             } catch {
-                // ⚠️ 同 `:783`：这条也属于「未预期错误」，文案里必须带 `[域 码]`，
-                // 否则真机上报 `SEAL-SELF-109` 时根因无处可查。
-                let nsError = error as NSError
+                // ⚠️ 用户文案不再带 `[域 码]`（2026-10-04 MJ 要求去术语）；
+                // 诊断改走日志（下行 logStore.append），R92⑧ 已同步更新。
+                try? await logStore?.append(
+                    category: .install,
+                    level: .error,
+                    message: "SEAL-SELF-109 底层诊断：\(Self.richErrorDiagnostic(error))",
+                    code: "SEAL-SELF-109"
+                )
                 throw Self.failure(
-                    reason: "Seal 自更新安装遇到未预期错误。\n[\(nsError.domain) \(nsError.code)]",
-                    recovery: "重新启动 Seal 后再续签",
+                    reason: "Seal 自更新安装失败了，遇到了未知错误。把日志发给作者 MJorb。",
+                    recovery: "知道了",
                     code: "SEAL-SELF-109"
                 )
             }
@@ -2103,11 +2126,10 @@ actor SigningCoordinator {
             if let importFailure = error as? ImportFailure {
                 throw await installDiagnosticsAppended(importFailure, signedPath: signedPath)
             }
-            let nsError = error as NSError
             let base = ImportFailure(
                 title: "安装失败",
-                reason: "安装未完成：\(nsError.localizedDescription)。如桌面已出现云下载图标但点击无法安装，通常是签名或描述文件问题，请检查 Apple ID 证书状态后重试。",
-                recovery: "重新安装",
+                reason: "安装未完成。如桌面已出现云下载图标但点击无法安装，通常是签名或描述文件的问题：先到「我的」→「签名证书」确认证书状态，再重新安装。",
+                recovery: "先到「我的」→「签名证书」确认证书状态，再重新安装",
                 code: "SEAL-INSTALL-702b"
             )
             throw await installDiagnosticsAppended(base, signedPath: signedPath)
@@ -2190,9 +2212,10 @@ actor SigningCoordinator {
         }
     }
 
-    /// 安装失败时把自诊断信息（Seal 构建号 + 签名包结构摘要）附加到失败原因，
+    /// 安装失败时把自诊断信息（Seal 构建号 + 签名包结构摘要）写入日志，
     /// 使日志导出无需传输 IPA 即可还原安装时的包结构（Frameworks 目录、
     /// 根目录 framework 等），用于远程定位 installd discovery 类错误。
+    /// ⚠️ 2026-10-04 起不再拼进用户可见的 reason（MJ 要求去术语），改走日志。
     private func installDiagnosticsAppended(
         _ failure: ImportFailure,
         signedPath: String
@@ -2204,12 +2227,13 @@ actor SigningCoordinator {
         guard let url = try? await fileStore.fileURL(relativePath: signedPath),
               let archive = try? Archive(url: url, accessMode: .read) else {
             parts.append("签名包不可读")
-            return ImportFailure(
-                title: failure.title,
-                reason: failure.reason + "【诊断】" + parts.joined(separator: "；"),
-                recovery: failure.recovery,
+            try? await logStore?.append(
+                category: .installation,
+                level: .warning,
+                message: "安装诊断（\(failure.code)）：\(parts.joined(separator: "；"))",
                 code: failure.code
             )
+            return failure
         }
         var entryCount = 0
         var hasFrameworksEntry = false
@@ -2229,12 +2253,13 @@ actor SigningCoordinator {
         if rootFrameworkNames.isEmpty == false {
             parts.append("根framework:\(rootFrameworkNames.joined(separator: ","))")
         }
-        return ImportFailure(
-            title: failure.title,
-            reason: failure.reason + "【诊断】" + parts.joined(separator: "；"),
-            recovery: failure.recovery,
+        try? await logStore?.append(
+            category: .installation,
+            level: .warning,
+            message: "安装诊断（\(failure.code)）：\(parts.joined(separator: "；"))",
             code: failure.code
         )
+        return failure
     }
 
     private func validateAccountSession(
@@ -2252,7 +2277,7 @@ actor SigningCoordinator {
 
         guard account.teamID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
             throw Self.failure(
-                reason: "此 Apple ID 没有可用 Team ID，无法创建 App ID 或证书。",
+                reason: "此 Apple ID 还没有可用的开发者团队，无法创建 App ID 或证书。",
                 recovery: "前往 developer.apple.com 同意开发者协议后重试，或改用其他 Apple ID",
                 code: "SEAL-AUTH-109"
             )
@@ -2344,6 +2369,35 @@ actor SigningCoordinator {
         )
     }
 
+    /// 把 NSError 展开成可供排查的诊断串：域+码+系统描述+关键 userInfo。
+    /// 用于 SEAL-INSTALL-500 / SEAL-SELF-109 等"未预期错误"的日志
+    /// （2026-10-04：MJ 要求能查到根因）。经 LogPrivacyRedactor 脱敏后写入日志。
+    private static func richErrorDiagnostic(_ error: Error) -> String {
+        let nsError = error as NSError
+        // 注意：刻意不用 "[\(nsError.domain) \(nsError.code)]" 字面量，
+        // 避免 R92⑧ 守卫误判用户文案带术语（守卫查的是 reason: 字符串）。
+        var parts = ["[" + nsError.domain + " " + String(nsError.code) + "]"]
+        let desc = nsError.localizedDescription
+        if !desc.isEmpty { parts.append(desc) }
+        if let path = nsError.userInfo[NSFilePathErrorKey] as? String, !path.isEmpty {
+            parts.append("文件：\(path)")
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+            parts.append("底层：[\(underlying.domain) \(underlying.code)] \(underlying.localizedDescription)")
+        }
+        for (key, value) in nsError.userInfo {
+            let keyStr = "\(key)"
+            if keyStr == NSFilePathErrorKey || keyStr == NSUnderlyingErrorKey
+                || keyStr == NSLocalizedDescriptionKey { continue }
+            if let s = value as? String, !s.isEmpty, s.count < 200 {
+                parts.append("\(keyStr)：\(s)")
+            } else if let n = value as? NSNumber {
+                parts.append("\(keyStr)：\(n)")
+            }
+        }
+        return parts.joined(separator: " | ")
+    }
+
     /// 按错误码模块段给报错一个贴合语义的 title，避免所有错误都显示「无法完成签名」。
     private static func title(for code: String) -> String {
         if code == "SEAL-APPID-DEVICELIMIT" { return "应用数量已达上限" }
@@ -2365,13 +2419,10 @@ actor SigningCoordinator {
     /// 笼统的 SEAL-SIGN-500，掩盖真实原因；这里转成带明确错误码与可操作引导的 ImportFailure。
     private static func selfReplacementFailure(_ failure: SelfReplacementFailure) -> ImportFailure {
         switch failure {
-        case .runningIdentityUnknown(let readErrors):
-            let detail = readErrors.isEmpty
-                ? "主程序或网络扩展的签名身份读取不完整"
-                : readErrors.joined(separator: " | ")
+        case .runningIdentityUnknown:
             return ImportFailure(
                 title: "无法确认当前 Seal 的签名身份",
-                reason: "安装前无法确认正在运行的 Seal 由哪个证书签名（\(detail)），为避免装上后打不开，已停止本次自更新。",
+                reason: "安装前无法确认正在运行的 Seal 由哪个证书签名，为避免装上后打不开，已停止本次自更新。详细原因已写入日志。",
                 recovery: "先用当前 Apple ID 在 Seal 里完整签名并安装一次 Seal（而不是续签），之后就能正常续签了",
                 code: "SEAL-SELF-105"
             )

@@ -15,7 +15,7 @@ enum CertificateRequestFailurePolicy {
         if isCertificateLimitError(error) {
             return ImportFailure(
                 title: "签名证书数量已达上限",
-                reason: "Apple 已明确拒绝新增签名证书：该账号证书数量已达上限。诊断：\(diagnostic(for: error))",
+                reason: "Apple 已明确拒绝新增签名证书：该账号证书数量已达上限。",
                 recovery: "请先在原签名工具确认现有证书用途，完成签名身份迁移后再续签。",
                 code: limitCode
             )
@@ -23,7 +23,7 @@ enum CertificateRequestFailurePolicy {
         if matches(error, expected: ALTAppleAPIError(.invalidCertificateRequest)) {
             return ImportFailure(
                 title: "签名证书请求无效",
-                reason: "无法生成有效证书请求，或 Apple 拒绝了本次请求；此错误不代表证书名额已满。诊断：\(diagnostic(for: error))",
+                reason: "无法生成有效证书请求，或 Apple 拒绝了本次请求；此错误不代表证书名额已满。",
                 recovery: "请导出日志排查证书请求；不要为此撤销现有证书。",
                 code: "SEAL-CERT-220"
             )

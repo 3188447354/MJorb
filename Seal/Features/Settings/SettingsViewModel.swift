@@ -26,22 +26,22 @@ struct SelfManagementPresentation: Equatable, Sendable {
         switch state {
         case .externalBootstrap:
             values =
-                ("电脑签名，等待本机接管", "先准备 Seal 本机可控的签名证书。", true, false)
+                ("电脑签名，等待本机接管", "先准备一张 Seal 自己能用的签名证书。", true, false)
         case .preparingLocalIdentity:
             values =
                 ("正在准备本机签名身份", "请保持 Seal 在前台。", false, false)
         case .localIdentityReady:
             values =
-                ("本机身份已就绪", "可以提交一次覆盖安装。", true, false)
+                ("本机身份已就绪", "现在可以提交覆盖安装。", true, false)
         case .awaitingReplacementConfirmation:
             values =
-                ("已提交安装，等待重新打开 Seal 确认", "请按 Home 回到主屏幕，让 iOS 用新版完成替换，再重新打开 Seal。本页会自动确认安装结果。", false, false)
+                ("已提交安装，等待重新打开 Seal 确认", "请上滑回到主屏幕，等 iOS 用新版完成替换，再重新打开 Seal。本页会自动确认安装结果。", false, false)
         case .selfManaged:
             values =
                 ("Seal 已由本机管理", "后续续签复用本机证书。", true, false)
         case .recoveryRequired:
             values =
-                ("需要电脑覆盖恢复", "不要卸载 Seal。", false, true)
+                ("需要用电脑覆盖安装恢复", "不要卸载 Seal。", false, true)
         }
         title = values.0
         detail = values.1
@@ -61,8 +61,8 @@ enum CertificateRoleLabel: Equatable, Sendable {
     var title: String {
         switch self {
         case .currentSealSigner: return "当前 Seal 实际使用"
-        case .locallyUsable: return "本机持有私钥"
-        case .external: return "仅 Apple 端存在"
+        case .locallyUsable: return "本机可用于签名"
+        case .external: return "只存在于 Apple 服务器"
         case .associatedOnThisDevice: return "本机已安装 App 在用"
         case .associationUnknown: return "关联状态无法确认"
         }
@@ -222,7 +222,7 @@ final class SettingsViewModel: ObservableObject {
         self.logStore = logStore
         self.signingHistoryStore = signingHistoryStore
         self.applePortalInventoryService = ApplePortalInventoryService()
-        self.applePortalCertificateService = ApplePortalCertificateService()
+        self.applePortalCertificateService = ApplePortalCertificateService(logStore: logStore)
         self.notificationScheduler = notificationScheduler
         self.notificationPreferences = notificationPreferences
         self.anisetteEnvironment = anisetteEnvironment
@@ -400,8 +400,8 @@ final class SettingsViewModel: ObservableObject {
             guard generation == loadGeneration else { return }
             alertFailure = Self.failure(
                 title: "无法读取设置",
-                reason: "本地配置不可用，设置项无法加载。\n[\((error as NSError).domain) \((error as NSError).code)]",
-                recovery: "重试",
+                reason: "本机保存的设置读不出来，设置项无法加载。",
+                recovery: "下拉刷新页面重试",
                 code: "SEAL-SET-001"
             )
         }
@@ -472,7 +472,7 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             alertFailure = Self.failure(
                 title: "证书不可用",
-                reason: "Seal 无法读取本地证书私钥。",
+                reason: "这张证书在本机缺少密钥，无法使用。",
                 recovery: "重新验证 Apple ID",
                 code: "SEAL-CERT-206"
             )
@@ -488,8 +488,8 @@ final class SettingsViewModel: ObservableObject {
               secret.p12(for: serialNumber) != nil else {
             alertFailure = Self.failure(
                 title: "证书不可用",
-                reason: "Seal 本地没有此证书对应的私钥，未更改当前签名证书。",
-                recovery: "选择其他证书；或重新验证 Apple ID 以获取对应私钥",
+                reason: "这张证书在本机缺少密钥，当前签名证书没有更换。",
+                recovery: "选择其他证书，或重新验证 Apple ID",
                 code: "SEAL-CERT-206a"
             )
             return
@@ -509,8 +509,8 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             alertFailure = Self.failure(
                 title: "无法选择证书",
-                reason: "证书选择未能保存。\n[\((error as NSError).domain) \((error as NSError).code)]",
-                recovery: "重试；如持续失败请重新验证 Apple ID",
+                reason: "证书选择未能保存。",
+                recovery: "重新选择；如持续失败请重新验证 Apple ID",
                 code: "SEAL-CERT-102"
             )
         }
@@ -564,7 +564,7 @@ final class SettingsViewModel: ObservableObject {
             alertFailure = Self.failure(
                 title: "创建签名证书失败",
                 reason: "Apple 未返回签名证书，可能网络不稳定或 Apple 服务异常。",
-                recovery: "检查网络后重试",
+                recovery: "检查网络后重新创建",
                 code: "SEAL-CERT-211"
             )
         }
@@ -602,8 +602,8 @@ final class SettingsViewModel: ObservableObject {
                   let sealActualSigner = runningIdentity?.mainTarget?.signerSerialNumber else {
                 throw Self.failure(
                     title: "无法撤销证书",
-                    reason: "无法确认当前 Seal 的真实签名证书，为保护 Seal 已停止撤销。",
-                    recovery: "重启 Seal 后重试",
+                    reason: "无法确认当前 Seal 实际使用的证书，为安全起见已停止撤销。",
+                    recovery: "重启 Seal 后重新撤销",
                     code: "SEAL-CERT-230"
                 )
             }
@@ -614,7 +614,7 @@ final class SettingsViewModel: ObservableObject {
                 throw Self.failure(
                     title: "不能撤销这张证书",
                     reason: "这张证书正在给当前运行的 Seal 签名，撤销后 Seal 会立即无法打开。",
-                    recovery: "如需更换签名身份，请用电脑按相同 Bundle ID 重新签名安装 Seal",
+                    recovery: "如需更换签名身份，请用电脑按相同的包名重新签名安装 Seal",
                     code: "SEAL-CERT-230a"
                 )
             }
@@ -707,8 +707,8 @@ final class SettingsViewModel: ObservableObject {
                   let sealActualSigner = runningIdentity?.mainTarget?.signerSerialNumber else {
                 throw Self.failure(
                     title: "无法更换证书",
-                    reason: "无法确认当前 Seal 的真实签名证书，为保护 Seal 已停止撤销。",
-                    recovery: "重启 Seal 后重试",
+                    reason: "无法确认当前 Seal 实际使用的证书，为安全起见已停止撤销。",
+                    recovery: "重启 Seal 后重新撤销",
                     code: "SEAL-CERT-230"
                 )
             }
@@ -719,7 +719,7 @@ final class SettingsViewModel: ObservableObject {
                 throw Self.failure(
                     title: "不能撤销这张证书",
                     reason: "这张证书正在给当前运行的 Seal 签名，撤销后 Seal 会立即无法打开。",
-                    recovery: "如需更换签名身份，请用电脑按相同 Bundle ID 重新签名安装 Seal",
+                    recovery: "如需更换签名身份，请用电脑按相同的包名重新签名安装 Seal",
                     code: "SEAL-CERT-230a"
                 )
             }
@@ -734,7 +734,7 @@ final class SettingsViewModel: ObservableObject {
             }) else {
                 throw Self.failure(
                     title: "证书状态已变化",
-                    reason: "这张证书已不在 Apple 的生效列表里（可能刚被撤销）。未创建新证书。",
+                    reason: "这张证书在 Apple 那边已失效（可能刚被撤销），没有创建新证书。",
                     recovery: "重新同步证书后确认当前状态",
                     code: "SEAL-CERT-219"
                 )
@@ -760,8 +760,8 @@ final class SettingsViewModel: ObservableObject {
             })
             guard targetStillActive == false else {
                 throw Self.failure(
-                    title: "未能确认证书槽位已释放",
-                    reason: "撤销请求已提交，但 Apple 生效列表里仍能看到这张证书。未创建新证书。",
+                    title: "未能确认证书名额已释放",
+                    reason: "撤销请求已提交，但 Apple 那边还能看到这张证书，没有创建新证书。",
                     recovery: "稍后重新同步证书再试",
                     code: "SEAL-CERT-231"
                 )
@@ -810,7 +810,7 @@ final class SettingsViewModel: ObservableObject {
             await refreshCertificateInventory(for: account, force: true)
             alertFailure = Self.failure(
                 title: "无法完成证书处理",
-                reason: "已按用户选择处理证书，但 Apple 或本地保存阶段没有返回明确失败原因。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                reason: "已按你的选择处理证书，但 Apple 或本机保存环节没有返回明确的失败原因。",
                 recovery: "重新同步证书后确认当前状态",
                 code: "SEAL-CERT-212"
             )
@@ -869,7 +869,7 @@ final class SettingsViewModel: ObservableObject {
             let runningIdentity = SelfAppMetadata.current()?.installedIdentity
             guard runningIdentity?.isComplete == true,
                   let sealActualSigner = runningIdentity?.mainTarget?.signerSerialNumber else {
-                return CertificateCleanupPlan.blocked(reason: "无法确认当前 Seal 的真实签名证书")
+                return CertificateCleanupPlan.blocked(reason: "无法确认当前 Seal 实际使用的证书")
             }
             let plan = CertificateCleanupPolicy.makePlan(
                 certificates: inventory.certificates,
@@ -890,7 +890,7 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             alertFailure = Self.failure(
                 title: "无法分析证书",
-                reason: "从 Apple 获取证书清单失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                reason: "从 Apple 获取证书清单失败。",
                 recovery: "检查网络后重试；如持续失败请在「我的」中重新验证 Apple ID",
                 code: "SEAL-CERT-217"
             )
@@ -952,7 +952,7 @@ final class SettingsViewModel: ObservableObject {
                   let sealActualSigner = runningIdentity?.mainTarget?.signerSerialNumber else {
                 throw Self.failure(
                     title: "无法撤销证书",
-                    reason: "无法确认当前 Seal 的真实签名证书，为保护 Seal 已停止撤销，未撤销任何证书。",
+                    reason: "无法确认当前 Seal 实际使用的证书，为安全起见已停止撤销，没有撤销任何证书。",
                     recovery: "重启 Seal 后重新分析再试",
                     code: "SEAL-CERT-219b"
                 )
@@ -987,7 +987,7 @@ final class SettingsViewModel: ObservableObject {
             guard targets.isEmpty == false else {
                 throw Self.failure(
                     title: "证书状态已变化",
-                    reason: "重新核验后，先前选中的证书已不再满足可撤销条件（可能刚被 App 使用或已在本机恢复私钥）。未撤销任何证书。",
+                    reason: "重新检查后，之前选中的证书已不符合撤销条件（可能刚被某个 App 用上，或密钥已在本机恢复）。没有撤销任何证书。",
                     recovery: "重新分析后再试",
                     code: "SEAL-CERT-219"
                 )
@@ -1083,7 +1083,7 @@ final class SettingsViewModel: ObservableObject {
             await refreshCertificateInventory(for: account, force: true)
             alertFailure = Self.failure(
                 title: "证书清理失败",
-                reason: "清理过程未能完成。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                reason: "清理过程未能完成。",
                 recovery: "检查网络后重试；如持续失败请重新验证 Apple ID",
                 code: "SEAL-CERT-218b"
             )
@@ -1107,7 +1107,7 @@ final class SettingsViewModel: ObservableObject {
                   parsed.serialNumber.caseInsensitiveCompare(material.serialNumber) == .orderedSame else {
                 throw Self.failure(
                     title: "本机证书校验失败",
-                    reason: "证书已由 Apple 创建，但从 Keychain 重新读取后，P12 或完整 Serial 校验不一致。",
+                    reason: "证书已由 Apple 创建，但本机重新读取时信息对不上。",
                     recovery: "重新同步证书",
                     code: "SEAL-CERT-208"
                 )
@@ -1147,8 +1147,8 @@ final class SettingsViewModel: ObservableObject {
             }
             if rollbackFailures.isEmpty == false {
                 throw Self.failure(
-                    title: "证书补偿未完成",
-                    reason: "证书创建后的补偿未完整完成（\(rollbackFailures.joined(separator: "、"))）。",
+                    title: "证书后续处理未完成",
+                    reason: "证书创建后的后续步骤没有全部完成（\(rollbackFailures.joined(separator: "、"))）。",
                     recovery: "重新同步证书并检查 Apple ID 状态",
                     code: "SEAL-CERT-215a"
                 )
@@ -1156,8 +1156,8 @@ final class SettingsViewModel: ObservableObject {
             if let failure = originalError as? ImportFailure { throw failure }
             throw Self.failure(
                 title: "签名证书保存失败",
-                reason: "签名证书已由 Apple 创建，但保存到本机失败；已自动回滚远程证书。",
-                recovery: "重试",
+                reason: "签名证书已由 Apple 创建，但保存到本机失败；Apple 那边的证书已自动删除。",
+                recovery: "重新创建",
                 code: "SEAL-CERT-208a"
             )
         }
@@ -1340,7 +1340,7 @@ final class SettingsViewModel: ObservableObject {
             guard acceptsCertificateInventoryRefresh(ticket) else { return }
             certificateInventoryFailures[account.id] = Self.failure(
                 title: "Apple ID 同步失败",
-                reason: "App ID 与证书状态同步失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                reason: "App ID 与证书状态同步失败。",
                 recovery: "重新同步",
                 code: "SEAL-INVENTORY-900b"
             )
@@ -1413,7 +1413,7 @@ final class SettingsViewModel: ObservableObject {
             guard acceptsCertificateInventoryRefresh(ticket) else { return }
             certificateInventoryFailures[account.id] = Self.failure(
                 title: "Apple ID 同步失败",
-                reason: "App ID 状态同步失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                reason: "App ID 状态同步失败。",
                 recovery: "重新同步",
                 code: "SEAL-INVENTORY-900"
             )
@@ -1528,7 +1528,7 @@ final class SettingsViewModel: ObservableObject {
             guard acceptsCertificateInventoryRefresh(ticket) else { return }
             let failure = Self.failure(
                 title: "Apple 侧同步失败",
-                reason: "证书状态同步失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                reason: "证书状态同步失败。",
                 recovery: "重新同步",
                 code: "SEAL-INVENTORY-900a"
             )
@@ -1781,8 +1781,8 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             alertFailure = Self.failure(
                 title: "无法清除签名历史",
-                reason: "本地签名历史记录不可写入。\n[\((error as NSError).domain) \((error as NSError).code)]",
-                recovery: "重试",
+                reason: "本地签名历史记录不可写入。",
+                recovery: "重新清除",
                 code: "SEAL-HISTORY-001"
             )
         }
@@ -1854,9 +1854,9 @@ final class SettingsViewModel: ObservableObject {
 
             guard authenticated.teams.isEmpty == false else {
                 throw Self.failure(
-                    title: "没有可用开发者团队",
-                reason: "这个 Apple ID 下没有可用于签名的开发者团队。",
-                recovery: "确认该 Apple ID 可正常登录且已同意 Apple 开发者协议（免费账号即可），或更换其他 Apple ID",
+                    title: "没有可用的签名团队",
+                reason: "这个 Apple ID 下没有可用于签名的团队。",
+                recovery: "确认这个 Apple ID 能正常登录，并已同意 Apple 开发者协议（免费账号就可以），或换一个 Apple ID",
                     code: "SEAL-AUTH-114"
                 )
             }
@@ -1872,8 +1872,8 @@ final class SettingsViewModel: ObservableObject {
                 }
                 guard let existingTeam = authenticated.teams.first(where: { $0.id == existingAccount.teamID }) else {
                     throw Self.failure(
-                        title: "原 Team 不可用",
-                        reason: "重新验证后没有找到原 Team（\(TeamNameDisplayFormatter.string(from: existingAccount.teamName)) / \(existingAccount.teamID)）。Seal 不会静默切换到其他 Team。",
+                        title: "原来的团队不可用",
+                        reason: "重新验证后没有找到原来的团队（\(TeamNameDisplayFormatter.string(from: existingAccount.teamName)) / \(existingAccount.teamID)）。Seal 不会自动切换到其他团队。",
                         recovery: "重新验证 Apple ID",
                         code: "SEAL-AUTH-109a"
                     )
@@ -1911,7 +1911,7 @@ final class SettingsViewModel: ObservableObject {
                 ? AppleServiceFailurePolicy.networkFailure(underlying: error)
                 : Self.failure(
                     title: "无法添加账号",
-                    reason: "Apple ID 验证失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                    reason: "Apple ID 验证失败。",
                     recovery: "重试；如持续失败请核对 Apple ID 与密码",
                     code: "SEAL-AUTH-102"
                 )
@@ -1948,9 +1948,9 @@ final class SettingsViewModel: ObservableObject {
             return false
         } catch {
             alertFailure = Self.failure(
-                title: "无法保存 Team",
-                reason: "账号信息保存失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
-                recovery: "重试；如持续失败请重新验证 Apple ID",
+                title: "无法保存团队",
+                reason: "账号信息保存失败。",
+                recovery: "重新保存；如持续失败请重新验证 Apple ID",
                 code: "SEAL-AUTH-110b"
             )
             return false
@@ -2008,8 +2008,8 @@ final class SettingsViewModel: ObservableObject {
                 }
             } catch {
                 throw Self.failure(
-                    title: "账号保存补偿未完成",
-                    reason: "账号记录保存失败，且 Keychain 无法恢复到修改前状态。",
+                    title: "账号保存未完成",
+                    reason: "账号记录保存失败，本机保存的密码也无法恢复到修改前。",
                     recovery: "重新验证 Apple ID 后检查账号状态",
                     code: "SEAL-AUTH-DB-002"
                 )
@@ -2045,7 +2045,7 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             alertFailure = Self.failure(
                 title: "无法删除 Apple ID",
-                reason: "删除 \(account.maskedEmail) 前无法读取其本机 Keychain 凭据，已中止删除以避免数据丢失。",
+                reason: "删除前无法读取本机保存的该账号密码，已中止删除以防数据丢失。",
                 recovery: "重启应用后重试；仍失败请先重新验证该 Apple ID 再删除",
                 code: "SEAL-AUTH-DB-003"
             )
@@ -2083,7 +2083,7 @@ final class SettingsViewModel: ObservableObject {
                 reason: rollbackFailures.isEmpty
                     ? "删除 \(account.maskedEmail) 时本地数据未能更新，原账号已恢复。"
                     : "删除失败，且本地补偿未完整完成（\(rollbackFailures.joined(separator: "、"))）。",
-                recovery: rollbackFailures.isEmpty ? "重试" : "重新验证 Apple ID 后检查账号状态",
+                recovery: rollbackFailures.isEmpty ? "重新删除" : "重新验证 Apple ID 后检查账号状态",
                 code: rollbackFailures.isEmpty ? "SEAL-AUTH-106" : "SEAL-AUTH-DB-002"
             )
         }
@@ -2182,7 +2182,7 @@ final class SettingsViewModel: ObservableObject {
         guard pairingStore != nil, installChannel != nil else {
             let failure = Self.failure(
                 title: "配对服务未就绪",
-                reason: "Seal 的设备配对组件尚未准备好。",
+                reason: "Seal 的设备配对功能还没准备好。",
                 recovery: "重新打开 Seal 后重试",
                 code: "SEAL-PAIR-215"
             )
@@ -2292,7 +2292,7 @@ final class SettingsViewModel: ObservableObject {
         if normalized.contains("permission") || normalized.contains("network") {
             return failure(
                 title: "未允许本地网络",
-                reason: "Seal 无法在本机发布设备配对服务。",
+                reason: "Seal 无法在本机启动设备配对。",
                 recovery: "在系统设置中允许 Seal 使用本地网络后重试",
                 code: "SEAL-PAIR-217"
             )
@@ -2452,7 +2452,7 @@ final class SettingsViewModel: ObservableObject {
                 }
                 throw Self.failure(
                     title: "无法验证 Apple ID",
-                    reason: "Apple 验证返回了无法分类的错误。账号状态未改变。\n[\((error as NSError).domain) \((error as NSError).code)]",
+                    reason: "Apple 验证返回了未知错误，账号状态未改变。",
                     recovery: "稍后重试；如持续失败再重新验证 Apple ID",
                     code: "SEAL-VERIFY-500"
                 )
@@ -2482,9 +2482,9 @@ final class SettingsViewModel: ObservableObject {
         guard installChannel != nil else {
             diagnosticState = .failed(
                 Self.failure(
-                    title: "连接通道未就绪",
+                    title: "设备连接未就绪",
                     reason: "LocalDevVPN 未启动或未安装。请先连接 Wi-Fi 并打开 LocalDevVPN。",
-                    recovery: "打开 LocalDevVPN 后重试",
+                    recovery: "打开 LocalDevVPN 后重新检测",
                     code: "SEAL-PAIR-204"
                 )
             )
@@ -2590,7 +2590,7 @@ final class SettingsViewModel: ObservableObject {
             } catch {
                 let failure = Self.failure(
                     title: "配对验证失败",
-                    reason: "无法保存设备配对的验证中状态。",
+                    reason: "无法保存设备配对的验证结果。",
                     recovery: "重新配对设备",
                     code: "SEAL-PAIR-206"
                 )
@@ -2721,7 +2721,7 @@ final class SettingsViewModel: ObservableObject {
             } catch {
                 alertFailure = Self.failure(
                     title: "配对状态保存失败",
-                    reason: "LocalDevVPN 检测失败后，配对状态未能写入本机存储。",
+                    reason: "LocalDevVPN 检测失败后，配对状态没能保存到本机。",
                     recovery: "重新配对设备后再检测",
                     code: "SEAL-PAIR-208b"
                 )
@@ -2754,7 +2754,7 @@ final class SettingsViewModel: ObservableObject {
                     throw Self.failure(
                         title: "通知未开启",
                         reason: "Seal 内提醒已开启，但系统没有授予通知权限。",
-                        recovery: "检查系统通知权限",
+                        recovery: "前往 iPhone「设置」>「Seal」>「通知」，允许通知后重试。",
                         code: "SEAL-NOTIFY-001"
                     )
                 }
@@ -2778,7 +2778,7 @@ final class SettingsViewModel: ObservableObject {
             let failure = Self.failure(
                 title: "无法设置提醒",
                 reason: "提醒未能更新。\n\(NotificationSchedulingFailure.diagnostic(for: error))",
-                recovery: "在系统设置中确认通知权限已开启后重试",
+                recovery: "去系统设置打开通知权限后重试",
                 code: "SEAL-NOTIFY-002a"
             )
             notificationStatus = await notificationScheduler.status(
@@ -2807,7 +2807,7 @@ final class SettingsViewModel: ObservableObject {
             let failure = Self.failure(
                 title: "无法设置提醒",
                 reason: "提醒时间未能更新。\n\(NotificationSchedulingFailure.diagnostic(for: error))",
-                recovery: "在系统设置中确认通知权限已开启后重试",
+                recovery: "去系统设置打开通知权限后重试",
                 code: "SEAL-NOTIFY-002b"
             )
             alertFailure = failure
@@ -2860,8 +2860,8 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             alertFailure = Self.failure(
                 title: "无法清理缓存",
-                reason: "临时文件仍在使用，无法清理。\n[\((error as NSError).domain) \((error as NSError).code)]",
-                recovery: "稍后重试",
+                reason: "临时文件仍在使用，无法清理。",
+                recovery: "稍后重新清理",
                 code: "SEAL-STORAGE-001a"
             )
         }
@@ -2896,8 +2896,8 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             alertFailure = Self.failure(
                 title: "无法清理未使用文件",
-                reason: "部分文件仍在使用或本地记录无法读取。\n[\((error as NSError).domain) \((error as NSError).code)]",
-                recovery: "稍后重试",
+                reason: "部分文件仍在使用或本地记录无法读取。",
+                recovery: "稍后重新清理",
                 code: "SEAL-STORAGE-002"
             )
         }
@@ -2922,8 +2922,8 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             alertFailure = Self.failure(
                 title: "无法清理日志",
-                reason: "日志文件仍在使用，无法清理。\n[\((error as NSError).domain) \((error as NSError).code)]",
-                recovery: "重试",
+                reason: "日志文件仍在使用，无法清理。",
+                recovery: "稍后重新清理",
                 code: "SEAL-LOG-001"
             )
         }
@@ -2951,8 +2951,8 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             alertFailure = Self.failure(
                 title: "无法更新证书",
-                reason: "清除 \(account.maskedEmail) 的证书状态时，证书记录或 Keychain 缓存保存失败。\n[\((error as NSError).domain) \((error as NSError).code)]",
-                recovery: "重试；仍失败请重新验证 Apple ID",
+                reason: "清除时的证书记录或本机缓存保存失败。",
+                recovery: "重新清除；仍失败请重新验证 Apple ID",
                 code: "SEAL-CERT-101"
             )
         }
@@ -3004,7 +3004,7 @@ final class SettingsViewModel: ObservableObject {
     private static let localDevVPNUnavailableFailure = ImportFailure(
         title: "LocalDevVPN 未就绪",
         reason: "LocalDevVPN 未就绪。请先连接 Wi-Fi 并确认 LocalDevVPN 已连接。",
-        recovery: "一键检测",
+        recovery: "知道了",
         code: "SEAL-INSTALL-706a"
     )
 

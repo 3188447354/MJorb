@@ -223,11 +223,6 @@ enum ApplePortalSigningFailure {
         let normalized = rawMessage.lowercased()
 
         if let failure = CertificateRequestFailurePolicy.requestFailure(error: error, limitCode: "SEAL-CERT-204a") {
-            try? await logStore?.append(
-                category: .signing, level: .error,
-                message: "SEAL-CERT-204a 底层诊断：\(CertificateRequestFailurePolicy.diagnostic(for: error))",
-                code: "SEAL-CERT-204a"
-            )
             return failure
         }
 
@@ -783,7 +778,7 @@ actor ApplePortalSigningService {
 
         // 快路径下复用首份 anisette；慢路径（上方解压 30 秒+）才刷新，
         // 避免 one-time 值过期（性能优化 2026-10-04）。
-        let freshAnisette: AnisetteData
+        let freshAnisette: ALTAnisetteData
         if case .slowPath = preparationInput {
             // Preparing an IPA can take minutes. Renew the one-time anisette value
             // before every Apple portal phase, matching the full signing flow.
@@ -1250,7 +1245,7 @@ actor ApplePortalSigningService {
             // 进度回调与心跳。不省墙钟，修调度正确性。
             let packageStartedAt = Date()
             try await Task.detached(priority: .userInitiated) {
-                try signingWorkspace.package(prepared, outputURL: signedIPAURL)
+                try self.signingWorkspace.package(prepared, outputURL: signedIPAURL)
             }.value
             await diagnostic(
                 "签名：打包完成（deflate），耗时 \(Int(Date().timeIntervalSince(packageStartedAt))) 秒"
@@ -1464,17 +1459,8 @@ actor ApplePortalSigningService {
         // 慢速路径：本地证书不可用，从 Apple 服务器获取证书列表。
         // ⚠️ **读操作 ⇒ 允许重试超时**（限流时 Apple 响应会变慢，20 秒超时后直接失败太脆；
         // 而超时不属于「会话过期」，原先完全不重试）。
-        //
-        // ── 复用快路径已拉列表（性能优化 2026-10-04）──
-        // 快路径判 `.fallThroughToSlowPath` 时若已成功拉到列表（fetchedCertificates 非 nil），
-        // 直接复用，省一次 Apple 往返（约 2–8 秒）。
-        let certificates: [ALTX509Certificate]
-        if let fetched = fetchedCertificates {
-            certificates = fetched
-        } else {
-            certificates = try await withSessionRecovery("读取证书列表", retriesOnTimeout: true) {
-                try await fetchCertificates(team: team, session: session)
-            }
+        let certificates: [ALTX509Certificate] = try await withSessionRecovery("读取证书列表", retriesOnTimeout: true) {
+            try await fetchCertificates(team: team, session: session)
         }
         try Task.checkCancellation()
 

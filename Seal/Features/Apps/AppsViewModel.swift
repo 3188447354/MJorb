@@ -1440,7 +1440,7 @@ final class AppsViewModel: ObservableObject {
             } catch let sacrificeFailure as ImportFailure {
                 signingSession?.status = .failed(sacrificeFailure)
             } catch {
-                try? logStore?.append(category: .signing, level: .error,
+                try? await logStore?.append(category: .signing, level: .error,
                     message: "SEAL-SIGN-500 底层诊断：\(ErrorDiagnosticFormatter.diagnostic(for: error))",
                     code: "SEAL-SIGN-500")
                 signingSession?.status = .failed(Self.unexpectedSigningFailure(error))

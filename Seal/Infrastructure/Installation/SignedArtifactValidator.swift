@@ -56,6 +56,14 @@ enum SignedArtifactValidator {
                 code: "SEAL-INSTALL-721"
             )
         }
+        return validate(archive: archive, expectedBundleID: expectedBundleID)
+    }
+
+    /// 性能：复用已打开的 Archive（2026-10-04）。
+    static func validate(
+        archive: Archive,
+        expectedBundleID: String
+    ) -> SignedArtifactValidationResult {
 
         let entries = Array(archive)
 

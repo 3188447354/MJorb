@@ -5031,10 +5031,11 @@ def violations(load=read):
     check('        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"'
           in load("Seal/Features/Settings/SettingsFormatters.swift"),
           "SecondLevel/format: 有效期必须精确到秒（分钟粒度无法证伪「profile 是本轮新生成的」）")
-    check('        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"'
-          in load("Seal/Features/Apps/AppSigningSheet.swift"),
-          "SecondLevel/copy: AppSigningSheet 里的同格式副本必须一起改 —— "
-          "两处不一致会让同一天显示两种时间")
+    # 2026-10-04 死代码清理：AppSigningSheet 里的同格式 dateFormatter 零调用已删除，
+    # 不再需要"两处一起改"的约束（只剩 SettingsFormatters.swift 一处真相源）。
+    check('private static let dateFormatter: DateFormatter' not in load("Seal/Features/Apps/AppSigningSheet.swift"),
+          "SecondLevel/copy: AppSigningSheet 里的死代码 dateFormatter 副本不得复活 —— "
+          "要用就用 SealSettingsDateFormatter")
 
     # ── R80c：取消 ≠ 超时（2026-09-25 真机 14:10:49）─────────────────────────
     # `BlockingCall.bounded` 的 `catch { return nil }` 会把 `CancellationError` 折叠成 nil
@@ -6349,11 +6350,13 @@ def violations(load=read):
     # R92⑧（2026-10-04 修订）：四处「未预期错误」的用户文案不再带 `[域 码]`
     # （MJ 要求去术语），但诊断必须真进日志（不能回到「技术信息已写入脱敏日志」的空话）。
     # 新不变量 = 用户文案干净 ＋ logStore 有底层诊断行。
-    check('reason: "签名失败了，遇到了未知错误。把日志发给作者 MJorb。"'
+    # 2026-10-04 死代码审计："把日志发给作者 MJorb" 收敛为 ImportFailure.sendLogToAuthor 常量，
+    # 用户看到的运行时文本不变，守卫改查插值形式。
+    check('reason: "签名失败了，遇到了未知错误。\\(ImportFailure.sendLogToAuthor)。"'
           in r92_view_model_code
-          and 'reason: "安装失败了，遇到了未知错误。把日志发给作者 MJorb。"'
+          and 'reason: "安装失败了，遇到了未知错误。\\(ImportFailure.sendLogToAuthor)。"'
           in r92_signing
-          and 'reason: "Seal 自更新安装失败了，遇到了未知错误。把日志发给作者 MJorb。"'
+          and 'reason: "Seal 自更新安装失败了，遇到了未知错误。\\(ImportFailure.sendLogToAuthor)。"'
           in r92_signing
           and "[\\(nsError.domain) \\(nsError.code)]" not in r92_view_model_code
           and "[\\(nsError.domain) \\(nsError.code)]" not in r92_signing
@@ -10121,12 +10124,12 @@ def main():
          "R92⑦:"),
         # ⑧ `SEAL-SIGN-500` 的用户文案带回 `[域 码]` 术语 ⇒ R92⑧ 报红。
         ("Seal/Features/Apps/AppsViewModel.swift",
-         'reason: "签名失败了，遇到了未知错误。把日志发给作者 MJorb。"',
+         'reason: "签名失败了，遇到了未知错误。\\(ImportFailure.sendLogToAuthor)。"',
          'reason: "签名失败了，遇到了未知错误。\\n[\\(nsError.domain) \\(nsError.code)]"',
          "R92⑧:"),
         # ⑧b `SEAL-SELF-109` 的用户文案带回 `[域 码]` 术语 ⇒ R92⑧ 报红。
         ("Seal/Core/Signing/SigningCoordinator.swift",
-         'reason: "Seal 自更新安装失败了，遇到了未知错误。把日志发给作者 MJorb。"',
+         'reason: "Seal 自更新安装失败了，遇到了未知错误。\\(ImportFailure.sendLogToAuthor)。"',
          'reason: "Seal 自更新安装失败了，遇到了未知错误。\\n[\\(nsError.domain) \\(nsError.code)]"',
          "R92⑧:"),
         # ⑨ 关键单测被改名（不变量没人守）⇒ R92⑨ 报红。

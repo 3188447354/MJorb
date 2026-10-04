@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import CryptoKit
 import ZIPFoundation
 @preconcurrency import AltSign
 
@@ -869,11 +870,11 @@ actor SigningCoordinator {
             try? await logStore?.append(
                 category: .installation,
                 level: .error,
-                message: "SEAL-INSTALL-500 底层诊断：\(Self.richErrorDiagnostic(error))",
+                message: "SEAL-INSTALL-500 底层诊断：\(ErrorDiagnosticFormatter.diagnostic(for: error))",
                 code: "SEAL-INSTALL-500"
             )
             let unexpected = Self.failure(
-                reason: "安装失败了，遇到了未知错误。把日志发给作者 MJorb。",
+                reason: "安装失败了，遇到了未知错误。\(ImportFailure.sendLogToAuthor)。",
                 recovery: "知道了",
                 code: "SEAL-INSTALL-500"
             )
@@ -1470,7 +1471,11 @@ actor SigningCoordinator {
                 code: "SEAL-INSTALL-711"
             )
         }
-        guard try await fileStore.validateSHA256(relativePath: signedPath, expected: expectedSHA256) else {
+        // 性能：读一次、内存哈希（2026-10-04）。原先流式读文件校验、随后
+        // installSignedIPA 又全量载入，1.5GB 包多一次磁盘读。
+        let cachedData = try await fileStore.read(relativePath: signedPath)
+        let actualSHA256 = SHA256.hash(data: cachedData).map { String(format: "%02x", $0) }.joined()
+        guard actualSHA256.caseInsensitiveCompare(expectedSHA256) == .orderedSame else {
             app.signedArtifactStatus = .damaged
             try await persistAppState(app)
             throw Self.failure(
@@ -1526,7 +1531,8 @@ actor SigningCoordinator {
                 // ⇒ 上传完成时必须由签名侧补发 `.installing`。少了它，Seal 的
                 // 「重新安装」永远等不到「该回主屏了」，自替换会在 installd 阶段
                 // 一直等旧进程让位（与批量续签同一条规则，见 `InstallStageBridge`）。
-                broadcastsInstallStage: true
+                broadcastsInstallStage: true,
+                preloadedData: cachedData
             )
         } catch let failure as ImportFailure {
             app.state = app.state == .installed ? .installed : .signed
@@ -1544,10 +1550,10 @@ actor SigningCoordinator {
             try? await logStore?.append(
                 category: .installation,
                 level: .error,
-                message: "SEAL-INSTALL-500 底层诊断：\(Self.richErrorDiagnostic(error))",
+                message: "SEAL-INSTALL-500 底层诊断：\(ErrorDiagnosticFormatter.diagnostic(for: error))",
                 code: "SEAL-INSTALL-500"
             )
-            app.lastInstallFailureReason = "安装失败了，遇到了未知错误。把日志发给作者 MJorb。"
+            app.lastInstallFailureReason = "安装失败了，遇到了未知错误。\(ImportFailure.sendLogToAuthor)。"
             try await persistAppState(app)
             throw error
         }
@@ -1748,7 +1754,7 @@ actor SigningCoordinator {
                 try? await logStore?.append(
                     category: .renewal,
                     level: .error,
-                    message: "证书轮换事务：受影响应用 \(candidate.name) 自动恢复失败 \(Self.richErrorDiagnostic(error))"
+                    message: "证书轮换事务：受影响应用 \(candidate.name) 自动恢复失败 \(ErrorDiagnosticFormatter.diagnostic(for: error))"
                 )
             }
         }
@@ -1924,12 +1930,13 @@ actor SigningCoordinator {
             return nil
         }
 
+        let cachedData: Data
         do {
             _ = try await fileStore.fileURL(relativePath: signedPath)
-            guard try await fileStore.validateSHA256(
-                relativePath: signedPath,
-                expected: expectedSHA256
-            ) else { return nil }
+            // 性能：读一次、内存哈希（2026-10-04），省一次大包全文件磁盘读。
+            cachedData = try await fileStore.read(relativePath: signedPath)
+            let actualSHA256 = SHA256.hash(data: cachedData).map { String(format: "%02x", $0) }.joined()
+            guard actualSHA256.caseInsensitiveCompare(expectedSHA256) == .orderedSame else { return nil }
         } catch {
             return nil
         }
@@ -1940,7 +1947,8 @@ actor SigningCoordinator {
             expirationDate: pendingExpiration,
             progress: progress,
             onInstallProgress: onInstallProgress,
-            broadcastsInstallStage: broadcastsInstallStage
+            broadcastsInstallStage: broadcastsInstallStage,
+            preloadedData: cachedData
         )
     }
 
@@ -1951,8 +1959,17 @@ actor SigningCoordinator {
         expirationDate: Date,
         progress: @escaping @Sendable (SigningStageUpdate) async -> Void,
         onInstallProgress: @escaping @Sendable (Double) async -> Void = { _ in },
-        broadcastsInstallStage: Bool = false
+        broadcastsInstallStage: Bool = false,
+        // 性能：预载入的 Data（2026-10-04）。缓存路径已读文件做 SHA256，
+        // 传进来省一次全量磁盘读。不传则内部读取（签名新包路径）。
+        preloadedData: Data? = nil
     ) async throws -> AppRecord {
+        let signedData: Data
+        if let preloadedData {
+            signedData = preloadedData
+        } else {
+            signedData = try await fileStore.read(relativePath: signedPath)
+        }
         var updated = app
         // 安装期间申请后台保活，防止锁屏/切后台时 iOS 挂起网络连接
         let bgTask = await MainActor.run {
@@ -1972,11 +1989,20 @@ actor SigningCoordinator {
             _ = try? await installChannel.start()
         }
 
-        let signedData = try await fileStore.read(relativePath: signedPath)
+        // 性能：Archive 只打开一次（2026-10-04）。bundleIdentifier + validate +
+        // mainInfoDictionary + embeddedProfiles 原先各 parse 一遍中央目录。
+        guard let sharedArchive = try? Archive(data: signedData, accessMode: .read) else {
+            throw ImportFailure(
+                title: "安装前验证失败",
+                reason: "签名后 IPA 不是有效的 ZIP 压缩包，无法解析。",
+                recovery: "重新签名后再安装",
+                code: "SEAL-INSTALL-721"
+            )
+        }
 
         // 对齐官方 idevice：安装/校验以「成品包内 Info.plist 的真实 Bundle ID」为准，
         // 外部计算值仅在包内回读失败时回退，消除暂存路径 / ClientOptions / 包内 ID 不一致。
-        let effectiveBundleID = SignedArtifactBundleIDReader.bundleIdentifier(in: signedData)
+        let effectiveBundleID = SignedArtifactBundleIDReader.bundleIdentifier(in: sharedArchive)
             ?? bundleIdentifier
         // 非标准包上回读值可能与外部计算值不同：以装到设备上的真实 ID 为准回写记录，
         // 否则后续续签用旧计算值做 lookup 会找不到应用，陷入重复签名。
@@ -1988,7 +2014,7 @@ actor SigningCoordinator {
         // embedded.mobileprovision、主可执行文件，避免把损坏包传到设备端
         // （设备端 installd 对结构损坏的包可能误报 MissingPackagePath 或模糊错误）。
         let validation = SignedArtifactValidator.validate(
-            ipaData: signedData,
+            archive: sharedArchive,
             expectedBundleID: effectiveBundleID
         )
         guard validation.isValid else {
@@ -2071,11 +2097,11 @@ actor SigningCoordinator {
                 try? await logStore?.append(
                     category: .installation,
                     level: .error,
-                    message: "SEAL-SELF-109 底层诊断：\(Self.richErrorDiagnostic(error))",
+                    message: "SEAL-SELF-109 底层诊断：\(ErrorDiagnosticFormatter.diagnostic(for: error))",
                     code: "SEAL-SELF-109"
                 )
                 throw Self.failure(
-                    reason: "Seal 自更新安装失败了，遇到了未知错误。把日志发给作者 MJorb。",
+                    reason: "Seal 自更新安装失败了，遇到了未知错误。\(ImportFailure.sendLogToAuthor)。",
                     recovery: "知道了",
                     code: "SEAL-SELF-109"
                 )
@@ -2372,32 +2398,6 @@ actor SigningCoordinator {
     /// 把 NSError 展开成可供排查的诊断串：域+码+系统描述+关键 userInfo。
     /// 用于 SEAL-INSTALL-500 / SEAL-SELF-109 等"未预期错误"的日志
     /// （2026-10-04：MJ 要求能查到根因）。经 LogPrivacyRedactor 脱敏后写入日志。
-    private static func richErrorDiagnostic(_ error: Error) -> String {
-        let nsError = error as NSError
-        // 注意：刻意不用 "[\(nsError.domain) \(nsError.code)]" 字面量，
-        // 避免 R92⑧ 守卫误判用户文案带术语（守卫查的是 reason: 字符串）。
-        var parts = ["[" + nsError.domain + " " + String(nsError.code) + "]"]
-        let desc = nsError.localizedDescription
-        if !desc.isEmpty { parts.append(desc) }
-        if let path = nsError.userInfo[NSFilePathErrorKey] as? String, !path.isEmpty {
-            parts.append("文件：\(path)")
-        }
-        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
-            parts.append("底层：[\(underlying.domain) \(underlying.code)] \(underlying.localizedDescription)")
-        }
-        for (key, value) in nsError.userInfo {
-            let keyStr = "\(key)"
-            if keyStr == NSFilePathErrorKey || keyStr == NSUnderlyingErrorKey
-                || keyStr == NSLocalizedDescriptionKey { continue }
-            if let s = value as? String, !s.isEmpty, s.count < 200 {
-                parts.append("\(keyStr)：\(s)")
-            } else if let n = value as? NSNumber {
-                parts.append("\(keyStr)：\(n)")
-            }
-        }
-        return parts.joined(separator: " | ")
-    }
-
     /// 按错误码模块段给报错一个贴合语义的 title，避免所有错误都显示「无法完成签名」。
     private static func title(for code: String) -> String {
         if code == "SEAL-APPID-DEVICELIMIT" { return "应用数量已达上限" }

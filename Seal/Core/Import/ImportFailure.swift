@@ -7,6 +7,9 @@ struct ImportFailure: Error, Equatable, Identifiable, Sendable {
     let code: String
 
     var id: String { code }
+
+    /// 无法由用户自行解决时的统一指引（2026-10-04 死代码审计：11 处硬编码收敛）。
+    static let sendLogToAuthor = "把日志发给作者 MJorb"
 }
 
 extension ImportFailure: LocalizedError {

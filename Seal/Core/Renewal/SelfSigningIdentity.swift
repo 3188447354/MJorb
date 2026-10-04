@@ -135,19 +135,6 @@ struct CandidateIdentity: Codable, Equatable, Sendable {
     }
 }
 
-struct LocalSigningIdentity: Codable, Equatable, Sendable {
-    let accountID: UUID
-    let teamIdentifier: String
-    let certificateSerialNumber: String
-    let certificateSHA256: String
-    let expirationDate: Date
-    let hasMatchingPrivateKey: Bool
-
-    var isUsable: Bool {
-        hasMatchingPrivateKey && expirationDate > Date()
-    }
-}
-
 enum SelfManagementState: String, Codable, Sendable {
     case externalBootstrap
     case preparingLocalIdentity

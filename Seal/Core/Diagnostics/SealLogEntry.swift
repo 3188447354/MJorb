@@ -102,10 +102,6 @@ enum SealLogTextFormatter {
         notice: String? = nil,
         buildLabel: String = SealLogTextFormatter.currentBuildLabel
     ) -> String {
-        let formatter = DateFormatter()
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         var lines = [
             "Seal 日志 · 北京时间 · 保留最近 \(capacity) 条",
             "构建 \(buildLabel) · 构建号取自 CI run number，可用于定位对应提交"
@@ -116,7 +112,7 @@ enum SealLogTextFormatter {
         lines.append("")
         lines.append(contentsOf: entries.map { entry in
             let code = entry.code.map { "  [\($0)]" } ?? ""
-            let time = formatter.string(from: entry.timestamp)
+            let time = SealSettingsDateFormatter.string(from: entry.timestamp)
             return "\(time)  \(entry.level.displayName)  \(entry.category.displayName)\(code)  \(entry.message)"
         })
         return lines.joined(separator: "\n")

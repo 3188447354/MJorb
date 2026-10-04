@@ -22,7 +22,14 @@ enum SignedArtifactBundleIDReader {
     private static let mainInfoPlistSegmentCount = 3
 
     static func bundleIdentifier(in ipaData: Data) -> String? {
-        guard let plist = mainInfoDictionary(in: ipaData),
+        guard let archive = try? Archive(data: ipaData, accessMode: .read) else { return nil }
+        return bundleIdentifier(in: archive)
+    }
+
+    /// 性能：复用已打开的 Archive（2026-10-04）。安装流程对同一份 Data 调
+    /// bundleIdentifier + validate + mainInfoDictionary，三次各 parse 一遍中央目录。
+    static func bundleIdentifier(in archive: Archive) -> String? {
+        guard let plist = mainInfoDictionary(in: archive),
               let identifier = plist["CFBundleIdentifier"] as? String,
               identifier.isEmpty == false else { return nil }
         return identifier
@@ -30,6 +37,10 @@ enum SignedArtifactBundleIDReader {
 
     static func mainInfoDictionary(in ipaData: Data) -> [String: Any]? {
         guard let archive = try? Archive(data: ipaData, accessMode: .read) else { return nil }
+        return mainInfoDictionary(in: archive)
+    }
+
+    static func mainInfoDictionary(in archive: Archive) -> [String: Any]? {
 
         guard let entry = archive.first(where: { isMainInfoPlist($0.path) }) else { return nil }
 

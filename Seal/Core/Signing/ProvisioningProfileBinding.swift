@@ -159,7 +159,7 @@ struct ProvisioningProfileBinding: Codable, Equatable, Sendable {
         ImportFailure(
             title: title,
             reason: reason,
-            recovery: "重新签名一次（Seal 会自动拉取新的描述文件）；仍失败时先到「我的」→「签名证书」确认账号和证书状态，再把日志发给作者 MJorb",
+            recovery: "重新签名一次（Seal 会自动拉取新的描述文件）；仍失败时先到「我的」→「签名证书」确认账号和证书状态，再\(ImportFailure.sendLogToAuthor)",
             code: code
         )
     }

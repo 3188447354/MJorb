@@ -31,6 +31,11 @@ enum SignedArtifactProfileReader {
     /// 缺项意味着那一条不会被清理，而不会导致误删（方向是安全的）。
     static func embeddedProfiles(in ipaData: Data) -> [EmbeddedProfile] {
         guard let archive = try? Archive(data: ipaData, accessMode: .read) else { return [] }
+        return embeddedProfiles(in: archive)
+    }
+
+    /// 性能：复用已打开的 Archive（2026-10-04）。
+    static func embeddedProfiles(in archive: Archive) -> [EmbeddedProfile] {
 
         var profiles: [EmbeddedProfile] = []
         var seenUUIDs = Set<String>()

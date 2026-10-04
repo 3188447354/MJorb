@@ -7,6 +7,16 @@ import AnisetteKit
 struct AnisetteV3Client: AnisetteEnvironmentManaging {
     private static let logger = Logger(subsystem: "com.mjorb.seal", category: "anisette")
 
+    /// Anisette 时间格式（ISO8601 UTC），两处复用，避免每次新建 DateFormatter。
+    private static let iso8601UTCFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter
+    }()
+
     private let servers: [AnisetteServer]
     private let session: URLSession
     private let store: any AnisetteProvisioningStore
@@ -104,10 +114,7 @@ struct AnisetteV3Client: AnisetteEnvironmentManaging {
 
     /// 官方 AnisetteData -> AltSign ALTAnisetteData
     private func convert(_ data: AnisetteData) -> ALTAnisetteData? {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(abbreviation: "UTC")
+        let formatter = Self.iso8601UTCFormatter
         let json: [String: String] = [
             "machineID": data.machineID,
             "oneTimePassword": data.oneTimePassword,
@@ -694,12 +701,7 @@ struct AnisetteV3Client: AnisetteEnvironmentManaging {
     }
 
     private static func currentDateString() -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'"
-        return formatter.string(from: Date())
+        return iso8601UTCFormatter.string(from: Date())
     }
 
     private func prioritizedServers() async -> [AnisetteServer] {

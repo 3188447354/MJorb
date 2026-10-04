@@ -374,6 +374,9 @@ actor ApplePortalSigningService {
     private var cachedTeamsByAccountIdentifier: [String: (teams: [ALTTeam], fetchedAt: Date)] = [:]
     private var cachedAppIDsByTeamIdentifier: [String: (appIDs: [ALTAppID], fetchedAt: Date)] = [:]
     private var cachedDevicesByTeamAndDeviceIdentifier: [String: (device: ALTDevice, fetchedAt: Date)] = [:]
+    // 性能：证书列表也加批量缓存（2026-10-04）。profile-only 准入和完整重签每 App
+    // 各拉一次，同一 Team 一轮批量里不变。写成功（addCertificate）即失效。
+    private var cachedCertificatesByTeamIdentifier: [String: (certs: [ALTX509Certificate], fetchedAt: Date)] = [:]
 
     /// 缓存条目是否仍新鲜 —— **纯函数**，判据与三处调用点同源（可单测）。
     static func isPortalReadCacheFresh(
@@ -387,6 +390,11 @@ actor ApplePortalSigningService {
     /// App ID 写操作成功后调用：对应 Team 的列表缓存立即失效。
     private func invalidateAppIDsCache(forTeamIdentifier teamIdentifier: String) {
         cachedAppIDsByTeamIdentifier.removeValue(forKey: teamIdentifier)
+    }
+
+    /// 证书写操作成功后调用：对应 Team 的证书列表缓存立即失效。
+    private func invalidateCertificatesCache(forTeamIdentifier teamIdentifier: String) {
+        cachedCertificatesByTeamIdentifier.removeValue(forKey: teamIdentifier)
     }
 
     init(
@@ -1934,6 +1942,11 @@ actor ApplePortalSigningService {
         team: ALTTeam,
         session: ALTAppleAPISession
     ) async throws -> [ALTX509Certificate] {
+        // 批量缓存：同一 Team 的证书列表一轮批量里不变（写成功即失效）。
+        if let cached = cachedCertificatesByTeamIdentifier[team.identifier],
+           Self.isPortalReadCacheFresh(fetchedAt: cached.fetchedAt) {
+            return cached.certs
+        }
         let box: LegacyBox<[ALTX509Certificate]> = try await withAppleTimeout {
             try await withCheckedThrowingContinuation {
                 continuation in
@@ -1944,6 +1957,7 @@ actor ApplePortalSigningService {
                 }
             }
         }
+        cachedCertificatesByTeamIdentifier[team.identifier] = (box.value, Date())
         return box.value
     }
 
@@ -1975,6 +1989,8 @@ actor ApplePortalSigningService {
                     }
                 }
             }
+            // 写成功即失效证书列表缓存（2026-10-04 批量缓存）。
+            invalidateCertificatesCache(forTeamIdentifier: team.identifier)
             return box.value
         } catch {
             guard Self.isTimeoutError(error) else { throw error }
@@ -2522,24 +2538,73 @@ actor ApplePortalSigningService {
         }
 
         // Phase 2: App IDs are settled; now fetch/generate real provisioning profiles.
+        // 性能：并行拉取（2026-10-04）。每份 profile 的 fetch 是独立网络请求，
+        // 串行 9 个 bundle 约 18-27 次顺序调用。限 3 并发防 Apple 1100 限流。
+        // 先并行取完、再按序处理失败（删扩展等副作用必须串行、保序）。
         await progress(.preparingProfiles)
-        var profiles: [ALTProvisioningProfile] = []
-        for preparedAppID in preparedAppIDs {
-            do {
-                try Task.checkCancellation()
-                // 同上：9 个 bundle ID 连续申请描述文件同样会触发限流。
-                let profile = try await fetchProvisioningProfile(
-                    for: preparedAppID.appID,
-                    team: team,
-                    session: session
-                )
-                profiles.append(profile)
-                // 真实信号：描述文件也是一份一份取的，分母是 Phase 1 已就绪的个数。
+        let profileResults: [Result<ALTProvisioningProfile, Error>] = try await withThrowingTaskGroup(
+            of: (Int, Result<ALTProvisioningProfile, Error>).self
+        ) { group in
+            var ordered = [Result<ALTProvisioningProfile, Error>?](
+                repeating: nil, count: preparedAppIDs.count)
+            var nextToStart = 0
+            let maxConcurrent = 3
+            // 启动首批
+            while nextToStart < min(maxConcurrent, preparedAppIDs.count) {
+                let index = nextToStart
+                let prepared = preparedAppIDs[index]
+                group.addTask {
+                    do {
+                        try Task.checkCancellation()
+                        let profile = try await self.fetchProvisioningProfile(
+                            for: prepared.appID,
+                            team: team,
+                            session: session
+                        )
+                        return (index, Result<ALTProvisioningProfile, Error>.success(profile))
+                    } catch {
+                        return (index, Result<ALTProvisioningProfile, Error>.failure(error))
+                    }
+                }
+                nextToStart += 1
+            }
+            var completed = 0
+            while let (index, result) = try await group.next() {
+                ordered[index] = result
+                completed += 1
                 await onWorkUnits(SigningWorkUnits(
                     stage: .preparingProfiles,
-                    done: profiles.count,
+                    done: completed,
                     total: preparedAppIDs.count
                 ))
+                // 补一个，保持 3 并发
+                if nextToStart < preparedAppIDs.count {
+                    let index = nextToStart
+                    let prepared = preparedAppIDs[index]
+                    group.addTask {
+                        do {
+                            try Task.checkCancellation()
+                            let profile = try await self.fetchProvisioningProfile(
+                                for: prepared.appID,
+                                team: team,
+                                session: session
+                            )
+                            return (index, Result<ALTProvisioningProfile, Error>.success(profile))
+                        } catch {
+                            return (index, Result<ALTProvisioningProfile, Error>.failure(error))
+                        }
+                    }
+                    nextToStart += 1
+                }
+            }
+            return ordered.map { $0! }
+        }
+        var profiles: [ALTProvisioningProfile] = []
+        for (i, preparedAppID) in preparedAppIDs.enumerated() {
+            do {
+                try Task.checkCancellation()
+                let profile = try profileResults[i].get()
+                profiles.append(profile)
             } catch is CancellationError {
                 throw CancellationError()
             } catch let failure as ImportFailure {
@@ -2672,20 +2737,52 @@ actor ApplePortalSigningService {
         }
 
         await progress(.preparingProfiles)
-        var profiles: [ALTProvisioningProfile] = []
-        for prepared in preparedAppIDs {
-            try Task.checkCancellation()
-            let profile = try await fetchProvisioningProfile(
-                for: prepared.appID,
-                team: team,
-                session: session
-            )
-            profiles.append(profile)
-            await onWorkUnits(SigningWorkUnits(
-                stage: .preparingProfiles,
-                done: profiles.count,
-                total: preparedAppIDs.count
-            ))
+        // 性能：并行拉取（2026-10-04），限 3 并发防限流。保序。
+        let profiles: [ALTProvisioningProfile] = try await withThrowingTaskGroup(
+            of: (Int, ALTProvisioningProfile).self
+        ) { group in
+            var ordered = [ALTProvisioningProfile?](repeating: nil, count: preparedAppIDs.count)
+            var nextToStart = 0
+            let maxConcurrent = 3
+            while nextToStart < min(maxConcurrent, preparedAppIDs.count) {
+                let index = nextToStart
+                let prepared = preparedAppIDs[index]
+                group.addTask {
+                    try Task.checkCancellation()
+                    let profile = try await self.fetchProvisioningProfile(
+                        for: prepared.appID,
+                        team: team,
+                        session: session
+                    )
+                    return (index, profile)
+                }
+                nextToStart += 1
+            }
+            var completed = 0
+            while let (index, profile) = try await group.next() {
+                ordered[index] = profile
+                completed += 1
+                await onWorkUnits(SigningWorkUnits(
+                    stage: .preparingProfiles,
+                    done: completed,
+                    total: preparedAppIDs.count
+                ))
+                if nextToStart < preparedAppIDs.count {
+                    let index = nextToStart
+                    let prepared = preparedAppIDs[index]
+                    group.addTask {
+                        try Task.checkCancellation()
+                        let profile = try await self.fetchProvisioningProfile(
+                            for: prepared.appID,
+                            team: team,
+                            session: session
+                        )
+                        return (index, profile)
+                    }
+                    nextToStart += 1
+                }
+            }
+            return ordered.map { $0! }
         }
 
         // 请求集 = 旧描述文件实授的 entitlements（键：实际目标 Bundle ID）。
@@ -2769,6 +2866,12 @@ actor ApplePortalSigningService {
             }
         }
         let profile = firstBox.value
+
+        // 性能：免费账号跳过删除（2026-10-04）。免费账号自 2023-03-20 起无法删除
+        // 描述文件，每次白跑 15 秒超时 + 1 次往返。直接用第一次 fetch 的结果。
+        if team.type == .free {
+            return profile
+        }
 
         // 尝试删除旧描述文件（付费账号可删除，免费账号会失败）
         let deleteSucceeded: Bool

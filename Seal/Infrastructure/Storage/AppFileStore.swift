@@ -649,7 +649,13 @@ actor AppFileStore {
         let pending = directory.appending(path: ".Signed.pending-\(UUID().uuidString).ipa")
         let backup = directory.appending(path: ".Signed.backup-\(UUID().uuidString).ipa")
         do {
-            try fileManager.copyItem(at: sourceURL, to: pending)
+            // 性能：同卷 move 是秒级 rename（2026-10-04）。源在 workspace(tmp)，
+            // 存完即弃，move 安全；跨卷失败时回退 copy。
+            do {
+                try fileManager.moveItem(at: sourceURL, to: pending)
+            } catch {
+                try fileManager.copyItem(at: sourceURL, to: pending)
+            }
             try protect(pending)
             guard (try? pending.resourceValues(forKeys: [.fileSizeKey]).fileSize).map({ $0 > 0 }) == true else {
                 throw invalidStagedFileFailure()

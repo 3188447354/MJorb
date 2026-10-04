@@ -507,7 +507,7 @@ final class AppsViewModel: ObservableObject {
             guard generation == loadGeneration else { return }
             alertFailure = ImportFailure(
                 title: "无法读取应用",
-                reason: "本地应用数据读取失败，应用列表无法加载。请先完全退出再重新打开 Seal；如果还是加载不出来，把日志发给作者 MJorb。",
+                reason: "本地应用数据读取失败，应用列表无法加载。请先完全退出再重新打开 Seal；如果还是加载不出来，\(ImportFailure.sendLogToAuthor)。",
                 recovery: "知道了",
                 code: "SEAL-APP-002"
             )
@@ -1413,7 +1413,7 @@ final class AppsViewModel: ObservableObject {
                 signingSession?.status = .failed(sacrificeFailure)
             } catch {
                 try? logStore?.append(category: .signing, level: .error,
-                    message: "SEAL-SIGN-500 底层诊断：\(Self.richErrorDiagnostic(error))",
+                    message: "SEAL-SIGN-500 底层诊断：\(ErrorDiagnosticFormatter.diagnostic(for: error))",
                     code: "SEAL-SIGN-500")
                 signingSession?.status = .failed(Self.unexpectedSigningFailure(error))
             }
@@ -1501,7 +1501,7 @@ final class AppsViewModel: ObservableObject {
         } catch {
             alertFailure = ImportFailure(
                 title: "无法保存应用 ID",
-                reason: "Bundle ID 没能保存到本机。请检查本机存储空间是否充足，然后重新输入保存；如果反复失败，把日志发给作者 MJorb。",
+                reason: "Bundle ID 没能保存到本机。请检查本机存储空间是否充足，然后重新输入保存；如果反复失败，\(ImportFailure.sendLogToAuthor)。",
                 recovery: "知道了",
                 code: "SEAL-BUNDLE-003"
             )
@@ -1531,7 +1531,7 @@ final class AppsViewModel: ObservableObject {
         } catch {
             alertFailure = ImportFailure(
                 title: "无法保存 App 名称",
-                reason: "App 名称没能保存到本机。请检查本机存储空间是否充足，然后重新输入保存；如果反复失败，把日志发给作者 MJorb。",
+                reason: "App 名称没能保存到本机。请检查本机存储空间是否充足，然后重新输入保存；如果反复失败，\(ImportFailure.sendLogToAuthor)。",
                 recovery: "知道了",
                 code: "SEAL-CUSTOM-002"
             )
@@ -1623,7 +1623,7 @@ final class AppsViewModel: ObservableObject {
             )
         } catch {
             try? logStore?.append(category: .signing, level: .error,
-                message: "SEAL-SIGN-500 底层诊断：\(Self.richErrorDiagnostic(error))",
+                message: "SEAL-SIGN-500 底层诊断：\(ErrorDiagnosticFormatter.diagnostic(for: error))",
                 code: "SEAL-SIGN-500")
             alertFailure = Self.unexpectedSigningFailure(error)
         }
@@ -1711,7 +1711,7 @@ final class AppsViewModel: ObservableObject {
         } catch {
             alertFailure = ImportFailure(
                 title: "无法移除应用",
-                reason: "「\(app.displayName)」的本地文件没能删掉。请先完全退出再重新打开 Seal，然后再删一次；如果还是删不掉，把日志发给作者 MJorb。",
+                reason: "「\(app.displayName)」的本地文件没能删掉。请先完全退出再重新打开 Seal，然后再删一次；如果还是删不掉，\(ImportFailure.sendLogToAuthor)。",
                 recovery: "知道了",
                 code: "SEAL-APP-003"
             )
@@ -2182,7 +2182,7 @@ final class AppsViewModel: ObservableObject {
             batchRefreshSession?.status = .failed(
                 ImportFailure(
                     title: "无法续签应用",
-                    reason: "本轮续签没能跑完，Seal 没拿到具体原因。稍等片刻后重新发起续签；如果反复失败，把日志发给作者 MJorb。",
+                    reason: "本轮续签没能跑完，Seal 没拿到具体原因。稍等片刻后重新发起续签；如果反复失败，\(ImportFailure.sendLogToAuthor)。",
                     recovery: "知道了",
                     code: "SEAL-RENEW-500a"
                 )
@@ -2788,7 +2788,7 @@ final class AppsViewModel: ObservableObject {
                 try? await logStore?.append(
                     category: .signing,
                     level: .error,
-                    message: "SEAL-SIGN-500 底层诊断：\(Self.richErrorDiagnostic(error))",
+                    message: "SEAL-SIGN-500 底层诊断：\(ErrorDiagnosticFormatter.diagnostic(for: error))",
                     code: failure.code
                 )
             } else {
@@ -3241,7 +3241,7 @@ final class AppsViewModel: ObservableObject {
     private nonisolated static func unexpectedSigningFailure(_ error: Error) -> ImportFailure {
         return ImportFailure(
             title: "签名失败",
-            reason: "签名失败了，遇到了未知错误。把日志发给作者 MJorb。",
+            reason: "签名失败了，遇到了未知错误。\(ImportFailure.sendLogToAuthor)。",
             recovery: "知道了",
             code: "SEAL-SIGN-500"
         )
@@ -3250,34 +3250,6 @@ final class AppsViewModel: ObservableObject {
     /// 把 NSError 展开成可供排查的诊断串：域+码+系统描述+关键 userInfo。
     /// 用于 SEAL-SIGN-500 等"未预期错误"的日志（2026-10-04：MJ 要求能查到根因）。
     /// 经 LogPrivacyRedactor 脱敏后写入日志。
-    private nonisolated static func richErrorDiagnostic(_ error: Error) -> String {
-        let nsError = error as NSError
-        // 注意：刻意不用 "[\(nsError.domain) \(nsError.code)]" 字面量，
-        // 避免 R92⑧ 守卫误判用户文案带术语（守卫查的是 reason: 字符串）。
-        var parts = ["[" + nsError.domain + " " + String(nsError.code) + "]"]
-        let desc = nsError.localizedDescription
-        if !desc.isEmpty { parts.append(desc) }
-        // 关键 userInfo：文件路径、底层错误链
-        if let path = nsError.userInfo[NSFilePathErrorKey] as? String, !path.isEmpty {
-            parts.append("文件：\(path)")
-        }
-        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
-            parts.append("底层：[\(underlying.domain) \(underlying.code)] \(underlying.localizedDescription)")
-        }
-        // 其他 userInfo 里可能有用的键（只取字符串/数字，避免 dump 大对象）
-        for (key, value) in nsError.userInfo {
-            let keyStr = "\(key)"
-            if keyStr == NSFilePathErrorKey || keyStr == NSUnderlyingErrorKey
-                || keyStr == NSLocalizedDescriptionKey { continue }
-            if let s = value as? String, !s.isEmpty, s.count < 200 {
-                parts.append("\(keyStr)：\(s)")
-            } else if let n = value as? NSNumber {
-                parts.append("\(keyStr)：\(n)")
-            }
-        }
-        return parts.joined(separator: " | ")
-    }
-
     /// 单应用签名 / 续签的**失败归类**：通道类给带码、可引导的 `SEAL-SIGN-504`，
     /// 其余才退回 `SEAL-SIGN-500`。
     ///

@@ -281,7 +281,7 @@ actor RenewalCoordinator {
         if let failure = error as? ImportFailure { return failure }
         return ImportFailure(
             title: "续签失败",
-            reason: "续签过程遇到错误，已自动重试仍未恢复。请检查网络和设备连接后，再重新发起续签；如果反复失败，把日志发给作者 MJorb。",
+            reason: "续签过程遇到错误，已自动重试仍未恢复。请检查网络和设备连接后，再重新发起续签；如果反复失败，\(ImportFailure.sendLogToAuthor)。",
             recovery: "检查网络和设备连接后，再重新发起续签",
             code: "SEAL-RENEW-500"
         )

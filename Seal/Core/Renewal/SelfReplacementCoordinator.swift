@@ -51,6 +51,10 @@ actor SelfReplacementCoordinator: SelfReplacing {
     private let keychain: KeychainVault
     private let processID: UUID
     private let logStore: SealLogStore?
+    // 性能：prepare 读到的 Data 缓存（2026-10-04）。submitPrepared 紧随其后调用，
+    // 复用内存中的 Data，省一次全文件磁盘读 + 一次 SHA256。key 为 transaction ID，
+    // 用后即删，不长期占用内存。
+    private var preparedDataByTransactionID: [UUID: Data] = [:]
 
     /// 传输返回到「能读到新包」之间的宽限期。
     ///
@@ -144,7 +148,10 @@ actor SelfReplacementCoordinator: SelfReplacing {
             candidate: candidate,
             signedIPARelativePath: signedIPARelativePath
         )
-        return try await store.create(transaction)
+        let created = try await store.create(transaction)
+        // 缓存 Data 供 submitPrepared 复用（省一次磁盘读 + SHA256）。
+        preparedDataByTransactionID[id] = ipaData
+        return created
     }
 
     func submitPrepared(
@@ -152,10 +159,19 @@ actor SelfReplacementCoordinator: SelfReplacing {
         progress: @escaping @Sendable (Double) async -> Void
     ) async throws {
         let transaction = try await store.requirePending(id: transactionID)
-        let data = try await fileStore.read(relativePath: transaction.signedIPARelativePath)
-        guard SHA256.hexDigest(data) == transaction.candidate.ipaSHA256 else {
-            throw SelfReplacementFailure.candidateChanged
+        // 性能：复用 prepare 缓存的 Data（2026-10-04）。命中时跳过磁盘读；
+        // 未命中（进程重启后恢复）时回退原逻辑：读文件 + 验哈希。
+        let data: Data
+        if let cached = preparedDataByTransactionID[transactionID] {
+            data = cached
+        } else {
+            let fromDisk = try await fileStore.read(relativePath: transaction.signedIPARelativePath)
+            guard SHA256.hexDigest(fromDisk) == transaction.candidate.ipaSHA256 else {
+                throw SelfReplacementFailure.candidateChanged
+            }
+            data = fromDisk
         }
+        preparedDataByTransactionID.removeValue(forKey: transactionID)
         _ = try await store.claimSubmission(transactionID: transactionID)
         do {
             try await installChannel.install(

@@ -19,7 +19,7 @@ struct SelfManagementPresentationTests {
         PresentationCase(.localIdentityReady, "本机身份已就绪"),
         PresentationCase(.awaitingReplacementConfirmation, "已提交安装，等待重新打开 Seal 确认"),
         PresentationCase(.selfManaged, "Seal 已由本机管理"),
-        PresentationCase(.recoveryRequired, "需要电脑覆盖恢复")
+        PresentationCase(.recoveryRequired, "需要用电脑覆盖安装恢复")
     ])
     func stateHasPlainLanguageSummary(testCase: PresentationCase) {
         #expect(SelfManagementPresentation(testCase.state).title == testCase.title)

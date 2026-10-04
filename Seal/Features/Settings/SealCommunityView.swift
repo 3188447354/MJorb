@@ -38,7 +38,7 @@ struct SealCommunityView: View {
             }
             .padding(20)
         }
-        .navigationTitle("加入 Seal 社群")
+        .navigationTitle("加入社群")
         .navigationBarTitleDisplayMode(.inline)
         .sealScreenBackground()
         .sheet(isPresented: $showRewardCode) { rewardCodeSheet }
@@ -63,7 +63,7 @@ struct SealCommunityView: View {
                     .frame(width: 44, height: 44)
                     .foregroundStyle(Color.sealAccent)
             }
-            Text("加入 Seal 社群")
+            Text("加入社群")
                 .font(.system(size: 22, weight: .bold))
             Text("反馈问题、获取更新、交流心得")
                 .font(.system(size: 14, weight: .regular))
@@ -121,7 +121,7 @@ struct SealCommunityView: View {
             Image(systemName: "info.circle")
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(Color.sealTextSecondary)
-            Text("欢迎加入 Seal 社群，交流使用心得、反馈问题、获取最新动态。")
+            Text("欢迎加入社群，交流使用心得、反馈问题、获取最新动态。")
                 .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(Color.sealTextSecondary)
             Spacer(minLength: 0)

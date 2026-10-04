@@ -478,6 +478,17 @@ final class AppsViewModel: ObservableObject {
             hasLoaded = true
             restorePendingBatchResultIfNeeded()
 
+            // 重装后自动恢复：列表为空时扫设备找回之前签过的应用
+            if fetched.isEmpty {
+                Task {
+                    let recovery = OrphanAppRecoveryService(appStore: appStore)
+                    let created = await recovery.recoverIfNeeded()
+                    if created > 0 {
+                        await load(force: true)
+                    }
+                }
+            }
+
             // 后台只做「读取 + 派生」：邮箱、图标、签名历史、通知调度。
             // 每一步都校验加载代次 —— 快速连续 load（导入/签名/删除后都会触发）会同时存在
             // 多个后台任务，旧代次的任务不得回写 UI 状态，否则新数据会被旧数据覆盖。

@@ -2575,17 +2575,18 @@ actor ApplePortalSigningService {
         // 串行 9 个 bundle 约 18-27 次顺序调用。限 3 并发防 Apple 1100 限流。
         // 先并行取完、再按序处理失败（删扩展等副作用必须串行、保序）。
         await progress(.preparingProfiles)
+        let appIDsForProfiles = preparedAppIDs
         let profileResults: [Result<ALTProvisioningProfile, Error>] = try await withThrowingTaskGroup(
             of: (Int, Result<ALTProvisioningProfile, Error>).self
         ) { group in
             var ordered = [Result<ALTProvisioningProfile, Error>?](
-                repeating: nil, count: preparedAppIDs.count)
+                repeating: nil, count: appIDsForProfiles.count)
             var nextToStart = 0
             let maxConcurrent = 3
             // 启动首批
-            while nextToStart < min(maxConcurrent, preparedAppIDs.count) {
+            while nextToStart < min(maxConcurrent, appIDsForProfiles.count) {
                 let index = nextToStart
-                let prepared = preparedAppIDs[index]
+                let prepared = appIDsForProfiles[index]
                 group.addTask {
                     do {
                         try Task.checkCancellation()
@@ -2608,12 +2609,12 @@ actor ApplePortalSigningService {
                 await onWorkUnits(SigningWorkUnits(
                     stage: .preparingProfiles,
                     done: completed,
-                    total: preparedAppIDs.count
+                    total: appIDsForProfiles.count
                 ))
                 // 补一个，保持 3 并发
-                if nextToStart < preparedAppIDs.count {
+                if nextToStart < appIDsForProfiles.count {
                     let index = nextToStart
-                    let prepared = preparedAppIDs[index]
+                    let prepared = appIDsForProfiles[index]
                     group.addTask {
                         do {
                             try Task.checkCancellation()
@@ -2779,7 +2780,7 @@ actor ApplePortalSigningService {
             let maxConcurrent = 3
             while nextToStart < min(maxConcurrent, preparedAppIDs.count) {
                 let index = nextToStart
-                let prepared = preparedAppIDs[index]
+                let prepared = appIDsForProfiles[index]
                 group.addTask {
                     try Task.checkCancellation()
                     let profile = try await self.fetchProvisioningProfile(
@@ -2798,11 +2799,11 @@ actor ApplePortalSigningService {
                 await onWorkUnits(SigningWorkUnits(
                     stage: .preparingProfiles,
                     done: completed,
-                    total: preparedAppIDs.count
+                    total: appIDsForProfiles.count
                 ))
-                if nextToStart < preparedAppIDs.count {
+                if nextToStart < appIDsForProfiles.count {
                     let index = nextToStart
-                    let prepared = preparedAppIDs[index]
+                    let prepared = appIDsForProfiles[index]
                     group.addTask {
                         try Task.checkCancellation()
                         let profile = try await self.fetchProvisioningProfile(

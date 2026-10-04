@@ -130,7 +130,7 @@ struct SettingsRootView: View {
 
                         NavigationLink { PrivacyNoticeView() } label: {
                             settingsRow(
-                                title: "本机签名与凭据说明",
+                                title: "隐私政策",
                                 value: nil,
                                 icon: "lock.shield",
                                 showsChevron: true

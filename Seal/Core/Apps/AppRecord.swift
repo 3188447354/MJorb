@@ -188,6 +188,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         case pendingFileTransactionID
         case hasPendingSelfUpdateSource
         case pendingUpdateSourceFingerprint
+        case needsIPAImport
         case isSeal
         case isPinned
         case importedAt

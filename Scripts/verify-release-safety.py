@@ -2063,7 +2063,10 @@ def violations(load=read):
     check(budget_view.count("renewalExecutionPath: renewalExecutionPath") >= 2,
           "R36: 单签进度环与轨道必须同时使用实际续签路径，不能只改其中一个")
     batch_view = strip_comments(load("Seal/Features/Apps/BatchRefreshView.swift"))
-    check("renewalExecutionPath: session.currentRenewalExecutionPath" in batch_view,
+    # 2026-10-04 并行 UI：headline 改为总进度 + 阶段分布，不再有单项轨道。
+    # 因此"批量轨道用实际路径"这条只在仍用 SigningStageTrack 时要求。
+    check("renewalExecutionPath: session.currentRenewalExecutionPath" in batch_view
+          or "SigningStageTrack(" not in batch_view,
           "R36: 批量续签轨道必须使用当前项的实际续签路径")
     # ⚠️ 刻意**不加**「视图必须调 hasRealSignal」这条正向断言：那个符号在视图里出现两次
     #（环 + 轨道），删掉一处仍会留下另一处 ⇒ 断言失去约束力，而变异锚点又只能打在
@@ -4258,9 +4261,15 @@ def violations(load=read):
     #  ② 「只声明依赖不等于接上了」—— `signAndInstall` 有 `onWorkUnits` 形参，
     #     批量调用点不传，轨道那两格就永远退回慢爬，而**界面上没人会发现** ✗。
     batch_track_view = strip_comments(load("Seal/Features/Apps/BatchRefreshView.swift"))
-    check("SigningStageTrack(" in batch_track_view,
-          "R64: 批量续签抽屉必须复用共用的 `SigningStageTrack` ✗ —— 自己再画一条"
-          "就等于把 `bucketFill` 抄第二份，两处从此各说各话")
+    # 2026-10-04 并行 UI：headline 改为总进度（完成数/总数）+ 阶段分布文案，
+    # 不再用单 App 的 5 格轨道（并行时它会撒谎）。因此允许两种形态：
+    # - 单项运行时仍可用 SigningStageTrack（复用共用实现）；
+    # - 多项并行时用总进度条（completed/total，不碰 bucketFill，不算重复实现）。
+    check("SigningStageTrack(" in batch_track_view
+          or "totalProgress" in batch_track_view,
+          "R64: 批量续签抽屉必须复用共用的 `SigningStageTrack` 或用总进度 ✗ —— "
+          "自己再画一条 5 格轨道就等于把 `bucketFill` 抄第二份，两处从此各说各话；"
+          "总进度条（完成数/总数）不算重复实现")
     check("SigningProgressBudget" not in batch_track_view,
           "R64: 批量抽屉不许自己算进度数值 ✗ —— 数值只能由共用的轨道视图给出")
     single_track_view = strip_comments(load("Seal/Features/Apps/SigningProgressView.swift"))
@@ -6178,19 +6187,21 @@ def violations(load=read):
     #
     # 用户要求快捷指令与 App 内一样快。串行时 2 个 App 要 16-20 秒，
     # 大头是 Apple Portal 网络 I/O。改法：
-    # ① `RenewalCoordinator.process()` 里非 Seal 项用 task group 并行，
-    #    Seal 殿后（自替换会杀进程，不能并行）；
+    # ① `RenewalCoordinator.process()` 里按**预测路径**分区并行 ——
+    #    profile-only 项（2026-10-04 起含预测为 profile-only 的 Seal）用 task group 并行，
+    #    预测 fullResign 的 Seal 串行殿后（自替换会杀进程，不能并行）；
     # ② `ProfileOnlyProvisioningProfileInstaller.installAndVerify` 改排队
     #    （替代 351 抛错），拿锁后自愈污染（替代 350 抛错）；
     # ③ 路径信号按 appID 隔离（替代单变量 + 每项重置，并行下是竞态）。
     r117_renewal = strip_comments(load("Seal/Core/Renewal/RenewalCoordinator.swift"))
     check("withThrowingTaskGroup(of: ProcessItemOutcome.self)" in r117_renewal
           and "private func processItem(" in r117_renewal
-          and "sealItems" in r117_renewal
-          and "regularItems" in r117_renewal,
-          "R117①: 批量续签必须并行（非 Seal 项 task group，Seal 串行殿后）✗ —— "
+          and "serialLastItems" in r117_renewal
+          and "parallelItems" in r117_renewal
+          and "predictsProfileOnlyForSeal" in r117_renewal,
+          "R117①: 批量续签必须并行（按预测路径分区，fullResign 的 Seal 串行殿后）✗ —— "
           "串行时 2 个 App 要 16-20 秒，用户要求快捷指令与 App 内一样快；"
-          "Seal 绝不能进并行组：`fullResign` 自替换会杀掉进程")
+          "预测 fullResign 的 Seal 绝不能进并行组：自替换会杀掉进程")
     check("private var renewalExecutionPaths: [UUID: RenewalExecutionPath]" in r117_renewal
           and "currentRenewalExecutionPath" not in r117_renewal,
           "R117②: 路径信号必须按 appID 隔离 ✗ —— "
@@ -6201,6 +6212,18 @@ def violations(load=read):
           "R117③: 设备注入必须排队而非抛 351 ✗ —— "
           "并行后多项会同时到达注入，直接抛错等于让第二项白白失败；"
           "`misagent` 仍是同一时间只有一项在写（排队保证）")
+
+    # R117④: Seal 路径预测必须保守（2026-10-04）——
+    # 预测 profile-only 但实际 fullResign ⇒ 进程在并行中被杀（灾难）；
+    # 预测 fullResign 但实际 profile-only ⇒ 只是多等一轮（无害）。
+    # 因此：非 Seal 直接 false；必须查 policy 判 eligible；证书缺失也 false。
+    r117_signing = strip_comments(load("Seal/Core/Signing/SigningCoordinator.swift"))
+    check("func predictsProfileOnlyForSeal(app: AppRecord) async -> Bool" in r117_signing
+          and "guard app.isSeal else { return false }" in r117_signing
+          and "case .eligible = decision else { return false }" in r117_signing,
+          "R117④: Seal 路径预测必须保守 ✗ —— "
+          "误判 profile-only 会让自替换杀掉并行中的进程；"
+          "任何不确定都必须返回 false 走串行殿后")
 
     check("if identity == .unavailable" in r115_coordinator_code
           and "await ProfileOnlyProvisioningProfileInstaller.shared.markTainted()" in r115_coordinator_code,

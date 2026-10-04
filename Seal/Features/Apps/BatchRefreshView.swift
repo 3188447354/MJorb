@@ -51,27 +51,29 @@ struct BatchRefreshView: View {
                 HStack(alignment: .firstTextBaseline) {
                     Text(progressText)
                         .font(.system(size: 20, weight: .bold, design: .rounded))
+                    Text("已完成")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color.sealTextSecondary)
                     Spacer()
                     ProgressView().controlSize(.small)
                 }
-                Text(currentStageTitle)
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color.sealTextSecondary)
-                Text(viewModel.batchRefreshSession?.currentAppName ?? "当前 App")
-                    .font(.system(size: 18, weight: .semibold))
-                    .lineLimit(1)
-                // ★ 当前 App 的 5 格阶段轨道：与单签抽屉**同一个视图、同一张预算表**
-                //（`SigningStageTrack` → `SigningProgressBudget.bucketFill`）。
-                // 它只讲「手上这一个 App 走到哪一段」；整批进度照旧由上面的 `i / total`
-                // 和下面的队列承担，两件事不互相冒充。
-                if let session = viewModel.batchRefreshSession, let stage = session.currentStage {
-                    SigningStageTrack(
-                        stage: stage,
-                        realProgress: session.currentInstallProgress,
-                        workUnits: session.workUnits,
-                        renewalExecutionPath: session.currentRenewalExecutionPath,
-                        stageStartedAt: session.stageStartedAt
-                    )
+                // 总进度条：并行时不再假装只有一个"当前 App"。
+                ProgressView(value: totalProgress)
+                    .progressViewStyle(.linear)
+                    .tint(Color.sealAccent)
+                // 阶段分布：所有并行项的实时状态汇总，文案无图标。
+                if !stageDistribution.isEmpty {
+                    HStack(spacing: 8) {
+                        ForEach(stageDistribution, id: \.self) { chip in
+                            Text(chip)
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(Color.sealAccent)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color.sealAccent.opacity(0.12))
+                                .clipShape(Capsule())
+                        }
+                    }
                     .padding(.top, 4)
                 }
                 uploadProgressBlock
@@ -239,6 +241,36 @@ struct BatchRefreshView: View {
 
     private var progressText: String {
         "\(viewModel.batchRefreshSession?.currentIndex ?? 0) / \(viewModel.batchRefreshSession?.total ?? 0)"
+    }
+
+    /// 总进度（0-1）：已完成项 / 总项。并行时不再用"当前第几个"冒充进度。
+    private var totalProgress: Double {
+        guard let session = viewModel.batchRefreshSession, session.total > 0 else { return 0 }
+        return Double(session.currentIndex) / Double(session.total)
+    }
+
+    /// 阶段分布文案（2026-10-04 并行 UI）：所有运行中项按阶段收敛成 3 类。
+    /// profile-only 只有"拿描述文件"和"注入"两段耗时，10 个细分阶段收敛后不乱。
+    /// 文案无图标（用户要求）。
+    private var stageDistribution: [String] {
+        guard let session = viewModel.batchRefreshSession else { return [] }
+        var preparing = 0, fetchingProfiles = 0, updatingProfiles = 0
+        for item in session.items where item.state == .running {
+            switch item.stage {
+            case .preparingProfiles:
+                fetchingProfiles += 1
+            case .signing, .pushing, .installing, .verifying:
+                updatingProfiles += 1
+            case .waitingForChannel, .preparingAccount, .preparingBundle,
+                 .preparingCertificate, .preparingAppID, nil:
+                preparing += 1
+            }
+        }
+        var chips: [String] = []
+        if preparing > 0 { chips.append("\(preparing) 个准备中") }
+        if fetchingProfiles > 0 { chips.append("\(fetchingProfiles) 个申请描述文件中") }
+        if updatingProfiles > 0 { chips.append("\(updatingProfiles) 个更新描述文件中") }
+        return chips
     }
 
     private var footerTip: String? {

@@ -202,6 +202,29 @@ actor SigningCoordinator {
         }
     }
 
+    /// 预测 Seal 本轮是否走 profile-only（2026-10-04 并行优化）。
+    ///
+    /// 保守预测：只有**高度确信**是 profile-only 时才返回 true。
+    /// 误判的代价不对称 —— 预测 profile-only 但实际 fullResign ⇒ 进程在并行中被杀（灾难）；
+    /// 预测 fullResign 但实际 profile-only ⇒ 只是 Seal 多等一轮（无害）。
+    /// 因此任何不确定都返回 false（走保守的串行殿后）。
+    ///
+    /// 检查的是 Seal 走 fullResign 的主要触发条件：
+    /// - 有新版待安装（pendingSelfUpdateSource）
+    /// - 证书/私钥缺失
+    /// - 账号不匹配
+    func predictsProfileOnlyForSeal(app: AppRecord) async -> Bool {
+        guard app.isSeal else { return false }
+        let liveIdentity = await liveProfileOnlyIdentity(for: app)
+        let decision = ProfileOnlyRenewalPolicy.evaluate(app: app, liveIdentity: liveIdentity)
+        guard case .eligible = decision else { return false }
+        // 证书私钥必须在本机（否则实际执行时会回落 fullResign）。
+        guard ProfileOnlyRenewalPolicy.effectiveCertificateSerialNumber(
+            app: app, liveIdentity: liveIdentity
+        ) != nil else { return false }
+        return true
+    }
+
     func signAndInstall(
         appID: UUID,
         accountID: UUID,

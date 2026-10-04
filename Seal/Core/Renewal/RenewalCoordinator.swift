@@ -307,12 +307,22 @@ actor RenewalCoordinator {
         // 设备注入由 `ProfileOnlyProvisioningProfileInstaller` 在 actor 内串行排队，
         // `misagent` 同一时间仍只有一项在写。
         //
-        // Seal 必须殿后：`fullResign` 自替换会杀掉当前进程，不能和别人同时跑。
-        // planner 已按 group 排序（Seal group=2 在最后），这里按 `isSeal` 分区。
+        // 分区按**实际路径**而非身份（2026-10-04）：只有 Seal 的 `fullResign`
+        //（自替换重装）会杀掉当前进程；Seal 走 profile-only 时与普通 App 无异，
+        // 可以进并行组。预测是保守的 —— 不确定就殿后（见 predictsProfileOnlyForSeal）。
         let apps = try await appStore.fetchAll()
-        let sealAppIDs = Set(apps.filter(\.isSeal).map(\.id))
-        let regularItems = queue.filter { !sealAppIDs.contains($0.appID) }
-        let sealItems = queue.filter { sealAppIDs.contains($0.appID) }
+        let appsByID = Dictionary(uniqueKeysWithValues: apps.map { ($0.id, $0) })
+        var parallelItems: [RefreshQueueItem] = []
+        var serialLastItems: [RefreshQueueItem] = []
+        for item in queue {
+            if let app = appsByID[item.appID], app.isSeal,
+               await signingCoordinator.predictsProfileOnlyForSeal(app: app) == false {
+                // Seal 且预测走 fullResign（或不确定）⇒ 串行殿后。
+                serialLastItems.append(item)
+            } else {
+                parallelItems.append(item)
+            }
+        }
         // 原队列下标：日志里的「第 i/N 项」与串行时一致，不因并行重排。
         let offsetsByAppID = Dictionary(
             uniqueKeysWithValues: queue.enumerated().map { ($1.appID, $0) }
@@ -330,7 +340,7 @@ actor RenewalCoordinator {
         // actor-isolated 闭包，捕获 `succeeded` 等变量会被判数据竞态。
         // 直接在循环里 switch 内联。
         try await withThrowingTaskGroup(of: ProcessItemOutcome.self) { group in
-            for item in regularItems {
+            for item in parallelItems {
                 let offset = offsetsByAppID[item.appID] ?? 0
                 group.addTask {
                     try await self.processItem(
@@ -351,8 +361,8 @@ actor RenewalCoordinator {
             }
         }
 
-        // Seal 项串行殿后。
-        for item in sealItems {
+        // 预测 fullResign 的 Seal 项串行殿后（自替换会杀进程）。
+        for item in serialLastItems {
             try Task.checkCancellation()
             let offset = offsetsByAppID[item.appID] ?? 0
             let outcome = try await processItem(

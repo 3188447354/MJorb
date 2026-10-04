@@ -107,6 +107,9 @@ enum AssetCatalogParser {
 
     // MARK: - LZVN 解压
 
+    // COMPRESSION_LZVN 在某些 Swift 工具链下不在作用域，本地定义兜底（值为 4，见 <compression.h>）
+    private static let lzvnAlgorithm = compression_algorithm(4)
+
     private static func decompressLZVN(_ data: Data, expectedSize: Int) -> Data? {
         // 用 Compression.framework 的 LZVN 解压
         // 注意：需要 iOS 9+，公开 API
@@ -122,7 +125,7 @@ enum AssetCatalogParser {
                     srcBase.assumingMemoryBound(to: UInt8.self),
                     data.count,
                     nil,
-                    COMPRESSION_LZVN
+                    lzvnAlgorithm
                 )
             }
         }

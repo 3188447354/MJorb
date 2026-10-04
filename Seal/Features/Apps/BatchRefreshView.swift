@@ -174,6 +174,7 @@ struct BatchRefreshView: View {
             Spacer(minLength: 10)
             QueueStatusRing(state: item.state, fill: ringFill(for: item))
                 .accessibilityLabel(accessibilityLabel(for: item.state))
+                .padding(.trailing, 4)
         }
         .frame(minHeight: 54)
         .onAppear { recordMaxFill(for: item) }

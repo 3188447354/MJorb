@@ -3413,7 +3413,8 @@ final class AppsViewModel: ObservableObject {
                 stagedIPA: StagedIPA(
                     id: appID,
                     url: FileManager.default.temporaryDirectory.appending(path: "Demo.ipa")
-                )
+                ),
+                versionCheck: .newApp
             )
             return AppsViewModel(apps: [], draft: draft)
         }

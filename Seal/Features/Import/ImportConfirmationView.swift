@@ -14,6 +14,8 @@ struct ImportConfirmationView: View {
     let onCreateCopy: () -> Void
 
     @State private var didTapPrimaryAction = false
+    @State private var showSameVersionConfirm = false
+    @State private var showDowngradeConfirm = false
 
     private var showsProgress: Bool {
         isCommitting || didTapPrimaryAction
@@ -23,9 +25,27 @@ struct ImportConfirmationView: View {
         failure == nil && replacementCandidate != nil
     }
 
+    private var isAlreadyLatest: Bool {
+        if case .alreadyLatest = draft.versionCheck { return true }
+        return false
+    }
+
     var body: some View {
         SealDrawer(title: drawerTitle) {
             VStack(spacing: 18) {
+                // 已是最新提示
+                if case .alreadyLatest(let version) = draft.versionCheck {
+                    HStack(spacing: 10) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                        Text("已是最新版本 \(version)，无需导入")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                }
                 header
                 if let failure {
                     failureCard(failure)
@@ -38,8 +58,19 @@ struct ImportConfirmationView: View {
             VStack(spacing: 10) {
                 Button {
                     guard showsProgress == false else { return }
-                    didTapPrimaryAction = true
-                    onPrimaryAction()
+                    // 版本检查：根据结果决定是否直接导入还是弹确认
+                    switch draft.versionCheck {
+                    case .alreadyLatest:
+                        // 已是最新，不允许导入（按钮已禁用，这里兜底）
+                        return
+                    case .sameVersionDifferentContent:
+                        showSameVersionConfirm = true
+                    case .downgrade:
+                        showDowngradeConfirm = true
+                    case .upgrade, .newApp:
+                        didTapPrimaryAction = true
+                        onPrimaryAction()
+                    }
                 } label: {
                     if showsProgress {
                         HStack(spacing: 10) {
@@ -52,7 +83,7 @@ struct ImportConfirmationView: View {
                     }
                 }
                 .sealPrimaryAction(cornerRadius: 14)
-                .disabled(showsProgress)
+                .disabled(showsProgress || isAlreadyLatest)
                 .accessibilityIdentifier("import-confirmation-primary")
 
                 if isOverwriteUpdate {
@@ -69,6 +100,30 @@ struct ImportConfirmationView: View {
         }
         .interactiveDismissDisabled(showsProgress)
         .accessibilityIdentifier("import-confirmation")
+        // 同版本不同内容确认
+        .alert("内容不同，是否覆盖？", isPresented: $showSameVersionConfirm) {
+            Button("取消", role: .cancel) {}
+            Button("覆盖", role: .destructive) {
+                didTapPrimaryAction = true
+                onPrimaryAction()
+            }
+        } message: {
+            if case .sameVersionDifferentContent(let version) = draft.versionCheck {
+                Text("已安装版本 \(version)，新包版本号相同但内容不同，可能是修改过的包。")
+            }
+        }
+        // 降级警告
+        .alert("确定要降级吗？", isPresented: $showDowngradeConfirm) {
+            Button("取消", role: .cancel) {}
+            Button("继续降级", role: .destructive) {
+                didTapPrimaryAction = true
+                onPrimaryAction()
+            }
+        } message: {
+            if case .downgrade(let oldVersion, let newVersion) = draft.versionCheck {
+                Text("当前已安装 \(oldVersion)，新包是旧版本 \(newVersion)，降级可能导致数据丢失。")
+            }
+        }
         .onChange(of: isCommitting) { newValue in
             if newValue == false { didTapPrimaryAction = false }
         }
@@ -84,6 +139,7 @@ struct ImportConfirmationView: View {
 
     private var primaryActionTitle: String {
         if let recovery = failure?.recovery { return recovery }
+        if isAlreadyLatest { return "已是最新" }
         return isOverwriteUpdate ? "覆盖更新" : "导入应用"
     }
 

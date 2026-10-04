@@ -61,10 +61,13 @@ actor ImportWorkflow {
             stagedIPA = staged
             try Task.checkCancellation()
             let parsed = try parser.parse(url: staged.url)
+            // 版本检查：找同 Bundle ID 的已存在记录，比较版本
+            let versionCheck = await checkVersion(parsed: parsed, stagedURL: staged.url)
             let draft = ImportDraft(
                 appID: makeID(),
                 parsedIPA: parsed,
-                stagedIPA: staged
+                stagedIPA: staged,
+                versionCheck: versionCheck
             )
             state = .awaitingConfirmation(draft)
         } catch is CancellationError {
@@ -80,6 +83,68 @@ actor ImportWorkflow {
             } else {
                 state = .failed(importFailure)
             }
+        }
+    }
+
+    /// 版本检查：比较新 IPA 与已存在记录的版本
+    /// - 高版本 → .upgrade（直接覆盖）
+    /// - 同版本同内容 → .alreadyLatest（阻止导入）
+    /// - 同版本不同内容 → .sameVersionDifferentContent（需确认）
+    /// - 低版本 → .downgrade（需二次确认）
+    private func checkVersion(parsed: ParsedIPA, stagedURL: URL) async -> VersionCheckResult {
+        guard let records = try? await appStore.fetchAll() else {
+            return .newApp
+        }
+        // 找同 Bundle ID 的已存在记录（包括 Seal 自更新）
+        let existing = Self.existingSealRecord(
+            for: parsed,
+            in: records,
+            runningSealBundleIdentifier: runningSealBundleIdentifier
+        ) ?? records.first { record in
+            record.isSeal == false
+                && record.originalBundleIdentifier == parsed.bundleIdentifier
+        }
+        guard let existing else {
+            return .newApp
+        }
+
+        let oldVersion = existing.version ?? ""
+        let newVersion = parsed.version ?? ""
+        let comparison = Self.compareVersions(newVersion, oldVersion)
+
+        if comparison > 0 {
+            return .upgrade(oldVersion: oldVersion, newVersion: newVersion)
+        } else if comparison < 0 {
+            return .downgrade(oldVersion: oldVersion, newVersion: newVersion)
+        } else {
+            // 同版本：比较内容指纹
+            let newFingerprint = try? AppFileStore.streamingSHA256(url: stagedURL)
+            // 找旧 IPA 文件路径
+            if let oldIPAPath = existing.ipaRelativePath,
+               let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                let oldURL = docs.appendingPathComponent(oldIPAPath)
+                let oldFingerprint = try? AppFileStore.streamingSHA256(url: oldURL)
+                if let newFP = newFingerprint, let oldFP = oldFingerprint, newFP == oldFP {
+                    return .alreadyLatest(version: newVersion)
+                }
+            }
+            // 指纹不同或无法比较 → 视为内容不同
+            return .sameVersionDifferentContent(version: newVersion)
+        }
+    }
+
+    /// 版本号比较：返回 >0 表示 v1 > v2，<0 表示 v1 < v2，=0 表示相等
+    private static func compareVersions(_ v1: String, _ v2: String) -> Int {
+        // 空版本视为 0
+        if v1.isEmpty && v2.isEmpty { return 0 }
+        if v1.isEmpty { return -1 }
+        if v2.isEmpty { return 1 }
+        // 用 numeric 比较，正确处理 1.10 > 1.9
+        let result = v1.compare(v2, options: .numeric)
+        switch result {
+        case .orderedAscending: return -1
+        case .orderedDescending: return 1
+        case .orderedSame: return 0
         }
     }
 

@@ -24,6 +24,9 @@ struct LogViewerView: View {
             }
             .padding()
         }
+        .refreshable {
+            await loadRounds()
+        }
         .navigationTitle("日志")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -34,16 +37,14 @@ struct LogViewerView: View {
                             .font(.system(size: 16, weight: .medium))
                             .foregroundColor(.red)
                             .frame(width: 36, height: 36)
-                            .background(glassBackground)
-                            .clipShape(Circle())
+                            .glassButton()
                     }
                     Button(action: exportLogs) {
                         Image(systemName: "square.and.arrow.up")
                             .font(.system(size: 16, weight: .medium))
                             .foregroundColor(.accentColor)
                             .frame(width: 36, height: 36)
-                            .background(glassBackground)
-                            .clipShape(Circle())
+                            .glassButton()
                     }
                 }
             }
@@ -62,20 +63,12 @@ struct LogViewerView: View {
         .sheet(isPresented: $isExporting) {
             if let url = exportURL {
                 ShareSheet(activityItems: [url])
+            } else {
+                // 兜底：理论上不会走到（exportLogs 里已判空），避免空白抽屉
+                Text("日志文件不存在")
+                    .foregroundColor(.secondary)
+                    .padding()
             }
-        }
-    }
-
-    @ViewBuilder
-    private var glassBackground: some View {
-        if #available(iOS 26.0, *) {
-            // iOS 26 Liquid Glass
-            Color.clear
-                .glassEffect(.regular, in: Circle())
-        } else {
-            // 低版本降级：半透明模糊
-            Color.white.opacity(0.4)
-                .background(.ultraThinMaterial, in: Circle())
         }
     }
 
@@ -89,18 +82,36 @@ struct LogViewerView: View {
         }
         let parsed = LogRound.parse(from: text)
         await MainActor.run {
-            // 最新的在前面，最多显示 50 轮
-            rounds = Array(parsed.suffix(50).reversed())
+            // 日志文件是最新的在前面，取前 50 轮直接显示（不反转）
+            rounds = Array(parsed.prefix(50))
         }
     }
 
     private func exportLogs() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
         let logURL = docs?.appendingPathComponent("Seal-log.txt")
-        if let url = logURL, FileManager.default.fileExists(atPath: url.path) {
-            exportURL = url
+        guard let url = logURL, FileManager.default.fileExists(atPath: url.path) else {
+            exportURL = nil
             isExporting = true
+            return
         }
+        // 复制到 tmp 目录并给个友好文件名，避免直接分享 Documents 下的文件出问题
+        let tmpURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Seal-日志-\(formattedDate()).txt")
+        try? FileManager.default.removeItem(at: tmpURL)
+        do {
+            try FileManager.default.copyItem(at: url, to: tmpURL)
+            exportURL = tmpURL
+        } catch {
+            exportURL = url  // 复制失败就用原文件
+        }
+        isExporting = true
+    }
+
+    private func formattedDate() -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyyMMdd-HHmmss"
+        return fmt.string(from: Date())
     }
 
     private func clearLogs() async {
@@ -133,30 +144,44 @@ struct LogRound: Identifiable {
     static func parse(from text: String) -> [LogRound] {
         var rounds: [LogRound] = []
         var currentLines: [String] = []
+        var currentDate: Date?
         var inBlock = false
 
         for line in text.components(separatedBy: "\n") {
-            // 日志行格式：时间 级别 分类 消息，取消息部分
-            // 简化：直接找 ▶/✓/✗/■/原因 行
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            // 提取消息部分（去掉时间戳前缀）
             let message = extractMessage(from: line)
 
             if message.hasPrefix("━") {
                 if inBlock && !currentLines.isEmpty {
-                    if let round = buildRound(from: currentLines) {
+                    if let round = buildRound(from: currentLines, date: currentDate) {
                         rounds.append(round)
                     }
                     currentLines = []
+                    currentDate = nil
                 }
                 inBlock.toggle()
                 continue
             }
             if inBlock {
+                // 记录第一行的日期（▶ 行的时间戳）
+                if currentDate == nil, message.hasPrefix("▶") {
+                    currentDate = extractDate(from: line)
+                }
                 currentLines.append(message)
             }
         }
         return rounds
+    }
+
+    /// 从日志行提取日期（格式：2026-10-05 00:33:19）
+    private static func extractDate(from line: String) -> Date? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        // 取前 19 个字符：yyyy-MM-dd HH:mm:ss
+        guard trimmed.count >= 19 else { return nil }
+        let dateStr = String(trimmed.prefix(19))
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        fmt.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        return fmt.date(from: dateStr)
     }
 
     private static func extractMessage(from line: String) -> String {
@@ -178,15 +203,15 @@ struct LogRound: Identifiable {
         return ""
     }
 
-    private static func buildRound(from lines: [String]) -> LogRound? {
-        var title = ""
+    private static func buildRound(from lines: [String], date: Date?) -> LogRound? {
+        var rawTitle = ""
         var items: [LogRoundItem] = []
         var footer = ""
         var pendingReason: String?
 
         for line in lines {
             if line.hasPrefix("▶") {
-                title = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                rawTitle = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
             } else if line.hasPrefix("✓") {
                 let text = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
                 items.append(LogRoundItem(succeeded: true, text: text, reason: nil))
@@ -214,8 +239,37 @@ struct LogRound: Identifiable {
             // 跳过 ─ 分隔线和 → 指引行
         }
 
-        guard !title.isEmpty else { return nil }
+        guard !rawTitle.isEmpty else { return nil }
+        let title = formatTitle(rawTitle, date: date)
         return LogRound(title: title, items: items, footer: footer)
+    }
+
+    /// 格式化标题：只把"第X轮"换成相对日期，其余不动
+    /// "第4轮 · 23:36:39 · 快捷指令 · 3个App" → "今天 · 23:36:39 · 快捷指令 · 3个App"
+    private static func formatTitle(_ raw: String, date: Date?) -> String {
+        let parts = raw.components(separatedBy: "·").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count >= 4 else { return raw }
+
+        // 相对日期替换第X轮
+        let dateStr: String
+        if let d = date {
+            let cal = Calendar.current
+            if cal.isDateInToday(d) {
+                dateStr = "今天"
+            } else if cal.isDateInYesterday(d) {
+                dateStr = "昨天"
+            } else {
+                let fmt = DateFormatter()
+                fmt.dateFormat = "M月d日"
+                dateStr = fmt.string(from: d)
+            }
+        } else {
+            dateStr = parts[0]  // 拿不到日期就保留原样
+        }
+
+        var newParts = parts
+        newParts[0] = dateStr
+        return newParts.joined(separator: " · ")
     }
 }
 
@@ -275,4 +329,21 @@ struct ShareSheet: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+/// iOS 26 原生毛玻璃按钮：直接作用在内容上，不套多余层级，低版本自动降级
+struct GlassButtonModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular, in: Circle())
+        } else {
+            content.background(.ultraThinMaterial, in: Circle())
+        }
+    }
+}
+
+extension View {
+    func glassButton() -> some View {
+        modifier(GlassButtonModifier())
+    }
 }

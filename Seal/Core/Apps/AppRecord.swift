@@ -263,6 +263,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
             AppExtensionProfileStrategy.self,
             forKey: .extensionProfileStrategy
         )
+        needsIPAImport = try container.decodeIfPresent(Bool.self, forKey: .needsIPAImport) ?? false
     }
 
     var hasPersistedSigningIdentity: Bool {

@@ -240,13 +240,29 @@ struct BatchRefreshView: View {
     }
 
     private var progressText: String {
-        "\(viewModel.batchRefreshSession?.currentIndex ?? 0) / \(viewModel.batchRefreshSession?.total ?? 0)"
+        let session = viewModel.batchRefreshSession
+        return "\(completedCount) / \(session?.total ?? 0)"
+    }
+
+    /// 已终态的项数（完成 / 失败 / 待处理 / 等 Seal 新进程确认都算本轮已定）。
+    /// 不用 `session.currentIndex`：它是最后完成项的队列下标，并行时完成顺序
+    /// 是乱的（日志里出现过 2/3 → 3/3 → 跳回 1/3），拿它当进度会倒退。
+    private var completedCount: Int {
+        guard let session = viewModel.batchRefreshSession else { return 0 }
+        return session.items.filter { item in
+            switch item.state {
+            case .completed, .failed, .waiting, .awaitingSealConfirmation:
+                return true
+            case .running, .preparingSealUpdate:
+                return false
+            }
+        }.count
     }
 
     /// 总进度（0-1）：已完成项 / 总项。并行时不再用"当前第几个"冒充进度。
     private var totalProgress: Double {
         guard let session = viewModel.batchRefreshSession, session.total > 0 else { return 0 }
-        return Double(session.currentIndex) / Double(session.total)
+        return Double(completedCount) / Double(session.total)
     }
 
     /// 阶段分布文案（2026-10-04 并行 UI）：所有运行中项按阶段收敛成 3 类。

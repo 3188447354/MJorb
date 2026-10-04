@@ -1917,7 +1917,14 @@ final class AppsViewModel: ObservableObject {
     ///
     /// 不做「假装已停止」的假象：日志里明确记一笔，用户与开发者都能对上账。
     func cancelBatchRefresh() {
-        let processed = batchRefreshSession?.currentIndex ?? 0
+        // 已终态项数才是真实已处理数；currentIndex 是最后完成项的队列下标，
+        // 并行时完成顺序是乱的，不能拿它当计数（BatchRefreshView 同一教训）。
+        let processed = batchRefreshSession?.items.filter {
+            switch $0.state {
+            case .completed, .failed, .waiting, .awaitingSealConfirmation: return true
+            case .running, .preparingSealUpdate: return false
+            }
+        }.count ?? 0
         let total = batchRefreshSession?.total ?? 0
         batchRefreshTask?.cancel()
         isBatchRefreshSheetPresented = false

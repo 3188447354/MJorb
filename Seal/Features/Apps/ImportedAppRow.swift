@@ -103,7 +103,15 @@ struct ImportedAppRow: View {
 
     @ViewBuilder
     private var trailing: some View {
-        if app.belongsInInstalledList {
+        if app.needsIPAImport {
+            // 空壳记录：显示待导入徽标
+            Text("待导入 IPA")
+                .font(.caption.weight(.semibold))
+                .foregroundColor(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.orange, in: RoundedRectangle(cornerRadius: 8))
+        } else if app.belongsInInstalledList {
             let validity = AppOperationPresentation(app: app).validity
             Text(validity?.text ?? "已安装")
                 .font(.subheadline.weight(.semibold))
@@ -145,6 +153,9 @@ struct ImportedAppRow: View {
     }
 
     private var trailingLabel: String {
+        if app.needsIPAImport {
+            return "待导入 IPA"
+        }
         if app.belongsInInstalledList {
             return AppOperationPresentation(app: app).validity?.text ?? "已安装"
         }

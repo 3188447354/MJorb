@@ -40,6 +40,9 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
     var lastInstallFailureReason: String?
     var pendingFileTransactionID: UUID?
     var hasPendingSelfUpdateSource: Bool
+    /// 重装后扫回来的"空壳"记录：有名字版本但没有 IPA 文件，需要用户重新导入 IPA。
+    /// 为 true 时列表显示"待导入 IPA"徽标，且不能签名/续签。
+    var needsIPAImport: Bool
     /// 待安装的自更新源包指纹（源 IPA 的 SHA256，导入 Seal 自身 IPA 时写入）。
     /// 续签准入用它判断「有没有待安装的更新源」：版本号相同时只能靠内容指纹区分。
     /// 自替换安装成功、结算完成后清掉（`SelfAppRegistrar.atomicallyApplyInstalledIdentity`），
@@ -91,6 +94,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         pendingFileTransactionID: UUID? = nil,
         hasPendingSelfUpdateSource: Bool = false,
         pendingUpdateSourceFingerprint: String? = nil,
+        needsIPAImport: Bool = false,
         isSeal: Bool = false,
         isPinned: Bool = false,
         importedAt: Date,
@@ -135,6 +139,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         self.lastInstallFailureReason = lastInstallFailureReason
         self.pendingFileTransactionID = pendingFileTransactionID
         self.hasPendingSelfUpdateSource = hasPendingSelfUpdateSource
+        self.needsIPAImport = needsIPAImport
         self.pendingUpdateSourceFingerprint = pendingUpdateSourceFingerprint
         self.isSeal = isSeal
         self.isPinned = isPinned

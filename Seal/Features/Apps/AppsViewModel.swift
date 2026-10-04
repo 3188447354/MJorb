@@ -1651,7 +1651,7 @@ final class AppsViewModel: ObservableObject {
                 code: failure.code
             )
         } catch {
-            try? logStore?.append(category: .signing, level: .error,
+            try? await logStore?.append(category: .signing, level: .error,
                 message: "SEAL-SIGN-500 底层诊断：\(ErrorDiagnosticFormatter.diagnostic(for: error))",
                 code: "SEAL-SIGN-500")
             alertFailure = Self.unexpectedSigningFailure(error)
@@ -2863,7 +2863,7 @@ final class AppsViewModel: ObservableObject {
         forceResign: Bool
     ) async throws -> AppRecord {
         guard let signingCoordinator else {
-            try? logStore?.append(category: .signing, level: .error,
+            try? await logStore?.append(category: .signing, level: .error,
                 message: "SEAL-SIGN-500 底层诊断：[Seal.AppsViewModel 1] signingCoordinator 为空",
                 code: "SEAL-SIGN-500")
             throw Self.unexpectedSigningFailure(
@@ -2940,7 +2940,7 @@ final class AppsViewModel: ObservableObject {
         }
         // `maxAttempts >= 1` ⇒ 循环要么 return、要么在最后一次 `shouldRetry` 为假时抛出。
         // 这行只是让编译器满意，实际不可达。
-        try? logStore?.append(category: .signing, level: .error,
+        try? await logStore?.append(category: .signing, level: .error,
             message: "SEAL-SIGN-500 底层诊断：[Seal.AppsViewModel 2] 重试循环意外落空",
             code: "SEAL-SIGN-500")
         throw Self.unexpectedSigningFailure(

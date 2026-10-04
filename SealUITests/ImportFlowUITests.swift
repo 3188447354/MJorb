@@ -28,7 +28,7 @@ final class ImportFlowUITests: XCTestCase {
         XCTAssertTrue(element("import-confirmation-version", in: app).exists)
         assertSummary("import-summary-extensions", value: "1 个", in: app)
         assertSummary("import-summary-compatibility", value: "可导入", in: app)
-        XCTAssertTrue(app.buttons["导入"].exists)
+        XCTAssertTrue(app.buttons["导入应用"].exists)
         XCTAssertTrue(app.buttons["取消导入"].exists)
     }
 

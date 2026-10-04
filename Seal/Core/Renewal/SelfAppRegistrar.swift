@@ -215,6 +215,7 @@ actor SelfAppRegistrar {
                 ipaRelativePath: files.ipaRelativePath,
                 signedIPARelativePath: nil,
                 preferredBundleIdentifier: metadata.bundleIdentifier,
+                preferredIconRelativePath: existing?.preferredIconRelativePath,
                 isSeal: true,
                 isPinned: true,
                 importedAt: existing?.importedAt ?? Date(),

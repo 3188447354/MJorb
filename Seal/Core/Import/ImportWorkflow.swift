@@ -175,6 +175,8 @@ actor ImportWorkflow {
             let preferredIconData: Data?
             if let path = existingSeal?.preferredIconRelativePath
                 ?? existingSeal?.iconRelativePath
+                ?? existing?.preferredIconRelativePath
+                ?? existing?.iconRelativePath
                 ?? preferenceSource?.preferredIconRelativePath {
                 preferredIconData = try? await fileStore.read(relativePath: path)
             } else {
@@ -385,6 +387,8 @@ actor ImportWorkflow {
             ?? preferenceSource?.preferredDisplayName
         let preferredIconRelativePath = existing?.preferredIconRelativePath
             ?? files.preferredIconRelativePath
+        let iconRelativePath = files.iconRelativePath
+            ?? existing?.iconRelativePath
         let removedExtensionBundleIdentifiers = existing?.removedExtensionBundleIdentifiers
             ?? preferenceSource?.removedExtensionBundleIdentifiers
             ?? []
@@ -398,7 +402,7 @@ actor ImportWorkflow {
             version: parsed.version,
             buildNumber: parsed.buildNumber,
             size: parsed.fileSize,
-            iconRelativePath: files.iconRelativePath,
+            iconRelativePath: iconRelativePath,
             state: .preflightPassed,
             expiryDate: nil,
             accountID: nil,
@@ -432,7 +436,7 @@ actor ImportWorkflow {
             version: parsed.version,
             buildNumber: parsed.buildNumber,
             size: parsed.fileSize,
-            iconRelativePath: files.iconRelativePath,
+            iconRelativePath: files.iconRelativePath ?? existingSeal.iconRelativePath,
             state: .installed,
             expiryDate: existingSeal.expiryDate,
             accountID: existingSeal.accountID,
@@ -495,7 +499,7 @@ actor ImportWorkflow {
             version: parsed.version,
             buildNumber: parsed.buildNumber,
             size: parsed.fileSize,
-            iconRelativePath: files.iconRelativePath,
+            iconRelativePath: files.iconRelativePath ?? existing.iconRelativePath,
             state: .installed,
             expiryDate: existing.expiryDate,
             accountID: existing.accountID,

@@ -80,6 +80,11 @@ actor SelfReplacementTransactionStore {
         return transaction
     }
 
+    /// 清除残留的待处理事务（用户要求：不管什么条件都清，直接重建）。
+    func clearPending() throws {
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
     func requirePending(id: UUID) throws -> SelfReplacementTransaction {
         guard let transaction = try loadPending(), transaction.id == id else {
             throw SelfReplacementStoreError.pendingNotFound

@@ -6357,7 +6357,7 @@ def violations(load=read):
           in r92_view_model_code
           and 'reason: "安装失败了，遇到了未知错误。\\(ImportFailure.sendLogToAuthor)。"'
           in r92_signing
-          and 'reason: "Seal 自更新安装失败了，遇到了未知错误。\\(ImportFailure.sendLogToAuthor)。"'
+          and 'reason: "Seal 更新失败了，请重试。"'
           in r92_signing
           and "[\\(nsError.domain) \\(nsError.code)]" not in r92_view_model_code
           and "[\\(nsError.domain) \\(nsError.code)]" not in r92_signing
@@ -10127,8 +10127,8 @@ def main():
          "R92⑧:"),
         # ⑧b `SEAL-SELF-109` 的用户文案带回 `[域 码]` 术语 ⇒ R92⑧ 报红。
         ("Seal/Core/Signing/SigningCoordinator.swift",
-         'reason: "Seal 自更新安装失败了，遇到了未知错误。\\(ImportFailure.sendLogToAuthor)。"',
-         'reason: "Seal 自更新安装失败了，遇到了未知错误。\\n[\\(nsError.domain) \\(nsError.code)]"',
+         'reason: "Seal 更新失败了，请重试。"',
+         'reason: "Seal 更新失败了，请重试。\\n[\\(nsError.domain) \\(nsError.code)]"',
          "R92⑧:"),
         # ⑨ 关键单测被改名（不变量没人守）⇒ R92⑨ 报红。
         ("SealTests/Renewal/DeviceChannelTransientPolicyTests.swift",

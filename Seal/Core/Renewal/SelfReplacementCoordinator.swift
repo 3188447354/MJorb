@@ -148,7 +148,14 @@ actor SelfReplacementCoordinator: SelfReplacing {
             candidate: candidate,
             signedIPARelativePath: signedIPARelativePath
         )
-        let created = try await store.create(transaction)
+        let created: SelfReplacementTransaction
+        do {
+            created = try await store.create(transaction)
+        } catch SelfReplacementStoreError.alreadySubmitted {
+            // 上次自替换残留的事务文件，直接清掉重建（MJ 要求：不管条件都清）
+            try await store.clearPending()
+            created = try await store.create(transaction)
+        }
         // 缓存 Data 供 submitPrepared 复用（省一次磁盘读 + SHA256）。
         preparedDataByTransactionID[id] = ipaData
         return created

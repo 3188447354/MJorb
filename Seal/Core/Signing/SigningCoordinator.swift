@@ -2121,7 +2121,7 @@ actor SigningCoordinator {
                     code: "SEAL-SELF-109"
                 )
                 throw Self.failure(
-                    reason: "Seal 自更新安装失败了，遇到了未知错误。\(ImportFailure.sendLogToAuthor)。",
+                    reason: "Seal 更新失败了，请重试。",
                     recovery: "知道了",
                     code: "SEAL-SELF-109"
                 )

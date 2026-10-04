@@ -35,20 +35,16 @@ struct LogViewerView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                HStack(spacing: 8) {
+                HStack(spacing: 16) {
                     Button(action: { showClearConfirm = true }) {
                         Image(systemName: "trash")
-                            .font(.system(size: 16, weight: .medium))
+                            .font(.system(size: 17, weight: .regular))
                             .foregroundColor(.red)
-                            .frame(width: 36, height: 36)
-                            .glassButton()
                     }
                     Button(action: exportLogs) {
                         Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 16, weight: .medium))
+                            .font(.system(size: 17, weight: .regular))
                             .foregroundColor(.accentColor)
-                            .frame(width: 36, height: 36)
-                            .glassButton()
                     }
                 }
             }
@@ -98,6 +94,8 @@ struct LogViewerView: View {
         guard let url = logURL,
               let text = try? String(contentsOf: url, encoding: .utf8),
               !text.isEmpty else {
+            // 文件不存在或为空时清空显示，避免显示过期缓存
+            await MainActor.run { rounds = [] }
             return
         }
         let parsed = LogRound.parse(from: text)

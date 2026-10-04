@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 /// 日志查看页：只显示人话卡片，不显示原始日志。
@@ -8,6 +9,7 @@ struct LogViewerView: View {
     @State private var isExporting = false
     @State private var exportURL: URL?
     @State private var showClearConfirm = false
+    @State private var selectedError: LogRound.LogRoundItem?
 
     var body: some View {
         ScrollView {
@@ -56,6 +58,22 @@ struct LogViewerView: View {
             }
         } message: {
             Text("将删除所有本地日志，此操作不可恢复。")
+        }
+        .alert("解决办法", isPresented: Binding(
+            get: { selectedError != nil },
+            set: { if !$0 { selectedError = nil } }
+        )) {
+            Button("复制错误信息") {
+                if let err = selectedError {
+                    let info = err.text + (err.reason.map { "\n原因：\($0)" } ?? "")
+                    UIPasteboard.general.string = info
+                }
+            }
+            Button("好的", role: .cancel) {}
+        } message: {
+            if let err = selectedError {
+                Text((err.reason ?? "暂无具体解决办法，可复制错误信息到社群求助。"))
+            }
         }
         .task {
             await loadRounds()
@@ -299,10 +317,14 @@ struct RoundCard: View {
                             .padding(.leading, 20)
                     }
                     if !item.succeeded {
-                        Text("查看解决办法 →")
-                            .font(.system(size: 13))
-                            .foregroundColor(.accentColor)
-                            .padding(.leading, 20)
+                        Button {
+                            selectedError = item
+                        } label: {
+                            Text("查看解决办法 →")
+                                .font(.system(size: 13))
+                                .foregroundColor(.accentColor)
+                        }
+                        .padding(.leading, 20)
                     }
                 }
             }

@@ -530,7 +530,6 @@ actor SigningCoordinator {
                         await ProfileOnlyProvisioningProfileInstaller.shared.markTainted()
                     }
                 }
-                }
             }
             if isInstalledRenewal {
                 await onRenewalExecutionPath(

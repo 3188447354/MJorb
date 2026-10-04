@@ -212,8 +212,8 @@ struct AppPresentationTests {
         // 文案必须同时说清「这一次会重装」与「之后不再重装」——
         // 缺后半句，用户会以为「每次续签都要重装」，而那正是这套快路径要消除的误解。
         #expect(
-            AppSigningPresentationHelpers.pendingUpdateDetail.contains("完整重签并安装")
-                && AppSigningPresentationHelpers.pendingUpdateDetail.contains("只更新描述文件")
+            AppSigningPresentationHelpers.pendingUpdateDetail.contains("完整签名并安装")
+                && AppSigningPresentationHelpers.pendingUpdateDetail.contains("只更新签名")
         )
 
         // 版本一致（更新已经装上）⇒ 不说话，否则每次续签都会看到一句假警报。

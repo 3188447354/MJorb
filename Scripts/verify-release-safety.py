@@ -9945,14 +9945,18 @@ def main():
         #    ⚠️ 锚点必须带上分支注释：本函数里手动分支也是 refreshAll，
         #    裸换 `refreshAll`→`refreshPredictive` 会误伤手动分支。
         ("Seal/Features/Apps/AppsViewModel.swift",
+         "                // 🔴 快捷指令触发 = 全量续签（2026-10-03 用户明确要求）：\n"
          "                // 触发就走续签，不做预测式过滤。之前预测式（48h 窗口）让测试连点时\n"
          "                // 每轮 0 个纳入、静默结束 —— 用户要的是\"点了就有动作\"。\n"
-         "                result = try await renewalCoordinator.refreshAll(progress: progress)\n"
-         "            } else {",
+         "                result = try await renewalCoordinator.refreshAll(triggerSource: triggerSource, progress: progress)\n"
+         "            }\n"
+         "            // 拿到结果就发通知",
+         "                // 🔴 快捷指令触发 = 全量续签（2026-10-03 用户明确要求）：\n"
          "                // 触发就走续签，不做预测式过滤。之前预测式（48h 窗口）让测试连点时\n"
          "                // 每轮 0 个纳入、静默结束 —— 用户要的是\"点了就有动作\"。\n"
-         "                result = try await renewalCoordinator.refreshPredictive(progress: progress)\n"
-         "            } else {",
+         "                result = try await renewalCoordinator.refreshPredictive(triggerSource: triggerSource, progress: progress)\n"
+         "            }\n"
+         "            // 拿到结果就发通知",
          "R112④b:"),
         # ④c 后台 total == 0 改回弹 SEAL-RENEW-001（莫名其妙的过期 alert）⇒ R112④c 报红。
         ("Seal/Features/Apps/AppsViewModel.swift",

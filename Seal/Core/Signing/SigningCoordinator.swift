@@ -867,7 +867,7 @@ actor SigningCoordinator {
             // ⚠️ 用户文案不再带 `[域 码]`（2026-10-04 MJ 要求去术语）；
             // 诊断改走日志（下行 logStore.append），R92⑧ 已同步更新。
             try? await logStore?.append(
-                category: .install,
+                category: .installation,
                 level: .error,
                 message: "SEAL-INSTALL-500 底层诊断：\(Self.richErrorDiagnostic(error))",
                 code: "SEAL-INSTALL-500"
@@ -1542,7 +1542,7 @@ actor SigningCoordinator {
             // ⚠️ 用户文案不再带 `[域 码]`（2026-10-04 MJ 要求去术语）；
             // 诊断改走日志（下行 logStore.append），R92⑧ 已同步更新。
             try? await logStore?.append(
-                category: .install,
+                category: .installation,
                 level: .error,
                 message: "SEAL-INSTALL-500 底层诊断：\(Self.richErrorDiagnostic(error))",
                 code: "SEAL-INSTALL-500"
@@ -2058,7 +2058,7 @@ actor SigningCoordinator {
                 // SEAL-SELF-105 的 detail 进日志，用户文案保持干净
                 if case .runningIdentityUnknown(let readErrors) = failure {
                     try? await logStore?.append(
-                        category: .install,
+                        category: .installation,
                         level: .error,
                         message: "SEAL-SELF-105 底层诊断：\(readErrors.isEmpty ? "主程序或网络扩展的签名身份读取不完整" : readErrors.joined(separator: " | "))",
                         code: "SEAL-SELF-105"
@@ -2069,7 +2069,7 @@ actor SigningCoordinator {
                 // ⚠️ 用户文案不再带 `[域 码]`（2026-10-04 MJ 要求去术语）；
                 // 诊断改走日志（下行 logStore.append），R92⑧ 已同步更新。
                 try? await logStore?.append(
-                    category: .install,
+                    category: .installation,
                     level: .error,
                     message: "SEAL-SELF-109 底层诊断：\(Self.richErrorDiagnostic(error))",
                     code: "SEAL-SELF-109"

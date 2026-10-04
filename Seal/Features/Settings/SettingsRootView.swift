@@ -139,6 +139,17 @@ struct SettingsRootView: View {
                         .buttonStyle(.plain)
                         sectionDivider
 
+                        NavigationLink { LogViewerView() } label: {
+                            settingsRow(
+                                title: "查看日志",
+                                value: nil,
+                                icon: "doc.text",
+                                showsChevron: true
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        sectionDivider
+
                         NavigationLink { AboutView(onInstall: onSelfUpdateInstall) } label: {
                             settingsRow(
                                 title: "关于 Seal",

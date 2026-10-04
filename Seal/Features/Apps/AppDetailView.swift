@@ -75,6 +75,7 @@ struct AppDetailView: View {
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(Color.sealTextSecondary)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
             Spacer()
         }
@@ -173,24 +174,28 @@ struct AppDetailView: View {
                 .foregroundStyle(valueColor)
                 .multilineTextAlignment(.trailing)
                 .lineLimit(1)
+                .minimumScaleFactor(0.8)
                 .truncationMode(.middle)
                 .layoutPriority(1)
         }
         .padding(.vertical, 15)
     }
 
-    /// 证书序列号行：标题左、值右。完整序列号允许换行，便于直接与证书页核对。
+    /// 证书序列号行：标题左、值右。单行显示，超长缩小字号。
     private func serialDetailRow(_ title: String, _ value: String) -> some View {
-        HStack(alignment: .top, spacing: 14) {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text(title)
                 .foregroundStyle(.primary)
                 .lineLimit(1)
+                .minimumScaleFactor(0.8)
             Spacer(minLength: 12)
             Text(value)
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(Color.sealTextSecondary)
                 .multilineTextAlignment(.trailing)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .truncationMode(.middle)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
@@ -253,10 +258,13 @@ struct AppDetailView: View {
         HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text(title)
                 .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             Spacer(minLength: 12)
             bundleIdentifierValue(value, highlightSeal: highlightSeal)
                 .font(.caption.monospaced())
                 .lineLimit(1)
+                .minimumScaleFactor(0.8)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .trailing)

@@ -92,7 +92,7 @@ enum ApplePortalSigningFailure {
             } else {
                 details = (
                     "Apple 账户操作失败",
-                    "Apple 返回了无法分类的账户错误。账号状态未改变。\nApple 返回：\(diagnostic)",
+                    "Apple 返回了无法分类的账户错误。账号状态未改变。",
                     "重试",
                     "SEAL-VERIFY-500"
                 )
@@ -100,7 +100,7 @@ enum ApplePortalSigningFailure {
         case .device:
             details = (
                 "设备注册失败",
-                "Apple 返回：设备注册未完成。\nApple 返回：\(diagnostic)",
+                "Apple 返回：设备注册未完成。",
                 "检查设备配对",
                 "SEAL-DEVICE-203"
             )
@@ -111,7 +111,7 @@ enum ApplePortalSigningFailure {
         case .provisioningProfile:
             details = (
                 "描述文件失败",
-                "Apple 返回：描述文件生成失败。\nApple 返回：\(diagnostic)",
+                "Apple 返回：描述文件生成失败。",
                 "重试",
                 "SEAL-PROFILE-303"
             )
@@ -169,7 +169,7 @@ enum ApplePortalSigningFailure {
             || normalized.contains("bundle identifier unavailable") {
             return ImportFailure(
                 title: "Bundle ID 已被占用",
-                reason: "这个 Bundle ID 已被其他开发者账号注册，当前账号无法使用。\nApple 返回：\(diagnostic)",
+                reason: "这个 Bundle ID 已被其他开发者账号注册，当前账号无法使用。",
                 recovery: "更换一个新的 Bundle ID，或使用注册该 Bundle ID 的原账号签名",
                 code: "SEAL-APPID-302"
             )
@@ -189,7 +189,7 @@ enum ApplePortalSigningFailure {
 
         return ImportFailure(
             title: "App ID 创建失败",
-            reason: "Apple 服务器未能创建该应用的 App ID。Apple 返回：\(diagnostic)",
+            reason: "Apple 服务器未能创建该应用的 App ID。",
             recovery: "若提示会话已过期，请先前往「我的」页面重新验证 Apple ID；否则检查网络后重试，或尝试更换 Bundle ID / 使用其他开发者账号",
             code: "SEAL-APPID-303"
         )
@@ -232,7 +232,7 @@ enum ApplePortalSigningFailure {
             || nsError.domain == NSURLErrorDomain {
             return ImportFailure(
                 title: "证书服务连接失败",
-                reason: "无法连接 Apple 证书服务（网络超时或无法连接）。Apple 返回：\(diagnostic)",
+                reason: "无法连接 Apple 证书服务（网络超时或无法连接）。",
                 recovery: "检查网络后重试",
                 code: "SEAL-CERT-205"
             )
@@ -270,7 +270,7 @@ enum ApplePortalSigningFailure {
 
         return ImportFailure(
             title: "证书准备失败",
-            reason: "Apple 服务器未能准备好签名证书。\nApple 返回：\(diagnostic)",
+            reason: "Apple 服务器未能准备好签名证书。",
             recovery: "检查网络后重试",
             code: "SEAL-CERT-203"
         )

@@ -24,11 +24,13 @@ struct ImportedAppRow: View {
                         .font(.caption.weight(.medium))
                         .foregroundStyle(Color.sealTextSecondary)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.85)
                 }
 
                 bundleIdentifierText
                     .font(.system(.caption, design: .monospaced))
                     .lineLimit(1)
+                    .minimumScaleFactor(0.85)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
             }

@@ -2775,9 +2775,10 @@ final class SettingsViewModel: ObservableObject {
             alertFailure = failure
             try? await logStore?.append(category: .system, level: .error, message: failure.reason, code: failure.code)
         } catch {
+            let diagnostic = NotificationSchedulingFailure.diagnostic(for: error)
             let failure = Self.failure(
                 title: "无法设置提醒",
-                reason: "提醒未能更新。\n\(NotificationSchedulingFailure.diagnostic(for: error))",
+                reason: "提醒未能更新。",
                 recovery: "去系统设置打开通知权限后重试",
                 code: "SEAL-NOTIFY-002a"
             )
@@ -2786,7 +2787,7 @@ final class SettingsViewModel: ObservableObject {
                 schedulingFailure: failure.reason
             )
             alertFailure = failure
-            try? await logStore?.append(category: .system, level: .error, message: failure.reason, code: failure.code)
+            try? await logStore?.append(category: .system, level: .error, message: "SEAL-NOTIFY-002a 底层诊断：\(diagnostic)", code: failure.code)
         }
     }
 
@@ -2804,14 +2805,15 @@ final class SettingsViewModel: ObservableObject {
             )
             notificationStatus = await notificationScheduler.status(sealEnabled: notificationsEnabled)
         } catch {
+            let diagnostic = NotificationSchedulingFailure.diagnostic(for: error)
             let failure = Self.failure(
                 title: "无法设置提醒",
-                reason: "提醒时间未能更新。\n\(NotificationSchedulingFailure.diagnostic(for: error))",
+                reason: "提醒时间未能更新。",
                 recovery: "去系统设置打开通知权限后重试",
                 code: "SEAL-NOTIFY-002b"
             )
             alertFailure = failure
-            try? await logStore?.append(category: .system, level: .error, message: failure.reason, code: failure.code)
+            try? await logStore?.append(category: .system, level: .error, message: "SEAL-NOTIFY-002b 底层诊断：\(diagnostic)", code: failure.code)
         }
     }
 

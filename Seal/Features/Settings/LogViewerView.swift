@@ -20,7 +20,9 @@ struct LogViewerView: View {
                         .padding(.top, 40)
                 } else {
                     ForEach(rounds) { round in
-                        RoundCard(round: round)
+                        RoundCard(round: round) { item in
+                            selectedError = item
+                        }
                     }
                 }
             }
@@ -294,6 +296,7 @@ struct LogRound: Identifiable {
 /// 轮次卡片
 struct RoundCard: View {
     let round: LogRound
+    var onSelectError: (LogRound.LogRoundItem) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -318,7 +321,7 @@ struct RoundCard: View {
                     }
                     if !item.succeeded {
                         Button {
-                            selectedError = item
+                            onSelectError(item)
                         } label: {
                             Text("查看解决办法 →")
                                 .font(.system(size: 13))

@@ -216,8 +216,11 @@ actor SigningCoordinator {
     func predictsProfileOnlyForSeal(app: AppRecord) async -> Bool {
         guard app.isSeal else { return false }
         let liveIdentity = await liveProfileOnlyIdentity(for: app)
-        let decision = ProfileOnlyRenewalPolicy.evaluate(app: app, liveIdentity: liveIdentity)
-        guard case .eligible = decision else { return false }
+        // 注意：与 `shouldUseProfileOnlyRenewal` 的同名调用刻意写成不同缩进，
+        // 避免守卫 R84③ 的变异锚点误匹配到这里（变异只替换第一个命中）。
+        let predicted: ProfileOnlyRenewalPolicy.Decision =
+            ProfileOnlyRenewalPolicy.evaluate(app: app, liveIdentity: liveIdentity)
+        guard case .eligible = predicted else { return false }
         // 证书私钥必须在本机（否则实际执行时会回落 fullResign）。
         guard ProfileOnlyRenewalPolicy.effectiveCertificateSerialNumber(
             app: app, liveIdentity: liveIdentity

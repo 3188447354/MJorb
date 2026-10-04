@@ -6220,7 +6220,7 @@ def violations(load=read):
     r117_signing = strip_comments(load("Seal/Core/Signing/SigningCoordinator.swift"))
     check("func predictsProfileOnlyForSeal(app: AppRecord) async -> Bool" in r117_signing
           and "guard app.isSeal else { return false }" in r117_signing
-          and "case .eligible = decision else { return false }" in r117_signing,
+          and "case .eligible = predicted else { return false }" in r117_signing,
           "R117④: Seal 路径预测必须保守 ✗ —— "
           "误判 profile-only 会让自替换杀掉并行中的进程；"
           "任何不确定都必须返回 false 走串行殿后")
@@ -8620,11 +8620,8 @@ def main():
          "                key",
          "#expect must not pass a bare identifier as its comment"),
         # ── R64：批量续签的轨道必须复用共用视图、且计数真的接上（2026-09-21）──
-        # ① 批量抽屉改回自己画一条轨道 ⇒ 同一条规则出现第二份实现 ✓ 报红。
-        ("Seal/Features/Apps/BatchRefreshView.swift",
-         "                    SigningStageTrack(",
-         "                    BatchStageTrackLegacy(",
-         "R64: 批量续签抽屉必须复用共用的 `SigningStageTrack`"),
+        # 2026-10-04 并行 UI：headline 改为总进度条 + 阶段分布，不再用 SigningStageTrack。
+        # 旧的变异锚点（①）已 obsolete，删除；R64 的断言已同步允许 totalProgress。
         # ② 批量调用点不再转发计数 ⇒ 界面上完全看不出来（轨道只是慢一点），
         #    正是「只声明依赖不等于接上了」那一类 ⇒ 必须报红 ✓。
         ("Seal/Core/Renewal/RenewalCoordinator.swift",

@@ -114,12 +114,20 @@ struct IPAParserService: Sendable {
             .split(separator: "/")
             .dropLast()
             .joined(separator: "/")
-        let iconData = try readIcon(
+        var iconData = try readIcon(
             info: info,
             appRoot: appRoot,
             entries: entries,
             archive: archive
         )
+        // PNG 没找到时，试试从 Assets.car 提取（现代 App 图标编译在里面）
+        if iconData == nil {
+            iconData = try extractIconFromAssetCatalog(
+                appRoot: appRoot,
+                entries: entries,
+                archive: archive
+            )
+        }
         let appExtensions = try readExtensions(
             appRoot: appRoot,
             entries: entries,
@@ -267,6 +275,28 @@ struct IPAParserService: Sendable {
             in: archive,
             maximumSize: limits.maximumIconSize
         )
+    }
+
+    /// 从 Assets.car 提取 App 图标（现代 App 的图标编译在 asset catalog 里，没有散装 PNG）。
+    private func extractIconFromAssetCatalog(
+        appRoot: String,
+        entries: [Entry],
+        archive: Archive
+    ) throws -> Data? {
+        // 找 Assets.car
+        guard let carEntry = entries.first(where: { entry in
+            guard entry.type == .file else { return false }
+            let fileName = URL(filePath: entry.path).lastPathComponent
+            return fileName == "Assets.car" && entry.path.hasPrefix("\(appRoot)/")
+        }) else {
+            return nil
+        }
+        let carData = try data(
+            from: carEntry,
+            in: archive,
+            maximumSize: limits.maximumIconSize * 10  // car 文件可能较大
+        )
+        return AssetCatalogParser.extractAppIcon(from: carData)
     }
 
     private func iconFileNames(from info: [String: Any]) -> [String] {

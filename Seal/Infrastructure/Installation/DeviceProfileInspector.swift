@@ -122,6 +122,56 @@ struct DeviceProfileInspector: Sendable {
         return parsed > 0 ? false : nil
     }
 
+    /// 批量核验：一次 dump + 全量 CMS 解析，核验全部 bindings。
+    /// 按输入顺序返回每个 binding 的核验结果（`nil` = dump 不可用，`false` = 枚举成功但未找到）。
+    /// 供 `installAndVerify` 一次注入全部后统一核验，避免每份 profile 各做一次秒级 dump。
+    static func containsProfiles(
+        matching bindings: [ProvisioningProfileBinding],
+        certificateSerialNumber: String
+    ) async -> [Bool?] {
+        let fileManager = FileManager.default
+        let workingDir = fileManager.temporaryDirectory
+            .appendingPathComponent("seal-profile-verify-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: workingDir) }
+
+        guard let dumpDir = try? Provision.dumpProfiles(docsPath: workingDir.path),
+              let profileURLs = try? fileManager.contentsOfDirectory(
+                at: URL(fileURLWithPath: dumpDir),
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+              ) else { return bindings.map { _ in nil } }
+
+        let expectedSerial = SigningCertificateSelectionPolicy.normalizedSerialNumber(certificateSerialNumber)
+        let reader = ProvisioningProfileReader()
+        // 一次解析全部，建 (bundleID.lowercased, uuid.lowercased) -> (creation, expiration, serials) 索引
+        var index: [String: (creation: Date?, expiration: Date?, serials: [String])] = [:]
+        var parsed = 0
+        var handledUUIDs = Set<String>()
+        for fileURL in profileURLs {
+            guard let data = try? Data(contentsOf: fileURL),
+                  let details = try? reader.details(from: data) else { continue }
+            if let uuid = details.uuid, handledUUIDs.insert(uuid).inserted == false { continue }
+            parsed += 1
+            guard let bid = details.bundleIdentifier?.lowercased(),
+                  let uuid = details.uuid?.lowercased() else { continue }
+            index["\(bid)|\(uuid)"] = (details.creationDate, details.expirationDate, details.certificateSerialNumbers)
+        }
+        guard parsed > 0 else { return bindings.map { _ in nil } }
+
+        return bindings.map { binding in
+            guard let profileUUID = binding.profileUUID, profileUUID.isEmpty == false,
+                  let entry = index["\(binding.bundleIdentifier.lowercased())|\(profileUUID.lowercased())"] else {
+                return false
+            }
+            guard entry.creation == binding.creationDate,
+                  entry.expiration == binding.expirationDate,
+                  entry.serials.contains(where: {
+                      SigningCertificateSelectionPolicy.normalizedSerialNumber($0) == expectedSerial
+                  }) else { return false }
+            return true
+        }
+    }
+
     /// 设备端全部描述文件引用的证书序列号集合（已归一化，见 DEBUG_LOG 坑位 1）。
     ///
     /// 返回 `nil` 表示**无法核验**（未连接设备/隧道不可用/dump 或解析失败），

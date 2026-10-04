@@ -68,13 +68,18 @@ extension SealLogEntry.Level {
 /// 日志导出统一排版：北京时间 + 中文固定宽度栏目，便于阅读。
 enum SealLogTextFormatter {
     /// 日志文案里的业务时间统一使用北京时间，保留 ISO 8601 偏移以避免与 UTC 混淆。
-    static func diagnosticTimestamp(_ date: Date) -> String {
+    /// 2026-10-04: DateFormatter 提为 static，避免每次调用新建（毫秒级开销）。
+    private static let diagnosticFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXXXX"
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    static func diagnosticTimestamp(_ date: Date) -> String {
+        diagnosticFormatter.string(from: date)
     }
 
     /// 当前构建标识，形如 `1.1.16 (91)`。

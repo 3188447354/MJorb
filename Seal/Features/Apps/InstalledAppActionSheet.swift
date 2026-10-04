@@ -89,7 +89,7 @@ struct InstalledAppActionSheet: View {
     @ViewBuilder
     private func icon(size: CGFloat) -> some View {
         Group {
-            if let data = viewModel.iconData[app.id], let image = UIImage(data: data) {
+            if let image = viewModel.decodedIcon(for: app.id) {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()

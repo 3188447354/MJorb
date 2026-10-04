@@ -138,25 +138,29 @@ actor ProfileOnlyProvisioningProfileInstaller {
         for material in materials {
             try Task.checkCancellation()
             try await inject(material, using: channel)
+        }
 
-            let installed: Bool?
-            do {
-                installed = try await HardTimeout.run(
-                    seconds: 30,
-                    cancelsWorkOnTimeout: false
-                ) {
-                    await DeviceProfileInspector.containsProfile(
-                        matching: material.binding,
-                        certificateSerialNumber: certificateSerialNumber
-                    )
-                }
-            } catch {
-                taint.markTainted()
-                throw failure(
-                    reason: "设备端读取 \(material.binding.bundleIdentifier) 的描述文件超过 30 秒未完成。",
-                    code: "SEAL-PROFILE-353"
+        // ── 批量读回核验（性能优化）：全部注入完后一次 dump + 全量解析，
+        // 逐份核验，避免每份各做一次秒级 dump（2026-10-04）。
+        let results: [Bool?]
+        do {
+            results = try await HardTimeout.run(
+                seconds: 30,
+                cancelsWorkOnTimeout: false
+            ) {
+                await DeviceProfileInspector.containsProfiles(
+                    matching: materials.map(\.binding),
+                    certificateSerialNumber: certificateSerialNumber
                 )
             }
+        } catch {
+            taint.markTainted()
+            throw failure(
+                reason: "设备端读取本轮注入的描述文件超过 30 秒未完成。",
+                code: "SEAL-PROFILE-353"
+            )
+        }
+        for (material, installed) in zip(materials, results) {
             guard installed == true else {
                 throw failure(
                     reason: "设备端未能读回本轮注入的 \(material.binding.bundleIdentifier) 描述文件；本地到期日未更新。",

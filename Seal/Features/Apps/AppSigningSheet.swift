@@ -335,7 +335,7 @@ struct AppSigningSheet: View {
     @ViewBuilder
     private func appIcon(size: CGFloat) -> some View {
         Group {
-            if let data = viewModel.iconData[workingApp.id], let image = UIImage(data: data) {
+            if let image = viewModel.decodedIcon(for: workingApp.id) {
                 Image(uiImage: image).resizable().scaledToFill()
             } else {
                 Image(systemName: "app.fill")

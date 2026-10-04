@@ -13,6 +13,9 @@ actor SealLogStore {
     private var bufferLoaded = false
     private var pendingFlush = false
     private var hasProtectedOnce = false
+    // 2026-10-04: mirror 节流。flush 每次都全量写 Documents/Seal-log.txt（1000 条 encode + atomic 写），
+    // 签名/续签期间高频调用。节流到最多 30 秒一次，保留用户排障通道（注释要求不能关）。
+    private var lastMirrorDate: Date?
     /// 自上次清空以来被环形丢弃的更早日志条数（导出时提示，避免误以为历史完整）
     private var droppedSinceClear = 0
 
@@ -126,7 +129,13 @@ actor SealLogStore {
     }
 
     /// 把最近日志镜像到 Documents（文件 App → 我的 iPhone → Seal → Seal-log.txt）
+    /// 2026-10-04: 节流到 30 秒一次。高频 flush 时全量 encode+写文件是 MB 级磁盘写。
     private func mirrorToDocuments() {
+        let now = Date()
+        if let last = lastMirrorDate, now.timeIntervalSince(last) < 30 {
+            return
+        }
+        lastMirrorDate = now
         guard let documents = FileManager.default.urls(
             for: .documentDirectory,
             in: .userDomainMask

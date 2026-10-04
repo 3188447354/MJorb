@@ -26,6 +26,27 @@ final class AppsViewModel: ObservableObject {
         [UUID: ProfileOnlyRenewalPolicy.LocalCertificateAvailability] = [:]
     @Published private(set) var activeAccountID: UUID?
     @Published private(set) var iconData: [UUID: Data]
+    /// 解码后的图标缓存（性能优化 2026-10-04）：`UIImage(data:)` 的 PNG/JPEG 解码
+    /// 在列表滚动时重复触发，这里按 App ID 缓存解码结果。
+    private let decodedIconCache = NSCache<NSString, UIImage>()
+
+    /// 取指定 App 的解码后图标（走 NSCache，未命中时解码并缓存）。
+    func decodedIcon(for appID: UUID) -> UIImage? {
+        let key = appID.uuidString as NSString
+        if let cached = decodedIconCache.object(forKey: key) {
+            return cached
+        }
+        guard let data = iconData[appID], let image = UIImage(data: data) else {
+            return nil
+        }
+        decodedIconCache.setObject(image, forKey: key)
+        return image
+    }
+
+    /// 图标数据更新时同步失效解码缓存。
+    private func invalidateDecodedIcon(for appID: UUID) {
+        decodedIconCache.removeObject(forKey: appID.uuidString as NSString)
+    }
     @Published private(set) var phase: Phase
     @Published var isImporterPresented = false
     @Published var isImportSheetPresented: Bool
@@ -156,6 +177,7 @@ final class AppsViewModel: ObservableObject {
         apps = []
         accounts = []
         iconData = [:]
+        decodedIconCache.removeAllObjects()
         phase = .idle
         isImportSheetPresented = false
     }
@@ -180,6 +202,7 @@ final class AppsViewModel: ObservableObject {
         apps = []
         accounts = []
         iconData = [:]
+        decodedIconCache.removeAllObjects()
         phase = .idle
         isImportSheetPresented = false
         alertFailure = startupFailure
@@ -206,6 +229,7 @@ final class AppsViewModel: ObservableObject {
         self.apps = apps
         accounts = []
         iconData = [:]
+        decodedIconCache.removeAllObjects()
         phase = .idle
         sheetDraft = draft
         isImportSheetPresented = draft != nil
@@ -481,7 +505,10 @@ final class AppsViewModel: ObservableObject {
                     }
                 }
                 guard await self.isCurrentLoad(generation) else { return }
-                await MainActor.run { self.iconData = icons }
+                await MainActor.run {
+                    self.iconData = icons
+                    self.decodedIconCache.removeAllObjects()
+                }
 
                 await self.seedSigningHistoryIfNeeded(apps: fetched, accounts: fetchedAccounts)
 
@@ -1557,6 +1584,7 @@ final class AppsViewModel: ObservableObject {
             } else {
                 iconData[updated.id] = nil
             }
+            invalidateDecodedIcon(for: updated.id)
             await load(force: true)
             return true
         } catch {

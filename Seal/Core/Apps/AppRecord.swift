@@ -28,6 +28,10 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
     let ipaRelativePath: String
     var signedIPARelativePath: String?
     var signedIPASHA256: String?
+    /// 已签包落盘时的文件大小 + 修改时间（性能优化 2026-10-04）：
+    /// 缓存复用前先比对这两项，命中则跳过 1.5GB 全量 SHA256。
+    var signedIPAFileSize: Int64?
+    var signedIPAModificationDate: Date?
     var signedArtifactStatus: SignedArtifactStatus?
     var preferredBundleIdentifier: String?
     var preferredDisplayName: String?
@@ -76,6 +80,8 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         ipaRelativePath: String,
         signedIPARelativePath: String? = nil,
         signedIPASHA256: String? = nil,
+        signedIPAFileSize: Int64? = nil,
+        signedIPAModificationDate: Date? = nil,
         signedArtifactStatus: SignedArtifactStatus? = nil,
         preferredBundleIdentifier: String? = nil,
         preferredDisplayName: String? = nil,
@@ -119,6 +125,8 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         self.ipaRelativePath = ipaRelativePath
         self.signedIPARelativePath = signedIPARelativePath
         self.signedIPASHA256 = signedIPASHA256
+        self.signedIPAFileSize = signedIPAFileSize
+        self.signedIPAModificationDate = signedIPAModificationDate
         self.signedArtifactStatus = signedArtifactStatus
         self.preferredBundleIdentifier = preferredBundleIdentifier
         self.preferredDisplayName = preferredDisplayName
@@ -164,6 +172,8 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         case ipaRelativePath
         case signedIPARelativePath
         case signedIPASHA256
+        case signedIPAFileSize
+        case signedIPAModificationDate
         case signedArtifactStatus
         case preferredBundleIdentifier
         case preferredDisplayName
@@ -216,6 +226,8 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         ipaRelativePath = try container.decode(String.self, forKey: .ipaRelativePath)
         signedIPARelativePath = try container.decodeIfPresent(String.self, forKey: .signedIPARelativePath)
         signedIPASHA256 = try container.decodeIfPresent(String.self, forKey: .signedIPASHA256)
+        signedIPAFileSize = try container.decodeIfPresent(Int64.self, forKey: .signedIPAFileSize)
+        signedIPAModificationDate = try container.decodeIfPresent(Date.self, forKey: .signedIPAModificationDate)
         signedArtifactStatus = try container.decodeIfPresent(SignedArtifactStatus.self, forKey: .signedArtifactStatus)
         preferredBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .preferredBundleIdentifier)
         preferredDisplayName = try container.decodeIfPresent(String.self, forKey: .preferredDisplayName)

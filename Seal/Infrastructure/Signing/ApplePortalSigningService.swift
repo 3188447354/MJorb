@@ -694,6 +694,10 @@ actor ApplePortalSigningService {
         onWorkUnits: @escaping @Sendable (SigningWorkUnits) async -> Void = { _ in }
     ) async throws -> ProfileOnlyPortalResult {
         await progress(.preparingAccount)
+        // ── anisette 复用（性能优化 2026-10-04）──
+        // 旧逻辑每进一个 Portal 阶段就 fetch 一次（共 3 次）；anisette 生成含
+        // keychain 读 + 本地运算。快路径下三阶段间隔很短，复用同一份；
+        // 慢路径（解压 30 秒+）仍在下方按需刷新（见 freshAnisette）。
         let anisette = try await anisetteProvider.fetch()
         var session = ALTAppleAPISession(
             dsid: secret.dsid,
@@ -777,9 +781,16 @@ actor ApplePortalSigningService {
             preparationInput = .slowPath(prepared)
         }
 
-        // Preparing an IPA can take minutes. Renew the one-time anisette value
-        // before every Apple portal phase, matching the full signing flow.
-        let freshAnisette = try await anisetteProvider.fetch()
+        // 快路径下复用首份 anisette；慢路径（上方解压 30 秒+）才刷新，
+        // 避免 one-time 值过期（性能优化 2026-10-04）。
+        let freshAnisette: AnisetteData
+        if case .slowPath = preparationInput {
+            // Preparing an IPA can take minutes. Renew the one-time anisette value
+            // before every Apple portal phase, matching the full signing flow.
+            freshAnisette = try await anisetteProvider.fetch()
+        } else {
+            freshAnisette = anisette
+        }
         session = ALTAppleAPISession(
             dsid: secret.dsid,
             authToken: secret.authToken,
@@ -794,7 +805,7 @@ actor ApplePortalSigningService {
             session: session
         )
 
-        let profileAnisette = try await anisetteProvider.fetch()
+        let profileAnisette = freshAnisette
         session = ALTAppleAPISession(
             dsid: secret.dsid,
             authToken: secret.authToken,
@@ -1235,8 +1246,12 @@ actor ApplePortalSigningService {
             // 估算量级在 **30–70 秒**，**很可能是本地耗时的大头** —— 而它原先完全没有埋点，
             // 导致「大包签名慢」只能靠猜。（`package` 用 `.deflate` 是**兼容性要求**：
             // store-mode ZIP 会让 installd 报 `MissingPackagePath`，见 `package` 的注释。）
+            // 2026-10-04: 放 Task.detached，避免 30-70 秒同步压缩饿死 actor 执行器上的
+            // 进度回调与心跳。不省墙钟，修调度正确性。
             let packageStartedAt = Date()
-            try signingWorkspace.package(prepared, outputURL: signedIPAURL)
+            try await Task.detached(priority: .userInitiated) {
+                try signingWorkspace.package(prepared, outputURL: signedIPAURL)
+            }.value
             await diagnostic(
                 "签名：打包完成（deflate），耗时 \(Int(Date().timeIntervalSince(packageStartedAt))) 秒"
             )
@@ -1449,8 +1464,17 @@ actor ApplePortalSigningService {
         // 慢速路径：本地证书不可用，从 Apple 服务器获取证书列表。
         // ⚠️ **读操作 ⇒ 允许重试超时**（限流时 Apple 响应会变慢，20 秒超时后直接失败太脆；
         // 而超时不属于「会话过期」，原先完全不重试）。
-        let certificates = try await withSessionRecovery("读取证书列表", retriesOnTimeout: true) {
-            try await fetchCertificates(team: team, session: session)
+        //
+        // ── 复用快路径已拉列表（性能优化 2026-10-04）──
+        // 快路径判 `.fallThroughToSlowPath` 时若已成功拉到列表（fetchedCertificates 非 nil），
+        // 直接复用，省一次 Apple 往返（约 2–8 秒）。
+        let certificates: [ALTX509Certificate]
+        if let fetched = fetchedCertificates {
+            certificates = fetched
+        } else {
+            certificates = try await withSessionRecovery("读取证书列表", retriesOnTimeout: true) {
+                try await fetchCertificates(team: team, session: session)
+            }
         }
         try Task.checkCancellation()
 
@@ -2152,10 +2176,21 @@ actor ApplePortalSigningService {
         // **直接 trap（崩溃）**，而 `mappings` 是 `[原始 ID: 映射后 ID]`，映射后 ID 在
         // 「扩展 ID 需要哈希缩短」那条路径上理论上存在碰撞面 —— 签名链路上崩溃远糟于静默取后者。
         // 下面 `requestedEntitlements` 也是同样的赋值式累加，两处**同源**才谈得上「判据一致」。
+        // ── entitlements 缓存（性能优化 2026-10-04）：`ALTApplication.entitlements`
+        // 底层是 `LdidBridge.entitlements(at:)`（Mach-O 解析），本函数内 4 处调用，
+        // 这里一次取全缓存，后续透传，省重复解析。
+        var cachedEntitlementsByBundleID: [String: [ALTEntitlement: any Sendable]] = [:]
+        for (bundleID, application) in applications {
+            cachedEntitlementsByBundleID[bundleID] = application.entitlements
+        }
         var entitlementsByBundleID: [String: Set<String>] = [:]
         for mappedBundleID in mappings.values {
             guard let application = applications[mappedBundleID] else { continue }
-            let keys = filteredAppIDEntitlements(from: application, team: team)
+            let keys = filteredAppIDEntitlements(
+                from: application,
+                team: team,
+                cachedEntitlements: cachedEntitlementsByBundleID[mappedBundleID]
+            )
                 .keys
                 .map(\.rawValue)
             entitlementsByBundleID[mappedBundleID] = Set(keys)
@@ -2246,7 +2281,11 @@ actor ApplePortalSigningService {
         func desiredFeatureKeys(mapped: String) -> Set<String> {
             guard let application = applications[mapped] else { return [] }
             return Set(
-                filteredAppIDEntitlements(from: application, team: team)
+                filteredAppIDEntitlements(
+                    from: application,
+                    team: team,
+                    cachedEntitlements: cachedEntitlementsByBundleID[mapped]
+                )
                     .keys
                     .compactMap { ALTFeature(entitlement: $0) }
                     .map { String(describing: $0) }
@@ -2264,7 +2303,11 @@ actor ApplePortalSigningService {
         func desiredFeatureTypeSummary(mapped: String) -> String? {
             guard let application = applications[mapped] else { return nil }
             var pairs: [(String, String)] = []
-            for (entitlement, value) in filteredAppIDEntitlements(from: application, team: team) {
+            for (entitlement, value) in filteredAppIDEntitlements(
+                from: application,
+                team: team,
+                cachedEntitlements: cachedEntitlementsByBundleID[mapped]
+            ) {
                 guard let feature = ALTFeature(entitlement: entitlement) else { continue }
                 pairs.append((String(describing: feature), String(describing: type(of: value))))
             }
@@ -2318,7 +2361,11 @@ actor ApplePortalSigningService {
         // 供签后同一份主 profile 做逐 bundle 校验；不能把缺权限伪装成“签名成功”。
         for mappedBundleID in mappings.values {
             guard let application = applications[mappedBundleID] else { continue }
-            let entitlementSource = filteredAppIDEntitlements(from: application, team: team)
+            let entitlementSource = filteredAppIDEntitlements(
+                from: application,
+                team: team,
+                cachedEntitlements: cachedEntitlementsByBundleID[mappedBundleID]
+            )
             var entitlementValues: [String: ProvisioningEntitlementValue] = [:]
             for (entitlement, value) in entitlementSource {
                 guard let converted = ProvisioningEntitlementValue.make(from: value) else {
@@ -3060,7 +3107,8 @@ actor ApplePortalSigningService {
 
     private func filteredAppIDEntitlements(
         from application: ALTApplication,
-        team: ALTTeam
+        team: ALTTeam,
+        cachedEntitlements: [ALTEntitlement: any Sendable]? = nil
     ) -> [ALTEntitlement: any Sendable] {
         let signerManagedEntitlements: Set<String> = [
             "application-identifier",
@@ -3069,7 +3117,10 @@ actor ApplePortalSigningService {
             "get-task-allow"
         ]
         var filtered: [ALTEntitlement: any Sendable] = [:]
-        for (entitlement, value) in application.entitlements {
+        // ── entitlements 复用（性能优化 2026-10-04）：`application.entitlements`
+        // 底层是 `LdidBridge.entitlements(at:)`（Mach-O 解析），调用方已缓存时直接复用。
+        let sourceEntitlements = cachedEntitlements ?? application.entitlements
+        for (entitlement, value) in sourceEntitlements {
             if signerManagedEntitlements.contains(entitlement.rawValue) {
                 continue
             }
@@ -3336,8 +3387,17 @@ actor ApplePortalSigningService {
         let mainAuthData = materials.first(where: {
             $0.bundleID.caseInsensitiveCompare(mainBundleID) == .orderedSame
         })?.data ?? materials.first?.data
+        // ── 主描述文件解析复用（性能优化 2026-10-04）：下方 appGroups 写入循环
+        // 会再次解析同一份 mainAuthData（含 X.509 + 指纹），这里解析一次透传。
+        let mainAuthDetailsForGroups: ProvisioningProfileReader.Details? = {
+            guard let mainAuthData,
+                  let authDetails = try? ProvisioningProfileReader().details(from: mainAuthData) else {
+                return nil
+            }
+            return authDetails
+        }()
         if let mainAuthData,
-           let authDetails = try? ProvisioningProfileReader().details(from: mainAuthData) {
+           let authDetails = mainAuthDetailsForGroups {
             let authorizedSerials = authDetails.certificateSerialNumbers
                 .map { SigningCertificateSelectionPolicy.normalizedSerialNumber($0) }
             if authorizedSerials.contains(chosenSerial) == false {
@@ -3378,7 +3438,16 @@ actor ApplePortalSigningService {
             }
             for material in metadataMaterials {
                 let groups: [String]
-                if let details = try? reader.details(from: material.data),
+                // ── 主描述文件解析复用（性能优化 2026-10-04）：上方防御性检查已解析过
+                // 同一份 mainAuthData，直接复用，省一次 CMS 全解析。
+                let details: ProvisioningProfileReader.Details?
+                if let cached = mainAuthDetailsForGroups,
+                   material.data == mainAuthData {
+                    details = cached
+                } else {
+                    details = try? reader.details(from: material.data)
+                }
+                if let details,
                    case let .array(values) = details.entitlements["com.apple.security.application-groups"] {
                     groups = values.compactMap { v in
                         if case let .string(s) = v { return s }

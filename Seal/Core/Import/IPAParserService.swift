@@ -433,6 +433,8 @@ struct IPAParserService: Sendable {
         }
 
         // 读取二进制前 4KB（足够解析 Mach-O 头部和加载命令）
+        // 2026-10-04: 提前退出。ZIPFoundation 的 consumer 版 extract 会解压全部 chunk，
+        // 闭包里只存前 4KB 但 CPU 照付。用 throw 中断，避免大包主二进制完整解压。
         var binaryData = Data()
         binaryData.reserveCapacity(min(Int(binaryEntry.uncompressedSize), 4096))
         do {
@@ -440,13 +442,23 @@ struct IPAParserService: Sendable {
                 if binaryData.count < 4096 {
                     binaryData.append(chunk)
                 }
+                if binaryData.count >= 4096 {
+                    throw EarlyExit.done
+                }
             }
+        } catch EarlyExit.done {
+            // 已拿到足够数据，继续判定
         } catch {
             return false
         }
 
         guard binaryData.count >= 32 else { return false }
         return Self.isEncryptedMachOHeader(binaryData)
+    }
+
+    /// 提前退出 extract 的哨兵错误（非真实失败）
+    private enum EarlyExit: Error {
+        case done
     }
 
     /// 从 Mach-O 头部前缀（≤4KB）判定是否带 FairPlay 加密段。

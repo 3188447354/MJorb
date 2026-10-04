@@ -366,6 +366,7 @@ actor RenewalCoordinator {
                         item: item,
                         offset: offset,
                         total: queue.count,
+                        appsByID: appsByID,
                         progress: progress
                     )
                     return (offset, outcome, roundItem)
@@ -390,6 +391,7 @@ actor RenewalCoordinator {
                 item: item,
                 offset: offset,
                 total: queue.count,
+                appsByID: appsByID,
                 progress: progress
             )
             switch outcome {
@@ -450,14 +452,18 @@ actor RenewalCoordinator {
         item: RefreshQueueItem,
         offset: Int,
         total: Int,
+        appsByID: [UUID: AppRecord],
         progress: @escaping @Sendable (BatchRefreshEvent) async -> Void
     ) async throws -> (outcome: ProcessItemOutcome, roundItem: RenewalRoundItem) {
         try Task.checkCancellation()
         // 单项计时：首尾各一次 Date()，约百纳秒（要求 8）。
         let itemStart = Date()
+        // ── App 记录透传（性能优化 2026-10-04）──
+        // process() 轮次开始时已查一次全表建字典，这里直接取，省 8N+3 次 CoreData 查询。
+        // 重试时按需单条刷新（记录可能被改写）。
+        var cachedApp = appsByID[item.appID]
         // App 名：轮次总结人话层用。查不到时用占位，不阻塞流程。
-        let appName = (try? await appStore.fetchAll())?
-            .first(where: { $0.id == item.appID })?.name ?? "未知应用"
+        let appName = cachedApp?.name ?? "未知应用"
 
         // 本轮不执行的项（缺可用账号等）。**不静默跳过**：计入 needsAction，
         // 并复用失败条目的呈现把原因摊给用户 —— 否则「批量续签完成」会掩盖
@@ -483,8 +489,7 @@ actor RenewalCoordinator {
         }
 
         // 先确认记录存在；具体最新状态在每次尝试时重新读取（失败可能已改写 Bundle ID/证书）
-        let initialApps = try await appStore.fetchAll()
-        guard initialApps.contains(where: { $0.id == item.appID }) else {
+        guard cachedApp != nil else {
             // 本地记录确实不存在，无法续签
             let failure = ImportFailure(
                 title: "无法续签应用",
@@ -510,8 +515,11 @@ actor RenewalCoordinator {
         var updatedRecord: AppRecord?
 
         for attempt in 1...maxAttempts {
-            // 每次尝试都重新读取最新记录
-            guard let app = (try? await appStore.fetchAll())?.first(where: { $0.id == item.appID }) else {
+            // 每次尝试都重新读取最新记录：首轮用透传的字典，重试按需单条刷新。
+            if attempt > 1 {
+                cachedApp = (try? await appStore.fetchAll())?.first(where: { $0.id == item.appID })
+            }
+            guard let app = cachedApp else {
                 lastError = ImportFailure(
                     title: "无法续签应用",
                     reason: "续签时未找到这个应用的本地记录，它可能已被删除。",

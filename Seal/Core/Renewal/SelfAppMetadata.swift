@@ -25,11 +25,32 @@ struct SelfAppMetadata: Sendable {
     /// 撤销/接管等高风险操作因此关闭，但 Seal 自身记录仍应正常注册。
     var installedIdentity: InstalledIdentity? = nil
 
+    /// 轮次级短 TTL 缓存（性能优化 2026-10-04）：每轮续签调 2 次 `current()`，
+    /// 每次 = mobileprovision 磁盘读 + CMS 解析 + Mach-O 全解析 + 图标 PNG 解码。
+    /// 10 秒 TTL 覆盖一轮；自替换换包时调 `invalidateCache()` 失效。
+    @MainActor
+    private static var cachedMetadata: (value: SelfAppMetadata, at: Date)?
+    @MainActor
+    private static let cacheTTL: TimeInterval = 10
+
+    @MainActor
+    static func invalidateCache() {
+        cachedMetadata = nil
+    }
+
     @MainActor
     static func current(
         bundle: Bundle = .main,
-        identityReader: AppBundleSigningIdentityReader = .init()
+        identityReader: AppBundleSigningIdentityReader = .init(),
+        includeIcon: Bool = true
     ) -> SelfAppMetadata? {
+        if let cached = cachedMetadata,
+           Date().timeIntervalSince(cached.at) < cacheTTL {
+            // 缓存命中时若调用方不要图标，直接返回（图标懒加载，见下）。
+            if !includeIcon || cached.value.iconData != nil {
+                return cached.value
+            }
+        }
         guard let bundleIdentifier = bundle.bundleIdentifier else { return nil }
         let name = (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
             ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String)
@@ -53,7 +74,7 @@ struct SelfAppMetadata: Sendable {
         // 所有撤销和接管操作因此关闭。
         let identity = try? identityReader.read(bundleURL: bundle.bundleURL)
 
-        return SelfAppMetadata(
+        let result = SelfAppMetadata(
             bundleURL: bundle.bundleURL,
             bundleIdentifier: bundleIdentifier,
             originalBundleIdentifier: bundle.object(
@@ -62,7 +83,7 @@ struct SelfAppMetadata: Sendable {
             name: name,
             version: version,
             buildNumber: buildNumber,
-            iconData: iconData(bundle: bundle),
+            iconData: includeIcon ? iconData(bundle: bundle) : nil,
             expirationDate: profileDetails?.expirationDate,
             signingTeamIdentifier: profileDetails?.teamIdentifier,
             signingApplicationIdentifier: profileDetails?.applicationIdentifier,
@@ -72,6 +93,8 @@ struct SelfAppMetadata: Sendable {
             certificateSerialNumbers: profileDetails?.certificateSerialNumbers ?? [],
             installedIdentity: identity
         )
+        cachedMetadata = (result, Date())
+        return result
     }
 
     @MainActor

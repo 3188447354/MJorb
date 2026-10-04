@@ -482,6 +482,18 @@ actor SigningCoordinator {
             // ⚠️ 核验要等通道就绪（冷启动最长 75s），所以路径通知会晚于 `.waitingForChannel`
             // 阶段。这是刻意的：宁可晚说，也不先说错（旧行为是先说「仅更新描述文件」、
             // 再抛错，用户看到的是「说好只换描述文件，结果失败」）。
+            //
+            // ── 设备端核验与通道就绪并行（性能优化 2026-10-04）──
+            // verify 是 5 秒有界的设备 dump，只留痕（SEAL-PROFILE-363）+ 可能
+            // markTainted，不再决定路径 ⇒ 包进 Task，与下方的通道启动/isReady
+            // （冷启动最长 75s）并行；在 renewProfilesOnly（拿注入串行锁）之前 join，
+            // 保证 markTainted 先于 installAndVerify 的锁。
+            let identityVerificationTask: Task<ProfileOnlyIdentity, Never>? = useProfileOnlyRenewal ? Task {
+                await ProfileOnlyIdentityVerifier.verify(
+                    app: app,
+                    targetBundleIdentifier: targetBundleIdentifier
+                )
+            } : nil
             if useProfileOnlyRenewal {
                 if let channelStart {
                     _ = try await channelStart.value
@@ -495,10 +507,9 @@ actor SigningCoordinator {
                 }
                 // ⚠️ 设备端核验**只留痕、不再决定路径**（2026-09-26，对照上游 SideStore 后改）。
                 //
-                // 旧行为：没明确通过就 `useProfileOnlyRenewal = false` ＋ 记 `SEAL-PROFILE-363`
-                // ⇒ 回落完整重签（几百 MB 重装）。真机（构建 46）里 Guoguo 每次续签都被它拦下
-                // —— 01:26:41 与 01:27:12 两条 363，随后 01:28:08 才以完整重签成功。
-                // 这正是用户报的「续签全都要重装」。
+                // 旧行为：没明确通过就回落完整重签（几百 MB 重装）。真机（构建 46）里
+                // Guoguo 每次续签都被它拦下 —— 01:26:41 与 01:27:12 两条 363，
+                // 随后 01:28:08 才以完整重签成功。这正是用户报的「续签全都要重装」。
                 //
                 // 上游 `refresh` 管线**完全不枚举设备描述文件**（`dumpProfiles` 在 SideStore
                 // 全仓只有设置页一处业务调用）：它从门户取一份**新**描述文件直接注入
@@ -511,24 +522,23 @@ actor SigningCoordinator {
                 // ⇒ 真正的安全网挪到**注入之后**：`ProfileOnlyProvisioningProfileInstaller
                 //   .installAndVerify` 会逐份读回设备确认（上游连这一步都没有）。
                 //   注入没落地就抛 `SEAL-PROFILE-354`，绝不会谎报成功。
-                let identity = await ProfileOnlyIdentityVerifier.verify(
-                    app: app,
-                    targetBundleIdentifier: targetBundleIdentifier
-                )
-                if identity != .confirmed {
-                    try? await logStore?.append(
-                        category: .renewal,
-                        level: .warning,
-                        message: "profile-only 续签的设备端核验未确认（\(identity.fallbackReason)），"
-                            + "按上游做法继续只更新描述文件（注入后会逐份读回确认）：\(app.name)",
-                        code: "SEAL-PROFILE-363"
-                    )
-                    // 🔴 `.unavailable` = 通道坏了（枚举超时/解析失败），不是"设备上没有"。
-                    // 提前标记污染 ⇒ `renewProfilesOnly` 在第一次注入前就重置通道，
-                    // 不拿坏通道去撞 30 秒超时 + 8/16 秒退避（2026-10-03 真机一轮烧 59 秒）。
-                    // `.mismatched` 不标记：那是记录与设备不符，重置通道帮不上忙。
-                    if identity == .unavailable {
-                        await ProfileOnlyProvisioningProfileInstaller.shared.markTainted()
+                if let task = identityVerificationTask {
+                    let identity = await task.value
+                    if identity != .confirmed {
+                        try? await logStore?.append(
+                            category: .renewal,
+                            level: .warning,
+                            message: "profile-only 续签的设备端核验未确认（\(identity.fallbackReason)），"
+                                + "按上游做法继续只更新描述文件（注入后会逐份读回确认）：\(app.name)",
+                            code: "SEAL-PROFILE-363"
+                        )
+                        // 🔴 `.unavailable` = 通道坏了（枚举超时/解析失败），不是"设备上没有"。
+                        // 提前标记污染 ⇒ `renewProfilesOnly` 在第一次注入前就重置通道，
+                        // 不拿坏通道去撞 30 秒超时 + 8/16 秒退避（2026-10-03 真机一轮烧 59 秒）。
+                        // `.mismatched` 不标记：那是记录与设备不符，重置通道帮不上忙。
+                        if identity == .unavailable {
+                            await ProfileOnlyProvisioningProfileInstaller.shared.markTainted()
+                        }
                     }
                 }
             }
@@ -563,8 +573,7 @@ actor SigningCoordinator {
             }
 
             if useProfileOnlyRenewal {
-                // 走到这里说明设备端身份**已经**核验为 `confirmed`
-                //（核验与回落都在上方，见 `ProfileOnlyIdentityVerifier`）。
+                // 走到这里说明设备端身份核验已完成（上方已 join + 留痕 + 可能 markTainted）。
                 let originalURL = try await fileStore.fileURL(relativePath: app.ipaRelativePath)
                 return try await renewProfilesOnly(
                     app: app,
@@ -740,6 +749,13 @@ actor SigningCoordinator {
                 to: &app
             )
             app.signedIPASHA256 = signedSHA256
+            // ── 记录文件指纹（性能优化 2026-10-04）：缓存复用前先比对 size+mtime，
+            // 命中则跳过 1.5GB 全量 SHA256。
+            if let url = try? await fileStore.fileURL(relativePath: signedPath),
+               let attrs = try? FileManager.default.attributesOfItem(atPath: url.path) {
+                app.signedIPAFileSize = (attrs[.size] as? NSNumber)?.int64Value
+                app.signedIPAModificationDate = attrs[.modificationDate] as? Date
+            }
             app.signedArtifactStatus = SignedArtifactSnapshot.statusAfterSigning(
                 originalState: originalState,
                 isSeal: app.isSeal
@@ -1347,8 +1363,11 @@ actor SigningCoordinator {
         account: AppleAccountRecord,
         secret: AccountSecret
     ) async throws -> OrphanCleanupOutcome {
-        // 设备核验失败时保留证书；未知状态不能当成无人使用。
+        // 设备引用检查：`referencedCertificateSerials()` 返回 nil（枚举失败）时，
+        // 保守起见视作「无法确认设备端引用」，跳过清理（fail closed）。
         let deviceReferenced = await DeviceProfileInspector.referencedCertificateSerials()
+        // 决策必须用**最新**的远端清单：缓存的 inventory 可能已过期，
+        // 用过期清单做撤销决策会误删刚建好的证书。
         let inventoryService = ApplePortalInventoryService()
         guard let inventory = try? await inventoryService.fetchInventory(
             account: account,
@@ -1932,11 +1951,23 @@ actor SigningCoordinator {
 
         let cachedData: Data
         do {
-            _ = try await fileStore.fileURL(relativePath: signedPath)
+            let cachedURL = try await fileStore.fileURL(relativePath: signedPath)
+            // ── size+mtime 快检（性能优化 2026-10-04）──
+            // 文件未被改动时跳过 1.5GB 全量 SHA256（约 1.5–3 秒）。
+            var skipHash = false
+            if let expectedSize = app.signedIPAFileSize,
+               let expectedDate = app.signedIPAModificationDate,
+               let attrs = try? FileManager.default.attributesOfItem(atPath: cachedURL.path),
+               let actualSize = (attrs[.size] as? NSNumber)?.int64Value,
+               let actualDate = attrs[.modificationDate] as? Date {
+                skipHash = (actualSize == expectedSize) && (actualDate == expectedDate)
+            }
             // 性能：读一次、内存哈希（2026-10-04），省一次大包全文件磁盘读。
             cachedData = try await fileStore.read(relativePath: signedPath)
-            let actualSHA256 = SHA256.hash(data: cachedData).map { String(format: "%02x", $0) }.joined()
-            guard actualSHA256.caseInsensitiveCompare(expectedSHA256) == .orderedSame else { return nil }
+            if !skipHash {
+                let actualSHA256 = SHA256.hash(data: cachedData).map { String(format: "%02x", $0) }.joined()
+                guard actualSHA256.caseInsensitiveCompare(expectedSHA256) == .orderedSame else { return nil }
+            }
         } catch {
             return nil
         }

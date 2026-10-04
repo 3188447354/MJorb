@@ -5989,12 +5989,16 @@ def violations(load=read):
           "自己再抄一份 `zipItem` 会让「按类型选压缩方法」这条规则出现两份实现"
           "（改了一处、另一处照旧），这正是本项要修的病根")
 
-    check("try archive.addEntry(" in r91_ws_code
-          and "compressionMethod: compressionMethod(forRelativePath: entryPath)" in r91_ws_code
+    # 2026-10-04: writeIPA 改用 SideStore Archive.Writer（libdeflate）。
+    # 逐条目选压缩方法的语义保留：alreadyCompressedExtensions → level 0（store），
+    # 其余 → libdeflate level 1。Writer 另有"压完更大自动回退 store"兜底。
+    check("SideSign.Archive.Writer.create(at:" in r91_ws_code
+          and "alreadyCompressedExtensions.contains(ext)" in r91_ws_code
+          and "setCompressLevel" in r91_ws_code
           and "static let alreadyCompressedExtensions: Set<String>" in r91_ws_code,
           "R91⑧b: 打包必须**逐条目**选压缩方法 ✗ —— "
           "`FileManager.zipItem` 把同一个 `compressionMethod` 透传给每个条目、"
-          "且 `Archive.addEntry` 没有「压完更大就退回 store」的自动回退，"
+          "且旧 `Archive.addEntry` 没有「压完更大就退回 store」的自动回退，"
           "对已压过的载荷（png / jpg / mp4 / `Assets.car`）再 deflate 一遍是纯浪费 CPU")
 
     check("if purpose == .signing {\n"
@@ -9871,9 +9875,10 @@ def main():
          "shouldKeepParent: true, compressionMethod: .deflate)",
          "R91⑧a:"),
         # ⑧b 逐条目选压缩方法退回「一律 deflate」⇒ R91⑧b 报红。
+        # 2026-10-04: writeIPA 改用 SideStore Writer，变异改为"已压缩扩展名也走压缩"。
         ("Seal/Infrastructure/Signing/SigningWorkspace.swift",
-         "                compressionMethod: compressionMethod(forRelativePath: entryPath)",
-         "                compressionMethod: .deflate",
+         "writer.setCompressLevel(alreadyCompressedExtensions.contains(ext) ? 0 : fastLevel)",
+         "writer.setCompressLevel(fastLevel)",
          "R91⑧b:"),
         # ⑨a `layoutOnly` 不再跳过瘦身（开关失效，白花 30–35 秒）⇒ R91⑨a 报红。
         ("Seal/Infrastructure/Signing/SigningWorkspace.swift",

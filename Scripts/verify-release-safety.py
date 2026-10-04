@@ -9420,11 +9420,11 @@ def main():
          "R84③: 准入必须**真的用上**双通道"),
         # ④ 把「核验未通过就回落」加回去 ⇒ R84④ 报红。**这正是本轮修的真问题。**
         ("Seal/Core/Signing/SigningCoordinator.swift",
-         "                    if identity != .confirmed {\n"
-         "                        try? await logStore?.append(\n",
-         "                    if identity != .confirmed {\n"
-         "                        useProfileOnlyRenewal = false\n"
-         "                        try? await logStore?.append(\n",
+         "                if identity != .confirmed {\n"
+         "                    try? await logStore?.append(\n",
+         "                if identity != .confirmed {\n"
+         "                    useProfileOnlyRenewal = false\n"
+         "                    try? await logStore?.append(\n",
          "R84④: `SEAL-PROFILE-363` 只能**留痕**"),
         # ⑤ 把设备绑定判据放松成「总是通过」⇒ R84⑤ 报红。
         ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
@@ -9997,12 +9997,12 @@ def main():
          "R115①:"),
         # ② 363 不再标记（坏通道上硬撞超时）⇒ R115② 报红。
         ("Seal/Core/Signing/SigningCoordinator.swift",
-         "                        if identity == .unavailable {\n"
-         "                            await ProfileOnlyProvisioningProfileInstaller.shared.markTainted()\n"
-         "                        }",
-         "                        if identity == .unavailable {\n"
-         "                            // no taint marking\n"
-         "                        }",
+         "                    if identity == .unavailable {\n"
+         "                        await ProfileOnlyProvisioningProfileInstaller.shared.markTainted()\n"
+         "                    }",
+         "                    if identity == .unavailable {\n"
+         "                        // no taint marking\n"
+         "                    }",
          "R115②:"),
 
         # ── R116：预热失败不标记污染 ──

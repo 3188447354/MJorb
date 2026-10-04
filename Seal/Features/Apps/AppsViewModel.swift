@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import UIKit
 @preconcurrency import Minimuxer
 
 @MainActor

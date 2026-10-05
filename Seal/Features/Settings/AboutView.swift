@@ -2,7 +2,14 @@ import SwiftUI
 import UIKit
 
 struct AboutView: View {
-    private let version = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.0.0"
+    private var version: String {
+        let short = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.0.0"
+        let build = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? ""
+        if !build.isEmpty {
+            return "\(short)-beta\(build)"
+        }
+        return short
+    }
     private let bundleID = Bundle.main.bundleIdentifier ?? "com.mjorb.seal"
 
     /// 应用内更新安装回调（下载完成后触发）；为 nil 时回退跳转浏览器。

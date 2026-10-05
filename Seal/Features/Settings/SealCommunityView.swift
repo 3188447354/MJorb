@@ -30,7 +30,9 @@ struct SealCommunityView: View {
             VStack(spacing: 24) {
                 header
                 VStack(spacing: 12) {
+                    sectionTitle("支持作者")
                     rewardCard
+                    sectionTitle("交流与动态")
                     gzhCard
                     qqCard
                 }
@@ -71,6 +73,15 @@ struct SealCommunityView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 4)
+    }
+
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(Color.sealTextSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 4)
+            .padding(.top, 8)
     }
 
     private var rewardCard: some View {
@@ -160,7 +171,7 @@ struct SealCommunityView: View {
             .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
             .padding(.top, 8)
 
-            Text("Seal 社区 · 赞赏支持")
+            Text("赞赏支持")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(Color.sealTextSecondary)
                 .padding(.horizontal, 12)

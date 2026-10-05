@@ -128,6 +128,12 @@ actor SealLogStore {
         mirrorToDocuments()
     }
 
+    /// 强制镜像到 Documents（跳过 30 秒节流）：续签/签名完成后调用，让日志页立即能看到
+    func forceMirrorToDocuments() {
+        lastMirrorDate = nil
+        mirrorToDocuments()
+    }
+
     /// 把最近日志镜像到 Documents（文件 App → 我的 iPhone → Seal → Seal-log.txt）
     /// 2026-10-04: 节流到 30 秒一次。高频 flush 时全量 encode+写文件是 MB 级磁盘写。
     private func mirrorToDocuments() {

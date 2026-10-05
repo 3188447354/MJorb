@@ -2185,6 +2185,9 @@ final class AppsViewModel: ObservableObject {
                     //（2026-09-29 真机反馈「通知成功了、进 App 抽屉却有延迟」）。
                     persistPendingBatchResult(forceSealAwaiting: false)
                 }
+                // 续签完成立即强制镜像日志到 Documents，跳过 30 秒节流，
+                // 让用户进日志页立马能看到本轮日志
+                Task { await logStore?.forceMirrorToDocuments() }
                 // 轮次总结已由 RenewalCoordinator 写入 SEAL-RENEW-ROUND
                 //（人话层：每 App 结果+耗时、本轮总耗时、成功/失败数），
                 // 这里不再重复写 SEAL-RENEW-009，避免一轮两条总结。
@@ -2788,6 +2791,8 @@ final class AppsViewModel: ObservableObject {
                 category: isRenewal ? .renewal : .signing,
                 message: successMessage
             )
+            // 签名/续签完成立即强制镜像日志，让日志页立马能看到
+            Task { await logStore?.forceMirrorToDocuments() }
             await recordSigningHistory(
                 app: completed,
                 account: account,

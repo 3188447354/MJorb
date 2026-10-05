@@ -268,8 +268,16 @@ actor ImportWorkflow {
             // （2026-10-02 CI 实测 `importingSealIPAWithSameVersionRecordsSourceFingerprint` 失败）。
             // 流式哈希，不整包进内存；失败不阻断导入（回落为纯版本比较）。
             let pendingUpdateSourceFingerprint: String?
-            if existingSeal != nil {
-                pendingUpdateSourceFingerprint = try? AppFileStore.streamingSHA256(url: draft.stagedIPA.url)
+            if let existing = existingSeal {
+                let newFingerprint = try? AppFileStore.streamingSHA256(url: draft.stagedIPA.url)
+                // 与已装包指纹一致 ⇒ 同一个包，不标为待更新
+                if let newFP = newFingerprint,
+                   let installedFP = existing.installedFingerprint,
+                   newFP == installedFP {
+                    pendingUpdateSourceFingerprint = nil
+                } else {
+                    pendingUpdateSourceFingerprint = newFingerprint
+                }
             } else {
                 pendingUpdateSourceFingerprint = nil
             }

@@ -415,6 +415,10 @@ actor SelfAppRegistrar {
         // 注意 `hasPendingSelfUpdateSource` 在这里刻意不清 —— 自替换走不到
         // SigningCoordinator 的普通安装路径，那个标志的语义是「导入过自更新源」，
         // 由 `SelfAppRegistrar` 的待安装分支按版本/文件存在性解读。
+        // 安装的是待安装的包 ⇒ 把它的指纹记为已装指纹，下次导入同一包时不重复提示。
+        if let pending = updated.pendingUpdateSourceFingerprint {
+            updated.installedFingerprint = pending
+        }
         updated.pendingUpdateSourceFingerprint = nil
         try await appStore.save(updated)
     }

@@ -13,6 +13,19 @@ struct InstalledAppActionSheet: View {
             VStack(alignment: .leading, spacing: 16) {
                 appHeader
                 signingSummaryCard
+                if let note = AppSigningPresentationHelpers.pendingUpdateNote(
+                    for: app,
+                    runningVersion: Version.current
+                ) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .foregroundStyle(.orange)
+                        Text(note)
+                            .font(.footnote)
+                            .foregroundStyle(Color.sealTextSecondary)
+                    }
+                    .padding(.horizontal, 4)
+                }
             }
             .padding(.bottom, 12)
         } footer: {

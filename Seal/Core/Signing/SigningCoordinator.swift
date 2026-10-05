@@ -2152,6 +2152,9 @@ actor SigningCoordinator {
             updated.lastInstallFailureCode = nil
             updated.lastInstallFailureReason = nil
             updated.hasPendingSelfUpdateSource = false
+            if let pending = updated.pendingUpdateSourceFingerprint {
+                updated.installedFingerprint = pending
+            }
             updated.pendingUpdateSourceFingerprint = nil
             // 安装校验已通过 —— 此刻才允许把「设备上运行的构建」的顶层 profile 身份
             // 推进到刚装上的这一份（R08）。

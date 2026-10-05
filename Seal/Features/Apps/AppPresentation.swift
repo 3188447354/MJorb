@@ -246,7 +246,8 @@ enum AppSigningPresentationHelpers {
               ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
                   recordedVersion: app.version,
                   runningVersion: runningVersion,
-                  pendingUpdateSourceFingerprint: app.pendingUpdateSourceFingerprint
+                  pendingUpdateSourceFingerprint: app.pendingUpdateSourceFingerprint,
+                  installedFingerprint: app.installedFingerprint
               ) else {
             return nil
         }

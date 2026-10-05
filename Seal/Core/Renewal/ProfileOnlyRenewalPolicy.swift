@@ -364,14 +364,20 @@ enum ProfileOnlyRenewalPolicy {
     static func hasPendingUpdateSource(
         recordedVersion: String?,
         runningVersion: String?,
-        pendingUpdateSourceFingerprint: String? = nil
+        pendingUpdateSourceFingerprint: String? = nil,
+        installedFingerprint: String? = nil
     ) -> Bool {
         guard let recorded = nonBlank(recordedVersion),
               let running = nonBlank(runningVersion) else { return false }
         if Version.compare(recorded, running) != .orderedSame { return true }
         // 版本一致时看指纹：用户显式导入了新源包（即使版本号相同）才算待安装更新；
         // 指纹为空（老记录 / 已结算）时不声称有更新，行为与过去一致。
-        return nonBlank(pendingUpdateSourceFingerprint) != nil
+        // 指纹与已装包一致 ⇒ 同一个包，不算待更新。
+        guard let pending = nonBlank(pendingUpdateSourceFingerprint) else { return false }
+        if let installed = nonBlank(installedFingerprint), pending == installed {
+            return false
+        }
+        return true
     }
 
     /// 记录之外的**第二条准入通道**：以「运行产物的实时身份」为准（对齐上游 `refresh`）。
@@ -407,7 +413,8 @@ enum ProfileOnlyRenewalPolicy {
             guard hasPendingUpdateSource(
                 recordedVersion: app.version,
                 runningVersion: liveIdentity.runningVersion,
-                pendingUpdateSourceFingerprint: app.pendingUpdateSourceFingerprint
+                pendingUpdateSourceFingerprint: app.pendingUpdateSourceFingerprint,
+                installedFingerprint: app.installedFingerprint
             ) == false else {
                 return .requiresFullResign(.pendingSelfUpdateSource)
             }

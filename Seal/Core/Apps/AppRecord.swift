@@ -48,6 +48,9 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
     /// 自替换安装成功、结算完成后清掉（`SelfAppRegistrar.atomicallyApplyInstalledIdentity`），
     /// 因此它是自愈的 —— 不像 `hasPendingSelfUpdateSource` 那样装完还一直为真。
     var pendingUpdateSourceFingerprint: String?
+    /// 已安装包的指纹（安装成功时写入）。导入时若新包指纹与它一致，说明是同一个包，
+    /// 不标为待更新（避免重复导入同一包一直提示）。
+    var installedFingerprint: String?
     let isSeal: Bool
     var isPinned: Bool
     let importedAt: Date
@@ -94,6 +97,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         pendingFileTransactionID: UUID? = nil,
         hasPendingSelfUpdateSource: Bool = false,
         pendingUpdateSourceFingerprint: String? = nil,
+        installedFingerprint: String? = nil,
         needsIPAImport: Bool = false,
         isSeal: Bool = false,
         isPinned: Bool = false,
@@ -141,6 +145,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         self.hasPendingSelfUpdateSource = hasPendingSelfUpdateSource
         self.needsIPAImport = needsIPAImport
         self.pendingUpdateSourceFingerprint = pendingUpdateSourceFingerprint
+        self.installedFingerprint = installedFingerprint
         self.isSeal = isSeal
         self.isPinned = isPinned
         self.importedAt = importedAt
@@ -188,6 +193,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         case pendingFileTransactionID
         case hasPendingSelfUpdateSource
         case pendingUpdateSourceFingerprint
+        case installedFingerprint
         case needsIPAImport
         case isSeal
         case isPinned
@@ -248,6 +254,10 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         pendingUpdateSourceFingerprint = try container.decodeIfPresent(
             String.self,
             forKey: .pendingUpdateSourceFingerprint
+        )
+        installedFingerprint = try container.decodeIfPresent(
+            String.self,
+            forKey: .installedFingerprint
         )
         isSeal = try container.decodeIfPresent(Bool.self, forKey: .isSeal) ?? false
         isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false

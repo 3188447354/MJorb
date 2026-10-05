@@ -2188,6 +2188,15 @@ final class AppsViewModel: ObservableObject {
                 // 续签完成立即强制镜像日志到 Documents，跳过 30 秒节流，
                 // 让用户进日志页立马能看到本轮日志
                 Task { await logStore?.forceMirrorToDocuments() }
+                // 续签后立即重排通知（用新到期时间），并刷新状态，避免提醒时间滞后
+                Task {
+                    if let scheduler = self.notificationScheduler,
+                       let prefs = self.notificationPreferences,
+                       let store = self.appStore {
+                        let apps = (try? await store.fetchAll()) ?? []
+                        try? await scheduler.reschedule(apps: apps, enabled: prefs.isEnabled, leadHours: prefs.leadHours)
+                    }
+                }
                 // 通知停止后台保活（省电）：快捷指令触发的续签已完成，不需要再占后台
                 NotificationCenter.default.post(name: .sealRenewalCompleted, object: nil)
                 // 轮次总结已由 RenewalCoordinator 写入 SEAL-RENEW-ROUND
@@ -3360,15 +3369,17 @@ final class AppsViewModel: ObservableObject {
             isImportSheetPresented = false
             await load(force: true)
             await logImportReplacementOutcome(requested: requestedOverwrite, record: record)
-            // Seal 自更新：记录 state 为 installed，必须跳已安装页，不能去待签名
-            lastImportCompletedInstalledApp = record.isSeal || record.belongsInInstalledList
-            importCompletionCount += 1
             if autoOpenSigningAfterImport {
                 autoOpenSigningAfterImport = false
                 if let refreshed = apps.first(where: { $0.id == record.id }) {
                     selectedOperationApp = refreshed
                 }
             }
+            // Seal 自更新：必须跳已安装页，不能去待签名。放在最后，避免被上面的 sheet 逻辑覆盖。
+            // 三重判断：isSeal 标志、Bundle ID 含 seal、属于已安装列表，任一命中即跳已安装。
+            let isSealByID = record.mappedBundleIdentifier?.lowercased().contains("seal") ?? false
+            lastImportCompletedInstalledApp = record.isSeal || isSealByID || record.belongsInInstalledList
+            importCompletionCount += 1
             if let cleanupFailure = await workflow.takeCleanupFailure() {
                 alertFailure = cleanupFailure
             }

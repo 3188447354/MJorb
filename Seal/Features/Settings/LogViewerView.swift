@@ -87,6 +87,9 @@ struct LogViewerView: View {
         .task {
             await loadRounds()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .sealRenewalCompleted)) { _ in
+            Task { await loadRounds() }
+        }
         .sheet(isPresented: $isExporting) {
             if let url = exportURL {
                 ShareSheet(activityItems: [url])

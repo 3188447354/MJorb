@@ -20,7 +20,7 @@ struct ImportedAppRow: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
 
-                    Text("v\(app.version)")
+                    Text("v\(Self.displayVersion(for: app))")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(Color.sealTextSecondary)
                         .lineLimit(1)
@@ -192,7 +192,19 @@ struct ImportedAppRow: View {
         return ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
             recordedVersion: app.version,
             runningVersion: runningVersion,
-            pendingUpdateSourceFingerprint: app.pendingUpdateSourceFingerprint
+            pendingUpdateSourceFingerprint: app.pendingUpdateSourceFingerprint,
+            installedFingerprint: app.installedFingerprint
         )
+    }
+
+    /// 显示版本：Seal 显示带 beta 构建号（1.0.0-beta28），方便区分新旧。
+    private static func displayVersion(for app: AppRecord) -> String {
+        guard app.isSeal else { return app.version }
+        let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? app.version
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        if !build.isEmpty {
+            return "\(short)-beta\(build)"
+        }
+        return short
     }
 }

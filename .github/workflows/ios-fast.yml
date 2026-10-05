@@ -2,7 +2,7 @@ name: iOS Fast IPA
 
 on:
   push:
-    branches: [main]
+    branches: [main, perf/signing-renewal-speed]
   workflow_dispatch:
     inputs:
       rebuild_rustbridge:

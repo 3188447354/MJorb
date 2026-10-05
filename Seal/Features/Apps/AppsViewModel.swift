@@ -3360,7 +3360,8 @@ final class AppsViewModel: ObservableObject {
             isImportSheetPresented = false
             await load(force: true)
             await logImportReplacementOutcome(requested: requestedOverwrite, record: record)
-            lastImportCompletedInstalledApp = record.belongsInInstalledList
+            // Seal 自更新：记录 state 为 installed，必须跳已安装页，不能去待签名
+            lastImportCompletedInstalledApp = record.isSeal || record.belongsInInstalledList
             importCompletionCount += 1
             if autoOpenSigningAfterImport {
                 autoOpenSigningAfterImport = false

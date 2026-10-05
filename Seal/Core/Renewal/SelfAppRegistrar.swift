@@ -481,13 +481,14 @@ actor SelfAppRegistrar {
         }
         if let expiry = metadata.expirationDate,
            expiry != existing.expiryDate || expiry != existing.provisioningProfileExpirationDate {
-            // 结算：以运行包内的真实 profile 为准（可能是新包，也可能是回滚后的旧包）。
-            // 注意：这里是自更新结算路径，不是 profile-only。profile-only 不走结算、
-            // 不换包；自更新失败时必须回滚到运行中旧包的真实日期（R07），不能因
-            // "内嵌更旧" 而跳过，否则 UI 会显示设备上并不存在的到期日。
-            updated.expiryDate = expiry
-            updated.provisioningProfileExpirationDate = expiry
-            changed = true
+            // 只有在有待安装更新时才回滚：自更新失败后仍运行旧包，必须显示旧包真实日期。
+            // 无待安装时（profile-only 续签后），记录里的新日期是正确的，不能用内嵌旧日期覆盖。
+            if existing.hasPendingSelfUpdateSource {
+                // 结算：以运行包内的真实 profile 为准（可能是新包，也可能是回滚后的旧包）。
+                updated.expiryDate = expiry
+                updated.provisioningProfileExpirationDate = expiry
+                changed = true
+            }
         }
 
         // ── 证书序列号：同版本续签可能换证书，只能以运行包真实 CMS 签名者为准回补 ──

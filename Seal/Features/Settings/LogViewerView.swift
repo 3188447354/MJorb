@@ -281,7 +281,8 @@ struct LogRound: Identifiable {
         }
 
         guard !rawTitle.isEmpty else { return nil }
-        let title = formatTitle(rawTitle, date: date)
+        // 日期拿不到时用今天，避免回退显示"第X轮"
+        let title = formatTitle(rawTitle, date: date ?? Date())
         return LogRound(title: title, items: items, footer: footer)
     }
 

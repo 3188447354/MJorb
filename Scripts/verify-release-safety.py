@@ -3653,10 +3653,10 @@ def violations(load=read):
           "缺 `allowsBackgroundLocationUpdates` 切后台定位立刻停；"
           "`pausesLocationUpdatesAutomatically` 默认 true，不显式置 false 会被系统在定位静止时"
           "静默暂停（正是「已启用了却没用」的形态）")
+    check("container.locationKeepAlive.start()" in r110_app,
+          "R110③: `SealApp.init()` 必须启动定位保活 ✗ —— 正常启动这条路径漏了，双保险只剩快捷指令那一侧")
     check("container.locationKeepAlive.start()" in r110_intent,
-          "R110③: 快捷指令后台唤起必须启动定位保活 ✗ —— 不打开 App 的续签就靠这一路兜底")
-    # 2026-10-05: 保活改成按需启动（省电），不再要求 SealApp.init() 里启动。
-    # 快捷指令触发时 Intent 里会启动，续签完成后通过 sealRenewalCompleted 通知停止。
+          "R110④: 快捷指令后台唤起必须启动定位保活 ✗ —— 不打开 App 的续签就靠这一路兜底")
     check("locationKeepAlive: LocationKeepAliveService" in r110_container
           and "LocationKeepAliveService(logStore:" in r110_container,
           "R110⑤: `AppContainer` 必须注入 `LocationKeepAliveService` ✗ —— 不注入则两处 start 都是空引用")
@@ -5839,11 +5839,12 @@ def violations(load=read):
           "`docs/qa/log-code-index.md` ✗ —— 这条链路在后台跑、界面上什么都没有，"
           "日志是唯一的证据；用户发来日志时第一件事就是查码表")
 
-    check("container.backgroundKeepAlive.start()" in r90_intent
-          and "func stop()" in open("Seal/Infrastructure/Background/BackgroundKeepAliveService.swift").read(),
-          "R90⑪: 保活必须在 App Intent 里启动且有 stop() ✗ —— "
-          "快捷指令在后台唤起 Seal 时靠 Intent 启动；续签完成后通过 sealRenewalCompleted 通知停止，"
-          "不再常驻后台耗电（2026-10-05 用户明确要求省电）")
+    check("container.backgroundKeepAlive.start()" in r90_app
+          and "SealAppEnvironment.install(container)" in r90_app
+          and "container.backgroundKeepAlive.start()" in r90_intent,
+          "R90⑪: 保活必须在 `SealApp.init()` **与** App Intent 里都启动 ✗ —— "
+          "快捷指令在后台唤起 Seal 时界面还没装配；而只靠 Intent 里那一次，"
+          "用户手动发起的续签切后台后照样被挂起")
 
     check("AppContainer.live" not in strip_comments(r90_env),
           "R90⑫: `SealAppEnvironment` 只允许**读**容器，不得自己新建 ✗ —— "
@@ -9783,9 +9784,9 @@ def main():
          'code: "SEAL-BACKGROUND-006"',
          'code: "SEAL-BACKGROUND-007"',
          "R90⑩:"),
-        # ⑪ `SealApp.init()` 里不再启动保活 ⇒ R90⑪ 报红。
-        ("Seal/App/SealApp.swift",
-         "        container.backgroundKeepAlive.start()\n",
+        # ⑪ Intent 里不再启动保活 ⇒ R90⑪ 报红（2026-10-05 起按需启动，只要求 Intent 里启动）。
+        ("Seal/Features/Intents/SealRenewalIntent.swift",
+         "container.backgroundKeepAlive.start()",
          "",
          "R90⑪:"),
         # ⑫ 让环境持有者自己新建容器（第二份 store / 通道实例）⇒ R90⑫ 报红。
@@ -10508,16 +10509,13 @@ def main():
          "manager.pausesLocationUpdatesAutomatically = false",
          "manager.pausesLocationUpdatesAutomatically = true",
          "R110②:"),
-        # ③ `SealApp.init()` 里第二路被退成重复音频 start（正常启动丢一路）⇒ R110③ 报红。
-        ("Seal/App/SealApp.swift",
-         "container.locationKeepAlive.start()",
-         "container.backgroundKeepAlive.start()",
-         "R110③:"),
-        # ④ 快捷指令后台唤起里第二路被退成重复音频 start（后台续签丢兜底）⇒ R110④ 报红。
+        # ③ 快捷指令后台唤起里第二路被退成重复音频 start（后台续签丢兜底）⇒ R110③ 报红。
+        # （2026-10-05 起保活按需启动，`SealApp.init()` 不再启动，原针对 SealApp.swift 的
+        # 变异项已删除；断言 R110③ 现只查 Intent 文件。）
         ("Seal/Features/Intents/SealRenewalIntent.swift",
          "container.locationKeepAlive.start()",
          "container.backgroundKeepAlive.start()",
-         "R110④:"),
+         "R110③:"),
         # ── R111：发布成功后必须自动同步官网 ──
         # ① 把同步调用**挪到** `gh release create` 之前（注入一份）⇒ 会同步到上一版，R111① 报红。
         #    ⚠️ 只「删掉」同步步骤的话 ①–⑤ 会一起红，测不出 ① 自己的判别力 ⇒ 用「挪位」形态。

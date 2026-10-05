@@ -33,6 +33,16 @@ struct ImportedAppRow: View {
                     .minimumScaleFactor(0.85)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
+
+                // Seal 自更新：已导入新版包但还没安装，在 Bundle ID 下方提示
+                if app.hasPendingSelfUpdateSource && app.belongsInInstalledList {
+                    Text("需重新签名")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.red, in: RoundedRectangle(cornerRadius: 7))
+                }
             }
 
             Spacer(minLength: 8)

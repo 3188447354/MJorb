@@ -113,6 +113,7 @@ struct SealCommunityView: View {
             title: "关注公众号",
             subtitle: "更新动态 · 使用教程 · 官方通知",
             value: nil,
+            isExternal: false,
             action: { showGzhCode = true }
         )
     }
@@ -316,6 +317,7 @@ struct SealCommunityView: View {
         title: String,
         subtitle: String?,
         value: String?,
+        isExternal: Bool = true,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -337,7 +339,7 @@ struct SealCommunityView: View {
                         .font(.system(size: 14, weight: .medium, design: .monospaced))
                         .foregroundStyle(Color.sealTextSecondary)
                 }
-                Image(systemName: "arrow.up.right")
+                Image(systemName: isExternal ? "arrow.up.right" : "chevron.right")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.tertiary)
             }

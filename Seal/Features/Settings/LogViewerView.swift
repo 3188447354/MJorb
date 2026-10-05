@@ -299,6 +299,9 @@ struct LogRound: Identifiable {
                 dateStr = "今天"
             } else if cal.isDateInYesterday(d) {
                 dateStr = "昨天"
+            } else if let dayBefore = cal.date(byAdding: .day, value: -2, to: Date()),
+                      cal.isDate(d, inSameDayAs: dayBefore) {
+                dateStr = "前天"
             } else {
                 let fmt = DateFormatter()
                 fmt.dateFormat = "M月d日"

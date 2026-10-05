@@ -2189,7 +2189,9 @@ final class AppsViewModel: ObservableObject {
                 // 让用户进日志页立马能看到本轮日志
                 Task { await logStore?.forceMirrorToDocuments() }
                 // 续签后立即重排通知（用新到期时间），并刷新状态，避免提醒时间滞后
+                // 同时刷新内存中的应用列表，让已安装页立即显示新日期
                 Task {
+                    await self.load(force: true)
                     if let scheduler = self.notificationScheduler,
                        let prefs = self.notificationPreferences,
                        let store = self.appStore {

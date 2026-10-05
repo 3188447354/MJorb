@@ -38,7 +38,7 @@ struct ImportedAppRow: View {
                 // 用 ProfileOnlyRenewalPolicy.hasPendingUpdateSource 判断，不能直接用
                 // hasPendingSelfUpdateSource（那个标志自替换后不清，会常驻）
                 if app.belongsInInstalledList && Self.hasPendingSelfUpdate(app) {
-                    Text("需重新签名")
+                    Text("有新版本待安装")
                         .font(.caption.weight(.semibold))
                         .foregroundColor(.white)
                         .padding(.horizontal, 8)

@@ -231,6 +231,13 @@ final class SettingsViewModel: ObservableObject {
         self.selfReplacementStore = selfReplacementStore
         notificationsEnabled = notificationPreferences.isEnabled
         reminderHours = notificationPreferences.leadHours
+        // 续签完成后刷新提醒状态，避免显示旧日期需手动开关才更新
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(refreshNotificationStatusAfterRenewal),
+            name: .sealRenewalCompleted,
+            object: nil
+        )
     }
 
     init(startupFailure: ImportFailure) {
@@ -2788,6 +2795,13 @@ final class SettingsViewModel: ObservableObject {
             )
             alertFailure = failure
             try? await logStore?.append(category: .system, level: .error, message: "SEAL-NOTIFY-002a 底层诊断：\(diagnostic)", code: failure.code)
+        }
+    }
+
+    @objc private func refreshNotificationStatusAfterRenewal() {
+        Task { @MainActor in
+            guard let notificationScheduler, let notificationPreferences else { return }
+            notificationStatus = await notificationScheduler.status(sealEnabled: notificationPreferences.isEnabled)
         }
     }
 

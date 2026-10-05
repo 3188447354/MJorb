@@ -66,6 +66,7 @@ struct BatchRefreshView: View {
                 ProgressView(value: totalProgress)
                     .progressViewStyle(.linear)
                     .tint(Color.sealAccent)
+                    .animation(.easeInOut(duration: 0.3), value: totalProgress)
                 uploadProgressBlock
                 installWaitBlock
             }
@@ -129,6 +130,7 @@ struct BatchRefreshView: View {
                 ProgressView(value: progress)
                     .progressViewStyle(.linear)
                     .tint(Color.sealAccent)
+                    .animation(.easeInOut(duration: 0.3), value: progress)
             }
             .padding(.top, 2)
         }

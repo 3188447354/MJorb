@@ -105,7 +105,7 @@ struct SettingsRootView: View {
                     settingsSection("社群") {
                         NavigationLink { SealCommunityView() } label: {
                             settingsRow(
-                                title: "加入 Seal 社群",
+                                title: "加入社群",
                                 value: nil,
                                 icon: "person.3",
                                 showsChevron: true,

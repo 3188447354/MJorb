@@ -2,6 +2,11 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+/// 日志清空通知：LogViewerView 发出，SealLogStore 持有者监听并清空内存缓存
+extension Notification.Name {
+    static let sealClearLogs = Notification.Name("sealClearLogs")
+}
+
 /// 日志查看页：只显示人话卡片，不显示原始日志。
 /// 导出按钮在右上角（毛玻璃圆按钮，无文字）。
 struct LogViewerView: View {
@@ -35,16 +40,20 @@ struct LogViewerView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                HStack(spacing: 16) {
+                HStack(spacing: 8) {
                     Button(action: { showClearConfirm = true }) {
                         Image(systemName: "trash")
-                            .font(.system(size: 17, weight: .regular))
+                            .font(.system(size: 16, weight: .medium))
                             .foregroundColor(.red)
+                            .frame(width: 36, height: 36)
+                            .glassButton()
                     }
                     Button(action: exportLogs) {
                         Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 17, weight: .regular))
+                            .font(.system(size: 16, weight: .medium))
                             .foregroundColor(.accentColor)
+                            .frame(width: 36, height: 36)
+                            .glassButton()
                     }
                 }
             }
@@ -106,22 +115,32 @@ struct LogViewerView: View {
     }
 
     private func exportLogs() {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        let logURL = docs?.appendingPathComponent("Seal-log.txt")
-        guard let url = logURL, FileManager.default.fileExists(atPath: url.path) else {
+        // 从内存的 rounds 生成导出文本，不依赖文件是否存在（避免首次点击时文件系统延迟）
+        guard !rounds.isEmpty else {
             exportURL = nil
             isExporting = true
             return
         }
-        // 复制到 tmp 目录并给个友好文件名，避免直接分享 Documents 下的文件出问题
+        var text = ""
+        for round in rounds {
+            text += round.title + "\n"
+            for item in round.items {
+                text += (item.succeeded ? "✓ " : "✗ ") + item.text + "\n"
+                if let reason = item.reason {
+                    text += "  原因：" + reason + "\n"
+                }
+            }
+            text += round.footer + "\n"
+            text += String(repeating: "━", 40) + "\n"
+        }
         let tmpURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("Seal-日志-\(formattedDate()).txt")
         try? FileManager.default.removeItem(at: tmpURL)
         do {
-            try FileManager.default.copyItem(at: url, to: tmpURL)
+            try text.write(to: tmpURL, atomically: true, encoding: .utf8)
             exportURL = tmpURL
         } catch {
-            exportURL = url  // 复制失败就用原文件
+            exportURL = nil
         }
         isExporting = true
     }
@@ -138,6 +157,8 @@ struct LogViewerView: View {
         if let url = logURL {
             try? FileManager.default.removeItem(at: url)
         }
+        // 通知 SealLogStore 清空内存缓存，否则下次续签写日志时旧日志会从内存镜像回来
+        NotificationCenter.default.post(name: .sealClearLogs, object: nil)
         await MainActor.run {
             rounds = []
         }

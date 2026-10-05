@@ -1452,7 +1452,7 @@ def violations(load=read):
     # ⇒ 断言「目标页文字出现」会让 CI 间歇性红，而那是 SwiftUI 的行为、不是 Seal 的缺陷。
     # 选中态直接反映 `mode`（`modeButton` 用 `.accessibilityAddTraits(... .isSelected ...)`），
     # 点击一旦被接受就立刻成立 ⇒ 确定性。
-    check("button.isSelected" in ui_tests,
+    check("XCTAssertTrue( button.isSelected," in squash(ui_tests),
           "R28: 切 tab 的断言必须落在**确定性的选中态**（`button.isSelected`）上 —— "
           "断言「目标页文字出现」依赖 `TabView(.page)` 翻页，会间歇性红")
 

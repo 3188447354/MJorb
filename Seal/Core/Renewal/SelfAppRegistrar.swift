@@ -383,17 +383,24 @@ actor SelfAppRegistrar {
         // 内嵌描述文件日期可能比 profile-only 续签注入的新日期旧（内嵌的是打包时的，
         // profile-only 只换设备端 profile 不换包）。只在内嵌日期更新时才覆盖，
         // 避免后台维护任务把刚续签的新日期改回旧的。
+        // 例外：有待安装的自更新源时（hasPendingSelfUpdateSource），记录里是"未来"的新包信息，
+        // 必须以运行中旧包的真实日期为准（回滚语义），此时仍用内嵌日期覆盖。
         let embeddedExpiry = main.profileExpirationDate
-        let currentExpiry = existing.provisioningProfileExpirationDate ?? existing.expiryDate
-        if let current = currentExpiry {
-            if embeddedExpiry > current {
+        if existing.hasPendingSelfUpdateSource {
+            updated.expiryDate = embeddedExpiry
+            updated.provisioningProfileExpirationDate = embeddedExpiry
+        } else {
+            let currentExpiry = existing.provisioningProfileExpirationDate ?? existing.expiryDate
+            if let current = currentExpiry {
+                if embeddedExpiry > current {
+                    updated.expiryDate = embeddedExpiry
+                    updated.provisioningProfileExpirationDate = embeddedExpiry
+                }
+                // 内嵌更旧时保留现有（profile-only 的新日期），不覆盖
+            } else {
                 updated.expiryDate = embeddedExpiry
                 updated.provisioningProfileExpirationDate = embeddedExpiry
             }
-            // 内嵌更旧时保留现有（profile-only 的新日期），不覆盖
-        } else {
-            updated.expiryDate = embeddedExpiry
-            updated.provisioningProfileExpirationDate = embeddedExpiry
         }
         updated.signedArtifactStatus = .installed
         updated.accountID = SelfAppAccountBinding.resolvedAccountID(
@@ -475,15 +482,12 @@ actor SelfAppRegistrar {
         if let expiry = metadata.expirationDate,
            expiry != existing.expiryDate || expiry != existing.provisioningProfileExpirationDate {
             // 结算：以运行包内的真实 profile 为准（可能是新包，也可能是回滚后的旧包）。
-            // 但 profile-only 续签不换包，内嵌日期会比已注入的新日期旧，此时不覆盖。
-            let currentExpiry = existing.provisioningProfileExpirationDate ?? existing.expiryDate
-            if let current = currentExpiry, expiry <= current {
-                // 内嵌不比现有新，保留现有（profile-only 的新日期）
-            } else {
-                updated.expiryDate = expiry
-                updated.provisioningProfileExpirationDate = expiry
-                changed = true
-            }
+            // 注意：这里是自更新结算路径，不是 profile-only。profile-only 不走结算、
+            // 不换包；自更新失败时必须回滚到运行中旧包的真实日期（R07），不能因
+            // "内嵌更旧" 而跳过，否则 UI 会显示设备上并不存在的到期日。
+            updated.expiryDate = expiry
+            updated.provisioningProfileExpirationDate = expiry
+            changed = true
         }
 
         // ── 证书序列号：同版本续签可能换证书，只能以运行包真实 CMS 签名者为准回补 ──

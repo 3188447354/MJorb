@@ -5,6 +5,17 @@
 
 ---
 
+## 2026-10-05 6a56161 修过头：回滚语义被"只增不减"吃掉（CI 3 个单测红）
+
+- **现象**：CI run 37319253679（26c3628）`swift-regression` 挂 3 个单测：`oldRunningBundleCorrectsInstalledSnapshotWithoutDiscardingUpdateSource`（`updated.expiryDate` 期望 oldExpiry 得 newExpiry）、`failedSelfUpdateRollsBackToTheRunningBundleProfile`（期望回滚到 runningExpiry 得乐观写入的新值）。另 `build-package` 的 R28 变异检查红（见下）。
+- **根因**：6a56161 为修"后台任务用旧内嵌日期覆盖 profile-only 新日期"，在 `SelfAppRegistrar` 两处加了"内嵌更旧就不覆盖"。但它把**回滚语义**也吃掉了：① 自更新失败时记录里是乐观写入的"未来"日期，必须回滚到运行中旧包的真实日期（R07）；② 有待安装自更新源时（`hasPendingSelfUpdateSource`），记录反映未来包，同样要以运行包为准。两处测试都是这种场景。
+- **修复**：① 主注册路径（`ensureRegistered`）：`hasPendingSelfUpdateSource == true` 时走老行为（内嵌日期覆盖）；为 false 时才用"只增不减"。② 结算路径：profile-only 根本不走结算，直接恢复原行为（无条件以运行包为准）。
+- **R28 变异检查红的根因**：我给 `tapStage` 加的 `if button.isSelected { return }` 让变异后文件里仍有 `"button.isSelected"` 字符串，守卫的粗粒度 `in` 检查被绕过。修法：R28 检查改成与 R28b 同样的断言级精确模式（`"XCTAssertTrue( button.isSelected," in squash(ui_tests)`）。
+- **涉及文件**：`Seal/Core/Renewal/SelfAppRegistrar.swift`、`SealUITests/ImportFlowUITests.swift`（`tapStage` 4 次重试）、`Scripts/verify-release-safety.py`（R28 检查精确化）。
+- **验证状态**：待 CI。
+
+---
+
 ## 2026-10-05 `tapStage` 只点一次被动画吞掉（CI swift-regression 红）
 
 - **现象**：CI run 37316945665（83352a4）`swift-regression` 挂 1 个 UI 测试：`testTwoStageNavigationCanBeTappedWithoutChangingHeaderAlignment`，`ImportFlowUITests.swift:49` —— 「点了「已安装，0 个」之后它没有被选中（isEnabled=true）」。`build-package` / `signer-tests` 均绿。

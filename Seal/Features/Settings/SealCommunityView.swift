@@ -35,6 +35,7 @@ struct SealCommunityView: View {
                     sectionTitle("交流与动态")
                     gzhCard
                     qqCard
+                    douyinCard
                 }
                 footerNote
             }
@@ -125,6 +126,16 @@ struct SealCommunityView: View {
             subtitle: "点击直接跳转 QQ 加群",
             value: nil,
             action: joinQQGroup
+        )
+    }
+
+    private var douyinCard: some View {
+        communityCard(
+            icon: "music.note",
+            title: "关注抖音",
+            subtitle: "视频教程 · 使用技巧 · 更新动态",
+            value: nil,
+            action: openDouyin
         )
     }
 
@@ -363,6 +374,12 @@ struct SealCommunityView: View {
                     openURL(fallback)
                 }
             }
+        }
+    }
+
+    private func openDouyin() {
+        if let url = URL(string: "https://v.douyin.com/r5NTxx_Ztyk/") {
+            openURL(url)
         }
     }
 

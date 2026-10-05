@@ -383,10 +383,12 @@ actor SelfAppRegistrar {
         // 内嵌描述文件日期可能比 profile-only 续签注入的新日期旧（内嵌的是打包时的，
         // profile-only 只换设备端 profile 不换包）。只在内嵌日期更新时才覆盖，
         // 避免后台维护任务把刚续签的新日期改回旧的。
-        // 例外：有待安装的自更新源时（hasPendingSelfUpdateSource），记录里是"未来"的新包信息，
+        // 例外：有待安装的自更新源且版本号真的不一致时，记录里是"未来"新包信息，
         // 必须以运行中旧包的真实日期为准（回滚语义），此时仍用内嵌日期覆盖。
+        // 如果版本号一致（只是同版本重签），profile-only 的新日期是正确的，不覆盖。
         let embeddedExpiry = main.profileExpirationDate
-        if existing.hasPendingSelfUpdateSource {
+        let versionMismatch = existing.hasPendingSelfUpdateSource && existing.version != identity.version
+        if versionMismatch {
             updated.expiryDate = embeddedExpiry
             updated.provisioningProfileExpirationDate = embeddedExpiry
         } else {
@@ -481,9 +483,10 @@ actor SelfAppRegistrar {
         }
         if let expiry = metadata.expirationDate,
            expiry != existing.expiryDate || expiry != existing.provisioningProfileExpirationDate {
-            // 只有在有待安装更新时才回滚：自更新失败后仍运行旧包，必须显示旧包真实日期。
-            // 无待安装时（profile-only 续签后），记录里的新日期是正确的，不能用内嵌旧日期覆盖。
-            if existing.hasPendingSelfUpdateSource {
+            // 只有在有待安装更新且版本号真不一致时才回滚：自更新失败后仍运行旧包，必须显示旧包真实日期。
+            // 无待安装或版本号一致时（profile-only 续签后），记录里的新日期是正确的，不能用内嵌旧日期覆盖。
+            let versionMismatch = existing.hasPendingSelfUpdateSource && existing.version != metadata.version
+            if versionMismatch {
                 // 结算：以运行包内的真实 profile 为准（可能是新包，也可能是回滚后的旧包）。
                 updated.expiryDate = expiry
                 updated.provisioningProfileExpirationDate = expiry

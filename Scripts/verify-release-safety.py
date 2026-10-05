@@ -10509,13 +10509,16 @@ def main():
          "manager.pausesLocationUpdatesAutomatically = false",
          "manager.pausesLocationUpdatesAutomatically = true",
          "R110②:"),
-        # ③ 快捷指令后台唤起里第二路被退成重复音频 start（后台续签丢兜底）⇒ R110③ 报红。
-        # （2026-10-05 起保活按需启动，`SealApp.init()` 不再启动，原针对 SealApp.swift 的
-        # 变异项已删除；断言 R110③ 现只查 Intent 文件。）
-        ("Seal/Features/Intents/SealRenewalIntent.swift",
+        # ③ `SealApp.init()` 里第二路被退成重复音频 start（正常启动丢一路）⇒ R110③ 报红。
+        ("Seal/App/SealApp.swift",
          "container.locationKeepAlive.start()",
          "container.backgroundKeepAlive.start()",
          "R110③:"),
+        # ④ 快捷指令后台唤起里第二路被退成重复音频 start（后台续签丢兜底）⇒ R110④ 报红。
+        ("Seal/Features/Intents/SealRenewalIntent.swift",
+         "container.locationKeepAlive.start()",
+         "container.backgroundKeepAlive.start()",
+         "R110④:"),
         # ── R111：发布成功后必须自动同步官网 ──
         # ① 把同步调用**挪到** `gh release create` 之前（注入一份）⇒ 会同步到上一版，R111① 报红。
         #    ⚠️ 只「删掉」同步步骤的话 ①–⑤ 会一起红，测不出 ① 自己的判别力 ⇒ 用「挪位」形态。

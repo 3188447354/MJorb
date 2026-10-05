@@ -267,8 +267,25 @@ struct AppContainer {
                     selfReplacementStore: transactionStore
                 ),
                 certificateExportHandler: certificateExportHandler,
-                backgroundKeepAlive: BackgroundKeepAliveService(logStore: logStore),
-                locationKeepAlive: LocationKeepAliveService(logStore: logStore),
+                backgroundKeepAlive: {
+                    let service = BackgroundKeepAliveService(logStore: logStore)
+                    // 续签完成后停止保活（省电）：快捷指令下次触发时会重新 start()
+                    Task { @MainActor in
+                        for await _ in NotificationCenter.default.notifications(named: .sealRenewalCompleted) {
+                            service.stop()
+                        }
+                    }
+                    return service
+                }(),
+                locationKeepAlive: {
+                    let service = LocationKeepAliveService(logStore: logStore)
+                    Task { @MainActor in
+                        for await _ in NotificationCenter.default.notifications(named: .sealRenewalCompleted) {
+                            service.stop()
+                        }
+                    }
+                    return service
+                }(),
                 logStore: logStore
             )
         } catch {

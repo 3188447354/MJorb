@@ -3,8 +3,10 @@ import UIKit
 import UniformTypeIdentifiers
 
 /// 日志清空通知：LogViewerView 发出，SealLogStore 持有者监听并清空内存缓存
+/// 续签完成通知：AppsViewModel 发出，AppContainer 监听并停止后台保活（省电）
 extension Notification.Name {
     static let sealClearLogs = Notification.Name("sealClearLogs")
+    static let sealRenewalCompleted = Notification.Name("sealRenewalCompleted")
 }
 
 /// 日志查看页：只显示人话卡片，不显示原始日志。

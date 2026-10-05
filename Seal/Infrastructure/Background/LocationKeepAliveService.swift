@@ -138,6 +138,14 @@ final class LocationKeepAliveService: NSObject {
             )
         }
     }
+
+    /// 停止保活：停掉定位更新。
+    ///
+    /// 调用时机：续签/签名完成后。快捷指令触发时会重新 start()。
+    func stop() {
+        isEnabled = false
+        manager.stopUpdatingLocation()
+    }
 }
 
 extension LocationKeepAliveService: CLLocationManagerDelegate {

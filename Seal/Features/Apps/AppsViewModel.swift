@@ -2188,6 +2188,8 @@ final class AppsViewModel: ObservableObject {
                 // 续签完成立即强制镜像日志到 Documents，跳过 30 秒节流，
                 // 让用户进日志页立马能看到本轮日志
                 Task { await logStore?.forceMirrorToDocuments() }
+                // 通知停止后台保活（省电）：快捷指令触发的续签已完成，不需要再占后台
+                NotificationCenter.default.post(name: .sealRenewalCompleted, object: nil)
                 // 轮次总结已由 RenewalCoordinator 写入 SEAL-RENEW-ROUND
                 //（人话层：每 App 结果+耗时、本轮总耗时、成功/失败数），
                 // 这里不再重复写 SEAL-RENEW-009，避免一轮两条总结。

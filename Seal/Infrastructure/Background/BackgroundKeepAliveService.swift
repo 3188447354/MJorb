@@ -385,4 +385,26 @@ final class BackgroundKeepAliveService {
             )
         }
     }
+
+    /// 停止保活：停掉静音音频，移除通知监听。
+    ///
+    /// 调用时机：续签/签名完成后。快捷指令触发时会重新 start()，
+    /// 所以不需要常驻后台也能保证续签成功。
+    func stop() {
+        isEnabled = false
+        player?.stop()
+        player = nil
+        if let observer = interruptionObserver {
+            NotificationCenter.default.removeObserver(observer)
+            interruptionObserver = nil
+        }
+        if let observer = routeChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            routeChangeObserver = nil
+        }
+        if let observer = mediaServicesResetObserver {
+            NotificationCenter.default.removeObserver(observer)
+            mediaServicesResetObserver = nil
+        }
+    }
 }

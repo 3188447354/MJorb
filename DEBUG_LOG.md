@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-10-05 54b3f1b 「需重新签名」标签常驻：UI 直接用了永不清的标志
+
+- **现象**：MJ 反馈已安装列表 Seal 行 Bundle ID 下方红色「需重新签名」标签一直存在，安装成功后不消失。
+- **根因**：`ImportedAppRow` 直接用 `app.hasPendingSelfUpdateSource` 判断。`ProfileOnlyRenewalPolicy.hasPendingUpdateSource` 的注释（353-355 行）明确警告「不能用 `AppRecord.hasPendingSelfUpdateSource` 代替它：那个标志对 Seal 永远清不掉」——自替换路径（`SelfAppRegistrar.atomicallyApplyInstalledIdentity`）刻意不清它，语义是「导入过自更新源」而非「当前有待安装更新」。UI 偏偏用了被警告禁用的写法。
+- **修复**：`ImportedAppRow` 新增 `hasPendingSelfUpdate(_:)`，调用 `ProfileOnlyRenewalPolicy.hasPendingUpdateSource(recordedVersion:runningVersion:pendingUpdateSourceFingerprint:)` 同源判据（版本比较 + 指纹），运行版本取 `Bundle.main` 的 `CFBundleShortVersionString`。仅 Seal 行参与判断。
+- **涉及文件**：`Seal/Features/Apps/ImportedAppRow.swift`。
+- **验证状态**：待 CI。
+
+---
+
 ## 2026-10-05 6a56161 修过头：回滚语义被"只增不减"吃掉（CI 3 个单测红）
 
 - **现象**：CI run 37319253679（26c3628）`swift-regression` 挂 3 个单测：`oldRunningBundleCorrectsInstalledSnapshotWithoutDiscardingUpdateSource`（`updated.expiryDate` 期望 oldExpiry 得 newExpiry）、`failedSelfUpdateRollsBackToTheRunningBundleProfile`（期望回滚到 runningExpiry 得乐观写入的新值）。另 `build-package` 的 R28 变异检查红（见下）。

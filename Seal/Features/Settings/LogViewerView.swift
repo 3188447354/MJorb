@@ -131,7 +131,7 @@ struct LogViewerView: View {
                 }
             }
             text += round.footer + "\n"
-            text += String(repeating: "━", 40) + "\n"
+            text += String(repeating: "━", count: 40) + "\n"
         }
         let tmpURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("Seal-日志-\(formattedDate()).txt")

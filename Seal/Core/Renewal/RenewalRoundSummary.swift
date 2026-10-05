@@ -32,6 +32,8 @@ struct RenewalRoundItem: Sendable {
     /// 真实耗时（秒）。`processItem` 里取两个 `Date()` 算得，
     /// 约百纳秒开销，不增加续签时长（要求 8）。
     let duration: TimeInterval
+    /// 成功时新描述文件的到期时间（用户要看"有效期至"）
+    let profileExpirationDate: Date?
     /// 失败时的诊断码（技术层用）
     let failureCode: String?
     /// 失败时的人话原因（用户层用，已是去术语文案）
@@ -71,7 +73,12 @@ struct RenewalRoundSummary: Sendable {
         for item in items {
             switch item.outcome {
             case .succeeded:
-                lines.append("✓ \(item.appName) 成功，用了\(Self.formatDuration(item.duration))")
+                if let expiry = item.profileExpirationDate {
+                    let dateStr = Self.expiryFormatter.string(from: expiry)
+                    lines.append("✓ \(item.appName) 成功，有效期至 \(dateStr)")
+                } else {
+                    lines.append("✓ \(item.appName) 成功，用了\(Self.formatDuration(item.duration))")
+                }
             case .failed:
                 lines.append("✗ \(item.appName) 失败，用了\(Self.formatDuration(item.duration))")
                 if let reason = item.failureReason, !reason.isEmpty {
@@ -133,6 +140,15 @@ struct RenewalRoundSummary: Sendable {
         f.timeZone = TimeZone(identifier: "Asia/Shanghai")
         f.locale = Locale(identifier: "zh_CN")
         f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
+    /// 有效期格式：2026-10-05 21:08:35
+    private static let expiryFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return f
     }()
 

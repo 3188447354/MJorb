@@ -481,6 +481,7 @@ actor RenewalCoordinator {
                 appName: appName,
                 outcome: .needsAction,
                 duration: Date().timeIntervalSince(itemStart),
+                profileExpirationDate: nil,
                 failureCode: failure.code,
                 failureReason: failure.reason,
                 failureRecovery: failure.recovery
@@ -503,6 +504,7 @@ actor RenewalCoordinator {
                 appName: appName,
                 outcome: .failed,
                 duration: Date().timeIntervalSince(itemStart),
+                profileExpirationDate: nil,
                 failureCode: failure.code,
                 failureReason: failure.reason,
                 failureRecovery: failure.recovery
@@ -702,6 +704,7 @@ actor RenewalCoordinator {
                     appName: updated.name,
                     outcome: .awaitingConfirmation,
                     duration: Date().timeIntervalSince(itemStart),
+                    profileExpirationDate: nil,
                     failureCode: nil,
                     failureReason: nil,
                     failureRecovery: nil
@@ -735,6 +738,7 @@ actor RenewalCoordinator {
                 appName: updated.name,
                 outcome: .succeeded,
                 duration: Date().timeIntervalSince(itemStart),
+                profileExpirationDate: updated.provisioningProfileExpirationDate ?? updated.expiryDate,
                 failureCode: nil,
                 failureReason: nil,
                 failureRecovery: nil
@@ -759,6 +763,7 @@ actor RenewalCoordinator {
                 appName: appName,
                 outcome: .failed,
                 duration: Date().timeIntervalSince(itemStart),
+                profileExpirationDate: nil,
                 failureCode: failure.code,
                 failureReason: failure.reason,
                 failureRecovery: failure.recovery
@@ -771,6 +776,7 @@ actor RenewalCoordinator {
             appName: appName,
             outcome: .failed,
             duration: Date().timeIntervalSince(itemStart),
+            profileExpirationDate: nil,
             failureCode: "SEAL-RENEW-404",
             failureReason: "续签时未找到这个应用的本地记录，它可能已被删除。",
             failureRecovery: "重新导入 IPA 并签名安装"

@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-10-05 `tapStage` 只点一次被动画吞掉（CI swift-regression 红）
+
+- **现象**：CI run 37316945665（83352a4）`swift-regression` 挂 1 个 UI 测试：`testTwoStageNavigationCanBeTappedWithoutChangingHeaderAlignment`，`ImportFlowUITests.swift:49` —— 「点了「已安装，0 个」之后它没有被选中（isEnabled=true）」。`build-package` / `signer-tests` 均绿。
+- **根因**：`tapStage` 的注释写着「点 → 等 → 没到就再点」，但实现只 `tap()` 一次 + 等 10 秒。初始 mode 切换是程序化翻页（`resolveInitialModeIfNeeded`），动画未结束时 tap 会被吞掉（2026-09-17 CI 已实测过同机制）。`swipeStage` 早有 4 次重试，`tapStage` 漏了。注意与 2026-09-18 那次的区别：那次是「点了 4 次页面文字仍没出现」（点击被接受、TabView 没翻页 ⇒ 改断言为 isSelected）；这次是 isSelected 10 秒都没成立 ⇒ 点击根本没被接受 ⇒ 重试 tap 是对症的。
+- **修复**：`tapStage` 改成与 `swipeStage` 对等的 4 次循环：`if button.isSelected { return }` → tap → 等 3 秒 → 未选中再点；4 次后仍未选中才断言失败（不掩盖确定性缺陷）。
+- **涉及文件**：`SealUITests/ImportFlowUITests.swift`（`tapStage`）。
+- **验证状态**：待 CI（`swift-regression` 的 UI 回归）。
+
+---
+
 ## 2026-10-04 并行续签 + 350 误报根因（用户需求「快捷指令和 App 内一样快」）
 
 - **背景**：用户问「能不能做到快捷指令和 Seal 内续签一样快」。两边走同一套代码，差距在后台冷启动（2-4 秒，系统级抹不掉），但大头是续签串行：2 个 App 要 16-20 秒。用户拍板做并行重构（此前「冒风险试试」）。

@@ -131,16 +131,23 @@ final class ImportFlowUITests: XCTestCase {
         // 选中态是**确定性**的：`modeButton` 用
         // `.accessibilityAddTraits(mode == item ? .isSelected : [])` 直接反映 `mode`，
         // 点击一旦被接受就立刻成立 —— 这正是本测试名字要保的东西（「两段导航**能点**」）。
-        let waiter = XCTWaiter()
-        let becameSelected = expectation(
-            for: NSPredicate(format: "isSelected == true"),
-            evaluatedWith: button
-        )
-        button.tap()
-        _ = waiter.wait(for: [becameSelected], timeout: 10)
+        //
+        // ⚠️ 但「点击被接受」本身不确定：初始 mode 切换是程序化翻页，动画未结束时 tap
+        // 会被吞掉（2026-09-17 CI 实测）。`swipeStage` 早就有「滑 → 等 → 没到就再滑」
+        // 的 4 次重试，这里补上对等的「点 → 等 → 没到就再点」。
+        // **它不掩盖确定性缺陷**：真坏了 4 次之后照样断言失败。
+        for _ in 0..<4 {
+            if button.isSelected { return }
+            button.tap()
+            let becameSelected = expectation(
+                for: NSPredicate(format: "isSelected == true"),
+                evaluatedWith: button
+            )
+            _ = XCTWaiter().wait(for: [becameSelected], timeout: 3)
+        }
         XCTAssertTrue(
             button.isSelected,
-            "点了「\(button.label)」之后它没有被选中（isEnabled=\(button.isEnabled)）",
+            "点了「\(button.label)」4 次之后它没有被选中（isEnabled=\(button.isEnabled)）",
             file: file,
             line: line
         )

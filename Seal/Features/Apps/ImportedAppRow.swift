@@ -35,7 +35,9 @@ struct ImportedAppRow: View {
                     .textSelection(.enabled)
 
                 // Seal 自更新：已导入新版包但还没安装，在 Bundle ID 下方提示
-                if app.hasPendingSelfUpdateSource && app.belongsInInstalledList {
+                // 用 ProfileOnlyRenewalPolicy.hasPendingUpdateSource 判断，不能直接用
+                // hasPendingSelfUpdateSource（那个标志自替换后不清，会常驻）
+                if app.belongsInInstalledList && Self.hasPendingSelfUpdate(app) {
                     Text("需重新签名")
                         .font(.caption.weight(.semibold))
                         .foregroundColor(.white)
@@ -179,5 +181,18 @@ struct ImportedAppRow: View {
         case .danger: .sealDanger
         case .neutral, nil: .sealTextSecondary
         }
+    }
+
+    /// 是否有待安装的自更新源：用 ProfileOnlyRenewalPolicy.hasPendingUpdateSource
+    /// 的同源判据（版本比较 + 指纹），不能直接用 hasPendingSelfUpdateSource
+    ///（那个标志自替换后不清，会常驻）。
+    private static func hasPendingSelfUpdate(_ app: AppRecord) -> Bool {
+        guard app.isSeal else { return false }
+        let runningVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        return ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
+            recordedVersion: app.version,
+            runningVersion: runningVersion,
+            pendingUpdateSourceFingerprint: app.pendingUpdateSourceFingerprint
+        )
     }
 }

@@ -3204,12 +3204,15 @@ def violations(load=read):
     # UI 到期日取 `provisioningProfileExpirationDate ?? expiryDate`。签名阶段就推进顶层
     # profile 字段，安装失败/进程被杀时界面会显示设备上并不存在的日期 —— 用户以为续签成功，
     # 直到应用被吊销才发现。顶层字段必须只描述设备上正在运行的那份构建。
+    # 两阶段提交后：签名阶段只写 `pendingSignedSnapshot` 草稿，顶层一律不动，
+    # 安装校验通过后才转正。
     apply_result = section(
         signing_coord,
         "private func applySigningResult(",
-        "app.entitlementValidationStatus"
+        "    private func installCachedSignedIPAIfPossible("
     )
-    check("if advancesInstalledSnapshot {" in apply_result,
+    check("app.pendingSignedSnapshot = PendingSignedSnapshot(" in apply_result
+          and "app.provisioningProfileUUID =" not in apply_result,
           "E: top-level profile fields must not advance before install verification")
     snapshot = load("Seal/Core/Signing/SignedArtifactSnapshot.swift")
     check("static func statusAfterSigning(" in snapshot
@@ -3996,7 +3999,10 @@ def violations(load=read):
           "204e must surface when keyless certificates are still in use")
     # Seal 自身续签绝不撤自己的证书（会立刻打不开，2026-09-14 真机踩到）。两道护栏：
     # ① 命中「在用的无钥匙证书」时不抛 204e，回退原错误；② 一键全撤跳过 Seal 在用的证书。
-    check("if app.isSeal {" in cleanup_retry,
+    # 规矩盒子化后：① 由 `RenewalPolicy.allowsRevocationPrompt` 表达（自管理应用为 false）。
+    check("if case .blockedByInUseKeylessCerts" in cleanup_retry
+          and ("if app.isSeal {" in cleanup_retry
+               or "allowsRevocationPrompt == false" in cleanup_retry),
           "Seal self-renewal must never surface 204e (revoke makes Seal unlaunchable)")
     check("sealProtectedSerials" in coord and "sealProtectedSerials.contains" in coord,
           "Sacrifice: one-tap full revoke must skip Seal's own in-use certificate")
@@ -5676,12 +5682,17 @@ def violations(load=read):
         "    private func liveProfileOnlyIdentity(for app: AppRecord) async -> LiveProfileOnlyIdentity? {",
         "\n    private func shouldUseProfileOnlyRenewal("
     )
-    check("runningVersion: metadata?.version," in r89_live_identity_fn
-          and "guard app.isSeal else { return nil }" in r89_live_identity_fn,
+    # 规矩盒子化后：liveIdentity 委托给 policy；SelfManagedRenewalPolicy 读 Bundle.main，
+    # DefaultRenewalPolicy 返回 nil（第三方读 Bundle.main 会得到 Seal 自己的身份，造成假阳性）。
+    r89_policy_file = load("Seal/Core/Renewal/SealRenewalPolicy.swift")
+    check("runningVersion: metadata?.version," in r89_policy_file
+          and "await policy(for: app).liveIdentity(for: app)" in r89_live_identity_fn,
           "R89④: 调用点必须传**正在运行的版本**（`metadata?.version`），"
-          "且仍只在 `app.isSeal` 时读 ✗ —— `SelfAppMetadata.current()` 读的是 `Bundle.main`，"
+          "且仍只在自管理应用时读 ✗ —— `SelfAppMetadata.current()` 读的是 `Bundle.main`，"
           "对第三方 App 用它会得到 Seal 自己的版本（假阳性）；"
           "而传成 `app.version`（记录版本）会让这条判据恒假 —— 那正是本次要修的 bug")
+    check("func liveIdentity(for app: AppRecord) async -> LiveProfileOnlyIdentity? {\n        nil\n    }" in r89_policy_file,
+          "R89④b: 第三方规矩的 liveIdentity 必须返回 nil，绝不读 Bundle.main")
 
     r89_gate = section_or_empty(
         r89_coord,
@@ -7053,8 +7064,8 @@ def main():
          "let result = BatchRefreshResult(total: 0, succeeded: 0, failed: 0, needsAction: 0, awaitingConfirmation: 0)",
          "G: the restored BatchRefreshResult must come from the shared payload summary"),
         ("Seal/Core/Signing/SigningCoordinator.swift",
-         "if advancesInstalledSnapshot {",
-         "if true {",
+         "app.pendingSignedSnapshot = PendingSignedSnapshot(",
+         "app.pendingSignedSnapshot = nil //",
          "E: top-level profile fields must not advance"),
         ("Seal/Core/Signing/SignedArtifactSnapshot.swift",
          "return isSeal ? .installed : .awaitingVerification",

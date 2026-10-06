@@ -216,13 +216,13 @@ actor SigningCoordinator {
     /// - 账号不匹配
     func predictsProfileOnlyForSeal(app: AppRecord) async -> Bool {
         guard app.isSeal else { return false }
-        let liveIdentity = await liveProfileOnlyIdentity(for: app)
-        // 注意：与 `shouldUseProfileOnlyRenewal` 的同名调用刻意写成不同缩进，
-        // 避免守卫 R84③ 的变异锚点误匹配到这里（变异只替换第一个命中）。
+        let renewalPolicy = policy(for: app)
+        // 直接调策略的 admissionDecision，不手写重复逻辑（防两处分叉）
         let predicted: ProfileOnlyRenewalPolicy.Decision =
-            ProfileOnlyRenewalPolicy.evaluate(app: app, liveIdentity: liveIdentity)
+            await renewalPolicy.admissionDecision(for: app)
         guard case .eligible = predicted else { return false }
         // 证书私钥必须在本机（否则实际执行时会回落 fullResign）。
+        let liveIdentity = await renewalPolicy.liveIdentity(for: app)
         guard ProfileOnlyRenewalPolicy.effectiveCertificateSerialNumber(
             app: app, liveIdentity: liveIdentity
         ) != nil else { return false }
@@ -378,12 +378,12 @@ actor SigningCoordinator {
         //
         // ⚠️ 下面那条日志**只陈述保活的目的，不宣称覆盖了哪些步骤**（2026-09-26，构建 49 真机）。
         // 它写在**续签路径判定之前**（profile-only 会在 `renewProfilesOnly` 直接 return），
-        // 条件只有 `app.isSeal && installAfterSigning` ⇒ 走 profile-only 时照样打印。
+        // 条件只有「需贯穿保活 && installAfterSigning」⇒ 走 profile-only 时照样打印。
         // 旧文案「覆盖证书、描述文件、签名和安装」因此与同一秒的「续签路径已确认：仅更新
         // 描述文件；不会重新签名、打包或安装 IPA。」自相矛盾（真机 11:57:02 两行紧邻）——
         // 用户要求「没有做的事不写」，所以改成陈述这个后台任务干什么，两条路径上都成立。
         let selfRenewalBackgroundTask = await MainActor.run {
-            app.isSeal && installAfterSigning
+            policy(for: app).needsExtendedBackgroundTask && installAfterSigning
                 ? UIApplication.shared.beginBackgroundTask(withName: "Seal Self Renewal")
                 : UIBackgroundTaskIdentifier.invalid
         }
@@ -650,9 +650,9 @@ actor SigningCoordinator {
                 guard cleanupOutcome == .cleaned,
                       let refreshedSecret = try await keychain.load(accountID: accountID) else {
                     if case .blockedByInUseKeylessCerts(let appNames, let deviceOnlyCount) = cleanupOutcome {
-                        if app.isSeal {
-                            // Seal 自身续签绝不弹「撤销并继续签名」：撤销会让 Seal 正在
-                            // 使用的证书失效，重签安装后 Seal 立刻打不开（2026-09-14 真机）。
+                        if policy(for: app).allowsRevocationPrompt == false {
+                            // 自管理应用续签绝不弹「撤销并继续签名」：撤销会让正在
+                            // 使用的证书失效，重签安装后立刻打不开（2026-09-14 真机）。
                             // 新策略下前置清理已直接撤非本机证书，本分支基本不会走到。
                             throw failure
                         }
@@ -727,14 +727,12 @@ actor SigningCoordinator {
                 appID: appID
             )
             let signedSHA256 = try await fileStore.sha256(relativePath: signedPath)
-            // Seal 自身例外：自更新安装会替换本进程，这是安装前唯一的写入机会；
-            // 而且它的顶层快照由启动同步从**运行中的 Bundle** 结算（R07/D 包），
-            // 装失败时这份乐观值会被推翻，不会留下假日期。
+            // 两阶段提交：签名阶段写 pending 草稿，安装校验通过后转正；
+            // Seal 自替换会杀本进程，由新进程的 SelfAppRegistrar 确认转正。
             applySigningResult(
                 portalResult,
                 signedPath: signedPath,
                 accountID: accountID,
-                advancesInstalledSnapshot: originalState != .installed || app.isSeal,
                 to: &app
             )
             app.signedIPASHA256 = signedSHA256
@@ -745,9 +743,8 @@ actor SigningCoordinator {
                 app.signedIPAFileSize = (attrs[.size] as? NSNumber)?.int64Value
                 app.signedIPAModificationDate = attrs[.modificationDate] as? Date
             }
-            app.signedArtifactStatus = SignedArtifactSnapshot.statusAfterSigning(
-                originalState: originalState,
-                isSeal: app.isSeal
+            app.signedArtifactStatus = policy(for: app).statusAfterSigning(
+                originalState: originalState
             )
             app.lastInstallFailureCode = nil
             app.lastInstallFailureReason = nil
@@ -908,26 +905,10 @@ actor SigningCoordinator {
 
     /// 取「运行产物的实时签名身份」，作为记录之外的第二条续签准入通道。
     ///
-    /// ⚠️ 只在 `app.isSeal` 时读：`SelfAppMetadata.current()` 读的是 `Bundle.main`，
-    /// 对第三方 App 调用会得到 **Seal 自己**的身份 —— 那会把「记录不完整」的第三方应用
-    /// 误判成合格。这与本项目反复出现的「上游放行、下游又拦」是同一种错的两面：
-    /// 这里放行的是**错的对象**。
-    ///
-    /// 🔴 **必须同时传「正在运行的版本」**（2026-09-26 用户实测）：覆盖更新
-    /// （`ImportWorkflow.makeSelfUpdateRecord` / `makeInstalledUpdateRecord`）刻意把记录写成
-    /// **新导入包**的版本号并置 `hasPendingSelfUpdateSource`，而设备上跑的还是旧版。
-    /// 只看 Bundle ID 相等的准入会把这个窗口判成合格 ⇒ 走 profile-only
-    ///（**只换描述文件、从不安装**）⇒ 新版本永远装不上，界面却一直显示新版本号
-    /// （用户实测：导入 1.3.20 到 1.3.19，点续签「直接续签了」，「关于」里仍是 1.3.19）。
-    /// 传进去之后 `evaluate` 会回落完整重签并安装，装完两边自然相等。
+    /// 委托给规矩盒子：只有自管理应用才读 `Bundle.main`（`SelfAppMetadata.current()`），
+    /// 对第三方调用会得到 **Seal 自己**的身份，造成假阳性。
     private func liveProfileOnlyIdentity(for app: AppRecord) async -> LiveProfileOnlyIdentity? {
-        guard app.isSeal else { return nil }
-        let metadata = await MainActor.run { SelfAppMetadata.current() }
-        return ProfileOnlyRenewalPolicy.liveIdentity(
-            installedIdentity: metadata?.installedIdentity,
-            runningVersion: metadata?.version,
-            app: app
-        )
+        await policy(for: app).liveIdentity(for: app)
     }
 
     private func shouldUseProfileOnlyRenewal(
@@ -1121,6 +1102,8 @@ actor SigningCoordinator {
             deviceIdentifier: result.deviceIdentifier,
             to: &renewedApp
         )
+        // 两阶段提交：设备端已逐份读回确认（注入阶段），现在把 pending 转正
+        renewedApp.commitPendingSnapshot()
         renewedApp.lastInstallFailureCode = nil
         renewedApp.lastInstallFailureReason = nil
         try await appStore.save(renewedApp)
@@ -1834,41 +1817,32 @@ actor SigningCoordinator {
 
     /// 把签名产物的信息落进记录。
     ///
-    /// `advancesInstalledSnapshot` 决定**是否推进顶层 profile 字段**
-    /// （`provisioningProfile*` 四个）。这些顶层字段描述的是「设备上正在运行的那份构建」，
-    /// UI 展示的到期日取的是 `provisioningProfileExpirationDate ?? expiryDate`。
-    /// 已安装的第三方应用重签时若提前推进，一旦安装失败或进程中途被杀，
-    /// 界面就会显示一个设备上并不存在的到期日（R08：新旧日期混用），
-    /// 用户以为续签成功，直到应用被吊销才发现问题。
-    /// 产物身份由 `signingTargets` 承载，顶层快照等安装校验通过后再由
-    /// `advanceInstalledSnapshot(of:bundleIdentifier:expiryDate:)` 推进。
+    /// 两阶段提交：身份/产物类字段（Bundle ID、账号、签名产物路径等）描述的是
+    /// 「刚签出的产物」，直接写顶层；profile 相关字段（四件套、signingTargets、
+    /// 扩展 profile）描述的是「设备上正在运行的那份构建」，先写
+    /// `pendingSignedSnapshot` 草稿，安装校验通过后再转正。UI 只读顶层 committed 值。
     private func applySigningResult(
         _ result: PortalSigningResult,
         signedPath: String,
         accountID: UUID,
-        advancesInstalledSnapshot: Bool,
         to app: inout AppRecord
     ) {
         let mainBinding = result.profileBindings[result.mappedMainBundleID]
+        // 身份/产物字段：签名输入事实，直接写顶层，不用拆。
+        // 注意：certificateSerialNumber 是设备事实（实际签名者），走 pending，不在这里写。
         app.mappedBundleIdentifier = result.mappedMainBundleID
         app.preferredBundleIdentifier = result.mappedMainBundleID
         app.accountID = accountID
         app.signingTeamID = result.teamID
-        app.certificateSerialNumber = result.certificateSerialNumber
         app.signedDeviceIdentifier = result.deviceIdentifier
         app.signedIPARelativePath = signedPath
-        if advancesInstalledSnapshot {
-            app.provisioningProfileUUID = mainBinding?.profileUUID
-            app.provisioningProfileName = mainBinding?.profileName
-            app.provisioningProfileCreationDate = mainBinding?.creationDate
-            app.provisioningProfileExpirationDate = mainBinding?.expirationDate
-        }
         app.entitlementValidationStatus = "已按 embedded.mobileprovision 校验"
         app.capabilityValidationStatus = "已按 Apple App ID 与描述文件校验"
         app.extensionProfileStrategy = result.extensionProfileStrategy
         app.lastSignedAt = Date()
         app.removedExtensionBundleIdentifiers = result.droppedExtensionBundleIdentifiers
-        app.signingTargets = result.profileBindings
+        // profile 相关：写 pending 草稿，安装校验通过后转正。
+        let newSigningTargets = result.profileBindings
             .map { bundleIdentifier, binding in
                 SigningTargetRecord(
                     binding: binding,
@@ -1882,18 +1856,34 @@ actor SigningCoordinator {
                 $0.originalBundleIdentifier
             )
         }
+        var extensionSnapshots: [PendingSignedSnapshot.PendingExtensionSnapshot] = []
         for index in app.extensions.indices {
             let mapped = result.mappedBundleIdentifiers[
                 app.extensions[index].originalBundleIdentifier
             ]
             app.extensions[index].mappedBundleIdentifier = mapped
             if let mapped, let binding = result.profileBindings[mapped] {
-                app.extensions[index].provisioningProfileUUID = binding.profileUUID
-                app.extensions[index].provisioningProfileName = binding.profileName
-                app.extensions[index].provisioningProfileExpirationDate = binding.expirationDate
-                app.extensions[index].certificateSerialNumber = result.certificateSerialNumber
+                extensionSnapshots.append(
+                    PendingSignedSnapshot.PendingExtensionSnapshot(
+                        bundleIdentifier: mapped,
+                        provisioningProfileUUID: binding.profileUUID,
+                        provisioningProfileName: binding.profileName,
+                        provisioningProfileExpirationDate: binding.expirationDate,
+                        certificateSerialNumber: result.certificateSerialNumber
+                    )
+                )
             }
         }
+        app.pendingSignedSnapshot = PendingSignedSnapshot(
+            expiryDate: mainBinding?.expirationDate,
+            provisioningProfileUUID: mainBinding?.profileUUID,
+            provisioningProfileName: mainBinding?.profileName,
+            provisioningProfileCreationDate: mainBinding?.creationDate,
+            provisioningProfileExpirationDate: mainBinding?.expirationDate,
+            certificateSerialNumber: result.certificateSerialNumber,
+            signingTargets: newSigningTargets,
+            extensionSnapshots: extensionSnapshots
+        )
     }
 
     private func installCachedSignedIPAIfPossible(
@@ -2171,6 +2161,9 @@ actor SigningCoordinator {
             // An existing Bundle ID may belong to the previous signing generation.
             // Never convert an installation/verification/persistence failure into success
             // using lookup alone, and never clean profiles on this failure path.
+            // 两阶段提交：安装/校验失败时丢弃 pending 草稿，顶层保持旧的已确认值。
+            updated.discardPendingSnapshot()
+            try? await appStore.save(updated)
             if error is CancellationError { throw CancellationError() }
             // Preserve the original rejection instead of replacing it with a connection error.
             if let importFailure = error as? ImportFailure {
@@ -2530,9 +2523,9 @@ actor SigningCoordinator {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         guard normalizedTarget.isEmpty == false else { return }
-        // Seal 自身更新属于覆盖安装（升级版本），不是第三方同名冲突，直接放行。
+        // 自管理应用的自身更新属于覆盖安装（升级版本），不是第三方同名冲突，直接放行。
         // 第三方同 Bundle ID 仍走下方去重拦截。
-        if app.isSeal { return }
+        if policy(for: app).exemptsBundleIDConflict { return }
         let records = try await appStore.fetchAll()
         guard let conflicting = records.first(where: { record in
             record.id != app.id

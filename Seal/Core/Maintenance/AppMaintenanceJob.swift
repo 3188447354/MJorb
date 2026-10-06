@@ -253,11 +253,11 @@ final class AppMaintenanceJob {
         }
         // Seal 自己：**只信运行时读到的真实 profile**，绝不回退记录值。
         //
-        // 记录值对 Seal 尤其不可信（2026-09-25，构建 38 真机）：自更新路径在签名阶段就把
-        // 顶层 `provisioningProfileUUID` 乐观推进（`app.isSeal` ⇒ `advancesInstalledSnapshot`
-        // 恒为 true），而安装可能没落盘（`SEAL-SELF-111`）⇒ 记录指向一份设备上并不存在的
+        // 记录值对 Seal 尤其不可信（2026-09-25，构建 38 真机）：两阶段提交前，自更新路径在签名阶段就把
+        // 顶层 `provisioningProfileUUID` 乐观推进，而安装可能没落盘（`SEAL-SELF-111`）⇒ 记录指向一份设备上并不存在的
         // profile。拿它当保留集合，设备上**正在用的那一份**会被判成旧账删掉 ⇒ Seal 当场
         // 打不开、「VPN 与设备管理」里的描述文件消失。
+        // 现签名阶段只写 pending，顶层保持已确认值，此注释保留作历史教训。
         //
         // 读不到运行时值就**把这条从严格集合里摘掉**（宁缺勿滥 —— 与本函数开头
         // 「拿不到当前在用的是哪一份就整条跳过」是同一条纪律）：Seal 的 profile 于是走不到

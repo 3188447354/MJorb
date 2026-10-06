@@ -57,6 +57,9 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
     var extensions: [AppExtensionRecord]
     var importWarnings: [String]
     var extensionProfileStrategy: AppExtensionProfileStrategy?
+    /// 两阶段提交的草稿：签名/续签阶段先写这里，确认成功后整体转正到顶层。
+    /// nil = 无进行中的签名/续签。UI 只读顶层 committed 值，不读这里。
+    var pendingSignedSnapshot: PendingSignedSnapshot?
 
     init(
         id: UUID = UUID(),
@@ -104,7 +107,8 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         importedAt: Date,
         extensions: [AppExtensionRecord] = [],
         importWarnings: [String] = [],
-        extensionProfileStrategy: AppExtensionProfileStrategy? = nil
+        extensionProfileStrategy: AppExtensionProfileStrategy? = nil,
+        pendingSignedSnapshot: PendingSignedSnapshot? = nil
     ) {
         self.id = id
         self.originalBundleIdentifier = originalBundleIdentifier
@@ -152,6 +156,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         self.extensions = extensions
         self.importWarnings = importWarnings
         self.extensionProfileStrategy = extensionProfileStrategy
+        self.pendingSignedSnapshot = pendingSignedSnapshot
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -201,6 +206,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         case extensions
         case importWarnings
         case extensionProfileStrategy
+        case pendingSignedSnapshot
     }
 
     init(from decoder: Decoder) throws {
@@ -273,6 +279,10 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         extensionProfileStrategy = try container.decodeIfPresent(
             AppExtensionProfileStrategy.self,
             forKey: .extensionProfileStrategy
+        )
+        pendingSignedSnapshot = try container.decodeIfPresent(
+            PendingSignedSnapshot.self,
+            forKey: .pendingSignedSnapshot
         )
         needsIPAImport = try container.decodeIfPresent(Bool.self, forKey: .needsIPAImport) ?? false
     }

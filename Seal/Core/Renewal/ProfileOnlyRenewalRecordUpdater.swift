@@ -32,14 +32,10 @@ enum ProfileOnlyRenewalRecordUpdater {
             )
         }
 
+        // 两阶段提交：先写 pending 草稿，调用方在设备端逐份读回确认后转正。
+        // 身份/输入类字段（signingTeamID、signedDeviceIdentifier）直接写顶层，不用拆。
         app.signingTeamID = teamID
-        app.certificateSerialNumber = certificateSerialNumber
         app.signedDeviceIdentifier = deviceIdentifier
-        app.provisioningProfileUUID = mainBinding.profileUUID
-        app.provisioningProfileName = mainBinding.profileName
-        app.provisioningProfileCreationDate = mainBinding.creationDate
-        app.provisioningProfileExpirationDate = mainBinding.expirationDate
-        app.expiryDate = mainBinding.expirationDate
         app.lastSignedAt = Date()
         app.entitlementValidationStatus = "已按 Apple App ID 与新描述文件校验"
         app.capabilityValidationStatus = "已按 Apple App ID 与新描述文件校验"
@@ -47,11 +43,12 @@ enum ProfileOnlyRenewalRecordUpdater {
         // 若沿用 `SigningTargetRecord(binding:)`（它拿 **profile 内**的 bundleIdentifier 当键），
         // 9 条记录会**全部塌成主 App 一条** ⇒ 缓存与安装前校验逐项匹配失配 ✗。
         // ⇒ 显式传 `signedBundleIdentifier`，profile 元数据仍取自共享的那一份。
-        app.signingTargets = resolvedBindings
+        let newSigningTargets = resolvedBindings
             .map { SigningTargetRecord(binding: $0.value, signedBundleIdentifier: $0.key) }
             .sorted { $0.bundleIdentifier < $1.bundleIdentifier }
-        for index in app.extensions.indices {
-            guard let bundleIdentifier = app.extensions[index].mappedBundleIdentifier,
+        var extensionSnapshots: [PendingSignedSnapshot.PendingExtensionSnapshot] = []
+        for ext in app.extensions {
+            guard let bundleIdentifier = ext.mappedBundleIdentifier,
                   let binding = resolvedBindings[bundleIdentifier] else {
                 throw ImportFailure(
                     title: "描述文件不完整",
@@ -60,10 +57,25 @@ enum ProfileOnlyRenewalRecordUpdater {
                     code: "SEAL-PROFILE-342"
                 )
             }
-            app.extensions[index].provisioningProfileUUID = binding.profileUUID
-            app.extensions[index].provisioningProfileName = binding.profileName
-            app.extensions[index].provisioningProfileExpirationDate = binding.expirationDate
-            app.extensions[index].certificateSerialNumber = certificateSerialNumber
+            extensionSnapshots.append(
+                PendingSignedSnapshot.PendingExtensionSnapshot(
+                    bundleIdentifier: bundleIdentifier,
+                    provisioningProfileUUID: binding.profileUUID,
+                    provisioningProfileName: binding.profileName,
+                    provisioningProfileExpirationDate: binding.expirationDate,
+                    certificateSerialNumber: certificateSerialNumber
+                )
+            )
         }
+        app.pendingSignedSnapshot = PendingSignedSnapshot(
+            expiryDate: mainBinding.expirationDate,
+            provisioningProfileUUID: mainBinding.profileUUID,
+            provisioningProfileName: mainBinding.profileName,
+            provisioningProfileCreationDate: mainBinding.creationDate,
+            provisioningProfileExpirationDate: mainBinding.expirationDate,
+            certificateSerialNumber: certificateSerialNumber,
+            signingTargets: newSigningTargets,
+            extensionSnapshots: extensionSnapshots
+        )
     }
 }

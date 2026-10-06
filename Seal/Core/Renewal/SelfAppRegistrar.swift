@@ -249,20 +249,15 @@ actor SelfAppRegistrar {
             await settlePendingBatchSealResult(to: .failed)
             // ⚠️ **必须把记录拉回设备现实**（2026-09-25，构建 38 真机）。
             //
-            // 自更新路径在**签名阶段**就把顶层 `provisioningProfile*` 乐观推进
-            //（`app.isSeal` 让 `advancesInstalledSnapshot` 恒为 true —— 那是「安装前
-            // 唯一的写入机会」，见 `SigningCoordinator.applySigningResult` 的说明）。
-            // 而这里刚刚确认「候选没落盘」⇒ 设备上 Seal 用的还是**旧 profile**，
-            // 记录却指向一份设备上并不存在的新 profile。
+            // 自更新路径在**签名阶段**把 profile 相关写进 `pendingSignedSnapshot` 草稿。
+            // 而这里刚刚确认「候选没落盘」⇒ 设备上 Seal 用的还是**旧 profile**。
+            // `reconcileSealRecordFromRunningBundleIfNeeded` 会识别回滚
+            //（有待安装源且版本不一致）⇒ 丢弃 pending，以运行包的真实身份为准。
             //
             // 不拉回来，维护作业第 4 步的 `AppMaintenanceJob.profileKeepMap` 就会拿这份
             // 错位记录当「必须保留的那一份」，把设备上**正在用的旧 profile** 判成旧账删掉
             // ⇒ Seal 当场打不开、「VPN 与设备管理」里的描述文件消失。
             // 真机正是这个现象（01:46:30 判失败，01:46:50 维护作业删除 1 份）。
-            //
-            // 回补的判据是**运行中的 Bundle**（`reconcileSealRecordFromRunningBundleIfNeeded`
-            // 就是以它为准），要么读到新包（替换其实成功了）、要么读到旧包（确实没落盘），
-            // 两种情况下记录都会与设备现实一致。
             if let existing {
                 do {
                     try await reconcileSealRecordFromRunningBundleIfNeeded(
@@ -377,33 +372,17 @@ actor SelfAppRegistrar {
     ) async throws {
         guard let main = identity.mainTarget else { return }
         var updated = existing
+        // 两阶段确认：先转正 pending（拿 signingTargets，Mach-O 读不到它），
+        // 再用 Mach-O 真值覆盖标量字段（运行中的身份是最终可信源）。
+        // 不一致时（自更新失败回滚）：pending 是旧包的草稿，照样转正拿 targets，
+        // 标量会被下面 Mach-O 真值覆盖，结果正确。
+        updated.commitPendingSnapshot()
+        // 运行中的 Mach-O 身份是最终可信源，直接写顶层。
         updated.certificateSerialNumber = main.signerSerialNumber
         updated.provisioningProfileUUID = main.profileUUID
+        updated.provisioningProfileExpirationDate = main.profileExpirationDate
+        updated.expiryDate = main.profileExpirationDate
         updated.signingTeamID = main.teamIdentifier
-        // 内嵌描述文件日期可能比 profile-only 续签注入的新日期旧（内嵌的是打包时的，
-        // profile-only 只换设备端 profile 不换包）。只在内嵌日期更新时才覆盖，
-        // 避免后台维护任务把刚续签的新日期改回旧的。
-        // 例外：有待安装的自更新源且版本号真的不一致时，记录里是"未来"新包信息，
-        // 必须以运行中旧包的真实日期为准（回滚语义），此时仍用内嵌日期覆盖。
-        // 如果版本号一致（只是同版本重签），profile-only 的新日期是正确的，不覆盖。
-        let embeddedExpiry = main.profileExpirationDate
-        let versionMismatch = existing.hasPendingSelfUpdateSource && existing.version != identity.version
-        if versionMismatch {
-            updated.expiryDate = embeddedExpiry
-            updated.provisioningProfileExpirationDate = embeddedExpiry
-        } else {
-            let currentExpiry = existing.provisioningProfileExpirationDate ?? existing.expiryDate
-            if let current = currentExpiry {
-                if embeddedExpiry > current {
-                    updated.expiryDate = embeddedExpiry
-                    updated.provisioningProfileExpirationDate = embeddedExpiry
-                }
-                // 内嵌更旧时保留现有（profile-only 的新日期），不覆盖
-            } else {
-                updated.expiryDate = embeddedExpiry
-                updated.provisioningProfileExpirationDate = embeddedExpiry
-            }
-        }
         updated.signedArtifactStatus = .installed
         updated.accountID = SelfAppAccountBinding.resolvedAccountID(
             teamIdentifier: main.teamIdentifier,
@@ -469,38 +448,39 @@ actor SelfAppRegistrar {
             changed = true
         }
 
-        // ── profile 身份：同版本续签唯一的可观测差异 ──
-        // ⚠️ profile-only 续签后，设备上有新 profile，但运行包内嵌的还是旧的。
-        // 此时不能用旧 UUID/名称/创建日期覆盖新的。用 versionMismatch 守卫：
-        // 只有待安装更新且版本号真不一致（回滚语义）时，才以运行包内为准。
-        let versionMismatchForProfile = existing.hasPendingSelfUpdateSource && existing.version != metadata.version
-        if let uuid = metadata.provisioningProfileUUID,
-           uuid != existing.provisioningProfileUUID,
-           versionMismatchForProfile {
-            updated.provisioningProfileUUID = uuid
-            changed = true
-        }
-        if let name = metadata.provisioningProfileName,
-           name != existing.provisioningProfileName,
-           versionMismatchForProfile {
-            updated.provisioningProfileName = name
-            changed = true
-        }
-        if let creationDate = metadata.provisioningProfileCreationDate,
-           creationDate != existing.provisioningProfileCreationDate,
-           versionMismatchForProfile {
-            updated.provisioningProfileCreationDate = creationDate
-            changed = true
-        }
-        if let expiry = metadata.expirationDate,
-           expiry != existing.expiryDate || expiry != existing.provisioningProfileExpirationDate {
-            // 只有在有待安装更新且版本号真不一致时才回滚：自更新失败后仍运行旧包，必须显示旧包真实日期。
-            // 无待安装或版本号一致时（profile-only 续签后），记录里的新日期是正确的，不能用内嵌旧日期覆盖。
-            let versionMismatch = existing.hasPendingSelfUpdateSource && existing.version != metadata.version
-            if versionMismatch {
-                // 结算：以运行包内的真实 profile 为准（可能是新包，也可能是回滚后的旧包）。
-                updated.expiryDate = expiry
-                updated.provisioningProfileExpirationDate = expiry
+        // ── 两阶段确认：pending 的去留由「是否回滚」决定 ──
+        // 回滚 = 有待安装源且记录版本与运行版本不一致（自更新失败，仍跑旧包）。
+        // 回滚时丢弃 pending，以运行包的真实身份为准；非回滚时 pending 是有效的新真相，转正。
+        // 这替代了旧的 `versionMismatch` 守卫：profile-only 续签后设备有新 profile
+        // 但运行包内嵌旧 profile，非回滚时不再用旧值回盖新记录。
+        let isRollback = existing.hasPendingSelfUpdateSource && existing.version != metadata.version
+        if existing.pendingSignedSnapshot != nil {
+            if isRollback {
+                updated.discardPendingSnapshot()
+                // 回滚：以运行包的真实 profile 身份为准。
+                if let uuid = metadata.provisioningProfileUUID,
+                   uuid != existing.provisioningProfileUUID {
+                    updated.provisioningProfileUUID = uuid
+                    changed = true
+                }
+                if let name = metadata.provisioningProfileName,
+                   name != existing.provisioningProfileName {
+                    updated.provisioningProfileName = name
+                    changed = true
+                }
+                if let creationDate = metadata.provisioningProfileCreationDate,
+                   creationDate != existing.provisioningProfileCreationDate {
+                    updated.provisioningProfileCreationDate = creationDate
+                    changed = true
+                }
+                if let expiry = metadata.expirationDate,
+                   expiry != existing.expiryDate || expiry != existing.provisioningProfileExpirationDate {
+                    updated.expiryDate = expiry
+                    updated.provisioningProfileExpirationDate = expiry
+                    changed = true
+                }
+            } else {
+                updated.commitPendingSnapshot()
                 changed = true
             }
         }

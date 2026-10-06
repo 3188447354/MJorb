@@ -2,21 +2,18 @@ import Foundation
 
 /// 签名产物（signedArtifact）与「设备上正在运行的那份构建」（installedSnapshot）的边界。
 ///
-/// 一条 `AppRecord` 同时承载两件事：刚签出来的包，以及设备上正在跑的那个包。
-/// UI 展示的到期日取 `provisioningProfileExpirationDate ?? expiryDate`，
-/// 所以只要在签名阶段就把顶层 profile 字段推进到新产物，安装失败（或进程中途被杀）时
-/// 界面就会显示一个设备上并不存在的日期 —— 用户以为续签成功，直到应用被吊销才发现（R08）。
-///
-/// 因此规则是：**顶层 profile 字段只描述设备上正在运行的那份构建**；
-/// 产物身份由 `signingTargets` 承载，顶层快照等安装校验通过后再推进。
+/// 两阶段提交不变量：**顶层 profile 字段只描述已确认的设备现实**；签名/续签阶段
+/// 的新值先写 `pendingSignedSnapshot` 草稿，安装校验通过（或设备端读回确认）后
+/// 整体转正。UI 只读顶层，永远不会看到未确认的值。
+/// （旧模型是"签名阶段乐观推进顶层，失败再纠正"，已于 2026-10-07 重构废除。）
 enum SignedArtifactSnapshot {
 
     /// 签名完成后的产物状态。
     ///
     /// - 未安装的应用：产物已就绪（`.available`），可以装。
-    /// - 已安装的第三方应用：产物**还没装上**，绝不能声称 `.installed`。
-    /// - Seal 自身：自更新安装会替换本进程，顶层快照由启动同步从运行中的 Bundle 结算
-    ///   （R07 / `SelfAppRegistrar`），装失败时那份乐观值会被推翻，因此沿用 `.installed`。
+    /// - 已安装的应用：统一 `.awaitingVerification`，由安装校验或启动结算推进到 `.installed`。
+    ///   （旧逻辑曾给 Seal 返回 `.installed`，那是乐观写，已废除。）
+    /// - 注意：生产代码已改走 `RenewalPolicy.statusAfterSigning`，此 static 仅单测引用。
     static func statusAfterSigning(
         originalState: AppState,
         isSeal: Bool
@@ -26,21 +23,29 @@ enum SignedArtifactSnapshot {
     }
 
     /// 安装校验通过后，才把顶层 profile 身份推进到刚装上的那一份。
+    ///
+    /// 两阶段提交：从 `pendingSignedSnapshot` 草稿整体转正。
+    /// 无 pending 时走回填兜底——正常可达路径：缓存重装（`installCachedSignedIPAIfPossible`）
+    /// 不经过签名阶段，没有草稿，走这里是预期的，不是 bug。
     static func advanceInstalled(
         of app: inout AppRecord,
         bundleIdentifier: String,
         expiryDate: Date
     ) {
-        if let binding = app.signingTargets.first(where: { $0.bundleIdentifier == bundleIdentifier }) {
-            app.provisioningProfileUUID = binding.profileUUID
-            app.provisioningProfileName = binding.profileName
-            app.provisioningProfileCreationDate = binding.profileCreationDate
-            app.provisioningProfileExpirationDate = binding.profileExpirationDate
+        if app.pendingSignedSnapshot != nil {
+            app.commitPendingSnapshot()
         } else {
-            // 主 target 匹配不到时只补有效期：把既有 profile 身份清成 nil 会让 UI
-            // 从「有到期日」退化成「无到期日」，比保留旧值更糟。
-            app.provisioningProfileExpirationDate = expiryDate
+            // 兜底：缓存重装不经过签名阶段（无草稿），以及老数据/异常路径，
+            // 保留原有的回填逻辑，避免 UI 从「有到期日」退化成「无到期日」。
+            if let binding = app.signingTargets.first(where: { $0.bundleIdentifier == bundleIdentifier }) {
+                app.provisioningProfileUUID = binding.profileUUID
+                app.provisioningProfileName = binding.profileName
+                app.provisioningProfileCreationDate = binding.profileCreationDate
+                app.provisioningProfileExpirationDate = binding.profileExpirationDate
+            } else {
+                app.provisioningProfileExpirationDate = expiryDate
+            }
+            app.expiryDate = expiryDate
         }
-        app.expiryDate = expiryDate
     }
 }

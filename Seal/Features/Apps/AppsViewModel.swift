@@ -2190,41 +2190,8 @@ final class AppsViewModel: ObservableObject {
                 Task { await logStore?.forceMirrorToDocuments() }
                 // 续签后立即重排通知（用新到期时间），并刷新状态，避免提醒时间滞后
                 // 同时刷新内存中的应用列表，让已安装页立即显示新日期
-                Task {
-                    await self.load(force: true)
-                    let hasScheduler = self.notificationScheduler != nil
-                    let hasPrefs = self.notificationPreferences != nil
-                    let hasStore = self.appStore != nil
-                    try? await self.logStore?.append(
-                        category: .system,
-                        level: .info,
-                        message: "[SEAL-NOTIF-DBG] 续签后重排通知：scheduler=\(hasScheduler), prefs=\(hasPrefs), store=\(hasStore)"
-                    )
-                    if let scheduler = self.notificationScheduler,
-                       let prefs = self.notificationPreferences,
-                       let store = self.appStore {
-                        let apps = (try? await store.fetchAll()) ?? []
-                        try? await self.logStore?.append(
-                            category: .system,
-                            level: .info,
-                            message: "[SEAL-NOTIF-DBG] 重排通知：apps=\(apps.count), enabled=\(prefs.isEnabled)"
-                        )
-                        do {
-                            try await scheduler.reschedule(apps: apps, enabled: prefs.isEnabled, leadHours: prefs.leadHours)
-                            try? await self.logStore?.append(
-                                category: .system,
-                                level: .info,
-                                message: "[SEAL-NOTIF-DBG] 重排通知成功"
-                            )
-                        } catch {
-                            try? await self.logStore?.append(
-                                category: .system,
-                                level: .error,
-                                message: "[SEAL-NOTIF-DBG] 重排通知失败：\(error.localizedDescription)"
-                            )
-                        }
-                    }
-                }
+                // 两阶段提交：重排完成后再发 .sealRenewalCompleted，观察者读到的是新状态，不用睡2秒碰运气
+                await self.rescheduleNotificationsAfterRenewal()
                 // 通知停止后台保活（省电）：快捷指令触发的续签已完成，不需要再占后台
                 NotificationCenter.default.post(name: .sealRenewalCompleted, object: nil)
                 // 轮次总结已由 RenewalCoordinator 写入 SEAL-RENEW-ROUND
@@ -2288,6 +2255,44 @@ final class AppsViewModel: ObservableObject {
         let requested = backgroundTriggerRequested
         backgroundTriggerRequested = false
         return requested
+    }
+
+    /// 续签后重排通知：await 完成后才返回，调用方发 .sealRenewalCompleted 时状态已是新的。
+    /// 两阶段提交的一部分：消除 fire-and-forget + 睡2秒的竞态。
+    private func rescheduleNotificationsAfterRenewal() async {
+        await self.load(force: true)
+        let hasScheduler = self.notificationScheduler != nil
+        let hasPrefs = self.notificationPreferences != nil
+        let hasStore = self.appStore != nil
+        try? await self.logStore?.append(
+            category: .system,
+            level: .info,
+            message: "[SEAL-NOTIF-DBG] 续签后重排通知：scheduler=\(hasScheduler), prefs=\(hasPrefs), store=\(hasStore)"
+        )
+        if let scheduler = self.notificationScheduler,
+           let prefs = self.notificationPreferences,
+           let store = self.appStore {
+            let apps = (try? await store.fetchAll()) ?? []
+            try? await self.logStore?.append(
+                category: .system,
+                level: .info,
+                message: "[SEAL-NOTIF-DBG] 重排通知：apps=\(apps.count), enabled=\(prefs.isEnabled)"
+            )
+            do {
+                try await scheduler.reschedule(apps: apps, enabled: prefs.isEnabled, leadHours: prefs.leadHours)
+                try? await self.logStore?.append(
+                    category: .system,
+                    level: .info,
+                    message: "[SEAL-NOTIF-DBG] 重排通知成功"
+                )
+            } catch {
+                try? await self.logStore?.append(
+                    category: .system,
+                    level: .error,
+                    message: "[SEAL-NOTIF-DBG] 重排通知失败：\(error.localizedDescription)"
+                )
+            }
+        }
     }
 
     /// 快捷指令后台续签结束后的**系统通知**（成功、部分失败、全失败都走这里）。

@@ -530,7 +530,7 @@ final class AppsViewModel: ObservableObject {
                     do {
                         try await notificationScheduler.reschedule(apps: fetched, enabled: notificationPreferences.isEnabled, leadHours: notificationPreferences.leadHours)
                     } catch {
-                        try? await self.logStore?.append(
+                        try? try? await self.logStore?.append(
                             category: .system,
                             level: .error,
                             message: NotificationSchedulingFailure.diagnostic(for: error),
@@ -1792,7 +1792,7 @@ final class AppsViewModel: ObservableObject {
     func refreshAllFromBackgroundTrigger() {
         Task { [weak self] in
             guard let self else { return }
-            try? await self.logStore?.append(
+            try? try? await self.logStore?.append(
                 category: .renewal,
                 message: "快捷指令在后台触发「续签全部应用」（未打开 App）",
                 code: "SEAL-BACKGROUND-006"
@@ -1809,7 +1809,7 @@ final class AppsViewModel: ObservableObject {
             //    长得一模一样。
             guard self.hasActiveSigningWork == false else {
                 let blocker = self.activeOperationDescription
-                try? await self.logStore?.append(
+                try? try? await self.logStore?.append(
                     category: .renewal,
                     message: "后台触发让位：\(blocker)尚未完成，"
                         + "本轮不重复点火（进行中的那一轮会完成续签）",
@@ -2195,7 +2195,7 @@ final class AppsViewModel: ObservableObject {
                     let hasScheduler = self.notificationScheduler != nil
                     let hasPrefs = self.notificationPreferences != nil
                     let hasStore = self.appStore != nil
-                    await self.logStore?.append(
+                    try? await self.logStore?.append(
                         category: .system,
                         level: .info,
                         message: "[SEAL-NOTIF-DBG] 续签后重排通知：scheduler=\(hasScheduler), prefs=\(hasPrefs), store=\(hasStore)"
@@ -2204,20 +2204,20 @@ final class AppsViewModel: ObservableObject {
                        let prefs = self.notificationPreferences,
                        let store = self.appStore {
                         let apps = (try? await store.fetchAll()) ?? []
-                        await self.logStore?.append(
+                        try? await self.logStore?.append(
                             category: .system,
                             level: .info,
                             message: "[SEAL-NOTIF-DBG] 重排通知：apps=\(apps.count), enabled=\(prefs.isEnabled)"
                         )
                         do {
                             try await scheduler.reschedule(apps: apps, enabled: prefs.isEnabled, leadHours: prefs.leadHours)
-                            await self.logStore?.append(
+                            try? await self.logStore?.append(
                                 category: .system,
                                 level: .info,
                                 message: "[SEAL-NOTIF-DBG] 重排通知成功"
                             )
                         } catch {
-                            await self.logStore?.append(
+                            try? await self.logStore?.append(
                                 category: .system,
                                 level: .error,
                                 message: "[SEAL-NOTIF-DBG] 重排通知失败：\(error.localizedDescription)"

@@ -167,6 +167,10 @@ struct AppsRootView: View {
                     mode = viewModel.lastImportCompletedInstalledApp ? .installed : .unsigned
                 }
             }
+            .onAppear {
+                // 安装后重开 App，提示不消失，要点别的页再回来才刷——强制重载
+                Task { await viewModel.load(force: true) }
+            }
         }
         .sealScreenBackground()
     }

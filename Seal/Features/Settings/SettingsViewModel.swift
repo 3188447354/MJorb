@@ -2800,6 +2800,8 @@ final class SettingsViewModel: ObservableObject {
 
     @objc private func refreshNotificationStatusAfterRenewal() {
         Task { @MainActor in
+            // 等续签后的通知重排完成再读状态，避免读到旧的提醒日期
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard let notificationScheduler, let notificationPreferences else { return }
             notificationStatus = await notificationScheduler.status(sealEnabled: notificationPreferences.isEnabled)
         }

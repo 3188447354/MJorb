@@ -275,6 +275,15 @@ actor ImportWorkflow {
                    let installedFP = existing.installedFingerprint,
                    newFP == installedFP {
                     pendingUpdateSourceFingerprint = nil
+                } else if existing.installedFingerprint == nil {
+                    // 老记录没有指纹（旁加载装的）：比构建号，导入包与运行包构建号一致 ⇒ 同一个包
+                    let importedBuild = draft.parsedIPA.buildNumber
+                    let runningBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+                    if let ib = importedBuild, let rb = runningBuild, ib == rb {
+                        pendingUpdateSourceFingerprint = nil
+                    } else {
+                        pendingUpdateSourceFingerprint = newFingerprint
+                    }
                 } else {
                     pendingUpdateSourceFingerprint = newFingerprint
                 }

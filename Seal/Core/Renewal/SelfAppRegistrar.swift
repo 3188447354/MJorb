@@ -470,18 +470,25 @@ actor SelfAppRegistrar {
         }
 
         // ── profile 身份：同版本续签唯一的可观测差异 ──
+        // ⚠️ profile-only 续签后，设备上有新 profile，但运行包内嵌的还是旧的。
+        // 此时不能用旧 UUID/名称/创建日期覆盖新的。用 versionMismatch 守卫：
+        // 只有待安装更新且版本号真不一致（回滚语义）时，才以运行包内为准。
+        let versionMismatchForProfile = existing.hasPendingSelfUpdateSource && existing.version != metadata.version
         if let uuid = metadata.provisioningProfileUUID,
-           uuid != existing.provisioningProfileUUID {
+           uuid != existing.provisioningProfileUUID,
+           versionMismatchForProfile {
             updated.provisioningProfileUUID = uuid
             changed = true
         }
         if let name = metadata.provisioningProfileName,
-           name != existing.provisioningProfileName {
+           name != existing.provisioningProfileName,
+           versionMismatchForProfile {
             updated.provisioningProfileName = name
             changed = true
         }
         if let creationDate = metadata.provisioningProfileCreationDate,
-           creationDate != existing.provisioningProfileCreationDate {
+           creationDate != existing.provisioningProfileCreationDate,
+           versionMismatchForProfile {
             updated.provisioningProfileCreationDate = creationDate
             changed = true
         }

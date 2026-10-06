@@ -3407,7 +3407,7 @@ final class AppsViewModel: ObservableObject {
             // 三重判断：isSeal 标志、Bundle ID 含 seal、属于已安装列表，任一命中即跳已安装。
             let isSealByID = record.mappedBundleIdentifier?.lowercased().contains("seal") ?? false
             let shouldJumpInstalled = record.isSeal || isSealByID || record.belongsInInstalledList
-            await logStore?.append(
+            try? await logStore?.append(
                 category: .system,
                 level: .info,
                 message: "[SEAL-IMPORT-DBG] 导入完成跳转：isSeal=\(record.isSeal), isSealByID=\(isSealByID), belongsInInstalled=\(record.belongsInInstalledList), 跳转已安装=\(shouldJumpInstalled)"

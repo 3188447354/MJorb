@@ -539,6 +539,7 @@ actor ImportWorkflow {
             lastInstallFailureReason: nil,
             hasPendingSelfUpdateSource: true,
             pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint,
+            installedFingerprint: existingSeal.installedFingerprint,
             isSeal: true,
             isPinned: true,
             importedAt: existingSeal.importedAt,

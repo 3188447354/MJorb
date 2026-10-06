@@ -2192,11 +2192,37 @@ final class AppsViewModel: ObservableObject {
                 // 同时刷新内存中的应用列表，让已安装页立即显示新日期
                 Task {
                     await self.load(force: true)
+                    let hasScheduler = self.notificationScheduler != nil
+                    let hasPrefs = self.notificationPreferences != nil
+                    let hasStore = self.appStore != nil
+                    await self.logStore?.append(
+                        category: .system,
+                        level: .info,
+                        message: "[SEAL-NOTIF-DBG] 续签后重排通知：scheduler=\(hasScheduler), prefs=\(hasPrefs), store=\(hasStore)"
+                    )
                     if let scheduler = self.notificationScheduler,
                        let prefs = self.notificationPreferences,
                        let store = self.appStore {
                         let apps = (try? await store.fetchAll()) ?? []
-                        try? await scheduler.reschedule(apps: apps, enabled: prefs.isEnabled, leadHours: prefs.leadHours)
+                        await self.logStore?.append(
+                            category: .system,
+                            level: .info,
+                            message: "[SEAL-NOTIF-DBG] 重排通知：apps=\(apps.count), enabled=\(prefs.isEnabled)"
+                        )
+                        do {
+                            try await scheduler.reschedule(apps: apps, enabled: prefs.isEnabled, leadHours: prefs.leadHours)
+                            await self.logStore?.append(
+                                category: .system,
+                                level: .info,
+                                message: "[SEAL-NOTIF-DBG] 重排通知成功"
+                            )
+                        } catch {
+                            await self.logStore?.append(
+                                category: .system,
+                                level: .error,
+                                message: "[SEAL-NOTIF-DBG] 重排通知失败：\(error.localizedDescription)"
+                            )
+                        }
                     }
                 }
                 // 通知停止后台保活（省电）：快捷指令触发的续签已完成，不需要再占后台
@@ -3380,7 +3406,13 @@ final class AppsViewModel: ObservableObject {
             // Seal 自更新：必须跳已安装页，不能去待签名。放在最后，避免被上面的 sheet 逻辑覆盖。
             // 三重判断：isSeal 标志、Bundle ID 含 seal、属于已安装列表，任一命中即跳已安装。
             let isSealByID = record.mappedBundleIdentifier?.lowercased().contains("seal") ?? false
-            lastImportCompletedInstalledApp = record.isSeal || isSealByID || record.belongsInInstalledList
+            let shouldJumpInstalled = record.isSeal || isSealByID || record.belongsInInstalledList
+            await logStore?.append(
+                category: .system,
+                level: .info,
+                message: "[SEAL-IMPORT-DBG] 导入完成跳转：isSeal=\(record.isSeal), isSealByID=\(isSealByID), belongsInInstalled=\(record.belongsInInstalledList), 跳转已安装=\(shouldJumpInstalled)"
+            )
+            lastImportCompletedInstalledApp = shouldJumpInstalled
             importCompletionCount += 1
             if let cleanupFailure = await workflow.takeCleanupFailure() {
                 alertFailure = cleanupFailure

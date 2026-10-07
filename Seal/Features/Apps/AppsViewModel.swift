@@ -1696,11 +1696,15 @@ final class AppsViewModel: ObservableObject {
                 updated.preferredIconRelativePath = nil
             }
             try await appStore.save(updated)
+            let newIconData: Data?
             if let path = updated.displayIconRelativePath,
                let data = try? await fileStore.read(relativePath: path) {
-                iconData[updated.id] = data
+                newIconData = data
             } else {
-                iconData[updated.id] = nil
+                newIconData = nil
+            }
+            await MainActor.run {
+                iconData[updated.id] = newIconData
             }
             invalidateDecodedIcon(for: updated.id)
             await load(force: true)
@@ -3536,8 +3540,10 @@ final class AppsViewModel: ObservableObject {
             // 导入时选的自定义图标：应用到新记录上。
             if let iconData = pendingImportIconData {
                 pendingImportIconData = nil
-                // 先直接更新内存缓存，保证 UI 立刻刷新
-                self.iconData[record.id] = iconData
+                // 先直接更新内存缓存，保证 UI 立刻刷新（主线程）
+                await MainActor.run {
+                    self.iconData[record.id] = iconData
+                }
                 _ = await updatePreferredIcon(for: record, data: iconData)
             }
             await load(force: true)

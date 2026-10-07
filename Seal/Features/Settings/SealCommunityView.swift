@@ -109,8 +109,8 @@ struct SealCommunityView: View {
     }
 
     private var gzhCard: some View {
-        communityCard(
-            icon: "newspaper",
+        brandCard(
+            brandImage: "BrandWechat",
             title: "关注公众号",
             subtitle: "更新动态 · 使用教程 · 官方通知",
             value: nil,
@@ -120,8 +120,8 @@ struct SealCommunityView: View {
     }
 
     private var qqCard: some View {
-        communityCard(
-            icon: "bubble.left.and.bubble.right",
+        brandCard(
+            brandImage: "BrandQQ",
             title: "加入 QQ 群",
             subtitle: "点击直接跳转 QQ 加群",
             value: nil,
@@ -130,8 +130,8 @@ struct SealCommunityView: View {
     }
 
     private var douyinCard: some View {
-        communityCard(
-            icon: "music.note",
+        brandCard(
+            brandImage: "BrandDouyin",
             title: "关注抖音",
             subtitle: "视频教程 · 使用技巧 · 更新动态",
             value: nil,
@@ -326,6 +326,52 @@ struct SealCommunityView: View {
         Button(action: action) {
             HStack(spacing: 14) {
                 iconBadge(icon, tint: Color.sealAccent, background: Color.sealAccent.opacity(0.12))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.system(size: 13, weight: .regular))
+                            .foregroundStyle(Color.sealTextSecondary)
+                    }
+                }
+                Spacer(minLength: 8)
+                if let value {
+                    Text(value)
+                        .font(.system(size: 14, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Color.sealTextSecondary)
+                }
+                Image(systemName: isExternal ? "arrow.up.right" : "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(16)
+            .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 品牌图标卡片：用官方品牌图标（微信/QQ/抖音）替代通用 SF Symbol。
+    private func brandCard(
+        brandImage: String,
+        title: String,
+        subtitle: String?,
+        value: String?,
+        isExternal: Bool = true,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Image(brandImage)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 46, height: 46)
+                    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
                         .font(.system(size: 16, weight: .semibold))

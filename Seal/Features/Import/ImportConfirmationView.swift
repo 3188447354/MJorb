@@ -270,6 +270,7 @@ struct ImportConfirmationView: View {
                     customDisplayName = trimmed
                     onNameSelected(trimmed)
                 }
+                return true
             }
             .presentationDetents([.medium, .large])
         }

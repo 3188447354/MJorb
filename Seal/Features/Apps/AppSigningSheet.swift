@@ -784,7 +784,7 @@ private struct BundleIDEditorSheet: View {
     }
 }
 
-private struct AppNameEditorSheet: View {
+struct AppNameEditorSheet: View {
     let initialValue: String
     let onSave: (String) async -> Bool
     @Environment(\.dismiss) private var dismiss

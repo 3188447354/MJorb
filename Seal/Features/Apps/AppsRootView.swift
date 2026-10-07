@@ -61,7 +61,7 @@ struct AppsRootView: View {
                         onCreateCopy: { Task { await viewModel.confirmImportAsNewRecord() } },
                         onIconSelected: { data in viewModel.pendingImportIconData = data }
                     )
-                    .presentationDetents([.height(440)])
+                    .presentationDetents([.medium])
                     .presentationDragIndicator(.visible)
                 }
             }

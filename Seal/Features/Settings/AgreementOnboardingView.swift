@@ -15,7 +15,7 @@ struct AgreementOnboardingView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Spacer()
+            Spacer(minLength: 60)
 
             Image("SealBrandIcon")
                 .resizable()

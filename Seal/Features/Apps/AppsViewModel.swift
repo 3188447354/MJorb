@@ -1517,8 +1517,37 @@ final class AppsViewModel: ObservableObject {
         if case .running = signingSession.status { return }
         var signingSucceeded = false
         if case .succeeded = signingSession.status { signingSucceeded = true }
+        let appName = signingSession.app.displayName
+        let status = signingSession.status
         self.signingSession = nil
         selectedOperationApp = nil
+        // 单独签名/续签也要写日志轮次，否则日志列表里只有批量操作
+        Task { [weak self] in
+            let resultText: String
+            switch status {
+            case .succeeded:
+                resultText = "✓ \(appName) 签名成功"
+            case .failed(let failure):
+                resultText = "✗ \(appName) 签名失败：\(failure.userMessage)"
+            case .running, .preparing:
+                resultText = "○ \(appName) 未完成"
+            }
+            let message = """
+                ━━━━━━━━━━━━━━━━━━━━━━━━
+                ▶ 单独操作 · \(appName)
+                ────────────────────────────────
+                \(resultText)
+                ────────────────────────────────
+                ■ 完成
+                ━━━━━━━━━━━━━━━━━━━━━━━━
+                """
+            try? await self?.logStore?.append(
+                category: .signing,
+                level: signingSucceeded ? .info : .warning,
+                message: message,
+                code: "SEAL-SIGN-SINGLE"
+            )
+        }
         // 进度页关闭后再发起批量重签：两个 sheet 同挂 AppsRootView，
         // 同时弹出会导致批量续签页被盖住。
         resignAppsAffectedByCertificateSacrificeIfNeeded(signingSucceeded: signingSucceeded)

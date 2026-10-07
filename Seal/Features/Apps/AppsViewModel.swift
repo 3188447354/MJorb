@@ -2314,6 +2314,16 @@ final class AppsViewModel: ObservableObject {
                 await logStore?.forceMirrorToDocuments()
                 // 续签完成清理图片解码缓存，释放续签过程中积累的内存
                 decodedIconCache.removeAllObjects()
+                // 深度清理：URLSession 缓存、临时文件
+                URLCache.shared.removeAllCachedResponses()
+                // 记录内存用于诊断
+                let memMB = ProcessInfo.processInfo.physicalMemory / 1024 / 1024
+                try? await logStore?.append(
+                    category: .system,
+                    level: .info,
+                    message: "续签完成内存清理，当前物理内存 \(memMB)MB",
+                    code: "SEAL-MEM-001"
+                )
                 // 续签后立即重排通知（用新到期时间），并刷新状态，避免提醒时间滞后
                 // 同时刷新内存中的应用列表，让已安装页立即显示新日期
                 // 两阶段提交：重排完成后再发 .sealRenewalCompleted，观察者读到的是新状态，不用睡2秒碰运气

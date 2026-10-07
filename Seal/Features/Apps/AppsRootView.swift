@@ -38,36 +38,45 @@ struct AppsRootView: View {
             ) { result in
                 switch result {
                 case .success(let url):
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { mode = .unsigned }
+                    // 不在这里切 tab：等 versionCheck 出来，已安装被拦截的不跳，
+                    // 只有真正要导入的才切到待签名页（见 consumeWorkflowState）。
                     Task { await viewModel.importSelectedFile(url) }
                 case .failure(let error): viewModel.handleImporterFailure(error)
                 }
             }
             .sheet(isPresented: $viewModel.isImportSheetPresented, onDismiss: cancelDraftIfNeeded) {
                 if let draft = viewModel.sheetDraft {
-                    // 已安装的包：走系统弹窗，不走抽屉
-                    if case .alreadyLatest = draft.versionCheck {
-                        AlreadyInstalledAlertView(
-                            draft: draft,
-                            onDismiss: { Task { await viewModel.cancelImport() } }
-                        )
-                    } else {
-                        ImportConfirmationView(
-                            draft: draft,
-                            replacementCandidate: viewModel.importReplacementCandidate,
-                            isCommitting: viewModel.phase == .committing,
-                            failure: viewModel.sheetFailure,
-                            onCancel: { Task { await viewModel.cancelImport() } },
-                            onPrimaryAction: {
-                                Task {
-                                    if viewModel.sheetFailure == nil { await viewModel.confirmImport() }
-                                    else { await viewModel.retryImport() }
-                                }
-                            },
-                            onCreateCopy: { Task { await viewModel.confirmImportAsNewRecord() } }
-                        )
-                        .presentationDetents([.medium, .large])
-                    }
+                    ImportConfirmationView(
+                        draft: draft,
+                        replacementCandidate: viewModel.importReplacementCandidate,
+                        isCommitting: viewModel.phase == .committing,
+                        failure: viewModel.sheetFailure,
+                        onCancel: { Task { await viewModel.cancelImport() } },
+                        onPrimaryAction: {
+                            Task {
+                                if viewModel.sheetFailure == nil { await viewModel.confirmImport() }
+                                else { await viewModel.retryImport() }
+                            }
+                        },
+                        onCreateCopy: { Task { await viewModel.confirmImportAsNewRecord() } },
+                        onIconSelected: { data in viewModel.pendingImportIconData = data }
+                    )
+                    .presentationDetents([.height(440)])
+                    .presentationDragIndicator(.visible)
+                }
+            }
+            // 已安装包再导入：系统弹窗，不走抽屉
+            .alert("已安装", isPresented: Binding(
+                get: { viewModel.alreadyInstalledDraft != nil },
+                set: { if !$0 { viewModel.alreadyInstalledDraft = nil } }
+            )) {
+                Button("知道了") {
+                    viewModel.alreadyInstalledDraft = nil
+                    Task { await viewModel.cancelImport() }
+                }
+            } message: {
+                if let draft = viewModel.alreadyInstalledDraft {
+                    Text("\(draft.parsedIPA.name) v\(draft.parsedIPA.version) 已安装，无需重复导入")
                 }
             }
             .sheet(item: $viewModel.selectedOperationApp, onDismiss: operationSheetDismissed) { app in
@@ -171,6 +180,16 @@ struct AppsRootView: View {
                 detailApp = nil
                 // 批量抽屉弹出时，单个操作的 sheet 必须一起清掉，否则批量关掉后它会闪出来。
                 viewModel.dismissOperation()
+            }
+            // 真正要导入时才切到待签名页：
+            // - 全新应用：切（新记录在待签名页）
+            // - 覆盖更新（含 Seal 自更新）：不切，留在已安装页看标签变化
+            // - 已安装被拦截：不走抽屉，不切
+            .onChange(of: viewModel.isImportSheetPresented) { isPresented in
+                guard isPresented else { return }
+                // 有覆盖候选 ⇒ 在已安装页原地更新，不切 tab
+                guard viewModel.importReplacementCandidate == nil else { return }
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { mode = .unsigned }
             }
             .onChange(of: batchRefreshSheet.wrappedValue?.id) { sessionID in
                 guard sessionID != nil else { return }

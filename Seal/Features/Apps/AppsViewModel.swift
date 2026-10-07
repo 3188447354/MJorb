@@ -53,6 +53,10 @@ final class AppsViewModel: ObservableObject {
     @Published var isImportSheetPresented: Bool
     @Published private(set) var sheetDraft: ImportDraft?
     @Published private(set) var sheetFailure: ImportFailure?
+    /// 导入时用户选的自定义图标：record 建好后应用（.completed 里）。
+    @Published var pendingImportIconData: Data?
+    /// 已安装包再导入时的系统弹窗（不走抽屉）：非空 ⇒ 显示"已安装"弹窗。
+    @Published var alreadyInstalledDraft: ImportDraft?
     /// 导入的 IPA 与某条**已安装**记录同身份时的覆盖更新候选（见 `ImportReplacementPolicy`）。
     /// 非空 ⇒ 导入确认页给用户「覆盖更新 / 新建副本」的选择，而不是直接入库。
     @Published private(set) var importReplacementCandidate: AppRecord?
@@ -1026,6 +1030,8 @@ final class AppsViewModel: ObservableObject {
         sheetDraft = nil
         sheetFailure = nil
         importReplacementCandidate = nil
+        alreadyInstalledDraft = nil
+        pendingImportIconData = nil
         isImportSheetPresented = false
         phase = .idle
         if let cleanupFailure {
@@ -3466,6 +3472,22 @@ final class AppsViewModel: ObservableObject {
         case .awaitingConfirmation(let draft):
             sheetDraft = draft
             sheetFailure = nil
+            // 已安装的包再导入：不走抽屉，直接系统弹窗。
+            if case .alreadyLatest = draft.versionCheck {
+                alreadyInstalledDraft = draft
+                isImportSheetPresented = false
+                phase = .idle
+                return
+            }
+            // 全新导入：不弹抽屉，直接导进来。
+            if case .newApp = draft.versionCheck {
+                importReplacementCandidate = nil
+                isImportSheetPresented = false
+                phase = .committing
+                await workflow.confirm(preferredDraft: draft)
+                await consumeWorkflowState()
+                return
+            }
             if let candidate = await replacementCandidate(for: draft) {
                 // 覆盖更新会**替换**一条已安装记录（连带它的 IPA 与签名身份）——
                 // 这是破坏性操作，必须让用户看见并显式确认，不能像新建记录那样直接入库。
@@ -3491,6 +3513,11 @@ final class AppsViewModel: ObservableObject {
             let requestedOverwrite = importReplacementCandidate
             importReplacementCandidate = nil
             isImportSheetPresented = false
+            // 导入时选的自定义图标：应用到新记录上。
+            if let iconData = pendingImportIconData {
+                pendingImportIconData = nil
+                _ = await updatePreferredIcon(for: record, data: iconData)
+            }
             await load(force: true)
             await logImportReplacementOutcome(requested: requestedOverwrite, record: record)
             if autoOpenSigningAfterImport {

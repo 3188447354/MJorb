@@ -694,7 +694,7 @@ private enum BundleIDSealHighlighter {
         return attributed
     }
 }
-private struct AppIconSelectionSheet: View {
+struct AppIconSelectionSheet: View {
     enum Action {
         case photos
         case files

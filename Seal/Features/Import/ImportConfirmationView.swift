@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import PhotosUI
 
 struct ImportConfirmationView: View {
     let draft: ImportDraft
@@ -12,10 +13,16 @@ struct ImportConfirmationView: View {
     let onPrimaryAction: () -> Void
     /// 「新建副本（不覆盖）」：放弃覆盖更新，按原行为新建一条待签名记录。
     let onCreateCopy: () -> Void
+    /// 用户选的自定义图标（nil = 使用原图）。
+    let onIconSelected: (Data?) -> Void
 
     @State private var didTapPrimaryAction = false
     @State private var showSameVersionConfirm = false
     @State private var showDowngradeConfirm = false
+    @State private var isIconActionsPresented = false
+    @State private var isPhotoPickerPresented = false
+    @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var customIconData: Data?
 
     private var showsProgress: Bool {
         isCommitting || didTapPrimaryAction
@@ -156,6 +163,26 @@ struct ImportConfirmationView: View {
 
     private var summaryCard: some View {
         VStack(spacing: 0) {
+            Button {
+                isIconActionsPresented = true
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text("App 图标")
+                        .font(.system(size: 15, weight: .regular))
+                        .foregroundStyle(.primary)
+                    Spacer(minLength: 12)
+                    Text(customIconData == nil ? "使用原图" : "已自定义")
+                        .font(.system(size: 14, weight: .regular))
+                        .foregroundStyle(Color.sealTextSecondary)
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(Color.sealTextSecondary)
+                }
+                .frame(minHeight: 54)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("import-summary-icon")
+            Divider().padding(.leading, 16)
             summaryRow("Bundle ID", draft.parsedIPA.bundleIdentifier, monospaced: true)
                 .accessibilityIdentifier("import-summary-bundle-id")
                 .accessibilityValue(draft.parsedIPA.bundleIdentifier)
@@ -179,6 +206,37 @@ struct ImportConfirmationView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(Color.sealHairline.opacity(0.72), lineWidth: 0.8)
+        }
+        .sheet(isPresented: $isIconActionsPresented) {
+            AppIconSelectionSheet { action in
+                isIconActionsPresented = false
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(220))
+                    switch action {
+                    case .photos:
+                        isPhotoPickerPresented = true
+                    case .files:
+                        // 导入抽屉里暂只支持相册，文件入口在签名页
+                        isPhotoPickerPresented = true
+                    case .original:
+                        customIconData = nil
+                        onIconSelected(nil)
+                    }
+                }
+            }
+            .presentationDetents([.medium])
+        }
+        .photosPicker(isPresented: $isPhotoPickerPresented, selection: $selectedPhotoItem, matching: .images)
+        .onChange(of: selectedPhotoItem) { item in
+            guard let item else { return }
+            Task {
+                defer { selectedPhotoItem = nil }
+                guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+                await MainActor.run {
+                    customIconData = data
+                    onIconSelected(data)
+                }
+            }
         }
     }
 

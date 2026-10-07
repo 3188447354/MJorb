@@ -247,13 +247,28 @@ struct ImportedAppRow: View {
     }
 
     /// 显示版本：Seal 显示带 beta 构建号（1.0.0-beta28），方便区分新旧。
+    /// 有待安装更新时显示过渡：v1.0.0-beta68 → v1.0.0-beta69
     private static func displayVersion(for app: AppRecord) -> String {
         guard app.isSeal else { return app.version }
         let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? app.version
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
-        if !build.isEmpty {
-            return "\(short)-beta\(build)"
+        let running = !build.isEmpty ? "\(short)-beta\(build)" : short
+
+        // 有待安装更新时，显示过渡
+        if let kind = pendingUpdateKind(app), kind != .none {
+            let newBuild = app.buildNumber ?? ""
+            let newVersion: String
+            if !newBuild.isEmpty {
+                newVersion = "\(app.version)-beta\(newBuild)"
+            } else {
+                newVersion = app.version
+            }
+            // 运行版和记录版不同才显示箭头
+            if newVersion != running {
+                return "\(running) → \(newVersion)"
+            }
         }
-        return short
+
+        return running
     }
 }

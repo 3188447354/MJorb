@@ -183,14 +183,6 @@ struct SealCommunityView: View {
             .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
             .padding(.top, 8)
 
-            Text("赞赏支持")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Color.sealTextSecondary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 5)
-                .background(Color.sealSurfaceElevated, in: Capsule())
-                .padding(.top, 8)
-
             Text("保存图片后，到微信「扫一扫」选择该图片即可")
                 .font(.system(size: 14, weight: .regular))
                 .foregroundStyle(Color.sealTextSecondary)

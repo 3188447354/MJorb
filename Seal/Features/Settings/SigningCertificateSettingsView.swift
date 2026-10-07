@@ -47,17 +47,30 @@ struct SigningCertificateSettingsView: View {
                 dismissButton: .default(Text(failure.recovery))
             )
         }
-        .alert(item: $certificatePendingRevocation) { certificate in
-            Alert(
-                title: Text("撤销这张证书？"),
-                message: Text(revocationWarning(for: certificate)),
-                primaryButton: .destructive(Text("撤销证书")) {
-                    if let account = activeAccount {
-                        Task { await viewModel.revokeCertificate(serialNumber: certificate.serialNumber, for: account) }
+        .confirmationDialog(
+            "撤销这张证书？",
+            isPresented: Binding(
+                get: { certificatePendingRevocation != nil },
+                set: { if !$0 { certificatePendingRevocation = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("撤销证书", role: .destructive) {
+                if let account = activeAccount,
+                   let certificate = certificatePendingRevocation {
+                    Task {
+                        await viewModel.revokeCertificate(serialNumber: certificate.serialNumber, for: account)
                     }
-                },
-                secondaryButton: .cancel(Text("取消"))
-            )
+                }
+                certificatePendingRevocation = nil
+            }
+            Button("取消", role: .cancel) {
+                certificatePendingRevocation = nil
+            }
+        } message: {
+            if let certificate = certificatePendingRevocation {
+                Text(revocationWarning(for: certificate))
+            }
         }
         .task {
             if selectedAccountID == nil {

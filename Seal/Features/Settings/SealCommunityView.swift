@@ -6,8 +6,11 @@ import UIKit
 struct SealCommunityView: View {
     @Environment(\.openURL) private var openURL
 
-    @State private var showRewardCode = false
-    @State private var showGzhCode = false
+    private enum ActiveSheet: Identifiable {
+        case reward, gzh
+        var id: Self { self }
+    }
+    @State private var activeSheet: ActiveSheet?
     @State private var saveCoordinator: AlbumSaveCoordinator?
 
     @State private var alertTitle = ""
@@ -44,8 +47,12 @@ struct SealCommunityView: View {
         .navigationTitle("加入社群")
         .navigationBarTitleDisplayMode(.inline)
         .sealScreenBackground()
-        .sheet(isPresented: $showRewardCode) { rewardCodeSheet }
-        .sheet(isPresented: $showGzhCode) { gzhCodeSheet }
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .reward: rewardCodeSheet
+            case .gzh: gzhCodeSheet
+            }
+        }
         .alert(alertTitle, isPresented: $showAlert) {
             Button("好的", role: .cancel) { }
         } message: {
@@ -86,7 +93,7 @@ struct SealCommunityView: View {
     }
 
     private var rewardCard: some View {
-        Button { showRewardCode = true } label: {
+        Button { activeSheet = .reward } label: {
             HStack(spacing: 14) {
                 iconBadge("heart.fill", tint: .white, background: Color.white.opacity(0.20))
                 VStack(alignment: .leading, spacing: 3) {
@@ -115,7 +122,7 @@ struct SealCommunityView: View {
             subtitle: "更新动态 · 使用教程 · 官方通知",
             value: nil,
             isExternal: false,
-            action: { showGzhCode = true }
+            action: { activeSheet = .gzh }
         )
     }
 
@@ -216,7 +223,7 @@ struct SealCommunityView: View {
             .padding(.horizontal, 24)
             .padding(.top, 12)
 
-            Button("关闭") { showRewardCode = false }
+            Button("关闭") { activeSheet = nil }
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(Color.sealTextSecondary)
                 .padding(.top, 6)
@@ -295,7 +302,7 @@ struct SealCommunityView: View {
             .sealPrimaryAction(cornerRadius: 14)
             .padding(.horizontal, 24)
 
-            Button("关闭") { showGzhCode = false }
+            Button("关闭") { activeSheet = nil }
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(Color.sealTextSecondary)
                 .padding(.bottom, 12)

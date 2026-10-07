@@ -71,13 +71,7 @@ struct ImportConfirmationView: View {
                             Text(primaryActionTitle)
                         }
                     }
-                    .font(.system(size: 19, weight: .semibold))
-                    .frame(maxWidth: .infinity, minHeight: 54)
-                    .foregroundStyle(.white)
-                    .background(
-                        (isDowngrade ? Color.red : Color.sealAccent).opacity(showsProgress ? 0.38 : 1),
-                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    )
+                    .sealPrimaryAction(cornerRadius: 14)
                     .disabled(showsProgress)
                     .accessibilityIdentifier("import-confirmation-primary")
 
@@ -150,15 +144,6 @@ struct ImportConfirmationView: View {
             }
         }
         return "导入应用"
-    }
-
-    private var isDowngrade: Bool {
-        switch draft.versionCheck {
-        case .downgrade, .buildDowngrade:
-            return true
-        default:
-            return false
-        }
     }
 
     private var header: some View {

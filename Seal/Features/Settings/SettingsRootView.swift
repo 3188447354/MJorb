@@ -154,7 +154,7 @@ struct SettingsRootView: View {
                             settingsRow(
                                 title: "日志",
                                 value: nil,
-                                icon: "doc.text",
+                                icon: "terminal",
                                 showsChevron: true
                             )
                         }

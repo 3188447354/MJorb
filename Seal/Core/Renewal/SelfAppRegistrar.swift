@@ -112,6 +112,23 @@ actor SelfAppRegistrar {
         }
 
         // 版本变更或文件缺失 → 原子更新
+        // 兜底：如果运行中的 build 号与记录不一致（用户已通过旁加载或自替换装上新版，
+        // 但结算因竞态未清掉待安装标记），清掉 pending 指纹，避免「有新版本待安装」常驻。
+        if let existing, existing.buildNumber != metadata.buildNumber,
+           existing.pendingUpdateSourceFingerprint != nil {
+            var updated = existing
+            if let pending = updated.pendingUpdateSourceFingerprint {
+                updated.installedFingerprint = pending
+            }
+            updated.pendingUpdateSourceFingerprint = nil
+            try await appStore.save(updated)
+            try? await logStore?.append(
+                category: .system,
+                level: .info,
+                message: "Seal 启动检测到 build 号变化（记录 \(existing.buildNumber ?? "-") → 运行 \(metadata.buildNumber ?? "-")），已清掉待安装标记",
+                code: "SEAL-SELF-120"
+            )
+        }
         let id = existing?.id ?? fixedSealID
         try await atomicallyUpdateSealRecord(id: id, existing: existing, accounts: accounts)
 

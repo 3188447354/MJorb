@@ -1281,14 +1281,33 @@ final class SettingsViewModel: ObservableObject {
 
     /// Apple ID 总览同时展示 App ID 名额和证书状态；每个账号只建立一次 Apple 会话，
     /// 避免将同一份总览拆成两次串行网络同步。
-    func refreshApplePortalInventories() async {
-        for account in accounts where AccountAvailabilityPolicy.isSelectable(account) {
-            await refreshApplePortalInventory(for: account)
+    /// 证书页的 Apple 门户同步。`force` 为 false 时（页面打开），5 分钟内的缓存直接用，
+    /// 不打网络；下拉刷新传 `force: true` 强制拉新。多账号并行，不串行等。
+    func refreshApplePortalInventories(force: Bool = false) async {
+        let selectable = accounts.filter { AccountAvailabilityPolicy.isSelectable($0) }
+        await withTaskGroup(of: Void.self) { group in
+            for account in selectable {
+                group.addTask { [weak self] in
+                    await self?.refreshApplePortalInventory(for: account, force: force)
+                }
+            }
         }
     }
 
-    private func refreshApplePortalInventory(for account: AppleAccountRecord) async {
+    private func refreshApplePortalInventory(for account: AppleAccountRecord, force: Bool = false) async {
         guard let keychain, let applePortalInventoryService else { return }
+        // 缓存 5 分钟内有效：证书页反复进出不重复打 Apple 门户，又慢又费流量。
+        // 下拉刷新（force: true）不受此限。
+        if force == false,
+           let cached = certificateInventories[account.id],
+           Date().timeIntervalSince(cached.fetchedAt) < 300 {
+            try? await logStore?.append(
+                category: .account,
+                message: "证书同步跳过：5 分钟内已同步（\(cached.certificates.count) 张证书，App ID \(cached.appIDs.count) 个）",
+                code: "SEAL-INVENTORY-110"
+            )
+            return
+        }
         if certificateInventoryLoadingIDs.contains(account.id) { return }
 
         let ticket = beginCertificateInventoryRefresh(for: account.id)
@@ -1303,11 +1322,26 @@ final class SettingsViewModel: ObservableObject {
                     code: "SEAL-INVENTORY-100b"
                 )
             }
-            let inventory = try await applePortalInventoryService.fetchInventory(
+            // 证书页只关心证书：只拉 certificates（省掉 teams/appIDs 两次请求），
+            // App ID 列表复用缓存（与 refreshCertificateInventory 同一做法）。
+            // 无缓存时才拉全量（.all）把 App ID 列表也补上，避免计数显示 0。
+            let needsAppIDs = certificateInventories[account.id]?.appIDs.isEmpty ?? true
+            let scope: ApplePortalInventoryService.FetchScope = needsAppIDs ? .all : .certificates
+            var inventory = try await applePortalInventoryService.fetchInventory(
                 account: account,
                 secret: secret,
-                scope: .all
+                scope: scope
             )
+            if scope == .certificates, let cachedAppIDs = certificateInventories[account.id]?.appIDs {
+                inventory = ApplePortalInventory(
+                    accountID: inventory.accountID,
+                    teamID: inventory.teamID,
+                    teamName: inventory.teamName,
+                    appIDs: cachedAppIDs,
+                    certificates: inventory.certificates,
+                    fetchedAt: inventory.fetchedAt
+                )
+            }
             guard acceptsCertificateInventoryRefresh(ticket) else { return }
             certificateInventories[account.id] = inventory
             certificateInventoryFailures[account.id] = nil
@@ -1450,12 +1484,17 @@ final class SettingsViewModel: ObservableObject {
                 break
             }
         }
-        selfManagement = SelfManagementPresentation(
-            SelfManagementStateResolver.resolve(
-                identity: identity,
-                pendingTransaction: transaction,
-                signerHasLocalPrivateKey: signerIsLocal
-            )
+        let resolvedState = SelfManagementStateResolver.resolve(
+            identity: identity,
+            pendingTransaction: transaction,
+            signerHasLocalPrivateKey: signerIsLocal
+        )
+        selfManagement = SelfManagementPresentation(resolvedState)
+        // 诊断：证书页排障全靠这条——实际签名者、状态、有无本机私钥、事务是否挂起，一次说清。
+        try? await logStore?.append(
+            category: .account,
+            message: "自管理状态：\(resolvedState.rawValue)，实际签名者：\(signer ?? "未知")，有本机私钥：\(signerIsLocal)，待确认事务：\(transaction != nil)",
+            code: "SEAL-SELF-130"
         )
     }
 

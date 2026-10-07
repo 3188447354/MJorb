@@ -574,6 +574,48 @@ final class AppsViewModel: ObservableObject {
         await maintenanceJob?.syncSelfRecord()
     }
 
+    /// 启动关键路径：只跑记录恢复（设备扫描发现 App）。
+    ///
+    /// 新安装时这是已安装列表有数据的唯一来源，必须在首屏前完成；
+    /// 孤儿清理与描述文件清理不阻塞首屏，走 `runDeferredMaintenanceIfIdle()`。
+    /// 返回 true 表示补回了记录，调用方应当重新 `load()`。
+    func runEssentialMaintenanceIfIdle() async -> Bool {
+        guard let maintenanceJob else { return false }
+        return await maintenanceJob.restoreRecordsIfIdle()
+    }
+
+    /// 启动非关键路径：孤儿文件清理 + 设备端旧描述文件清理。
+    ///
+    /// 在首屏出来后于后台延迟执行，不阻塞用户。用户一旦开始签名 / 安装 / 续签，
+    /// 作业自动中止（`MaintenanceGate`），未执行的步骤下次再跑。
+    /// 日志留痕与原 `runMaintenanceIfIdle()` 的 `.completed` 分支保持一致。
+    func runDeferredMaintenanceIfIdle() async {
+        guard let maintenanceJob else { return }
+        guard let report = await maintenanceJob.sweepIfIdle() else { return }
+        if report.orphans.removedTotal > 0 {
+            try? await logStore?.append(
+                category: .system,
+                message: "已清理 \(report.orphans.removedTotal) 个未使用的应用目录",
+                code: "SEAL-STORAGE-005"
+            )
+        }
+        if report.orphans.skippedInFlightTransactions > 0 {
+            // 跳过说明确实存在进行中的导入事务；留痕便于排查「为什么没清干净」。
+            try? await logStore?.append(
+                category: .system,
+                message: "有 \(report.orphans.skippedInFlightTransactions) 个导入事务目录仍在进行，本轮未清理",
+                code: "SEAL-STORAGE-008"
+            )
+        }
+        if report.profiles.removed > 0 {
+            try? await logStore?.append(
+                category: .system,
+                message: "已清理 \(report.profiles.removed) 份设备端旧描述文件",
+                code: "SEAL-PROFILE-321"
+            )
+        }
+    }
+
     func runMaintenanceIfIdle() async -> AppMaintenanceJob.Outcome {
         guard let maintenanceJob else { return .skipped }
         let outcome = await maintenanceJob.run()

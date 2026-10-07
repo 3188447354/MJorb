@@ -38,6 +38,7 @@
 | `SEAL-SIGN-504` | 单应用续签时**设备通道不可用**，自动重试后仍未恢复（底层多为 `Minimuxer.MinimuxerError 1` 的 `NoConnection`）。失败弹窗的「恢复」按钮据此跳 LocalDevVPN 设置页 | `AppsViewModel.swift` |
 | `SEAL-APPID-303` | App ID 创建失败（Apple 未创建；常见原因见同行的 `Apple 返回：`） | `ApplePortalSigningService.swift` |
 | `SEAL-EXT-401` | **扩展**无法创建 App ID（多扩展 App 会走到这条） | `ApplePortalSigningService.swift` |
+| `SEAL-SELF-130` | 自管理状态诊断：实际签名者、有无本机私钥、待确认事务（证书页排障用） | `SettingsViewModel.swift` |
 
 ## 安装 / 设备通道
 
@@ -136,6 +137,7 @@
 | `SEAL-INVENTORY-900a` | 证书状态同步失败（带 domain/code） | `SettingsViewModel.swift` |
 | `SEAL-INVENTORY-100b` | Apple ID 总览完整同步时本机缺少该账号凭据 | `SettingsViewModel.swift` |
 | `SEAL-INVENTORY-900b` | Apple ID 总览的 App ID 与证书状态同步失败（带 domain/code） | `SettingsViewModel.swift` |
+| `SEAL-INVENTORY-110` | 证书同步跳过：5 分钟内已同步过，用缓存 | `SettingsViewModel.swift` |
 
 ## 设备配对
 

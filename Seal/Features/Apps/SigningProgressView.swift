@@ -97,18 +97,9 @@ struct SigningProgressView: View {
                     stage,
                     confirmed: hasRealSignal ? confirmed : nil
                 )
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(stageTitle(for: stage))
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.primary)
-                    // 真值行：这一步在数什么（没有可数对象的阶段返回 nil，就不编一行出来）。
-                    if let unitsText = stage.unitsText(workUnits) {
-                        Text(unitsText)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Color.sealAccent)
-                            .monospacedDigit()
-                    }
-                }
+                Text(stageTitle(for: stage))
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
                 Spacer()
             }
 
@@ -225,10 +216,10 @@ struct SigningProgressView: View {
         let centerLabel: String? = (confirmed == nil && stage == .installing && sealRenewal)
             ? "替换中"
             : nil
-        // 2026-09-28 用户反馈「圆环过大、动效朴素」⇒ 直径 50→38、线宽 5→3.5，
-        // 描边改为**渐变色**，不确定态用**两段反向旋转的弧**（比单段更像「在推进」）。
-        let ringSize: CGFloat = 38
-        let ringWidth: CGFloat = 3.5
+        // 2026-10-07 用户反馈「圆环还是太大」⇒ 直径 38→24（iOS 系统标准尺寸）、
+        // 线宽 3.5→2.5，中心文字同步缩小。
+        let ringSize: CGFloat = 24
+        let ringWidth: CGFloat = 2.5
         return TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: confirmed != nil)) { context in
             ZStack {
                 Circle()
@@ -253,7 +244,7 @@ struct SigningProgressView: View {
                         // 而不是一格一格跳。这不与逐帧时钟打架（转弧那支才受时钟驱动）。
                         .animation(.easeOut(duration: 0.28), value: confirmed)
                     Text("\(Int(confirmed))%")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .font(.system(size: 7, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.sealAccent)
                         .monospacedDigit()
                 } else {
@@ -273,7 +264,7 @@ struct SigningProgressView: View {
                         .rotationEffect(.degrees(-counterArcPhase(context.date) * 360))
                     if let centerLabel {
                         Text(centerLabel)
-                            .font(.system(size: 9, weight: .semibold, design: .rounded))
+                            .font(.system(size: 6, weight: .semibold, design: .rounded))
                             .foregroundStyle(Color.sealAccent)
                     }
                 }
@@ -552,8 +543,6 @@ struct SigningProgressView: View {
             return renewalExecutionPath.successTitle
         }
         return isRenewal ? "续签并安装成功" : "签名并安装成功"
-    }
-
     private func stageTitle(for stage: SigningStage) -> String {
         if let renewalExecutionPath = session?.renewalExecutionPath {
             return renewalExecutionPath.stageTitle(for: stage)

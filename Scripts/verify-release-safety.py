@@ -1107,9 +1107,9 @@ def violations(load=read):
     # 结算后的载荷虽已落盘，首屏却已经拿到旧结果。应用页是唯一结果恢复入口。
     root_tab_code = strip_comments(load("Seal/App/RootTabView.swift"))
     apps_root_code = strip_comments(load("Seal/Features/Apps/AppsRootView.swift"))
-    startup_maintenance_at = apps_root_code.find("await viewModel.runMaintenanceIfIdle()")
+    startup_maintenance_at = apps_root_code.find("await viewModel.runEssentialMaintenanceIfIdle()")
     startup_recovery_at = apps_root_code.find("await viewModel.recoverInterruptedQueueIfNeeded()")
-    startup_load_at = apps_root_code.find("await viewModel.load()", startup_recovery_at)
+    startup_load_at = apps_root_code.find("await viewModel.load(", startup_recovery_at)
     check("appsViewModel.performLightweightLaunchCheck()" not in root_tab_code
           and startup_maintenance_at != -1
           and startup_recovery_at != -1
@@ -3143,8 +3143,8 @@ def violations(load=read):
           "C: maintenance must never wait on a foreground lease")
 
     root_view = load("Seal/Features/Apps/AppsRootView.swift")
-    maintenance_at = root_view.find("runMaintenanceIfIdle()")
-    first_load_at = root_view.find("await viewModel.load()")
+    maintenance_at = root_view.find("runEssentialMaintenanceIfIdle()")
+    first_load_at = root_view.find("await viewModel.load(")
     check(maintenance_at != -1 and first_load_at != -1 and maintenance_at < first_load_at,
           "C: maintenance must run before the first read so recovered records are visible")
 
@@ -7036,7 +7036,7 @@ def main():
          "true",
          "C: every background write-back must be guarded"),
         ("Seal/Features/Apps/AppsRootView.swift",
-         "await viewModel.runMaintenanceIfIdle()",
+         "await viewModel.runEssentialMaintenanceIfIdle()",
          "",
          "C: maintenance must run before the first read"),
         ("Seal/Core/Renewal/SelfAppMetadata.swift",

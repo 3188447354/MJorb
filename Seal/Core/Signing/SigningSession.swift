@@ -34,7 +34,7 @@ enum RenewalExecutionPath: Equatable, Sendable {
             return stage.stageTitle(isRenewal: true)
         case .profileOnly:
             switch stage {
-            case .waitingForChannel: return "正在连接设备"
+            case .waitingForChannel: return "正在连接 LocalDevVPN"
             case .preparingAccount: return "正在验证 Apple ID"
             case .preparingBundle: return "正在核对应用身份"
             case .preparingCertificate: return "正在核验当前证书"

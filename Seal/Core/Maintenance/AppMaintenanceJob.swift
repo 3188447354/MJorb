@@ -97,6 +97,64 @@ final class AppMaintenanceJob {
         defer { gate.end(token) }
 
         // ── 1. 记录恢复 ────────────────────────────────────────────────
+        let recoveryResult = await performRecordRecovery(token: token)
+        let recoverySummary: InstalledRecordRecoverySummary
+        switch recoveryResult {
+        case .completed(let summary):
+            recoverySummary = summary
+        case .aborted(let stage, let reason):
+            return .aborted(stage: stage, reason: reason)
+        case .failed(let failure):
+            return .failed(failure)
+        }
+
+        // ── 2. Seal 自身注册已移至 `ensureSelfRegistered()`，启动时无条件调用，
+        // 不再受空闲门禁限制。此处不再重复执行。
+
+        // ── 3+4. 清理（孤儿文件 + 设备端旧描述文件）───────────────────
+        return await performSweep(token: token, recoverySummary: recoverySummary)
+    }
+
+    /// 关键路径：只做记录恢复（设备扫描发现 App）。
+    ///
+    /// 新安装时这是已安装列表有数据的唯一来源，必须在首屏前完成；
+    /// 孤儿清理与描述文件清理不阻塞首屏，走 `sweepIfIdle()` 延迟到后台。
+    /// 返回 true 表示补回了记录，调用方应当重新 load。
+    func restoreRecordsIfIdle() async -> Bool {
+        guard let token = gate.tryAcquire() else { return false }
+        defer { gate.end(token) }
+        let result = await performRecordRecovery(token: token)
+        if case .completed(let summary) = result {
+            return summary.recovered > 0
+        }
+        return false
+    }
+
+    /// 非关键路径：孤儿文件清理 + 设备端旧描述文件清理。
+    ///
+    /// 不阻塞首屏，可在后台延迟执行。返回 nil 表示本轮被跳过或中途中止，
+    /// 调用方无需重新 load（什么都没删）。
+    func sweepIfIdle() async -> MaintenanceReport? {
+        guard let token = gate.tryAcquire() else { return nil }
+        defer { gate.end(token) }
+        let outcome = await performSweep(
+            token: token,
+            recoverySummary: InstalledRecordRecoverySummary()
+        )
+        if case .completed(let report) = outcome {
+            return report
+        }
+        return nil
+    }
+
+    /// 步骤 1 的内部实现：`run()` 与 `restoreRecordsIfIdle()` 共用。
+    private enum RecordRecoveryStepOutcome {
+        case completed(InstalledRecordRecoverySummary)
+        case aborted(stage: String, reason: String)
+        case failed(ImportFailure)
+    }
+
+    private func performRecordRecovery(token: UUID) async -> RecordRecoveryStepOutcome {
         var recoverySummary = InstalledRecordRecoverySummary()
         if let recovery {
             do {
@@ -120,10 +178,14 @@ final class AppMaintenanceJob {
                 )
             }
         }
+        return .completed(recoverySummary)
+    }
 
-        // ── 2. Seal 自身注册已移至 `ensureSelfRegistered()`，启动时无条件调用，
-        // 不再受空闲门禁限制。此处不再重复执行。
-
+    /// 步骤 3+4 的内部实现：`run()` 与 `sweepIfIdle()` 共用。
+    private func performSweep(
+        token: UUID,
+        recoverySummary: InstalledRecordRecoverySummary
+    ) async -> Outcome {
         // ── 3. 孤儿文件清理（本地删除）────────────────────────────────
         let orphanReport: OrphanSweepReport
         do {

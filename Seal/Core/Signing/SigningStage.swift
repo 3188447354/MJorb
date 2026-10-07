@@ -13,7 +13,7 @@ enum SigningStage: String, CaseIterable, Equatable, Sendable {
     func stageTitle(isRenewal: Bool) -> String {
         switch self {
         case .waitingForChannel:
-            return "正在连接设备"
+            return "正在连接 LocalDevVPN"
         case .preparingAccount:
             return "正在验证 Apple ID"
         case .preparingBundle:

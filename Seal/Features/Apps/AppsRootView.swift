@@ -129,17 +129,23 @@ struct AppsRootView: View {
                 // 设备核验或列表加载拖住，造成用户得点几次应用才看到抽屉。
                 viewModel.presentSettledBackgroundBatchResultIfNeeded()
                 await settingsViewModel.load()
-                // 维护作业（记录恢复 / Seal 自注册 / 孤儿文件清理）只在空闲时执行；
-                // 启动瞬间没有前台操作，因此会正常跑。放在 load 之前，
-                // 保证恢复出来的记录能出现在列表里。Seal 自注册还会读取新运行包的真实身份，
-                // 先结算自替换结果，队列恢复才不会把已验证的 Seal 误降级为 unknown。
-                await viewModel.runMaintenanceIfIdle()
+                // ── 启动关键路径（阻塞首屏，只做最少必要）──
+                // 记录恢复（设备扫描发现 App）是新安装时列表有数据的唯一来源，
+                // 必须在首屏前完成。孤儿清理 / 描述文件清理 / 设备核验不阻塞首屏，
+                // 放后台延迟执行（用户操作开始时自动中止，下次再跑）。
+                let recoveredRecords = await viewModel.runEssentialMaintenanceIfIdle()
                 // 再恢复其余被中断项：上一轮留下的 running 项必须在任何新一轮续签覆盖队列文件之前
                 // 降级为 unknown，否则它们既不会被重试也不会被清理，永久停在「运行中」。
                 await viewModel.recoverInterruptedQueueIfNeeded()
-                await viewModel.load()
-                await viewModel.refreshInstalledApps(userInitiated: false)
+                // 恢复出了记录就强制重载：`.onAppear` 可能并发先刷出空列表，
+                // 不 force 的话恢复的记录要等后台核验才出现。
+                await viewModel.load(force: recoveredRecords)
                 resolveInitialModeIfNeeded()
+                // ── 非关键路径（后台，不阻塞首屏）──
+                Task {
+                    await viewModel.runDeferredMaintenanceIfIdle()
+                    await viewModel.refreshInstalledApps(userInitiated: false)
+                }
             }
             .onChange(of: scenePhase) { phase in
                 guard phase == .active else { return }

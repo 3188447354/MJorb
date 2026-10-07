@@ -93,7 +93,7 @@ struct SealCommunityView: View {
                     Text(rewardTitle)
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(.white)
-                    Text("你的每一份支持，都是更新的动力")
+                    Text("您的每一份支持，都是更新的动力")
                         .font(.system(size: 13, weight: .regular))
                         .foregroundStyle(.white.opacity(0.82))
                 }
@@ -123,7 +123,7 @@ struct SealCommunityView: View {
         brandCard(
             brandImage: "BrandQQ",
             title: "加入 QQ 群",
-            subtitle: "点击直接跳转 QQ 加群",
+            subtitle: "问题反馈 · 交流心得 · 第一时间获取更新",
             value: nil,
             action: joinQQGroup
         )
@@ -144,7 +144,7 @@ struct SealCommunityView: View {
             Image(systemName: "info.circle")
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(Color.sealTextSecondary)
-            Text("欢迎加入社群，交流使用心得、反馈问题、获取最新动态。")
+            Text("遇到问题先看公众号教程，群里直接贴日志截图更快定位。")
                 .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(Color.sealTextSecondary)
             Spacer(minLength: 0)
@@ -442,7 +442,7 @@ struct SealCommunityView: View {
 
     private func handleSaveResult(_ success: Bool) {
         if success {
-            presentAlert("已保存到相册", "感谢你的支持")
+            presentAlert("已保存到相册", "感谢您的支持")
         } else {
             presentAlert("保存失败", "请在系统设置中允许 Seal 访问相册后重试")
         }

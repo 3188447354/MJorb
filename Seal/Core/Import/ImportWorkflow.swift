@@ -629,7 +629,9 @@ actor ImportWorkflow {
             lastSignedAt: existing.lastSignedAt,
             lastInstalledAt: existing.lastInstalledAt,
             removedExtensionBundleIdentifiers: existing.removedExtensionBundleIdentifiers,
-            signingTargets: existing.signingTargets,
+            // 覆盖更新：清空旧版的 signingTargets，新版扩展可能不同，
+            // 下次签名时从新 IPA 重新发现。保留旧的会导致续签用错扩展信息。
+            signingTargets: [],
             ipaRelativePath: files.ipaRelativePath,
             signedIPARelativePath: nil,
             signedIPASHA256: nil,

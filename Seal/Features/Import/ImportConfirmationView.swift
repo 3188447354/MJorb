@@ -71,7 +71,13 @@ struct ImportConfirmationView: View {
                             Text(primaryActionTitle)
                         }
                     }
-                    .sealPrimaryAction(cornerRadius: 14)
+                    .font(.system(size: 19, weight: .semibold))
+                    .frame(maxWidth: .infinity, minHeight: 54)
+                    .foregroundStyle(.white)
+                    .background(
+                        (isDowngrade ? Color.red : Color.sealAccent).opacity(showsProgress ? 0.38 : 1),
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    )
                     .disabled(showsProgress)
                     .accessibilityIdentifier("import-confirmation-primary")
 
@@ -135,32 +141,44 @@ struct ImportConfirmationView: View {
 
     private var primaryActionTitle: String {
         if let recovery = failure?.recovery { return recovery }
-        return isOverwriteUpdate ? "覆盖更新" : "导入应用"
+        if isOverwriteUpdate {
+            switch draft.versionCheck {
+            case .downgrade, .buildDowngrade:
+                return "继续降级"
+            default:
+                return "覆盖更新"
+            }
+        }
+        return "导入应用"
+    }
+
+    private var isDowngrade: Bool {
+        switch draft.versionCheck {
+        case .downgrade, .buildDowngrade:
+            return true
+        default:
+            return false
+        }
     }
 
     private var header: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 14) {
             appIcon
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 5) {
                 Text(draft.parsedIPA.name)
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.system(size: 19, weight: .semibold))
                     .accessibilityIdentifier("import-confirmation-name")
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 Text("v\(draft.parsedIPA.version) · \(formattedSize)")
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(size: 13, weight: .regular))
                     .accessibilityIdentifier("import-confirmation-version")
                     .foregroundStyle(Color.sealTextSecondary)
                     .lineLimit(1)
             }
-            Spacer(minLength: 0)
+            Spacer(minLength: 8)
         }
-        .padding(16)
-        .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.sealHairline.opacity(0.72), lineWidth: 0.8)
-        }
+    }
     }
 
     private var summaryCard: some View {
@@ -170,34 +188,36 @@ struct ImportConfirmationView: View {
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     Text("App 图标")
-                        .font(.system(size: 15, weight: .regular))
+                        .font(.system(size: 14, weight: .regular))
                         .foregroundStyle(.primary)
+                        .frame(width: 96, alignment: .leading)
                     Spacer(minLength: 12)
                     Text(customIconData == nil ? "使用原图" : "已自定义")
-                        .font(.system(size: 14, weight: .regular))
+                        .font(.system(size: 13, weight: .regular))
                         .foregroundStyle(Color.sealTextSecondary)
                     Image(systemName: "chevron.right")
                         .font(.caption)
                         .foregroundStyle(Color.sealTextSecondary)
                 }
-                .frame(minHeight: 54)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("import-summary-icon")
-            Divider().padding(.leading, 16)
+            Divider().padding(.leading, 14)
             summaryRow("Bundle ID", draft.parsedIPA.bundleIdentifier, monospaced: true)
                 .accessibilityIdentifier("import-summary-bundle-id")
                 .accessibilityValue(draft.parsedIPA.bundleIdentifier)
-            Divider().padding(.leading, 16)
+            Divider().padding(.leading, 14)
             summaryRow("附加组件", extensionSummary)
                 .accessibilityIdentifier("import-summary-extensions")
                 .accessibilityValue(extensionSummary)
-            Divider().padding(.leading, 16)
+            Divider().padding(.leading, 14)
             if let candidate = replacementCandidate {
                 summaryRow("更新方式", overwriteSummary(candidate))
                     .accessibilityIdentifier("import-summary-overwrite")
                     .accessibilityValue(overwriteSummary(candidate))
-                Divider().padding(.leading, 16)
+                Divider().padding(.leading, 14)
             }
             summaryRow("状态", migrationSummary)
                 .accessibilityIdentifier("import-summary-compatibility")
@@ -256,15 +276,19 @@ struct ImportConfirmationView: View {
     private func summaryRow(_ title: String, _ value: String, monospaced: Bool = false) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(title)
-                .font(.system(size: 15, weight: .regular))
+                .font(.system(size: 14, weight: .regular))
                 .foregroundStyle(.primary)
-            Spacer(minLength: 12)
+                .frame(width: 96, alignment: .leading)
             Text(value)
-                .font(.system(size: 14, weight: .regular, design: monospaced ? .monospaced : .default))
-                .foregroundStyle(Color.sealTextSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+                .font(.system(size: 13, weight: .regular, design: monospaced ? .monospaced : .default))
+                .foregroundColor(Color.sealTextSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .frame(minHeight: 54)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
     }
 
     private func failureCard(_ failure: ImportFailure) -> some View {

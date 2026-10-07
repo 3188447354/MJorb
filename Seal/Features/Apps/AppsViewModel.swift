@@ -1719,7 +1719,6 @@ final class AppsViewModel: ObservableObject {
                 iconData[updated.id] = newIconData
             }
             invalidateDecodedIcon(for: updated.id)
-            await load(force: true)
             return true
         } catch {
             alertFailure = ImportFailure(
@@ -3561,14 +3560,10 @@ final class AppsViewModel: ObservableObject {
             let requestedOverwrite = importReplacementCandidate
             importReplacementCandidate = nil
             isImportSheetPresented = false
-            // 导入时选的自定义图标：应用到新记录上。
-            if let iconData = pendingImportIconData {
-                pendingImportIconData = nil
-                // 先直接更新内存缓存，保证 UI 立刻刷新（主线程）
-                await MainActor.run {
-                    self.iconData[record.id] = iconData
-                    self.invalidateDecodedIcon(for: record.id)
-                }
+            // 导入时选的自定义图标：先保存到文件，load 后再设置内存缓存（load 会重建整个 iconData）
+            let pendingIconData = pendingImportIconData
+            pendingImportIconData = nil
+            if let iconData = pendingIconData {
                 _ = await updatePreferredIcon(for: record, data: iconData)
             }
             // 导入时改的自定义名称：应用到新记录上。
@@ -3577,6 +3572,13 @@ final class AppsViewModel: ObservableObject {
                 _ = await updatePreferredDisplayName(for: record, name: displayName)
             }
             await load(force: true)
+            // load 会重建整个 iconData，在这里设置确保不被覆盖
+            if let iconData = pendingIconData {
+                await MainActor.run {
+                    self.iconData[record.id] = iconData
+                    self.invalidateDecodedIcon(for: record.id)
+                }
+            }
             await logImportReplacementOutcome(requested: requestedOverwrite, record: record)
             if autoOpenSigningAfterImport {
                 autoOpenSigningAfterImport = false

@@ -71,19 +71,21 @@ struct ImportConfirmationView: View {
                             Text(primaryActionTitle)
                         }
                     }
-                    .sealPrimaryAction(cornerRadius: 16)
+                    .sealPrimaryAction(cornerRadius: 14)
                     .disabled(showsProgress)
                     .accessibilityIdentifier("import-confirmation-primary")
 
                     if isOverwriteUpdate {
                         Button("新建副本（不覆盖）", action: onCreateCopy)
-                            .sealOutlineAction(cornerRadius: 16)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .foregroundColor(Color.sealAccent)
                             .disabled(showsProgress)
                             .accessibilityIdentifier("import-confirmation-new-copy")
                     }
 
                     Button("取消导入", action: onCancel)
-                        .sealOutlineAction(cornerRadius: 16)
+                        .frame(maxWidth: .infinity, minHeight: 40)
+                        .foregroundColor(Color.sealTextSecondary)
                         .disabled(isCommitting)
             }
         }

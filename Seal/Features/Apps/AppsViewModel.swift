@@ -1058,6 +1058,18 @@ final class AppsViewModel: ObservableObject {
         )
     }
 
+    /// Seal 自更新的覆盖候选：installedReplacementCandidate 把 Seal 排除在外，
+    /// 这里单独找 Seal 记录。返回 nil 表示不是 Seal 自更新或无需确认。
+    private func sealReplacementCandidate(for draft: ImportDraft) async -> AppRecord? {
+        guard let appStore, let records = try? await appStore.fetchAll() else { return nil }
+        // 只处理 Seal 自身的 IPA
+        let sealBundleIDs = ["com.mjorb.seal", "com.mjorb.Seal"]
+        guard sealBundleIDs.contains(where: {
+            draft.parsedIPA.bundleIdentifier.caseInsensitiveCompare($0) == .orderedSame
+        }) else { return nil }
+        return records.first(where: { $0.isSeal && $0.belongsInInstalledList })
+    }
+
     /// 覆盖更新的结果必须留痕。
     ///
     /// 用户点「覆盖更新」后，`ImportWorkflow.commit` 会**按 id 复核**目标记录；复核不过
@@ -3486,6 +3498,14 @@ final class AppsViewModel: ObservableObject {
                 phase = .committing
                 await workflow.confirm(preferredDraft: draft)
                 await consumeWorkflowState()
+                return
+            }
+            // Seal 自更新：installedReplacementCandidate 把 Seal 排除了，这里单独处理。
+            // 有真实版本变化（非 alreadyLatest）时弹抽屉确认。
+            if let sealCandidate = await sealReplacementCandidate(for: draft) {
+                importReplacementCandidate = sealCandidate
+                isImportSheetPresented = true
+                phase = .idle
                 return
             }
             if let candidate = await replacementCandidate(for: draft) {

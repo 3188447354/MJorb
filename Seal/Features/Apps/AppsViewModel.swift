@@ -1686,7 +1686,7 @@ final class AppsViewModel: ObservableObject {
 
     @discardableResult
     func updatePreferredIcon(for app: AppRecord, data: Data?) async -> Bool {
-        guard let appStore, let fileStore, app.state != .installed, app.hasSignedArtifact == false else { return false }
+        guard let appStore, let fileStore else { return false }
         do {
             var updated = app
             if let data {

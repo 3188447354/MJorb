@@ -217,8 +217,7 @@ struct ImportedAppRow: View {
             )
             return kind == .none ? nil : kind
         } else {
-            // 非 Seal：用 pendingUpdateFromVersion（旧版）与当前记录版本（新版）比较，
-            // 与 Seal 行为一致：区分升级/同版不同内容/降级。
+            // 非 Seal：只看指纹。指纹不同 ⇒ 有包待安装，显示"有更新待安装"。
             guard let pending = app.pendingUpdateSourceFingerprint,
                   !pending.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return nil
@@ -227,16 +226,6 @@ struct ImportedAppRow: View {
                !installed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                pending == installed {
                 return nil
-            }
-            // 有旧版本号就走完整版本比较，没有就回落为 sameVersion
-            if let fromVersion = app.pendingUpdateFromVersion, !fromVersion.isEmpty {
-                let kind = ProfileOnlyRenewalPolicy.pendingUpdateKind(
-                    recordedVersion: app.version,
-                    runningVersion: fromVersion,
-                    pendingUpdateSourceFingerprint: app.pendingUpdateSourceFingerprint,
-                    installedFingerprint: app.installedFingerprint
-                )
-                return kind == .none ? nil : kind
             }
             return .sameVersion
         }
@@ -258,21 +247,8 @@ struct ImportedAppRow: View {
 
     /// 显示版本：Seal 显示 1.0.0（对应构建号），如 v1.0.0 (70)。
     /// 有待安装更新时显示过渡：v1.0.0 (68) → v1.0.0 (69)
-    /// 非 Seal 同理：v3.8.10 → v3.8.8
     private static func displayVersion(for app: AppRecord) -> String {
-        // 非 Seal：有待安装更新时显示过渡
-        if !app.isSeal {
-            if let kind = pendingUpdateKind(app), kind != .none,
-               let fromVersion = app.pendingUpdateFromVersion, !fromVersion.isEmpty,
-               fromVersion != app.version {
-                let fromBuild = app.pendingUpdateFromBuildNumber
-                let toBuild = app.buildNumber
-                let from = (fromBuild?.isEmpty == false) ? "\(fromVersion) (\(fromBuild!))" : fromVersion
-                let to = (toBuild?.isEmpty == false) ? "\(app.version) (\(toBuild!))" : app.version
-                return "\(from) → \(to)"
-            }
-            return app.version
-        }
+        guard app.isSeal else { return app.version }
         let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? app.version
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
         let running = !build.isEmpty ? "\(short) (\(build))" : short

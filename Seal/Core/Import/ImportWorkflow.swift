@@ -642,8 +642,6 @@ actor ImportWorkflow {
             lastInstallFailureReason: nil,
             hasPendingSelfUpdateSource: true,
             pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint,
-            pendingUpdateFromVersion: existing.version,
-            pendingUpdateFromBuildNumber: existing.buildNumber,
             isSeal: false,
             isPinned: existing.isPinned,
             importedAt: existing.importedAt,

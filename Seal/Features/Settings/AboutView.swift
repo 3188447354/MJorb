@@ -6,7 +6,7 @@ struct AboutView: View {
         let short = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.0.0"
         let build = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? ""
         if !build.isEmpty {
-            return "\(short)-beta\(build)"
+            return "\(short) (\(build))"
         }
         return short
     }

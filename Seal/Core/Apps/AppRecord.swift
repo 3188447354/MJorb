@@ -48,6 +48,10 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
     /// 自替换安装成功、结算完成后清掉（`SelfAppRegistrar.atomicallyApplyInstalledIdentity`），
     /// 因此它是自愈的 —— 不像 `hasPendingSelfUpdateSource` 那样装完还一直为真。
     var pendingUpdateSourceFingerprint: String?
+    /// 待安装更新的来源版本（覆盖更新前旧记录的版本号，用于显示 v1.0.0 → v1.0.1）。
+    /// 非 Seal 也用，与 Seal 行为一致。
+    var pendingUpdateFromVersion: String?
+    var pendingUpdateFromBuildNumber: String?
     /// 已安装包的指纹（安装成功时写入）。导入时若新包指纹与它一致，说明是同一个包，
     /// 不标为待更新（避免重复导入同一包一直提示）。
     var installedFingerprint: String?
@@ -100,6 +104,8 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         pendingFileTransactionID: UUID? = nil,
         hasPendingSelfUpdateSource: Bool = false,
         pendingUpdateSourceFingerprint: String? = nil,
+        pendingUpdateFromVersion: String? = nil,
+        pendingUpdateFromBuildNumber: String? = nil,
         installedFingerprint: String? = nil,
         needsIPAImport: Bool = false,
         isSeal: Bool = false,
@@ -149,6 +155,8 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         self.hasPendingSelfUpdateSource = hasPendingSelfUpdateSource
         self.needsIPAImport = needsIPAImport
         self.pendingUpdateSourceFingerprint = pendingUpdateSourceFingerprint
+        self.pendingUpdateFromVersion = pendingUpdateFromVersion
+        self.pendingUpdateFromBuildNumber = pendingUpdateFromBuildNumber
         self.installedFingerprint = installedFingerprint
         self.isSeal = isSeal
         self.isPinned = isPinned
@@ -198,6 +206,8 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         case pendingFileTransactionID
         case hasPendingSelfUpdateSource
         case pendingUpdateSourceFingerprint
+        case pendingUpdateFromVersion
+        case pendingUpdateFromBuildNumber
         case installedFingerprint
         case needsIPAImport
         case isSeal
@@ -260,6 +270,14 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         pendingUpdateSourceFingerprint = try container.decodeIfPresent(
             String.self,
             forKey: .pendingUpdateSourceFingerprint
+        )
+        pendingUpdateFromVersion = try container.decodeIfPresent(
+            String.self,
+            forKey: .pendingUpdateFromVersion
+        )
+        pendingUpdateFromBuildNumber = try container.decodeIfPresent(
+            String.self,
+            forKey: .pendingUpdateFromBuildNumber
         )
         installedFingerprint = try container.decodeIfPresent(
             String.self,

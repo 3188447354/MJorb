@@ -305,6 +305,17 @@ actor ImportWorkflow {
                 } else {
                     pendingUpdateSourceFingerprint = newFingerprint
                 }
+            } else if let existing {
+                // 非 Seal 覆盖更新：同样计算指纹，用于已安装列表标签（与 Seal 行为一致）。
+                // 与已装包指纹一致 ⇒ 同一个包，不标为待更新。
+                let newFingerprint = try? AppFileStore.streamingSHA256(url: draft.stagedIPA.url)
+                if let newFP = newFingerprint,
+                   let installedFP = existing.installedFingerprint,
+                   newFP == installedFP {
+                    pendingUpdateSourceFingerprint = nil
+                } else {
+                    pendingUpdateSourceFingerprint = newFingerprint
+                }
             } else {
                 pendingUpdateSourceFingerprint = nil
             }
@@ -473,7 +484,8 @@ actor ImportWorkflow {
             return makeInstalledUpdateRecord(
                 draft: draft,
                 files: files,
-                existing: existing
+                existing: existing,
+                pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint
             )
         }
 
@@ -589,7 +601,8 @@ actor ImportWorkflow {
     private static func makeInstalledUpdateRecord(
         draft: ImportDraft,
         files: StoredAppFiles,
-        existing: AppRecord
+        existing: AppRecord,
+        pendingUpdateSourceFingerprint: String? = nil
     ) -> AppRecord {
         let parsed = draft.parsedIPA
         return AppRecord(
@@ -628,6 +641,9 @@ actor ImportWorkflow {
             lastInstallFailureCode: nil,
             lastInstallFailureReason: nil,
             hasPendingSelfUpdateSource: true,
+            pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint,
+            pendingUpdateFromVersion: existing.version,
+            pendingUpdateFromBuildNumber: existing.buildNumber,
             isSeal: false,
             isPinned: existing.isPinned,
             importedAt: existing.importedAt,

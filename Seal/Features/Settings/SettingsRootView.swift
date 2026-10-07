@@ -407,9 +407,9 @@ struct SettingsRootView: View {
     private var appVersion: String {
         let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
-        // 显示 beta 构建号以区分每次 CI 出包：1.0.0-beta172
+        // 显示构建号以区分每次 CI 出包：1.0.0 (172)
         if !build.isEmpty {
-            return "\(short)-beta\(build)"
+            return "\(short) (\(build))"
         }
         return short
     }

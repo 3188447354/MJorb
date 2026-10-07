@@ -33,8 +33,8 @@ struct SealCommunityView: View {
                     sectionTitle("支持作者")
                     rewardCard
                     sectionTitle("交流与动态")
-                    qqCard
                     gzhCard
+                    qqCard
                     douyinCard
                 }
                 footerNote
@@ -275,7 +275,7 @@ struct SealCommunityView: View {
             }
             .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
 
-            Text("关注公众号，第一时间获取版本动态、教程与官方通知")
+            Text("关注公众号，获取更新动态、使用教程与官方通知")
                 .font(.system(size: 14, weight: .regular))
                 .foregroundStyle(Color.sealTextSecondary)
                 .multilineTextAlignment(.center)

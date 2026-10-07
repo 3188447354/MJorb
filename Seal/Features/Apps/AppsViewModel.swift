@@ -1529,7 +1529,7 @@ final class AppsViewModel: ObservableObject {
                 resultText = "✓ \(appName) 签名成功"
             case .failed(let failure):
                 resultText = "✗ \(appName) 签名失败：\(failure.userMessage)"
-            case .running, .preparing:
+            case .running:
                 resultText = "○ \(appName) 未完成"
             }
             let message = """

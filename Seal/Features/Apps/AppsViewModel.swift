@@ -3578,6 +3578,19 @@ final class AppsViewModel: ObservableObject {
                     self.iconData[record.id] = iconData
                     self.invalidateDecodedIcon(for: record.id)
                 }
+                try? await logStore?.append(
+                    category: .system,
+                    level: .info,
+                    message: "导入图标已应用到记录 \(record.displayName) (\(record.id.uuidString.prefix(8)))，\(iconData.count) 字节",
+                    code: "SEAL-ICON-001"
+                )
+            } else {
+                try? await logStore?.append(
+                    category: .system,
+                    level: .info,
+                    message: "导入完成但 pendingIconData 为空，未应用自定义图标",
+                    code: "SEAL-ICON-002"
+                )
             }
             await logImportReplacementOutcome(requested: requestedOverwrite, record: record)
             if autoOpenSigningAfterImport {

@@ -123,23 +123,16 @@ struct LogViewerView: View {
     }
 
     private func exportLogs() {
-        // 从内存的 rounds 生成导出文本，不依赖文件是否存在（避免首次点击时文件系统延迟）
-        guard !rounds.isEmpty else {
+        // 直接读 Documents 里的 Seal-log.txt 文件，确保导出的是文件夹的完整日志
+        // 第一次点击也能用（不依赖内存 rounds 是否加载完成）
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        let logURL = docs?.appendingPathComponent("Seal-log.txt")
+        guard let url = logURL,
+              let text = try? String(contentsOf: url, encoding: .utf8),
+              !text.isEmpty else {
             exportURL = nil
             isExporting = true
             return
-        }
-        var text = ""
-        for round in rounds {
-            text += round.title + "\n"
-            for item in round.items {
-                text += (item.succeeded ? "✓ " : "✗ ") + item.text + "\n"
-                if let reason = item.reason {
-                    text += "  原因：" + reason + "\n"
-                }
-            }
-            text += round.footer + "\n"
-            text += String(repeating: "━", count: 40) + "\n"
         }
         let tmpURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("Seal-日志-\(formattedDate()).txt")

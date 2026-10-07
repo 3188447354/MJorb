@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct BatchRefreshView: View {
     @ObservedObject var viewModel: AppsViewModel
@@ -164,14 +165,25 @@ struct BatchRefreshView: View {
     /// 去掉之前的小环百分比设计（用户反馈看不懂），状态用文字直接说清楚。
     private func queueRow(_ item: BatchRefreshSession.Item) -> some View {
         HStack(spacing: 12) {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.sealAccent.opacity(0.12))
-                .frame(width: 40, height: 40)
-                .overlay {
-                    Text(String(item.name.prefix(1)))
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(Color.sealAccent)
+            // 真实 App 图标：从 viewModel.iconData 按 app id 取，取不到时回退到首字母占位
+            Group {
+                if let data = viewModel.iconData[item.id],
+                   let uiImage = UIImage(data: data) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.sealAccent.opacity(0.12))
+                        .overlay {
+                            Text(String(item.name.prefix(1)))
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(Color.sealAccent)
+                        }
                 }
+            }
+            .frame(width: 40, height: 40)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.name)

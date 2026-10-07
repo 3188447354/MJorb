@@ -81,6 +81,7 @@ Text(body)
 .foregroundStyle(Color.sealTextSecondary)
 .lineSpacing(4)
 }
+.frame(maxWidth: .infinity, alignment: .leading)
 .padding(16)
 .glassSurface(cornerRadius: 14)
 }

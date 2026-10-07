@@ -1519,26 +1519,37 @@ final class AppsViewModel: ObservableObject {
         if case .succeeded = signingSession.status { signingSucceeded = true }
         let appName = signingSession.app.displayName
         let status = signingSession.status
+        let expiryDate = signingSession.app.expiryDate
         self.signingSession = nil
         selectedOperationApp = nil
-        // 单独签名/续签也要写日志轮次，否则日志列表里只有批量操作
+        // 单独签名/续签也要写日志轮次，格式对齐批量续签
         Task { [weak self] in
+            let timeFormatter = DateFormatter()
+            timeFormatter.dateFormat = "HH:mm:ss"
+            let now = timeFormatter.string(from: Date())
+            let dateTimeFormatter = DateFormatter()
+            dateTimeFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+            let expiryText = expiryDate.map { dateTimeFormatter.string(from: $0) } ?? "未知"
             let resultText: String
+            let footerText: String
             switch status {
             case .succeeded:
-                resultText = "✓ \(appName) 签名成功"
+                resultText = "✓ \(appName) 成功，有效期至 \(expiryText)"
+                footerText = "■ 完成 · 1/1 成功"
             case .failed(let failure):
-                resultText = "✗ \(appName) 签名失败：\(failure.userMessage)"
+                resultText = "✗ \(appName) 失败：\(failure.userMessage)"
+                footerText = "■ 完成 · 0/1 成功"
             case .running:
                 resultText = "○ \(appName) 未完成"
+                footerText = "■ 未完成"
             }
             let message = """
                 ━━━━━━━━━━━━━━━━━━━━━━━━
-                ▶ 单独操作 · \(appName)
+                ▶ 今天 · \(now) · 手动 · 1个App
                 ────────────────────────────────
                 \(resultText)
                 ────────────────────────────────
-                ■ 完成
+                \(footerText)
                 ━━━━━━━━━━━━━━━━━━━━━━━━
                 """
             try? await self?.logStore?.append(

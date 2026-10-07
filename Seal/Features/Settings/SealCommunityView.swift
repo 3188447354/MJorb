@@ -33,8 +33,8 @@ struct SealCommunityView: View {
                     sectionTitle("支持作者")
                     rewardCard
                     sectionTitle("交流与动态")
-                    gzhCard
                     qqCard
+                    gzhCard
                     douyinCard
                 }
                 footerNote
@@ -93,7 +93,7 @@ struct SealCommunityView: View {
                     Text(rewardTitle)
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(.white)
-                    Text("您的每一份支持，都是更新的动力")
+                    Text("每一份支持，都是作者更新的动力")
                         .font(.system(size: 13, weight: .regular))
                         .foregroundStyle(.white.opacity(0.82))
                 }

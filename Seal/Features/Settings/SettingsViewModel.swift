@@ -2997,7 +2997,13 @@ final class SettingsViewModel: ObservableObject {
     }
 
     private func refreshLogExportText() {
-        logExportText = SealLogTextFormatter.exportText(logs)
+        // 与 Documents/Seal-log.txt 镜像用同一个入口，保证内容一致
+        //（含「已丢弃 N 条」notice 与构建标识）。
+        if let store = logStore, let text = try? store.exportText() {
+            logExportText = text
+        } else {
+            logExportText = SealLogTextFormatter.exportText(logs)
+        }
     }
 
     static func preview() -> SettingsViewModel {

@@ -5,9 +5,6 @@ struct ImportedAppRow: View {
     let app: AppRecord
     let iconData: Data?
 
-    /// 行图标解码缓存（性能优化 2026-10-04）：导入列表滚动时避免重复解码。
-    private static let iconCache = NSCache<NSString, UIImage>()
-
     var body: some View {
         HStack(spacing: 14) {
             icon
@@ -103,19 +100,10 @@ struct ImportedAppRow: View {
 
     @ViewBuilder private var icon: some View {
         Group {
-            if let iconData {
-                let key = app.id.uuidString as NSString
-                let image: UIImage? = {
-                    if let cached = Self.iconCache.object(forKey: key) {
-                        return cached
-                    }
-                    guard let decoded = UIImage(data: iconData) else { return nil }
-                    Self.iconCache.setObject(decoded, forKey: key)
-                    return decoded
-                }()
-                if let image {
-                    Image(uiImage: image)
-                        .resizable()
+            if let iconData,
+               let image = UIImage(data: iconData) {
+                Image(uiImage: image)
+                    .resizable()
                         .scaledToFill()
                         .accessibilityHidden(true)
                 }

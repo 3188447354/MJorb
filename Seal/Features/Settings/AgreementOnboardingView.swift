@@ -15,7 +15,7 @@ struct AgreementOnboardingView: View {
         VStack(spacing: 0) {
             Spacer()
 
-            Image(systemName: "seal.fill")
+            Image(systemName: "checkmark.seal.fill")
                 .font(.system(size: 64))
                 .foregroundStyle(Color.sealAccent)
                 .padding(.bottom, 20)

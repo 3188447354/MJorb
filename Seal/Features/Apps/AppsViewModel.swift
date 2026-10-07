@@ -183,8 +183,17 @@ final class AppsViewModel: ObservableObject {
         accounts = []
         iconData = [:]
         decodedIconCache.removeAllObjects()
+        decodedIconCache.countLimit = 50
+        decodedIconCache.totalCostLimit = 50 * 1024 * 1024
         phase = .idle
         isImportSheetPresented = false
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.decodedIconCache.removeAllObjects()
+        }
     }
 
     init(startupFailure: ImportFailure) {
@@ -2300,6 +2309,8 @@ final class AppsViewModel: ObservableObject {
                 // 必须 await：日志页收到 .sealRenewalCompleted 后直接读文件，
                 // fire-and-forget 会造成"刷新了但读到旧文件"的竞态。
                 await logStore?.forceMirrorToDocuments()
+                // 续签完成清理图片解码缓存，释放续签过程中积累的内存
+                decodedIconCache.removeAllObjects()
                 // 续签后立即重排通知（用新到期时间），并刷新状态，避免提醒时间滞后
                 // 同时刷新内存中的应用列表，让已安装页立即显示新日期
                 // 两阶段提交：重排完成后再发 .sealRenewalCompleted，观察者读到的是新状态，不用睡2秒碰运气

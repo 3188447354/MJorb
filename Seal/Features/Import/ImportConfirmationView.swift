@@ -302,7 +302,7 @@ struct ImportConfirmationView: View {
 
     @ViewBuilder private var appIcon: some View {
         Group {
-            if let data = draft.parsedIPA.iconData, let image = UIImage(data: data) {
+            if let data = customIconData ?? draft.parsedIPA.iconData, let image = UIImage(data: data) {
                 Image(uiImage: image).resizable().scaledToFill()
             } else {
                 Image(systemName: "app.fill")

@@ -2800,10 +2800,16 @@ final class SettingsViewModel: ObservableObject {
 
     @objc private func refreshNotificationStatusAfterRenewal() {
         Task { @MainActor in
-            // 两阶段提交：.sealRenewalCompleted 在重排完成后才发，直接读就是新的，不用睡2秒
-            guard let notificationScheduler, let notificationPreferences else { return }
-            notificationStatus = await notificationScheduler.status(sealEnabled: notificationPreferences.isEnabled)
+            await self.refreshNotificationStatus()
         }
+    }
+
+    /// 轻量刷新通知状态：每次进页面都调，不受 hasLoaded 守卫影响。
+    @MainActor
+    func refreshNotificationStatus() async {
+        // 两阶段提交：.sealRenewalCompleted 在重排完成后才发，直接读就是新的，不用睡2秒
+        guard let notificationScheduler, let notificationPreferences else { return }
+        notificationStatus = await notificationScheduler.status(sealEnabled: notificationPreferences.isEnabled)
     }
 
     func setReminderHours(_ hours: Int) async {

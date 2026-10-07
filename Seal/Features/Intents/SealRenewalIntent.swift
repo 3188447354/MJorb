@@ -40,8 +40,8 @@ struct RefreshAllAppsIntent: AppIntent {
             guard let container = SealAppEnvironment.container else { return .notReady }
             // 先起保活、再点火：反过来的话，点火之后进程可能立刻被系统挂起，
             // 续签任务还没跑到第一次网络往返就停了（后台没有界面，用户看不到）。
+            // 2026-10-07: 只用静音音频保活，定位保活退役（续签 4-12 秒，音频足够）。
             container.backgroundKeepAlive.start()
-            container.locationKeepAlive.start()
             container.appsViewModel.refreshAllFromBackgroundTrigger()
             return .started
         }

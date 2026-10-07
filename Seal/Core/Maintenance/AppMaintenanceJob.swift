@@ -100,6 +100,8 @@ final class AppMaintenanceJob {
         if let selfAppRegistrar {
             do {
                 try await selfAppRegistrar.ensureRegistered()
+                // 自安装重启后记录已更新，通知应用页刷新，"有新版本待安装"标签自动消失
+                NotificationCenter.default.post(name: .sealSelfRecordUpdated, object: nil)
             } catch {
                 // 自注册失败不阻断后续清理（清理是安全的：它只删 DB 里没有引用的目录），
                 // 但必须留痕，不能静默吞掉。

@@ -3625,19 +3625,11 @@ def violations(load=read):
           "R109: RemotePairing 端口必须持久化（冷启动恢复 / 采纳写回 / 换设备清除 / 冷启动同步 Rust）✗ —— "
           "只在内存记端口会让每次冷启动从 49152 撞一遍再 Bonjour 重查；只恢复 Swift 内存不写 Rust 会全程 ConnectionRefused")
 
-    # ── R110：后台保活双保险 —— 后台定位保活（2026-09-29）──
+    # ── R110：后台保活 —— 定位保活已退役（2026-10-07）──
     #
-    # 静音音频那一路会被来电/闹钟/路由变更/媒体重置打断，自愈之间有窗口，进程一旦被系统
-    # 挂起、锁屏续签就跑一半停掉。补第二路「后台定位」（`UIBackgroundModes: location`），
-    # 它与音频的失效模式正交：只要定位持续回调，进程就不被挂起（上游 SideStore 有备选的
-    # `BackgroundLocationService`，Locus / StikDebug 等依赖 LocalDevVPN 的同类 App 也声明
-    # `audio + location`）。
-    #
-    # ⚠️ 这路**静默失效**的形态正是「已声明 / 已 start 但没用」：缺
-    # `allowsBackgroundLocationUpdates` 切后台定位立刻停；`pausesLocationUpdatesAutomatically`
-    # 默认是 **true**，定位长时间不动时系统会自动暂停（编译照过、日志可能一行都没有）。
-    # 所以必须四件事同时成立：① Info.plist 声明 location + 两项权限描述；② 两个关键开关；
-    # ③ 两个启动点（App 启动 + 快捷指令后台唤起）都 start；④ 容器真正注入。
+    # 2026-10-07 退役原因：续签已优化到 4-12 秒，静音音频足够；定位只费电还挂箭头。
+    # LocationKeepAliveService 类保留以备后用，但不再启动。
+    # 守卫保留 ①②⑤⑥（类定义完整性），③④ 改为确认**不**启动（防有人顺手加回来）。
     r110_yml = load("project.yml")
     r110_service = load("Seal/Infrastructure/Background/LocationKeepAliveService.swift")
     r110_app = load("Seal/App/SealApp.swift")
@@ -3648,7 +3640,7 @@ def violations(load=read):
           and "NSLocationWhenInUseUsageDescription" in r110_yml
           and "NSLocationAlwaysAndWhenInUseUsageDescription" in r110_yml,
           "R110①: `project.yml` 必须声明 `UIBackgroundModes: location` + 两项定位权限描述 ✗ —— "
-          "缺 `location` 后台模式则切后台定位立刻停；缺 `AlwaysAndWhenInUse` 描述则 "
+          "类定义保留，后台模式声明也保留（以备后用）；缺 `AlwaysAndWhenInUse` 描述则 "
           "`requestAlwaysAuthorization()` 会因缺失权限描述被 iOS 强制终止")
     check("manager.pausesLocationUpdatesAutomatically = false" in r110_service
           and "manager.allowsBackgroundLocationUpdates = true" in r110_service,
@@ -3656,13 +3648,13 @@ def violations(load=read):
           "缺 `allowsBackgroundLocationUpdates` 切后台定位立刻停；"
           "`pausesLocationUpdatesAutomatically` 默认 true，不显式置 false 会被系统在定位静止时"
           "静默暂停（正是「已启用了却没用」的形态）")
-    check("container.locationKeepAlive.start()" in r110_app,
-          "R110③: `SealApp.init()` 必须启动定位保活 ✗ —— 正常启动这条路径漏了，双保险只剩快捷指令那一侧")
-    check("container.locationKeepAlive.start()" in r110_intent,
-          "R110④: 快捷指令后台唤起必须启动定位保活 ✗ —— 不打开 App 的续签就靠这一路兜底")
+    check("container.locationKeepAlive.start()" not in r110_app,
+          "R110③: `SealApp.init()` 不得启动定位保活 ✗ —— 2026-10-07 已退役，只用静音音频")
+    check("container.locationKeepAlive.start()" not in r110_intent,
+          "R110④: 快捷指令后台唤起不得启动定位保活 ✗ —— 2026-10-07 已退役，只用静音音频")
     check("locationKeepAlive: LocationKeepAliveService" in r110_container
           and "LocationKeepAliveService(logStore:" in r110_container,
-          "R110⑤: `AppContainer` 必须注入 `LocationKeepAliveService` ✗ —— 不注入则两处 start 都是空引用")
+          "R110⑤: `AppContainer` 必须注入 `LocationKeepAliveService` ✗ —— 不注入则类定义残缺")
     check("`SEAL-BACKGROUND-017`" in r110_index
           and "`SEAL-BACKGROUND-018`" in r110_index,
           "R110⑥: 定位保活两个日志码必须登记进 `docs/qa/log-code-index.md` ✗ —— "

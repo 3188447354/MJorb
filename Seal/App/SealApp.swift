@@ -22,8 +22,8 @@ struct SealApp: App {
         // 不再无条件常驻。用户要省电，保活只在需要时运行。
         // 幂等，重复调用无副作用。
         container.backgroundKeepAlive.start()
-        // 后台定位保活：与静音音频形成双保险（音频被来电/闹钟/路由变更打断时，定位兜底）。
-        container.locationKeepAlive.start()
+        // 2026-10-07: 定位保活退役。续签已优化到 4-12 秒，静音音频足够，
+        // 定位只费电还挂箭头。LocationKeepAliveService 保留类定义以备后用。
         // 钥匙串可访问性迁移：**必须同步、且必须在任何钥匙串读取之前**。
         // 锁屏下的后台续签要现读账号密钥与 anisette，条目若还是 `WhenUnlocked` 就会失败
         // （真机表现：日志只剩一句 `Seal.KeychainError 1`）。见 `SealKeychainAccessibility`。
@@ -48,16 +48,29 @@ struct SealApp: App {
         }
     }
 
+    @State private var agreementAccepted = !needsAgreementOnboarding()
+
     var body: some Scene {
         WindowGroup {
-            RootTabView(
-                appsViewModel: container.appsViewModel,
-                settingsViewModel: container.settingsViewModel,
-                certificateExportHandler: container.certificateExportHandler,
-                migrateKeychainAccessibility: {
-                    container.migrateKeychainAccessibilityIfNeeded()
+            Group {
+                if agreementAccepted {
+                    RootTabView(
+                        appsViewModel: container.appsViewModel,
+                        settingsViewModel: container.settingsViewModel,
+                        certificateExportHandler: container.certificateExportHandler,
+                        migrateKeychainAccessibility: {
+                            container.migrateKeychainAccessibilityIfNeeded()
+                        }
+                    )
+                } else {
+                    NavigationStack {
+                        AgreementOnboardingView(
+                            onAgreed: { agreementAccepted = true },
+                            onDeclined: { /* 留在协议页，用户必须同意才能使用 */ }
+                        )
+                    }
                 }
-            )
+            }
         }
     }
 }

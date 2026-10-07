@@ -139,6 +139,17 @@ struct SettingsRootView: View {
                         .buttonStyle(.plain)
                         sectionDivider
 
+                        NavigationLink { UserAgreementView() } label: {
+                            settingsRow(
+                                title: "用户协议",
+                                value: nil,
+                                icon: "doc.text",
+                                showsChevron: true
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        sectionDivider
+
                         NavigationLink { LogViewerView() } label: {
                             settingsRow(
                                 title: "日志",
@@ -198,6 +209,10 @@ struct SettingsRootView: View {
                 )
             }
             .task { await viewModel.load() }
+            .onAppear {
+                // 每次进页面都刷新通知状态（load 有 hasLoaded 守卫，二次进入不刷新）
+                Task { await viewModel.refreshNotificationStatus() }
+            }
             .refreshable {
                 await viewModel.load(force: true)
                 await viewModel.refreshStorageUsage()

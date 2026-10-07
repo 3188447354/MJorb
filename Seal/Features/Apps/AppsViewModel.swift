@@ -2186,8 +2186,10 @@ final class AppsViewModel: ObservableObject {
                     persistPendingBatchResult(forceSealAwaiting: false)
                 }
                 // 续签完成立即强制镜像日志到 Documents，跳过 30 秒节流，
-                // 让用户进日志页立马能看到本轮日志
-                Task { await logStore?.forceMirrorToDocuments() }
+                // 让用户进日志页立马能看到本轮日志。
+                // 必须 await：日志页收到 .sealRenewalCompleted 后直接读文件，
+                // fire-and-forget 会造成"刷新了但读到旧文件"的竞态。
+                await logStore?.forceMirrorToDocuments()
                 // 续签后立即重排通知（用新到期时间），并刷新状态，避免提醒时间滞后
                 // 同时刷新内存中的应用列表，让已安装页立即显示新日期
                 // 两阶段提交：重排完成后再发 .sealRenewalCompleted，观察者读到的是新状态，不用睡2秒碰运气
@@ -2835,8 +2837,9 @@ final class AppsViewModel: ObservableObject {
                 category: isRenewal ? .renewal : .signing,
                 message: successMessage
             )
-            // 签名/续签完成立即强制镜像日志，让日志页立马能看到
-            Task { await logStore?.forceMirrorToDocuments() }
+            // 签名/续签完成立即强制镜像日志，让日志页立马能看到。
+            // 必须 await：fire-and-forget 会造成"刷新了但读到旧文件"的竞态（批量路径已修过）。
+            await logStore?.forceMirrorToDocuments()
             await recordSigningHistory(
                 app: completed,
                 account: account,

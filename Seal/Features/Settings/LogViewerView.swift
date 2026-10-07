@@ -7,6 +7,9 @@ import UniformTypeIdentifiers
 extension Notification.Name {
     static let sealClearLogs = Notification.Name("sealClearLogs")
     static let sealRenewalCompleted = Notification.Name("sealRenewalCompleted")
+    /// Seal 自身记录更新完成（自安装重启后的结算）：应用页收到后刷新列表，
+    /// "有新版本待安装"标签自动消失，不用手动切页面。
+    static let sealSelfRecordUpdated = Notification.Name("sealSelfRecordUpdated")
 }
 
 /// 日志查看页：只显示人话卡片，不显示原始日志。
@@ -201,15 +204,14 @@ struct LogRound: Identifiable {
                     }
                     currentLines = []
                     currentDate = nil
+                } else if !inBlock {
+                    // 块开头：从 ━ 行的时间戳拿日期（▶ 行本身没有日期前缀）
+                    currentDate = extractDate(from: line)
                 }
                 inBlock.toggle()
                 continue
             }
             if inBlock {
-                // 记录第一行的日期（▶ 行的时间戳）
-                if currentDate == nil, message.hasPrefix("▶") {
-                    currentDate = extractDate(from: line)
-                }
                 currentLines.append(message)
             }
         }
@@ -284,8 +286,8 @@ struct LogRound: Identifiable {
         }
 
         guard !rawTitle.isEmpty else { return nil }
-        // 日期拿不到时用今天，避免回退显示"第X轮"
-        let title = formatTitle(rawTitle, date: date ?? Date())
+        // 日期拿不到时保留原标题，不用今天冒充（假数据）
+        let title = formatTitle(rawTitle, date: date)
         return LogRound(title: title, items: items, footer: footer)
     }
 

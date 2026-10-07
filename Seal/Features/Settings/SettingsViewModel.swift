@@ -400,8 +400,8 @@ final class SettingsViewModel: ObservableObject {
                 }
                 await MainActor.run {
                     self.storageUsage = loadedStorageUsage
-                    self.refreshLogExportText()
                 }
+                await self.refreshLogExportText()
             }
         } catch {
             guard generation == loadGeneration else { return }
@@ -512,7 +512,7 @@ final class SettingsViewModel: ObservableObject {
                 message: "已选择签名证书，完整 Serial：\(serialNumber)"
             )
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
         } catch {
             alertFailure = Self.failure(
                 title: "无法选择证书",
@@ -564,7 +564,7 @@ final class SettingsViewModel: ObservableObject {
                 message: "已创建并保存本机签名证书。完整 Serial：\(material.serialNumber)"
             )
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
         } catch let failure as ImportFailure {
             alertFailure = failure
         } catch {
@@ -662,7 +662,7 @@ final class SettingsViewModel: ObservableObject {
                 await refreshCertificateInventory(for: refreshedAccount, force: true)
             }
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
         } catch let failure as ImportFailure {
             await load(force: true)
             await refreshCertificateInventory(for: account, force: true)
@@ -807,7 +807,7 @@ final class SettingsViewModel: ObservableObject {
                 message: "用户已更新证书 Serial：\(serialNumber) -> \(material.serialNumber)"
             )
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
         } catch let failure as ImportFailure {
             await load(force: true)
             await refreshCertificateInventory(for: account, force: true)
@@ -1071,7 +1071,7 @@ final class SettingsViewModel: ObservableObject {
                 await refreshCertificateInventory(for: refreshedAccount, force: true)
             }
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
 
             if failedSerials.isEmpty == false {
                 alertFailure = Self.failure(
@@ -1359,7 +1359,7 @@ final class SettingsViewModel: ObservableObject {
             certificateHealthStatuses[account.id] = health
         }
         logs = (try? await logStore?.entries()) ?? logs
-        refreshLogExportText()
+        await refreshLogExportText()
     }
 
     func refreshAppIDInventory(
@@ -1426,7 +1426,7 @@ final class SettingsViewModel: ObservableObject {
             )
         }
         logs = (try? await logStore?.entries()) ?? logs
-        refreshLogExportText()
+        await refreshLogExportText()
     }
 
     /// 汇总 Seal 自管理状态：真实签名身份 + 未结算事务 + 签名者是否持有本机私钥。
@@ -1554,7 +1554,7 @@ final class SettingsViewModel: ObservableObject {
             )
         }
         logs = (try? await logStore?.entries()) ?? logs
-        refreshLogExportText()
+        await refreshLogExportText()
     }
 
     /// 立即用本机凭据 + 缓存清单刷新证书健康状态（不触发网络请求），
@@ -1784,7 +1784,7 @@ final class SettingsViewModel: ObservableObject {
                 message: "已清除 Apple ID 的签名历史"
             )
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
         } catch {
             alertFailure = Self.failure(
                 title: "无法清除签名历史",
@@ -2139,7 +2139,7 @@ final class SettingsViewModel: ObservableObject {
                 message: "\(Self.pairingAssistantSource)已自动写入配对信息，等待真实设备连接验证"
             )
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
             await validateImportedPairingWhenTunnelAvailable(
                 successMessage: "LocalDevVPN 通道正常（需连接 Wi-Fi）",
                 waitingMessage: "配对信息已导入，等待 LocalDevVPN 连接后验证"
@@ -2155,7 +2155,7 @@ final class SettingsViewModel: ObservableObject {
                 code: failure.code
             )
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
             return false
         } catch {
             try? FileManager.default.removeItem(at: inboxURL)
@@ -2172,7 +2172,7 @@ final class SettingsViewModel: ObservableObject {
                 code: "SEAL-PAIR-207a"
             )
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
             return false
         }
     }
@@ -2255,7 +2255,7 @@ final class SettingsViewModel: ObservableObject {
                 message: "已在系统设置完成与 Seal 的设备配对，开始验证 LocalDevVPN 通道"
             )
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
 
             guard await pairingTunnelProbe.probeTunnel() else {
                 diagnosticState = .idle
@@ -2265,7 +2265,7 @@ final class SettingsViewModel: ObservableObject {
                     message: "设备配对信息已保存，等待 LocalDevVPN 连接后验证"
                 )
                 logs = (try? await logStore?.entries()) ?? logs
-                refreshLogExportText()
+                await refreshLogExportText()
                 return
             }
 
@@ -2333,7 +2333,7 @@ final class SettingsViewModel: ObservableObject {
                 message: "手动导入配对文件成功，等待真实设备连接验证"
             )
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
             await validateImportedPairingWhenTunnelAvailable(
                 successMessage: "LocalDevVPN 通道正常（需连接 Wi-Fi）",
                 waitingMessage: "配对信息已导入，等待 LocalDevVPN 连接后验证"
@@ -2348,7 +2348,7 @@ final class SettingsViewModel: ObservableObject {
                 code: failure.code
             )
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
             return false
         } catch {
             alertFailure = Self.failure(
@@ -2364,7 +2364,7 @@ final class SettingsViewModel: ObservableObject {
                 code: "SEAL-PAIR-208a"
             )
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
             return false
         }
     }
@@ -2582,7 +2582,7 @@ final class SettingsViewModel: ObservableObject {
             installDiagnostics = .empty
             try? await logStore?.append(category: .pairing, message: waitingMessage)
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
             return
         }
         await runInstallChannelCheck(successMessage: successMessage)
@@ -2643,7 +2643,7 @@ final class SettingsViewModel: ObservableObject {
                 message: successMessage
             )
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
             return
         }
         await finishInstallChannelCheckWithFailure(
@@ -2689,7 +2689,7 @@ final class SettingsViewModel: ObservableObject {
                                     message: "上一份配对信息已恢复并重新验证成功"
                                 )
                                 logs = (try? await logStore?.entries()) ?? logs
-                                refreshLogExportText()
+                                await refreshLogExportText()
                                 return
                             } catch let restoreFailure as ImportFailure {
                                 effectiveFailure = restoreFailure
@@ -2744,7 +2744,7 @@ final class SettingsViewModel: ObservableObject {
             code: effectiveFailure.code
         )
         logs = (try? await logStore?.entries()) ?? logs
-        refreshLogExportText()
+        await refreshLogExportText()
     }
 
     func setNotificationsEnabled(_ enabled: Bool) async {
@@ -2879,7 +2879,7 @@ final class SettingsViewModel: ObservableObject {
                 message: "临时缓存与签名工作区已清理"
             )
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
         } catch {
             alertFailure = Self.failure(
                 title: "无法清理缓存",
@@ -2915,7 +2915,7 @@ final class SettingsViewModel: ObservableObject {
                 message: "临时缓存和未使用文件已清理；签名缓存、Apple ID 凭据和设备配对信息已保留"
             )
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
         } catch {
             alertFailure = Self.failure(
                 title: "无法清理未使用文件",
@@ -2941,7 +2941,7 @@ final class SettingsViewModel: ObservableObject {
         do {
             try await logStore.clear()
             logs = []
-            refreshLogExportText()
+            await refreshLogExportText()
         } catch {
             alertFailure = Self.failure(
                 title: "无法清理日志",
@@ -2970,7 +2970,7 @@ final class SettingsViewModel: ObservableObject {
                 message: "本地签名证书缓存已清除，下次签名会重新申请证书"
             )
             logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
+            await refreshLogExportText()
         } catch {
             alertFailure = Self.failure(
                 title: "无法更新证书",
@@ -2996,10 +2996,10 @@ final class SettingsViewModel: ObservableObject {
         operationCoordinator?.end(lease)
     }
 
-    private func refreshLogExportText() {
+    private func refreshLogExportText() async {
         // 与 Documents/Seal-log.txt 镜像用同一个入口，保证内容一致
         //（含「已丢弃 N 条」notice 与构建标识）。
-        if let store = logStore, let text = try? store.exportText() {
+        if let store = logStore, let text = try? await store.exportText() {
             logExportText = text
         } else {
             logExportText = SealLogTextFormatter.exportText(logs)

@@ -34,16 +34,37 @@ struct ImportedAppRow: View {
                     .truncationMode(.middle)
                     .textSelection(.enabled)
 
-                // Seal 自更新：已导入新版包但还没安装，在 Bundle ID 下方提示
-                // 用 ProfileOnlyRenewalPolicy.hasPendingUpdateSource 判断，不能直接用
-                // hasPendingSelfUpdateSource（那个标志自替换后不清，会常驻）
-                if app.belongsInInstalledList && Self.hasPendingSelfUpdate(app) {
-                    Text("有新版本待安装")
-                        .font(.caption.weight(.semibold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Color.red, in: RoundedRectangle(cornerRadius: 7))
+                // 待安装源标签：按 PendingUpdateKind 企业级分类显示
+                // - newVersion：红色"有新版本待安装"
+                // - sameVersion：橙色"有更新待安装"（同版本不同包）
+                // - downgrade：灰色"旧版本"（降级，需手动确认）
+                // - none：不显示
+                if app.belongsInInstalledList, let kind = Self.pendingUpdateKind(app) {
+                    switch kind {
+                    case .newVersion:
+                        Text("有新版本待安装")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.red, in: RoundedRectangle(cornerRadius: 7))
+                    case .sameVersion:
+                        Text("有更新待安装")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.orange, in: RoundedRectangle(cornerRadius: 7))
+                    case .downgrade:
+                        Text("旧版本")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.gray, in: RoundedRectangle(cornerRadius: 7))
+                    case .none:
+                        EmptyView()
+                    }
                 }
             }
 
@@ -180,6 +201,34 @@ struct ImportedAppRow: View {
         case .warning: .sealWarning
         case .danger: .sealDanger
         case .neutral, nil: .sealTextSecondary
+        }
+    }
+
+    /// 待安装源的企业级分类：Seal 用运行版本比，其他 App 只看指纹（无已装版本可比）。
+    /// 返回 nil 表示无待安装（不显示标签）。
+    private static func pendingUpdateKind(_ app: AppRecord) -> ProfileOnlyRenewalPolicy.PendingUpdateKind? {
+        if app.isSeal {
+            let runningVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            let kind = ProfileOnlyRenewalPolicy.pendingUpdateKind(
+                recordedVersion: app.version,
+                runningVersion: runningVersion,
+                pendingUpdateSourceFingerprint: app.pendingUpdateSourceFingerprint,
+                installedFingerprint: app.installedFingerprint
+            )
+            return kind == .none ? nil : kind
+        } else {
+            // 非 Seal：没有已装版本号可比，只看指纹。指纹不同 ⇒ 有包待安装，
+            // 统一按 sameVersion 显示"有更新待安装"，不声称是新版本。
+            guard let pending = app.pendingUpdateSourceFingerprint,
+                  !pending.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
+            if let installed = app.installedFingerprint,
+               !installed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               pending == installed {
+                return nil
+            }
+            return .sameVersion
         }
     }
 

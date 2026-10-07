@@ -327,16 +327,19 @@ final class AppMaintenanceJob {
         // 「路径 1」的删除分支，而它的 Bundle ID 一定在 `protectedBundleIDs` 里
         // ⇒ 也不会成为回收候选。净效果是一份都不会被误删；代价只是本轮少清一份 Seal 的
         // 旧 profile，那条路径另有 `SEAL-PROFILE-322` 自替换结算清理负责。
+        // Seal 自己：**永远不进保留集合**。
+        //
+        // 原因（2026-10-07 真机）：profile-only 续签只注入新 profile、不重装 App，
+        // `Bundle.main` 里还是旧的 embedded profile。保留集合若用运行时 UUID，
+        // 刚注入的新 UUID 就不在集合里 ⇒ 被当旧账删掉 ⇒ 下次续签又用回旧 profile。
+        // 索性 Seal 的 profile 维护作业一律不动（`protectedBundleIDs` 会兜住不被回收），
+        // 清理只走 `SEAL-PROFILE-322` 自替换结算那条路。
         if let seal = records.first(where: { $0.isSeal }),
            let sealBundleID = ProfileReclaimPolicy.effectiveBundleID(
                mapped: seal.mappedBundleIdentifier,
                preferred: seal.preferredBundleIdentifier
            ) {
-            if let sealProfileUUID, Self.isBlank(sealProfileUUID) == false {
-                map[sealBundleID] = sealProfileUUID
-            } else {
-                map.removeValue(forKey: sealBundleID)
-            }
+            map.removeValue(forKey: sealBundleID)
         }
         return map
     }

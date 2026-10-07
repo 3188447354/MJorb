@@ -45,21 +45,29 @@ struct AppsRootView: View {
             }
             .sheet(isPresented: $viewModel.isImportSheetPresented, onDismiss: cancelDraftIfNeeded) {
                 if let draft = viewModel.sheetDraft {
-                    ImportConfirmationView(
-                        draft: draft,
-                        replacementCandidate: viewModel.importReplacementCandidate,
-                        isCommitting: viewModel.phase == .committing,
-                        failure: viewModel.sheetFailure,
-                        onCancel: { Task { await viewModel.cancelImport() } },
-                        onPrimaryAction: {
-                            Task {
-                                if viewModel.sheetFailure == nil { await viewModel.confirmImport() }
-                                else { await viewModel.retryImport() }
-                            }
-                        },
-                        onCreateCopy: { Task { await viewModel.confirmImportAsNewRecord() } }
-                    )
-                    .presentationDetents([.medium, .large])
+                    // 已安装的包：走系统弹窗，不走抽屉
+                    if case .alreadyLatest = draft.versionCheck {
+                        AlreadyInstalledAlertView(
+                            draft: draft,
+                            onDismiss: { Task { await viewModel.cancelImport() } }
+                        )
+                    } else {
+                        ImportConfirmationView(
+                            draft: draft,
+                            replacementCandidate: viewModel.importReplacementCandidate,
+                            isCommitting: viewModel.phase == .committing,
+                            failure: viewModel.sheetFailure,
+                            onCancel: { Task { await viewModel.cancelImport() } },
+                            onPrimaryAction: {
+                                Task {
+                                    if viewModel.sheetFailure == nil { await viewModel.confirmImport() }
+                                    else { await viewModel.retryImport() }
+                                }
+                            },
+                            onCreateCopy: { Task { await viewModel.confirmImportAsNewRecord() } }
+                        )
+                        .presentationDetents([.medium, .large])
+                    }
                 }
             }
             .sheet(item: $viewModel.selectedOperationApp, onDismiss: operationSheetDismissed) { app in
@@ -161,6 +169,8 @@ struct AppsRootView: View {
                 guard isPresented else { return }
                 installedActionApp = nil
                 detailApp = nil
+                // 批量抽屉弹出时，单个操作的 sheet 必须一起清掉，否则批量关掉后它会闪出来。
+                viewModel.dismissOperation()
             }
             .onChange(of: batchRefreshSheet.wrappedValue?.id) { sessionID in
                 guard sessionID != nil else { return }

@@ -1014,6 +1014,15 @@ final class SettingsViewModel: ObservableObject {
                 } catch {
                     // 单张失败不中断：其余候选继续撤，名额尽量释放；失败明细进最终结果。
                     failedSerials.append(certificate.serialNumber)
+                    // Apple 说「找不到」= 它本来就已经不在了：直接从本地清单里摘掉，
+                    // 免得 UI 一直挂着一张撤不掉的幽灵证书。
+                    let errMsg = error.localizedDescription
+                    if errMsg.contains("未找到要撤销的证书") || errMsg.lowercased().contains("not found") {
+                        removeRevokedCertificateFromInventory(
+                            serialNumber: certificate.serialNumber,
+                            accountID: account.id
+                        )
+                    }
                     try? await logStore?.append(
                         category: .account,
                         level: .error,

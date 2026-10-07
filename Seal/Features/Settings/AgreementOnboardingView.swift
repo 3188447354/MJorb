@@ -15,69 +15,65 @@ struct AgreementOnboardingView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // 内容区：垂直居中，上下留白自然均分
-            VStack(spacing: 0) {
-                Spacer()
+            Spacer()
 
-                Image("SealBrandIcon")
-                    .resizable()
-                    .frame(width: 88, height: 88)
-                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                    .shadow(color: Color.sealAccent.opacity(0.25), radius: 20, y: 8)
-                    .padding(.bottom, 24)
+            Image("SealBrandIcon")
+                .resizable()
+                .frame(width: 96, height: 96)
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .shadow(color: Color.sealAccent.opacity(0.25), radius: 16, y: 8)
+                .padding(.bottom, 24)
 
-                Text("欢迎使用 Seal")
-                    .font(.title.weight(.bold))
-                    .padding(.bottom, 8)
+            Text("欢迎使用 Seal")
+                .font(.title.weight(.bold))
+                .padding(.bottom, 8)
 
-                Text("在使用之前，请阅读并同意以下文档")
-                    .font(.subheadline)
-                    .foregroundStyle(Color.sealTextSecondary)
-                    .padding(.bottom, 32)
-
-                VStack(spacing: 12) {
-                    NavigationLink { PrivacyNoticeView() } label: {
-                        agreementRow(title: "隐私政策", icon: "lock.shield")
-                    }
-                    .buttonStyle(.plain)
-
-                    NavigationLink { UserAgreementView() } label: {
-                        agreementRow(title: "用户协议", icon: "doc.text")
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 24)
-
-                Spacer()
-            }
-
-            // 操作区：贴底，不悬空
-            VStack(spacing: 0) {
-                Text("点击「同意并继续」，即表示您已阅读并同意\n《隐私政策》与《用户协议》的全部内容。")
-                    .font(.caption)
-                    .foregroundStyle(Color.sealTextSecondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
-                    .padding(.bottom, 16)
-
-                Button("同意并继续") {
-                    UserDefaults.standard.set(AgreementVersion.current, forKey: AgreementVersion.storageKey)
-                    onAgreed()
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 24)
-                .padding(.bottom, 12)
-
-                Button("不同意") {
-                    showDeclineHint = true
-                    onDeclined()
-                }
+            Text("在使用之前，请阅读并同意以下文档")
                 .font(.subheadline)
                 .foregroundStyle(Color.sealTextSecondary)
+                .padding(.bottom, 32)
+
+            VStack(spacing: 16) {
+                NavigationLink { PrivacyNoticeView() } label: {
+                    agreementRow(title: "隐私政策", icon: "lock.shield")
+                }
+                .buttonStyle(.plain)
+
+                NavigationLink { UserAgreementView() } label: {
+                    agreementRow(title: "用户协议", icon: "doc.text")
+                }
+                .buttonStyle(.plain)
             }
-            .padding(.bottom, 8)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 32)
+
+            Text("点击「同意并继续」，即表示您已阅读并同意\n《隐私政策》与《用户协议》的全部内容。")
+                .font(.caption)
+                .foregroundStyle(Color.sealTextSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+                .padding(.bottom, 16)
+
+            Button("同意并继续") {
+                UserDefaults.standard.set(AgreementVersion.current, forKey: AgreementVersion.storageKey)
+                onAgreed()
+            }
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .background(Color.sealAccent, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .padding(.horizontal, 24)
+            .padding(.bottom, 16)
+
+            Button("不同意") {
+                showDeclineHint = true
+                onDeclined()
+            }
+            .font(.subheadline)
+            .foregroundStyle(Color.sealTextSecondary)
+
+            Spacer()
         }
         .sealScreenBackground()
         .alert("需要您的同意", isPresented: $showDeclineHint) {
@@ -88,7 +84,7 @@ struct AgreementOnboardingView: View {
     }
 
     private func agreementRow(title: String, icon: String) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 16) {
             Image(systemName: icon)
                 .foregroundStyle(Color.sealAccent)
                 .frame(width: 24)
@@ -100,7 +96,7 @@ struct AgreementOnboardingView: View {
                 .foregroundStyle(Color.sealTextSecondary)
         }
         .padding(16)
-        .glassSurface(cornerRadius: 14)
+        .glassSurface(cornerRadius: 16)
     }
 }
 

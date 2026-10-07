@@ -4900,21 +4900,23 @@ def violations(load=read):
     check("SEAL-SELF-115" in r73_close,
           "R73②: 回补失败必须留痕（`SEAL-SELF-115`）—— 记录错位期间任何「按记录清理」的判断都不可信。")
 
-    # ── R74：keep-map 里 Seal **只信运行时值** ─────────────────────────────
-    # 记录值对 Seal 尤其不可信（同 R73 的成因）。拿它当保留集合，设备上正在用的那一份
-    # 会被判成旧账删掉；读不到运行时身份就**摘出**严格集合（宁缺勿滥），
-    # Seal 的 Bundle ID 仍在 `protectedBundleIDs` 里 ⇒ 也不会成为回收候选。
+    # ── R74：keep-map 里 Seal **永不进严格保留集合** ─────────────────────────────
+    # 2026-10-07 真机：profile-only 续签只注入新 profile、不重装 App，
+    # `Bundle.main` 里还是旧的 embedded profile。保留集合若用运行时 UUID，
+    # 刚注入的新 UUID 就不在集合里 ⇒ 被当旧账删掉。
+    # 索性 Seal 的 profile 维护作业一律不动（`protectedBundleIDs` 会兜住不被回收），
+    # 清理只走 `SEAL-PROFILE-322` 自替换结算那条路。
     r74_job = load("Seal/Core/Maintenance/AppMaintenanceJob.swift")
     r74_seal = section(
         r74_job,
-        "// Seal 自己：**只信运行时读到的真实 profile**",
+        "// Seal 自己：**永远不进保留集合**",
         "return map"
     )
     check("map.removeValue(forKey: sealBundleID)" in r74_seal,
-          "R74①: 读不到运行时身份时必须把 Seal 那条**摘出**严格保留集合 —— 回退到记录值"
-          "会让维护作业删掉设备上正在用的那份 profile。")
-    check("let sealProfileUUID, Self.isBlank(sealProfileUUID) == false" in r74_seal,
-          "R74②: 运行时值仍要先过空白判据（空白 UUID 进集合等于把这条判成「不需要保留」）。")
+          "R74①: Seal 必须从严格保留集合里摘出 —— 运行时 UUID 在 profile-only 续签后是旧值，"
+          "进集合会让维护作业删掉刚注入的新 profile。")
+    check("profile-only" in r74_seal and "Bundle.main" in r74_seal,
+          "R74②: 必须明确注释 Seal 永不进保留集合的原因（profile-only 后 Bundle.main 里还是旧值）。")
 
     # ── R77：自替换必须给 installd 一个「替换窗口」宽限期 ──────────────────
     # `InstallChannel.install()` 返回只代表「传输完成 + installd 接受命令」，真正的替换
@@ -5641,13 +5643,14 @@ def violations(load=read):
 
     r89_judge = section_or_empty(
         r89_policy,
-        "    static func hasPendingUpdateSource(",
-        "\n    /// 记录之外的**第二条准入通道**"
+        "    static func pendingUpdateKind(",
+        "\n    static func hasPendingUpdateSource("
     )
-    check("Version.compare(recorded, running) != .orderedSame" in r89_judge
+    check("Version.compare(recorded, running)" in r89_judge
           and "nonBlank(recordedVersion)" in r89_judge
           and "nonBlank(runningVersion)" in r89_judge,
-          "R89①: 「有已导入的更新源」判据必须是**版本比较**，且两边任一读不出来时返回 `false` ✗ —— "
+          "R89①: 「有已导入的更新源」判据必须是**版本比较**（经 pendingUpdateKind 分类），"
+          "且两边任一读不出来时返回 `none`/`false` ✗ —— "
           "读不出来就说「有待安装」会把一次正常的续签说成必须重装；"
           "而改用 `hasPendingSelfUpdateSource` 更糟：它对 Seal 永远清不掉 ⇒ 快路径被永久关停")
 

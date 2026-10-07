@@ -25,27 +25,9 @@ struct ImportConfirmationView: View {
         failure == nil && replacementCandidate != nil
     }
 
-    private var isAlreadyLatest: Bool {
-        if case .alreadyLatest = draft.versionCheck { return true }
-        return false
-    }
-
     var body: some View {
         SealDrawer(title: drawerTitle) {
             VStack(spacing: 18) {
-                // 已是最新提示
-                if case .alreadyLatest(let version) = draft.versionCheck {
-                    HStack(spacing: 10) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.green)
-                        Text("已是最新版本 \(version)，无需导入")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
-                }
                 header
                 if let failure {
                     failureCard(failure)
@@ -55,47 +37,47 @@ struct ImportConfirmationView: View {
             }
             .padding(.bottom, 12)
         } footer: {
-            VStack(spacing: 10) {
-                Button {
-                    guard showsProgress == false else { return }
-                    // 版本检查：根据结果决定是否直接导入还是弹确认
-                    switch draft.versionCheck {
-                    case .alreadyLatest:
-                        // 已是最新，不允许导入（按钮已禁用，这里兜底）
-                        return
-                    case .sameVersionDifferentContent:
-                        showSameVersionConfirm = true
-                    case .downgrade:
-                        showDowngradeConfirm = true
-                    case .upgrade, .newApp:
-                        didTapPrimaryAction = true
-                        onPrimaryAction()
-                    }
-                } label: {
-                    if showsProgress {
-                        HStack(spacing: 10) {
-                            ProgressView()
-                            Text("正在导入")
+                VStack(spacing: 16) {
+                    Button {
+                        guard showsProgress == false else { return }
+                        // 版本检查：根据结果决定是否直接导入还是弹确认
+                        switch draft.versionCheck {
+                        case .alreadyLatest:
+                            // 已是最新，不允许导入（按钮已禁用，这里兜底）
+                            return
+                        case .sameVersionDifferentContent:
+                            showSameVersionConfirm = true
+                        case .downgrade, .buildDowngrade:
+                            showDowngradeConfirm = true
+                        case .upgrade, .buildUpgrade, .newApp:
+                            didTapPrimaryAction = true
+                            onPrimaryAction()
                         }
-                        .frame(maxWidth: .infinity)
-                    } else {
-                        Text(primaryActionTitle)
+                    } label: {
+                        if showsProgress {
+                            HStack(spacing: 10) {
+                                ProgressView()
+                                Text("正在导入")
+                            }
+                            .frame(maxWidth: .infinity)
+                        } else {
+                            Text(primaryActionTitle)
+                        }
                     }
-                }
-                .sealPrimaryAction(cornerRadius: 14)
-                .disabled(showsProgress || isAlreadyLatest)
-                .accessibilityIdentifier("import-confirmation-primary")
+                    .sealPrimaryAction(cornerRadius: 16)
+                    .disabled(showsProgress)
+                    .accessibilityIdentifier("import-confirmation-primary")
 
-                if isOverwriteUpdate {
-                    Button("新建副本（不覆盖）", action: onCreateCopy)
-                        .sealOutlineAction(cornerRadius: 14)
-                        .disabled(showsProgress)
-                        .accessibilityIdentifier("import-confirmation-new-copy")
-                }
+                    if isOverwriteUpdate {
+                        Button("新建副本（不覆盖）", action: onCreateCopy)
+                            .sealOutlineAction(cornerRadius: 16)
+                            .disabled(showsProgress)
+                            .accessibilityIdentifier("import-confirmation-new-copy")
+                    }
 
-                Button("取消导入", action: onCancel)
-                    .sealOutlineAction(cornerRadius: 14)
-                    .disabled(isCommitting)
+                    Button("取消导入", action: onCancel)
+                        .sealOutlineAction(cornerRadius: 16)
+                        .disabled(isCommitting)
             }
         }
         .interactiveDismissDisabled(showsProgress)
@@ -120,8 +102,13 @@ struct ImportConfirmationView: View {
                 onPrimaryAction()
             }
         } message: {
-            if case .downgrade(let oldVersion, let newVersion) = draft.versionCheck {
+            switch draft.versionCheck {
+            case .downgrade(let oldVersion, let newVersion):
                 Text("当前已安装 \(oldVersion)，新包是旧版本 \(newVersion)，降级可能导致数据丢失。")
+            case .buildDowngrade(let oldBuild, let newBuild, let version):
+                Text("当前已安装 v\(version) build \(oldBuild)，新包是 build \(newBuild)，降级可能导致数据丢失。")
+            default:
+                Text("降级可能导致数据丢失。")
             }
         }
         .onChange(of: isCommitting) { newValue in
@@ -139,7 +126,6 @@ struct ImportConfirmationView: View {
 
     private var primaryActionTitle: String {
         if let recovery = failure?.recovery { return recovery }
-        if isAlreadyLatest { return "已是最新" }
         return isOverwriteUpdate ? "覆盖更新" : "导入应用"
     }
 
@@ -197,7 +183,14 @@ struct ImportConfirmationView: View {
     }
 
     private func overwriteSummary(_ existing: AppRecord) -> String {
-        "覆盖更新「\(existing.displayName)」（v\(existing.version) → v\(draft.parsedIPA.version)）"
+        switch draft.versionCheck {
+        case .buildUpgrade(let oldBuild, let newBuild, let version):
+            return "覆盖更新「\(existing.displayName)」（v\(version) build \(oldBuild) → build \(newBuild)）"
+        case .buildDowngrade(let oldBuild, let newBuild, let version):
+            return "降级「\(existing.displayName)」（v\(version) build \(oldBuild) → build \(newBuild)）"
+        default:
+            return "覆盖更新「\(existing.displayName)」（v\(existing.version) → v\(draft.parsedIPA.version)）"
+        }
     }
 
     private func summaryRow(_ title: String, _ value: String, monospaced: Bool = false) -> some View {

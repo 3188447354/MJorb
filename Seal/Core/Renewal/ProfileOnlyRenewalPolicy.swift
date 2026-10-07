@@ -361,23 +361,64 @@ enum ProfileOnlyRenewalPolicy {
     ///     守卫过 ⇒ 只可能是 `app.version` 为空（记录损坏，现实里不会出现）；
     ///   · 界面侧：读不到运行版本时不能凭空告诉用户「有更新待安装」，
     ///     那会把一次正常的续签说成必须重装（与 R85 的 `.undetermined` 同一条纪律）。
+    /// 待安装源的**企业级分类**：只看版本与指纹的客观事实，不掺 UI 文案。
+    ///
+    /// - `none`：无待安装（版本一致且指纹一致，或无源包）。
+    /// - `newVersion`：源包版本 > 已装版本 —— 真正的"新版本"。
+    /// - `sameVersion`：版本一致但指纹不同 —— 同版本号的不同包（重新打包/不同渠道）。
+    /// - `downgrade`：源包版本 < 已装版本 —— 旧包，**不是**新版本。
+    enum PendingUpdateKind {
+        case none
+        case newVersion
+        case sameVersion
+        case downgrade
+    }
+
+    /// 分类待安装源。调用方按分类决定 UI 文案与准入策略。
+    static func pendingUpdateKind(
+        recordedVersion: String?,
+        runningVersion: String?,
+        pendingUpdateSourceFingerprint: String? = nil,
+        installedFingerprint: String? = nil
+    ) -> PendingUpdateKind {
+        guard let recorded = nonBlank(recordedVersion),
+              let running = nonBlank(runningVersion) else { return .none }
+        switch Version.compare(recorded, running) {
+        case .orderedDescending:
+            return .newVersion
+        case .orderedAscending:
+            return .downgrade
+        case .orderedSame:
+            break
+        }
+        // 版本一致时看指纹：用户显式导入了新源包（即使版本号相同）才算待安装；
+        // 指纹为空（老记录 / 已结算）时不声称有更新；指纹与已装包一致 ⇒ 同一个包。
+        guard let pending = nonBlank(pendingUpdateSourceFingerprint) else { return .none }
+        if let installed = nonBlank(installedFingerprint), pending == installed {
+            return .none
+        }
+        return .sameVersion
+    }
+
     static func hasPendingUpdateSource(
         recordedVersion: String?,
         runningVersion: String?,
         pendingUpdateSourceFingerprint: String? = nil,
         installedFingerprint: String? = nil
     ) -> Bool {
-        guard let recorded = nonBlank(recordedVersion),
-              let running = nonBlank(runningVersion) else { return false }
-        if Version.compare(recorded, running) != .orderedSame { return true }
-        // 版本一致时看指纹：用户显式导入了新源包（即使版本号相同）才算待安装更新；
-        // 指纹为空（老记录 / 已结算）时不声称有更新，行为与过去一致。
-        // 指纹与已装包一致 ⇒ 同一个包，不算待更新。
-        guard let pending = nonBlank(pendingUpdateSourceFingerprint) else { return false }
-        if let installed = nonBlank(installedFingerprint), pending == installed {
+        // 降级不算"待更新"：旧包导入不触发更新流程，避免误导。
+        // 同版本不同包仍算待安装（与过去行为一致）。
+        switch pendingUpdateKind(
+            recordedVersion: recordedVersion,
+            runningVersion: runningVersion,
+            pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint,
+            installedFingerprint: installedFingerprint
+        ) {
+        case .newVersion, .sameVersion:
+            return true
+        case .none, .downgrade:
             return false
         }
-        return true
     }
 
     /// 记录之外的**第二条准入通道**：以「运行产物的实时身份」为准（对齐上游 `refresh`）。

@@ -89,7 +89,8 @@ actor ImportWorkflow {
     /// 版本检查：比较新 IPA 与已存在记录的版本
     /// - 高版本 → .upgrade（直接覆盖）
     /// - 同版本同内容 → .alreadyLatest（阻止导入）
-    /// - 同版本不同内容 → .sameVersionDifferentContent（需确认）
+    /// - 同版本不同构建号 → .buildUpgrade / .buildDowngrade（按构建号比）
+    /// - 同版本同构建号不同内容 → .sameVersionDifferentContent（需确认，可能被修改过）
     /// - 低版本 → .downgrade（需二次确认）
     private func checkVersion(parsed: ParsedIPA, stagedURL: URL) async -> VersionCheckResult {
         guard let records = try? await appStore.fetchAll() else {
@@ -117,7 +118,16 @@ actor ImportWorkflow {
         } else if comparison < 0 {
             return .downgrade(oldVersion: oldVersion, newVersion: newVersion)
         } else {
-            // 同版本：比较内容指纹
+            // 营销版本相同：比构建号
+            let oldBuild = existing.buildNumber ?? ""
+            let newBuild = parsed.buildNumber ?? ""
+            let buildComparison = Self.compareBuildNumbers(newBuild, oldBuild)
+            if buildComparison > 0 {
+                return .buildUpgrade(oldBuild: oldBuild, newBuild: newBuild, version: newVersion)
+            } else if buildComparison < 0 {
+                return .buildDowngrade(oldBuild: oldBuild, newBuild: newBuild, version: newVersion)
+            }
+            // 构建号也相同：比较内容指纹
             let newFingerprint = try? AppFileStore.streamingSHA256(url: stagedURL)
             // 找旧 IPA 文件路径（空壳记录的 ipaRelativePath 为空，直接跳过）
             if !existing.ipaRelativePath.isEmpty,
@@ -128,9 +138,17 @@ actor ImportWorkflow {
                     return .alreadyLatest(version: newVersion)
                 }
             }
-            // 指纹不同或无法比较 → 视为内容不同
+            // 指纹不同或无法比较 → 视为内容不同（可能被修改过）
             return .sameVersionDifferentContent(version: newVersion)
         }
+    }
+
+    /// 构建号比较：纯数字按数值比，否则按字符串比。返回 >0 表示 b1 > b2。
+    private static func compareBuildNumbers(_ b1: String, _ b2: String) -> Int {
+        if let n1 = Int(b1), let n2 = Int(b2) {
+            return n1 == n2 ? 0 : (n1 > n2 ? 1 : -1)
+        }
+        return b1.compare(b2).rawValue
     }
 
     /// 版本号比较：返回 >0 表示 v1 > v2，<0 表示 v1 < v2，=0 表示相等

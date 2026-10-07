@@ -3536,6 +3536,8 @@ final class AppsViewModel: ObservableObject {
             // 导入时选的自定义图标：应用到新记录上。
             if let iconData = pendingImportIconData {
                 pendingImportIconData = nil
+                // 先直接更新内存缓存，保证 UI 立刻刷新
+                self.iconData[record.id] = iconData
                 _ = await updatePreferredIcon(for: record, data: iconData)
             }
             await load(force: true)

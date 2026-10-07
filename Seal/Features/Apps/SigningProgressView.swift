@@ -543,6 +543,8 @@ struct SigningProgressView: View {
             return renewalExecutionPath.successTitle
         }
         return isRenewal ? "续签并安装成功" : "签名并安装成功"
+    }
+
     private func stageTitle(for stage: SigningStage) -> String {
         if let renewalExecutionPath = session?.renewalExecutionPath {
             return renewalExecutionPath.stageTitle(for: stage)

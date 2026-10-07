@@ -45,7 +45,7 @@ final class AppsViewModel: ObservableObject {
     }
 
     /// 图标数据更新时同步失效解码缓存。
-    private func invalidateDecodedIcon(for appID: UUID) {
+    func invalidateDecodedIcon(for appID: UUID) {
         decodedIconCache.removeObject(forKey: appID.uuidString as NSString)
     }
     @Published private(set) var phase: Phase
@@ -55,6 +55,8 @@ final class AppsViewModel: ObservableObject {
     @Published private(set) var sheetFailure: ImportFailure?
     /// 导入时用户选的自定义图标：record 建好后应用（.completed 里）。
     @Published var pendingImportIconData: Data?
+    /// 导入时用户改的自定义名称：record 建好后应用（.completed 里）。
+    @Published var pendingImportDisplayName: String?
     /// 已安装包再导入时的系统弹窗（不走抽屉）：非空 ⇒ 显示"已安装"弹窗。
     @Published var alreadyInstalledDraft: ImportDraft?
     /// 导入的 IPA 与某条**已安装**记录同身份时的覆盖更新候选（见 `ImportReplacementPolicy`）。
@@ -1041,6 +1043,7 @@ final class AppsViewModel: ObservableObject {
         importReplacementCandidate = nil
         alreadyInstalledDraft = nil
         pendingImportIconData = nil
+        pendingImportDisplayName = nil
         isImportSheetPresented = false
         phase = .idle
         if let cleanupFailure {
@@ -1665,7 +1668,7 @@ final class AppsViewModel: ObservableObject {
 
     @discardableResult
     func updatePreferredDisplayName(for app: AppRecord, name: String) async -> Bool {
-        guard let appStore, app.state != .installed, app.hasSignedArtifact == false else { return false }
+        guard let appStore else { return false }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.isEmpty == false else {
             alertFailure = ImportFailure(
@@ -3554,8 +3557,14 @@ final class AppsViewModel: ObservableObject {
                 // 先直接更新内存缓存，保证 UI 立刻刷新（主线程）
                 await MainActor.run {
                     self.iconData[record.id] = iconData
+                    self.invalidateDecodedIcon(for: record.id)
                 }
                 _ = await updatePreferredIcon(for: record, data: iconData)
+            }
+            // 导入时改的自定义名称：应用到新记录上。
+            if let displayName = pendingImportDisplayName {
+                pendingImportDisplayName = nil
+                _ = await updatePreferredDisplayName(for: record, name: displayName)
             }
             await load(force: true)
             await logImportReplacementOutcome(requested: requestedOverwrite, record: record)

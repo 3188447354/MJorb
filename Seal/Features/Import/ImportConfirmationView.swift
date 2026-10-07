@@ -15,6 +15,8 @@ struct ImportConfirmationView: View {
     let onCreateCopy: () -> Void
     /// 用户选的自定义图标（nil = 使用原图）。
     let onIconSelected: (Data?) -> Void
+    /// 用户改的自定义名称（nil = 使用原名）。
+    let onNameSelected: (String?) -> Void
 
     @State private var didTapPrimaryAction = false
     @State private var showSameVersionConfirm = false
@@ -23,6 +25,8 @@ struct ImportConfirmationView: View {
     @State private var isPhotoPickerPresented = false
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var customIconData: Data?
+    @State private var customDisplayName: String?
+    @State private var isNameEditorPresented = false
 
     private var showsProgress: Bool {
         isCommitting || didTapPrimaryAction
@@ -150,7 +154,7 @@ struct ImportConfirmationView: View {
         HStack(spacing: 14) {
             appIcon
             VStack(alignment: .leading, spacing: 5) {
-                Text(draft.parsedIPA.name)
+                Text(customDisplayName ?? draft.parsedIPA.name)
                     .font(.system(size: 19, weight: .semibold))
                     .accessibilityIdentifier("import-confirmation-name")
                     .foregroundStyle(.primary)
@@ -167,6 +171,33 @@ struct ImportConfirmationView: View {
 
     private var summaryCard: some View {
         VStack(spacing: 0) {
+            summaryRow("状态", migrationSummary)
+                .accessibilityIdentifier("import-summary-compatibility")
+                .accessibilityValue(migrationSummary)
+            Divider().padding(.leading, 14)
+            Button {
+                isNameEditorPresented = true
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text("App 名称")
+                        .font(.system(size: 14, weight: .regular))
+                        .foregroundStyle(.primary)
+                        .frame(width: 96, alignment: .leading)
+                    Spacer(minLength: 12)
+                    Text(customDisplayName ?? "使用原名")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(Color.sealTextSecondary)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(Color.sealTextSecondary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("import-summary-name")
+            Divider().padding(.leading, 14)
             Button {
                 isIconActionsPresented = true
             } label: {
@@ -193,7 +224,7 @@ struct ImportConfirmationView: View {
                 .accessibilityIdentifier("import-summary-bundle-id")
                 .accessibilityValue(draft.parsedIPA.bundleIdentifier)
             Divider().padding(.leading, 14)
-            summaryRow("附加组件", extensionSummary)
+            summaryRow("扩展", extensionSummary)
                 .accessibilityIdentifier("import-summary-extensions")
                 .accessibilityValue(extensionSummary)
             Divider().padding(.leading, 14)
@@ -203,9 +234,6 @@ struct ImportConfirmationView: View {
                     .accessibilityValue(overwriteSummary(candidate))
                 Divider().padding(.leading, 14)
             }
-            summaryRow("状态", migrationSummary)
-                .accessibilityIdentifier("import-summary-compatibility")
-                .accessibilityValue(migrationSummary)
         }
         .padding(.horizontal, 16)
         .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -231,6 +259,19 @@ struct ImportConfirmationView: View {
                 }
             }
             .presentationDetents([.medium])
+        }
+        .sheet(isPresented: $isNameEditorPresented) {
+            AppNameEditorSheet(initialValue: customDisplayName ?? draft.parsedIPA.name) { value in
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty || trimmed == draft.parsedIPA.name {
+                    customDisplayName = nil
+                    onNameSelected(nil)
+                } else {
+                    customDisplayName = trimmed
+                    onNameSelected(trimmed)
+                }
+            }
+            .presentationDetents([.medium, .large])
         }
         .photosPicker(isPresented: $isPhotoPickerPresented, selection: $selectedPhotoItem, matching: .images)
         .onChange(of: selectedPhotoItem) { item in

@@ -128,6 +128,10 @@ actor SelfAppRegistrar {
                 message: "Seal 启动检测到 build 号变化（记录 \(existing.buildNumber ?? "-") → 运行 \(metadata.buildNumber ?? "-")），已清掉待安装标记",
                 code: "SEAL-SELF-120"
             )
+            // 通知 UI 立刻刷新，标签秒消失，不残存
+            await MainActor.run {
+                NotificationCenter.default.post(name: .sealSelfRecordUpdated, object: nil)
+            }
         }
         let id = existing?.id ?? fixedSealID
         try await atomicallyUpdateSealRecord(id: id, existing: existing, accounts: accounts)

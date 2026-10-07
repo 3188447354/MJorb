@@ -43,7 +43,7 @@ struct AgreementOnboardingView: View {
             .padding(.horizontal, 24)
             .padding(.bottom, 32)
 
-            Text("点击"同意并继续"，即表示您已阅读并同意《隐私政策》与《用户协议》的全部内容。")
+            Text("点击「同意并继续」，即表示您已阅读并同意《隐私政策》与《用户协议》的全部内容。")
                 .font(.caption)
                 .foregroundStyle(Color.sealTextSecondary)
                 .multilineTextAlignment(.center)

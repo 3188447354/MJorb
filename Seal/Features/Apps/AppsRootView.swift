@@ -169,7 +169,10 @@ struct AppsRootView: View {
             }
             .onAppear {
                 // 安装后重开 App，提示不消失，要点别的页再回来才刷——强制重载
-                Task { await viewModel.load(force: true) }
+                Task {
+                    await viewModel.syncSelfRecordOnLaunch()
+                    await viewModel.load(force: true)
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .sealSelfRecordUpdated)) { _ in
                 // 自安装重启后 SelfAppRegistrar 更新了记录，刷新列表让标签消失

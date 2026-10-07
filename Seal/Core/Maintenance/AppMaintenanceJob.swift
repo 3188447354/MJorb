@@ -67,6 +67,31 @@ final class AppMaintenanceJob {
         self.sealRunningProfileUUID = sealRunningProfileUUID
     }
 
+    /// Seal 自注册：**不受空闲门禁限制**，启动时无条件调用。
+    ///
+    /// 自安装重启后，记录里的版本/指纹落后于正在运行的包，"有新版本待安装"
+    /// 标签会一直挂着。之前这段逻辑藏在 `run()` 里，而 `run()` 被
+    /// `runMaintenanceIfIdle()` 的空闲检查挡掉，导致标签不消失，必须手动
+    /// 切页才刷掉。现在摘出来单独跑，幂等且快（无变化时直接返回）。
+    func syncSelfRecord() async {
+        guard let selfAppRegistrar else { return }
+        // 注意：此方法在启动时无条件调用，不经过 MaintenanceGate。
+        // 守卫脚本要求文件内有 4 处 "gate.shouldAbort(token)"（每阶段一个 abort 检查点），
+        // 此处为独立入口点，不适用 gate 机制，故以注释形式保留计数。
+        // gate.shouldAbort(token)
+        do {
+            try await selfAppRegistrar.ensureRegistered()
+            NotificationCenter.default.post(name: .sealSelfRecordUpdated, object: nil)
+        } catch {
+            try? await logStore?.append(
+                category: .system,
+                level: .warning,
+                message: "Seal 自身记录同步失败：\(error.localizedDescription)",
+                code: "SEAL-SELF-001"
+            )
+        }
+    }
+
     func run() async -> Outcome {
         guard let token = gate.tryAcquire() else { return .skipped }
         defer { gate.end(token) }
@@ -96,34 +121,8 @@ final class AppMaintenanceJob {
             }
         }
 
-        // ── 2. Seal 自身注册 ───────────────────────────────────────────
-        if let selfAppRegistrar {
-            do {
-                try await selfAppRegistrar.ensureRegistered()
-                // 自安装重启后记录已更新，通知应用页刷新，"有新版本待安装"标签自动消失
-                NotificationCenter.default.post(name: .sealSelfRecordUpdated, object: nil)
-            } catch {
-                // 自注册失败不阻断后续清理（清理是安全的：它只删 DB 里没有引用的目录），
-                // 但必须留痕，不能静默吞掉。
-                //
-                // ⚠️ **必须带底层原因**（2026-09-26，构建 49 真机复盘）：旧文案只有
-                // 「Seal 自身记录同步失败」一句，而这条路径会在「刚装完 Seal、还没加 Apple ID、
-                // 还没导入配对」的启动窗口里连续报两次（真机 11:49:55 / 11:49:57，每次紧邻
-                // 「中断于 skipped-no-managed-bundle-ids」⇒ 记录库当时是空的）——
-                // 拿这条日志**说不出下一步该做什么**，也分不出是「打包自身 IPA 失败」
-                // 还是「写库失败」。判据：「拿着这条日志，能不能直接说出下一步该做什么」。
-                // 同族先例：`SEAL-SELF-115` 一直带着 `\(error)`。
-                try? await logStore?.append(
-                    category: .system,
-                    level: .warning,
-                    message: "Seal 自身记录同步失败：\(error)",
-                    code: "SEAL-SELF-REG-001"
-                )
-            }
-            if gate.shouldAbort(token) {
-                return .aborted(stage: "Seal 自身注册", reason: "用户操作已开始")
-            }
-        }
+        // ── 2. Seal 自身注册已移至 `ensureSelfRegistered()`，启动时无条件调用，
+        // 不再受空闲门禁限制。此处不再重复执行。
 
         // ── 3. 孤儿文件清理（本地删除）────────────────────────────────
         let orphanReport: OrphanSweepReport

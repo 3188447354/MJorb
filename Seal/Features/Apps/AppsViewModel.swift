@@ -568,6 +568,12 @@ final class AppsViewModel: ObservableObject {
     /// （`AppMaintenanceJob` 那条日志是**无条件**写的），而 `.skipped` 原先只有一句 `break`、
     /// `.failed` 只弹窗不写日志 —— 于是「profile 为什么一直在堆」完全无法归因。
     @discardableResult
+    /// Seal 自注册：启动时无条件调用，不受空闲门禁限制。
+    /// 自安装重启后必须立即同步记录，否则"有新版本待安装"标签不消失。
+    func syncSelfRecordOnLaunch() async {
+        await maintenanceJob?.syncSelfRecord()
+    }
+
     func runMaintenanceIfIdle() async -> AppMaintenanceJob.Outcome {
         guard let maintenanceJob else { return .skipped }
         let outcome = await maintenanceJob.run()

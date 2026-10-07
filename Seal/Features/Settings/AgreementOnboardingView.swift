@@ -11,13 +11,16 @@ struct AgreementOnboardingView: View {
     var onAgreed: () -> Void
     var onDeclined: () -> Void
 
+    @State private var showDeclineHint = false
+
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
 
-            Image(systemName: "checkmark.seal.fill")
-                .font(.system(size: 64))
-                .foregroundStyle(Color.sealAccent)
+            Image("SealBrandIcon")
+                .resizable()
+                .frame(width: 84, height: 84)
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .padding(.bottom, 20)
 
             Text("欢迎使用 Seal")
@@ -60,6 +63,7 @@ struct AgreementOnboardingView: View {
             .padding(.bottom, 12)
 
             Button("不同意") {
+                showDeclineHint = true
                 onDeclined()
             }
             .font(.subheadline)
@@ -67,6 +71,11 @@ struct AgreementOnboardingView: View {
             .padding(.bottom, 32)
         }
         .sealScreenBackground()
+        .alert("需要您的同意", isPresented: $showDeclineHint) {
+            Button("好的", role: .cancel) { }
+        } message: {
+            Text("Seal 需要您同意《隐私政策》与《用户协议》才能继续使用。")
+        }
     }
 
     private func agreementRow(title: String, icon: String) -> some View {

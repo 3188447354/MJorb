@@ -164,7 +164,6 @@ struct ImportConfirmationView: View {
             Spacer(minLength: 8)
         }
     }
-    }
 
     private var summaryCard: some View {
         VStack(spacing: 0) {

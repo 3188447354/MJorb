@@ -61,8 +61,8 @@ struct AppsRootView: View {
                         onCreateCopy: { Task { await viewModel.confirmImportAsNewRecord() } },
                         onIconSelected: { data in viewModel.pendingImportIconData = data }
                     )
-                    .presentationDetents([.medium])
-                    .presentationDragIndicator(.visible)
+                    .presentationDetents([.height(580)])
+                    .presentationDragIndicator(.hidden)
                 }
             }
             // 已安装包再导入：系统弹窗，不走抽屉

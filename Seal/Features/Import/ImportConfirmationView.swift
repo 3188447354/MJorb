@@ -34,7 +34,7 @@ struct ImportConfirmationView: View {
 
     var body: some View {
         SealDrawer(title: drawerTitle) {
-            VStack(spacing: 18) {
+            VStack(spacing: 14) {
                 header
                 if let failure {
                     failureCard(failure)
@@ -44,7 +44,7 @@ struct ImportConfirmationView: View {
             }
             .padding(.bottom, 12)
         } footer: {
-                VStack(spacing: 16) {
+                VStack(spacing: 10) {
                     Button {
                         guard showsProgress == false else { return }
                         // 版本检查：根据结果决定是否直接导入还是弹确认
@@ -313,7 +313,7 @@ struct ImportConfirmationView: View {
                     .background(Color.sealSurface)
             }
         }
-        .frame(width: 60, height: 60)
+        .frame(width: 56, height: 56)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 

@@ -207,3 +207,42 @@
   - 注释里写了契约就当契约读：改返回值前先看**谁在消费它**。
   - "算一次、存一份、后面还会再算几次"的链路，每次都要问：**手上这份还是最新的吗？**
     在内存里持有一个可被别处改写的记录副本、并在同一个函数里多轮对账 = 沉默写回。
+
+---
+
+## 14. 换 runner 池时，`runs-on` 只是能看见的那一半 —— 写死的运行时版本会静默变成 harness 失败
+
+- **症状**（2026-10-08，`ios.yml` 的 `swift-regression`）：`macos-26` 池枯竭后换到 `macos-15`，
+  job **拿到 runner 正常起跑**（不再是被排队掐掉），却在第 3 个 step 直接红：
+  ```
+  StopIteration
+  print(next(device["udid"] for runtime, devices in d.items() if "iOS-26-5" in runtime ...))
+  ##[error]Process completed with exit code 1.
+  ```
+  **`xcodebuild test` 一行都没跑**，841 个单测 + UI 用例的结论是「未知」，不是「失败」。
+- **根因**：`SIMULATOR_UDID` 的挑选写死了 `"iOS-26-5" in runtime`。
+  `iOS-26-5` 这个运行时**只随 Xcode 26.5 装**，而 `macos-15` 镜像上是 26.3/26.4
+  ⇒ 候选集为空。换池只换了 `runs-on` 和「选 Xcode」那一步，
+  **运行时的版本号是另一处独立硬编码，没人提醒你**。
+- **为什么危险**：`StopIteration` 的形态和「测试炸了」长得几乎一样，
+  很容易被读成「我的代码坏了」，然后去改代码 —— 越改越远。
+- **判别手法（3 秒）**：看**失败发生在第几个 step**。
+  发生在「选模拟器 / 装依赖 / 选 Xcode」这类 **harness 步骤** ⇒ 是环境问题；
+  只有 `xcodebuild test` 真的跑起来后的红才是测试红。
+  另外：`ios.yml` 的 harness 步骤都带 `set -o pipefail` + `tee build/TestLog.txt`，
+  只要 `build/TestLog.txt` **这一步没被创建/没内容**，就说明根本没走到测试。
+- **对策**：
+  - 换 runner 池时，把该 job 里**所有硬编码的版本号**列一遍：
+    Xcode 版本、iOS runtime 版本、SDK 版本、模拟器机型名。
+  - 模拟器选择改成**按版本号排序取最高可用**，并让「找不到」显式报错退出
+    （别让它抛裸 `StopIteration` —— 那是把「没有候选」伪装成「迭代越界」）。
+    本仓验证分支的写法见 `cdbd3e4`：解析 `simctl list devices available -j`，
+    过滤 `isAvailable` 的 iPhone，`rank()` 把 `iOS-26-5` 拆成 `[26, 5]` 排序取最大。
+  - **顺带一个 YAML 坑**：`run: |` 块标量里嵌多行 python 时，续行**必须统一缩进**；
+    顶格写会把块标量截断，pyyaml 报 `could not find expected ':'`，
+    GitHub 则是**整个 workflow 一个 job 都不生成**（静默无 run）。
+    改完 workflow 一律先用 pyyaml 本地 parse 一遍。
+- **别混淆**：这条和 §10「队列被掐」是**两种不同的红**。
+  §10 是 `runner=NULL` / `steps=[]` / 15 分钟被回收（**没起跑**）；
+  这条是**起跑了、但倒在 harness 步骤**。两者的处置完全相反：
+  前者换池，后者补版本兼容。

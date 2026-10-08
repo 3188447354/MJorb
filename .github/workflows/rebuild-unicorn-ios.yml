@@ -1,0 +1,97 @@
+name: Rebuild Unicorn (armv8.0 / no LSE)
+
+# ── 这个工作流是干什么的 ──────────────────────────────────────────────────────
+# 上游 `mahee96/unicorn` 的预编译包（`2.1.4-multiarch`）**带 ARMv8.1 的 LSE 原子指令**，
+# 在 A10/A10X（iPad 第 6/7 代、iPad Pro 2017）上是 SIGILL 秒退 —— 详见
+# `Scripts/verify-no-lse.py` 的模块 docstring 与 `Scripts/ensure-unicorn.sh`。
+#
+# 本工作流从 pinned 源码重编一份**不带 LSE** 的 Unicorn.xcframework，
+# 当场量 `verify-no-lse.py`（LSE=0 + minOS ≤ 17.4），把产物与缓存一并产出。
+#
+# ⚠️ 只手工触发：这是「换预编译件」级别的动作，不该跟着普通提交自动跑。
+#    触发方式：`gh workflow run "Rebuild Unicorn (armv8.0 / no LSE)" --ref <branch>`
+#    产出（artifact `unicorn-armv8.0`）下载后解到 `Vendor/AnisetteKit/` 入库。
+on:
+  workflow_dispatch:
+    inputs:
+      target_cpu:
+        description: "目标 CPU 型号（默认 apple-a10：A10 无 LSE，= iOS 17.4 能跑的最老芯片）"
+        required: false
+        default: "apple-a10"
+
+permissions:
+  contents: read
+
+jobs:
+  rebuild:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      # ⚠️ 与 `ios.yml` / `ios-fast.yml` / `ios-release.yml` 里**同一个 key**：
+      #    actions/cache 的缓存是仓库级的，本工作流构建一次之后，
+      #    其它工作流就能直接复用产物、不必各自再编一遍。
+      - name: Cache Unicorn xcframework
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: Vendor/AnisetteKit/Unicorn.xcframework
+          key: unicorn-${{ runner.os }}-${{ hashFiles('Scripts/ensure-unicorn.sh') }}
+          restore-keys: |
+            unicorn-${{ runner.os }}-
+
+      - name: Select pinned Xcode 26.5
+        run: |
+          test -d /Applications/Xcode_26.5.app
+          sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
+          xcodebuild -version
+          test "$(xcodebuild -version | head -n 1)" = "Xcode 26.5"
+
+      - name: Install CMake
+        run: |
+          if ! command -v cmake >/dev/null 2>&1; then
+            brew install --quiet cmake
+          fi
+          cmake --version
+
+      - name: Rebuild Unicorn without LSE
+        env:
+          UNICORN_TARGET_CPU: ${{ github.event.inputs.target_cpu || 'apple-a10' }}
+        run: bash Scripts/ensure-unicorn.sh
+
+      - name: Re-verify instruction-set baseline on the produced xcframework
+        run: |
+          python3 Scripts/verify-no-lse.py \
+            --label "Unicorn.xcframework (rebuild workflow)" \
+            --max-ios-version 17.4 \
+            --max-examples 20 \
+            Vendor/AnisetteKit/Unicorn.xcframework
+
+      - name: Reproductibility manifest
+        run: |
+          {
+            echo "commit=${GITHUB_SHA}"
+            echo "ref=$(cat Vendor/AnisetteKit/Unicorn.xcframework/.source-fingerprint 2>/dev/null || echo missing)"
+            echo "target_cpu=${{ github.event.inputs.target_cpu || 'apple-a10' }}"
+            xcodebuild -version | tr '\n' ' '; echo
+            cmake --version | head -n 1
+          } > Unicorn-build-manifest.txt
+          cat Unicorn-build-manifest.txt
+
+      - name: Package xcframework
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            Vendor/AnisetteKit/Unicorn.xcframework \
+            Unicorn.xcframework.zip
+          shasum -a 256 Unicorn.xcframework.zip > Unicorn.xcframework.zip.sha256
+          cat Unicorn.xcframework.zip.sha256
+
+      - name: Upload rebuilt Unicorn
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: unicorn-armv8.0
+          path: |
+            Unicorn.xcframework.zip
+            Unicorn.xcframework.zip.sha256
+            Unicorn-build-manifest.txt
+          retention-days: 30

@@ -39,6 +39,8 @@ struct SealCommunityView: View {
                     gzhCard
                     qqCard
                     douyinCard
+                    sectionTitle("官方资源")
+                    websiteCard
                 }
                 footerNote
             }
@@ -143,6 +145,16 @@ struct SealCommunityView: View {
             subtitle: "视频教程 · 使用技巧 · 更新动态",
             value: nil,
             action: openDouyin
+        )
+    }
+
+    private var websiteCard: some View {
+        brandCard(
+            brandImage: "SealBrandIcon",
+            title: "Seal 官网",
+            subtitle: "ios.sealsign.eu.cc",
+            value: nil,
+            action: openWebsite
         )
     }
 
@@ -424,6 +436,12 @@ struct SealCommunityView: View {
 
     private func openDouyin() {
         if let url = URL(string: "https://v.douyin.com/r5NTxx_Ztyk/") {
+            openURL(url)
+        }
+    }
+
+    private func openWebsite() {
+        if let url = URL(string: "https://ios.sealsign.eu.cc") {
             openURL(url)
         }
     }

@@ -34,16 +34,23 @@ permissions:
 
 jobs:
   rebuild:
-    # ⚠️ 为什么是 `macos-26-intel` 而不是 `macos-26`：
-    #   `macos-26`（arm64）与 `macos-26-intel`（x86_64）**是同一个 runner 镜像**
-    #   （探针实测两者都报 `Image: macos-26`，Xcode 26.0–26.6 与 cmake 齐全），
-    #   只是硬件架构不同 ⇒ 是两个**独立**的机器池。
-    #   2026-10-08 实测：`macos-26` 池子枯竭 —— 排队 job 连 runner 都拿不到、
-    #   `steps=[]`，并在 15 分 02 秒被掐掉（`cancelled`）；
-    #   同一次探针里 `macos-26-intel` / `macos-15` / `macos-15-intel` 全部 **4–8 秒**分配成功。
-    #   本工作流只做交叉编译（`CMAKE_OSX_ARCHITECTURES=arm64`），**与宿主架构无关**，
-    #   所以走 Intel 池子拿 Xcode 26.5 是等价的、且能立刻开跑。
-    runs-on: macos-26-intel
+    # ⚠️ 必须跑在 **arm64** 的 macOS 上；**不能**用 `macos-26-intel`（实测直接失败）。
+    #   原因在 Unicorn 自己的 `CMakeLists.txt:384-392`：它把 `qemu/configure` 当**本机**编译跑，
+    #   而传给 configure 的 `--extra-cflags` 里**只有 `-isysroot`、没有 `-arch`**
+    #   （`${CMAKE_C_FLAGS}` 仅在 `UNICORN_FUZZ=ON` 时才拼进去，该选项默认 OFF）
+    #   ⇒ configure 那句「能不能生成可执行文件」的探测会按**宿主机架构**编译
+    #     （platform 能从 `-isysroot` 的 SDKSettings 推出来，**arch 推不出来**）
+    #   ⇒ x86_64 宿主会得到 `x86_64-apple-ios`，而 iPhoneOS SDK 根本没有 x86_64 切片
+    #   ⇒ `CMake Error … qemu/configure failed (1): cannot build an executable (is your linker broken?)`
+    #   2026-10-08 实测 run 37757816680 就是死在这里 —— Intel 宿主对**本作业**并不等价。
+    #
+    #   而 `macos-26`（arm64）池当时已枯竭（排队 15 分 02 秒被回收、`steps=[]`、拿不到 runner；
+    #   见 `docs/knowledge/PITFALLS.md` 坑位 10），探针实测 `macos-15`（arm64）**8 秒**就分配到机器
+    #   ⇒ 改用 `macos-15`。注意它只装到 Xcode 26.3/26.4（**没有 26.5**），
+    #     所以下面的 Xcode 选择步骤放宽为「有 26.5 就用 26.5，否则取最新 26.x」；
+    #     本作业的指令集基线完全由 `-mcpu=apple-a10` + 显式部署目标 17.4 决定，
+    #     与 Xcode 的小版本无关（构建清单里会如实记录实际用的版本）。
+    runs-on: macos-15
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6.0.2
@@ -59,12 +66,22 @@ jobs:
           restore-keys: |
             unicorn-${{ runner.os }}-
 
-      - name: Select pinned Xcode 26.5
+      - name: Select Xcode (26.5 if available, otherwise newest 26.x)
         run: |
-          test -d /Applications/Xcode_26.5.app
-          sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
+          # `macos-26` 有 Xcode 26.5；`macos-15` 只到 26.3/26.4。两者都能做本作业，
+          # 因为指令集基线来自 `-mcpu=apple-a10` + `CMAKE_OSX_DEPLOYMENT_TARGET=17.4`。
+          if [[ -d /Applications/Xcode_26.5.app ]]; then
+            picked=/Applications/Xcode_26.5.app
+          else
+            picked="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)"
+          fi
+          test -n "$picked"
+          test -d "$picked"
+          sudo xcode-select --switch "$picked/Contents/Developer"
           xcodebuild -version
-          test "$(xcodebuild -version | head -n 1)" = "Xcode 26.5"
+          xcodebuild -version | head -n 1 | grep -Eq '^Xcode 26\.'
+          echo "selected Xcode at $picked"
+          echo "selected_xcode=$picked" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install CMake
         run: |

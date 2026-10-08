@@ -204,7 +204,8 @@ final class AppsViewModel: ObservableObject {
         apps = []
         accounts = []
         iconData = [:]
-        clearDecodedIconCache()
+        decodedIconCache.removeAllObjects()
+        decodedIconOrder.removeAll()
         decodedIconCache.countLimit = 50
         decodedIconCache.totalCostLimit = 50 * 1024 * 1024
         phase = .idle

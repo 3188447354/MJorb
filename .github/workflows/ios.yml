@@ -251,7 +251,29 @@ jobs:
 
       - name: Run Swift unit and UI regression tests
         run: |
-          SIMULATOR_UDID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(device["udid"] for runtime, devices in d.items() if "iOS-26-5" in runtime for device in devices if device.get("isAvailable") and device.get("name", "").startswith("iPhone")))')"
+          # 不要写死运行时版本（如 "iOS-26-5"）：它只随某一个 Xcode 小版本安装，
+          # 换 runner 镜像（或镜像里预装的 Xcode 变了）就会在这里抛 StopIteration，
+          # 表现成「测试失败」而其实 xcodebuild 一行都没跑（见 docs/knowledge/PITFALLS.md §14）。
+          # 改为：取可用的最高版本 iOS 运行时；找不到就显式报错退出。
+          SIMULATOR_UDID="$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          def rank(runtime):
+              tail = runtime.rsplit(".", 1)[-1]
+              return [int(p) for p in tail.split("-")[1:] if p.isdigit()] or [0]
+          candidates = []
+          for runtime, devs in devices.items():
+              if "iOS-" not in runtime:
+                  continue
+              for dev in devs:
+                  if dev.get("isAvailable") and dev.get("name", "").startswith("iPhone"):
+                      candidates.append((rank(runtime), dev["udid"]))
+          if not candidates:
+              raise SystemExit("no available iPhone simulator found")
+          candidates.sort()
+          print(candidates[-1][1])
+          ')"
+          echo "SIMULATOR_UDID=$SIMULATOR_UDID"
           xcrun simctl boot "$SIMULATOR_UDID" || true
           xcrun simctl bootstatus "$SIMULATOR_UDID" -b
           rm -rf build/TestResults.xcresult

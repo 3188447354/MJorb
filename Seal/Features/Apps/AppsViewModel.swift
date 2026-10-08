@@ -767,7 +767,6 @@ final class AppsViewModel: ObservableObject {
     func markLocalCertificateReady(for appID: UUID) {
         localCertificateAvailabilityByAppID[appID] = .ready
     }
-    }
 
     /// 一次读完所有账号的密钥 —— 邮箱显示与「本机证书状态」都从这里派生。
     ///

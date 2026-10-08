@@ -139,7 +139,6 @@ struct AgreementOnboardingView: View {
                 .padding(.top, 11)
             }
             .padding(.bottom, 8)
-            .background(Color.sealScreenBackground)
         }
         .sealScreenBackground()
         .alert("需要您的同意", isPresented: $showDeclineHint) {

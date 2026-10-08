@@ -67,8 +67,19 @@ Text("如您对本协议有任何疑问，可通过应用内「加入社群」�
 }
 .padding(20)
 }
-.navigationTitle("用户协议")
+.navigationTitle("\(AgreementMetadata.Terms.title)")
 .navigationBarTitleDisplayMode(.inline)
+.toolbar {
+    ToolbarItem(placement: .principal) {
+        VStack(spacing: 2) {
+            Text(AgreementMetadata.Terms.title)
+                .font(.headline)
+            Text("v\(AgreementMetadata.Terms.version) · \(AgreementMetadata.Terms.effectiveDate)生效")
+                .font(.caption2)
+                .foregroundStyle(Color.sealTextSecondary)
+        }
+    }
+}
 .sealScreenBackground()
 }
 

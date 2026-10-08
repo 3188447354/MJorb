@@ -5,6 +5,66 @@
 
 ---
 
+## 2026-10-08 83c26f4 `if let` 绑非可选 String：编译失败
+
+- **现象**：c54db07 的 Fast run 37711643262 编译失败。CI 日志（经 MJ 授权拉取）指向 `AppPresentation.swift` 的 `if let recordedBuild = app.buildNumber`。
+- **根因**：`app.buildNumber` 是非可选 `String`，`if let` 只能绑 Optional ⇒ 编译错误。手写时没核对类型（不是 CI 缓存问题——禁止猜测的又一实例）。
+- **修复**：去掉 `if let`，直接 `runningBuild == app.buildNumber` 比较。
+- **涉及文件**：`Seal/Features/Apps/AppPresentation.swift`。
+- **验证状态**：已推，待 Fast CI。
+
+---
+
+## 2026-10-08 c54db07 「有新版本待安装」红标自替换后不消失：双保险
+
+- **现象**：MJ 真机反馈（附截图 + Seal-log-30.txt）：Seal 自替重新安装后，后台进程还在跑，「有新版本待安装」标签仍然显示。
+- **根因**：两处判据都太紧：① `SelfAppRegistrar` 清待安装指纹要求「build 号不同」才清，自替换后运行包与记录同 build 号 ⇒ 不清；② 显示层只看标志，没把「记录 build 号 == 运行 build 号」当作已安装。
+- **修复**：① 只要 pending 指纹在就清，不再要求 build 号不同；② 显示层加一刀：Seal 记录 build 号与运行一致时直接不显示标签。
+- **涉及文件**：`Seal/Core/Renewal/SelfAppRegistrar.swift`、`Seal/Features/Apps/AppPresentation.swift`；知识库 5 文件同步建好（ARCHITECTURE/CODEMAP/DECISIONS/PITFALLS/README）。
+- **验证状态**：已推，待 Fast CI + MJ 真机。
+
+---
+
+## 2026-10-08 e913ff1 / 31cca3d ImportedAppRow：括号编译错 + 重复 static iconCache
+
+- **现象**：补推后编译失败（e913ff1 修）；MJ 下令并发关联查内存时发现 `ImportedAppRow` 里有个无上限的 `static iconCache`，与 `AppsViewModel` 的 `decodedIconCache` 重复（PITFALLS #1「只改一处，漏了关联」的实例）。
+- **根因**：① 修抽屉高度时多留了一个右花括号；② 图标缓存修了一处漏了一处。
+- **修复**：① 修括号；② 删掉 `ImportedAppRow` 的重复 static 缓存，只用 ViewModel 那套。
+- **涉及文件**：`Seal/Features/Apps/ImportedAppRow.swift`。
+- **验证状态**：随 c54db07 已推，待 CI。
+
+---
+
+## 2026-10-07 bad9807 日志导出改读 Seal-log.txt + SEAL-ICON-001/002 诊断
+
+- **现象**：MJ 问导入后日志里缺 SEAL-IPA-212（覆盖更新是否做进 App）；另图标诊断需要可落盘证据链。
+- **根因**：① 导出走内存 rounds，内存里没有历史 ⇒ 导出的不是完整日志；② 图标应用链路缺诊断码，无法从日志判定"数据到了记录但 UI 没刷新"。
+- **修复**：① 导出直接读 Documents 下 `Seal-log.txt`，第一次点就能导出完整日志；② 图标应用加 SEAL-ICON-001/002 两处诊断。
+- **涉及文件**：`Seal/Features/Settings/LogViewerView.swift`、`Seal/Features/Apps/AppsViewModel.swift`。
+- **验证状态**：build 87 已交付；Seal-log-30 证实 SEAL-ICON-001 生效（图标数据已到达记录），列表图标是否真实刷新待 MJ 真机确认。
+
+---
+
+## 2026-10-07 a065d3b 导入图标不显示：load() 重建字典覆盖设置
+
+- **现象**：build 79 真机：导入抽屉改图标后，桌面（主屏幕）图标改了，Seal 应用内列表图标没改。
+- **根因**：PITFALLS #4 的实例——`load()` 会重建整个 `iconData` 字典，把刚设置的自定义图标覆盖掉了；UI 自然读不到。
+- **修复**：`load()` 完成后再在主线程设置；同时去掉 `updatePreferredIcon` 里的多余 `load()`，避免双重加载。
+- **涉及文件**：`Seal/Features/Apps/AppsViewModel.swift`。
+- **验证状态**：随 build 87 交付，待 MJ 真机确认。
+
+---
+
+## 2026-10-07/08 图标解码缓存上限 + 续签内存清理 + SEAL-MEM-001
+
+- **现象**：MJ 下令并发关联查内存增长（Seal-log-30 侧写）：`decodedIconCache` 设了 `totalCostLimit` 却不限（存入不传 cost ⇒ limit 不生效，PITFALLS #3），解码后 UIImage 十几 MB 一张越积越多。
+- **根因**：① 存入时没传 cost，NSCache 的 totalCostLimit 恒不生效；② 无上限 static 重复缓存（见上条）。
+- **修复**：`decodedIconCache` 加 50 张 / 50MB 上限（countLimit 生效兜底）；续签完成后清理缓存；监听内存警告自动清理；续签后深度清理 `URLCache.shared`；SEAL-MEM-001 改记 App 实际占用内存（原先记的是设备总内存，误导）。
+- **涉及文件**：`Seal/Features/Apps/AppsViewModel.swift`、`Seal/Features/Import/ImportConfirmationView.swift`（6037f68 计入）。
+- **验证状态**：已推（6037f68 / 5096bf6 / deafaa9），待 MJ 真机验证内存增长。
+
+---
+
 ## 2026-10-05 54b3f1b 「需重新签名」标签常驻：UI 直接用了永不清的标志
 
 - **现象**：MJ 反馈已安装列表 Seal 行 Bundle ID 下方红色「需重新签名」标签一直存在，安装成功后不消失。

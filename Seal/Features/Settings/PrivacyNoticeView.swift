@@ -67,8 +67,19 @@ Text("本隐私政策是《Seal 用户协议》不可分割的组成部分。")
 }
 .padding(20)
 }
-.navigationTitle("隐私政策")
+.navigationTitle("\(AgreementMetadata.Privacy.title)")
 .navigationBarTitleDisplayMode(.inline)
+.toolbar {
+    ToolbarItem(placement: .principal) {
+        VStack(spacing: 2) {
+            Text(AgreementMetadata.Privacy.title)
+                .font(.headline)
+            Text("v\(AgreementMetadata.Privacy.version) · \(AgreementMetadata.Privacy.effectiveDate)生效")
+                .font(.caption2)
+                .foregroundStyle(Color.sealTextSecondary)
+        }
+    }
+}
 .sealScreenBackground()
 }
 

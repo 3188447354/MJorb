@@ -514,7 +514,7 @@ struct AppSigningSheet: View {
     }
 
     private func standardAlert(_ failure: ImportFailure) -> Alert {
-        let guideURL = "https://ios.sealsign.eu.cc/seal-error-guide.html?q=\(failure.code)"
+        let guideURL = "https://ios.sealsign.eu.cc/help/?q=\(failure.code)"
         return Alert(
             title: Text(failure.title),
             message: Text(failure.userMessage),

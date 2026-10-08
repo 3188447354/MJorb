@@ -539,7 +539,7 @@ struct AppsRootView: View {
 
     private func standardAlert(_ failure: ImportFailure) -> Alert {
         // 2026-10-04：报错弹窗加"查看解决办法"，跳到 MJ 网站上的教程（带错误码参数）
-        let guideURL = "https://ios.sealsign.eu.cc/seal-error-guide.html?q=\(failure.code)"
+        let guideURL = "https://ios.sealsign.eu.cc/help/?q=\(failure.code)"
         return Alert(
             title: Text(failure.title),
             message: Text(failure.userMessage),

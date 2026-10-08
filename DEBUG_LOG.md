@@ -5,6 +5,17 @@
 
 ---
 
+## 2026-10-08 476ea0f 「有新版本待安装」标签常驻：只改了详情页，漏了列表行
+
+- **现象**：MJ 反馈 Seal 自替换后，已安装列表 Seal 行的「有新版本待安装」标签一直在，点进去详情页标签也不消失。
+- **根因**：标签有两个显示入口：① `ImportedAppRow.pendingUpdateKind`（列表行）；② `AppPresentation.pendingUpdateNote`（详情页/操作抽屉）。之前只给 ② 加了 build 号一致就不显示的判断，漏了 ①。列表行走自己的 `pendingUpdateKind`，直接调 `ProfileOnlyRenewalPolicy.pendingUpdateKind`，没有 build 号兜底。
+- **修复**：`ImportedAppRow.pendingUpdateKind` 开头加 build 号判断：`Bundle.main` 的 `CFBundleVersion` 与 `app.buildNumber` 一致时直接返回 nil。
+- **涉及文件**：`Seal/Features/Apps/ImportedAppRow.swift`。
+- **验证状态**：待 CI + 真机（MJ 装新包验证标签消失）。
+- **教训**：改 UI 显示逻辑必须并发查所有调用方，不能只改一处。这次是典型的「补东墙漏西墙」。
+
+---
+
 ## 2026-10-08 83c26f4 `if let` 绑非可选 String：编译失败
 
 - **现象**：c54db07 的 Fast run 37711643262 编译失败。CI 日志（经 MJ 授权拉取）指向 `AppPresentation.swift` 的 `if let recordedBuild = app.buildNumber`。

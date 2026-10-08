@@ -29,9 +29,13 @@ final class AppsViewModel: ObservableObject {
     @Published private(set) var iconData: [UUID: Data]
     /// 解码后的图标缓存（性能优化 2026-10-04）：`UIImage(data:)` 的 PNG/JPEG 解码
     /// 在列表滚动时重复触发，这里按 App ID 缓存解码结果。
+    /// 硬上限 10 张：NSCache 的 totalCostLimit 必须传 cost 才生效，这里手动控制。
     private let decodedIconCache = NSCache<NSString, UIImage>()
+    private var decodedIconOrder: [NSString] = []
+    private let decodedIconMaxCount = 10
 
     /// 取指定 App 的解码后图标（走 NSCache，未命中时解码并缓存）。
+    /// 硬上限 10 张，超了删最旧的。
     func decodedIcon(for appID: UUID) -> UIImage? {
         let key = appID.uuidString as NSString
         if let cached = decodedIconCache.object(forKey: key) {
@@ -40,13 +44,29 @@ final class AppsViewModel: ObservableObject {
         guard let data = iconData[appID], let image = UIImage(data: data) else {
             return nil
         }
+        if decodedIconOrder.count >= decodedIconMaxCount,
+           let oldest = decodedIconOrder.first {
+            decodedIconCache.removeObject(forKey: oldest)
+            decodedIconOrder.removeFirst()
+        }
         decodedIconCache.setObject(image, forKey: key)
+        if !decodedIconOrder.contains(key) {
+            decodedIconOrder.append(key)
+        }
         return image
     }
 
     /// 图标数据更新时同步失效解码缓存。
     func invalidateDecodedIcon(for appID: UUID) {
-        decodedIconCache.removeObject(forKey: appID.uuidString as NSString)
+        let key = appID.uuidString as NSString
+        decodedIconCache.removeObject(forKey: key)
+        decodedIconOrder.removeAll { $0 == key }
+    }
+
+    /// 清空解码缓存（同时清顺序表）。
+    private func clearDecodedIconCache() {
+        decodedIconCache.removeAllObjects()
+        decodedIconOrder.removeAll()
     }
     @Published private(set) var phase: Phase
     @Published var isImporterPresented = false
@@ -184,7 +204,7 @@ final class AppsViewModel: ObservableObject {
         apps = []
         accounts = []
         iconData = [:]
-        decodedIconCache.removeAllObjects()
+        clearDecodedIconCache()
         decodedIconCache.countLimit = 50
         decodedIconCache.totalCostLimit = 50 * 1024 * 1024
         phase = .idle
@@ -194,7 +214,7 @@ final class AppsViewModel: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.decodedIconCache.removeAllObjects()
+            self?.clearDecodedIconCache()
         }
     }
 
@@ -218,7 +238,7 @@ final class AppsViewModel: ObservableObject {
         apps = []
         accounts = []
         iconData = [:]
-        decodedIconCache.removeAllObjects()
+        clearDecodedIconCache()
         phase = .idle
         isImportSheetPresented = false
         alertFailure = startupFailure
@@ -245,7 +265,7 @@ final class AppsViewModel: ObservableObject {
         self.apps = apps
         accounts = []
         iconData = [:]
-        decodedIconCache.removeAllObjects()
+        clearDecodedIconCache()
         phase = .idle
         sheetDraft = draft
         isImportSheetPresented = draft != nil
@@ -534,7 +554,7 @@ final class AppsViewModel: ObservableObject {
                 guard await self.isCurrentLoad(generation) else { return }
                 await MainActor.run {
                     self.iconData = icons
-                    self.decodedIconCache.removeAllObjects()
+                    self.clearDecodedIconCache()
                 }
 
                 await self.seedSigningHistoryIfNeeded(apps: fetched, accounts: fetchedAccounts)
@@ -2312,15 +2332,17 @@ final class AppsViewModel: ObservableObject {
                 // fire-and-forget 会造成"刷新了但读到旧文件"的竞态。
                 await logStore?.forceMirrorToDocuments()
                 // 续签完成清理图片解码缓存，释放续签过程中积累的内存
-                decodedIconCache.removeAllObjects()
+                clearDecodedIconCache()
                 // 深度清理：URLSession 缓存、临时文件
                 URLCache.shared.removeAllCachedResponses()
-                // 记录内存用于诊断
-                let memMB = ProcessInfo.processInfo.physicalMemory / 1024 / 1024
+                // 记录缓存状态用于诊断内存增长
+                let iconDataCount = iconData.count
+                let iconDataBytes = iconData.values.reduce(0) { $0 + $1.count }
+                let cacheOrderCount = decodedIconOrder.count
                 try? await logStore?.append(
                     category: .system,
                     level: .info,
-                    message: "续签完成内存清理，当前物理内存 \(memMB)MB",
+                    message: "续签完成缓存状态：iconData \(iconDataCount)项/\(iconDataBytes/1024)KB，解码缓存 \(cacheOrderCount)项",
                     code: "SEAL-MEM-001"
                 )
                 // 续签后立即重排通知（用新到期时间），并刷新状态，避免提醒时间滞后

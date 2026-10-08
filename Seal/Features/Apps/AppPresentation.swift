@@ -240,8 +240,19 @@ enum AppSigningPresentationHelpers {
     /// 因为「缺已装产物」回落完整重签，不需要这句话。
     static func pendingUpdateNote(
         for app: AppRecord,
-        runningVersion: String?
+        runningVersion: String?,
+        runningBuildNumber: String? = nil
     ) -> String? {
+        // Seal 自替换后：如果记录的 build 号和运行的一致，说明已装上新版，
+        // 即使 fingerprint 残留也不显示标签（等 SelfAppRegistrar 清理）。
+        let effectiveRunningBuild = runningBuildNumber
+            ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        if app.isSeal,
+           let runningBuild = effectiveRunningBuild,
+           let recordedBuild = app.buildNumber,
+           runningBuild == recordedBuild {
+            return nil
+        }
         guard app.isSeal,
               ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
                   recordedVersion: app.version,

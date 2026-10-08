@@ -15,7 +15,7 @@ enum AgreementVersion {
 /// 独立卡片** ⇒ 四行同类信息有四种「贴法」；再加上 40 / 24 / 16 / 14 / 12 / 8 混着当间距、
 /// 圆角 18 / 15 / 9 混着用，还手写了一个与设计系统不一致的主按钮（52pt / 字号 17 / 圆角 15）。
 /// 现在：「**一张玻璃卡片 = 一组同类信息**」，组内一条内缩细线分隔，组与组之间同一档间距；
-/// 所有间距只从 `Metrics` 的四档里取、圆角只用两档；主按钮直接走设计系统的
+/// 所有间距只从 `Metrics` 的三档里取、圆角只用两档；主按钮直接走设计系统的
 /// `sealPrimaryAction`（全 App 同一套按下动画与投影）。
 struct AgreementOnboardingView: View {
     var onAgreed: () -> Void
@@ -25,7 +25,9 @@ struct AgreementOnboardingView: View {
 
     /// 版式常量：集中在此，别让 magic number 再散回各处。
     ///
-    /// 间距只留**四档**、圆角只留**两档** —— 「割裂感」的根源就是同一类元素每处各调各的数值。
+    /// 规则：**间距按「关系」分三档**（块与块 / 紧邻 / 再紧一档），
+    /// **圆角只用两档**（卡片 / 卡片内小方块），按钮圆角跟随全 App 惯例。
+    /// 「割裂感」的根源就是同一类元素每处各调各的数值 —— 这里把它锁死。
     /// ⚠️ 名字刻意叫 `Metrics` 而不是 `Layout`：SwiftUI 自己有个 `Layout` 协议，
     /// 嵌套类型同名会在本类型作用域里把它遮住，日后有人在这里写自定义布局会莫名其妙编译不过。
     private enum Metrics {
@@ -40,13 +42,17 @@ struct AgreementOnboardingView: View {
         static let gutter: CGFloat = 20
         /// 首屏顶部留白（不参与块间距节奏）。
         static let pageTop: CGFloat = 32
+        /// 底部操作区与安全区之间的留白。
+        static let pageBottom: CGFloat = 18
         /// 卡片内行的左右内边距。
-        static let rowPadding: CGFloat = 14
-        /// 卡片内行的上下内边距。
+        static let rowHorizontal: CGFloat = 14
+        /// 卡片内行的上下内边距（两张卡片**共用同一值** ⇒ 行高节奏一致）。
         static let rowVertical: CGFloat = 13
 
         /// 卡片圆角。
         static let cardCorner: CGFloat = 18
+        /// 主按钮圆角：与全 App 其余 `sealPrimaryAction` 调用点一致（都是 14）。
+        static let buttonCorner: CGFloat = 14
         /// 卡片内小方块圆角。
         static let tileCorner: CGFloat = 10
         /// 卡片内行首图标方块边长。
@@ -55,7 +61,7 @@ struct AgreementOnboardingView: View {
         /// 细线粗细。
         static let hair: CGFloat = 1
         /// 组内分隔线左端对齐到文字起点（= 行内边距 + 图标方块 + 图标间距）。
-        static var dividerInset: CGFloat { rowPadding + tile + tight }
+        static var dividerInset: CGFloat { rowHorizontal + tile + tight }
     }
 
     var body: some View {
@@ -171,7 +177,7 @@ struct AgreementOnboardingView: View {
                 UserDefaults.standard.set(AgreementVersion.current, forKey: AgreementVersion.storageKey)
                 onAgreed()
             }
-            .sealPrimaryAction(cornerRadius: Metrics.cardCorner)
+            .sealPrimaryAction(cornerRadius: Metrics.buttonCorner)
 
             Button("暂不使用") {
                 showDeclineHint = true
@@ -183,7 +189,7 @@ struct AgreementOnboardingView: View {
             .frame(minHeight: 44)
         }
         .padding(.horizontal, Metrics.gutter)
-        .padding(.bottom, Metrics.tight)
+        .padding(.bottom, Metrics.pageBottom)
     }
 
     /// 「继续即表示你已阅读并同意《隐私政策》和《用户协议》。」协议名可点。
@@ -231,7 +237,7 @@ struct AgreementOnboardingView: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, Metrics.rowPadding)
+        .padding(.horizontal, Metrics.rowHorizontal)
         .padding(.vertical, Metrics.rowVertical)
     }
 
@@ -249,8 +255,8 @@ struct AgreementOnboardingView: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color.sealTextSecondary.opacity(0.55))
         }
-        .padding(.horizontal, Metrics.rowPadding)
-        .padding(.vertical, Metrics.rowPadding)
+        .padding(.horizontal, Metrics.rowHorizontal)
+        .padding(.vertical, Metrics.rowVertical)
         .contentShape(Rectangle())
     }
 

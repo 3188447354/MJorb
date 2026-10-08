@@ -66,6 +66,7 @@ private enum SigningGuideSection: String, CaseIterable, Identifiable {
         switch self {
         case .requirements:
             return [
+                "iOS 17.4 及以上、arm64 设备（iPhone / iPad）",
                 "连接 Wi-Fi",
                 "打开 LocalDevVPN",
                 "添加 Apple ID",
@@ -86,22 +87,23 @@ private enum SigningGuideSection: String, CaseIterable, Identifiable {
                 "确认名称、图标和包名",
                 "点击“签名并安装”",
                 "首次签名会自动准备好证书和应用信息",
-                "免费账号一台设备最多装 3 个自签 App"
+                "免费账号一台设备最多装 3 个自签 App；证书 7 天到期，到期前续签即可"
             ]
         case .renewal:
             return [
-                "打开已安装页",
+                "打开“应用”页",
                 "点开需要续签的 App",
-                "点击“立即续签”",
-                "证书等信息没变时只快速更新签名",
-                "信息对不上时自动完整重新签名并安装"
+                "证书状态显示“可用”或“需重新签名”时，点击“立即续签”",
+                "显示“待核验”时，先确认账号已验证、LocalDevVPN 已连接",
+                "证书等信息没变时只快速更新签名；对不上时自动完整重签并安装"
             ]
         case .batchRenewal:
             return [
-                "打开已安装页",
+                "打开“应用”页",
                 "点击“续签全部”",
+                "多个 App 同时续签，不必逐个操作；期间不要关闭 App 或断开 LocalDevVPN",
                 "确认本次续签结果",
-                "Seal 最后续签自身，必要时会覆盖安装"
+                "仅当 Seal 自身需要完整重签时，才会最后处理并覆盖安装（App 会重启一次）"
             ]
         case .automaticRenewal:
             return [

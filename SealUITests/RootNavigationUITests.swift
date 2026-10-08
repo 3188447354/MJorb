@@ -4,7 +4,9 @@ final class RootNavigationUITests: XCTestCase {
     @MainActor
     func testSwitchesBetweenTheTwoRootTabs() {
         let app = XCUIApplication()
-        app.launchArguments = ["--ui-testing-empty"]
+        // 显式越过开屏协议门控：它把 `RootTabView` 整个挡在协议页后面，
+        // 不越过的话下面第 10 行「Seal」标题就会超时（2026-10-08 CI 的真实报红）。
+        app.launchArguments = ["--ui-testing-empty", "--ui-testing-agreement-accepted"]
         app.launch()
 
         XCTAssertTrue(app.staticTexts["Seal"].waitForExistence(timeout: 10))

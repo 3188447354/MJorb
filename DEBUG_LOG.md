@@ -57,7 +57,55 @@
 
 ---
 
-## 2026-10-08 全量审计 27 问题修复（4 路并行）
+## 2026-10-08 开屏协议门控把 7 个 UI 用例全挡在门外（CI 自 2026-10-05 起第一次真跑完就红）
+
+- **现象（CI run 37782585836 / 上一次 37764867836）**：`swift-regression` 红，
+  报 `ImportFlowUITests` ×6 + `RootNavigationUITests` ×1 共 **7 个 UI 用例 / 25 处断言**失败，
+  报错形如 `ImportFlowUITests.swift:10: XCTAssertTrue failed`
+  以及 `No matches found for Descendants matching type TabBar`。
+- **关键辨识点**：同一个 run 里**841 个单测全绿**（含上一轮修的那 7 个），
+  且两次 run 的 UI 报错**文件:行号与消息逐字相同** ⇒ 与本轮改动**无关**，是既存红点。
+- **根因**：`f0c7e03`（2026-10-07「实时刷新 + 定位保活退役 + 企业级协议」）新增了
+  `AgreementOnboardingView` + `SealApp` 里的 `agreementAccepted` 门控 —— 它把**整个**
+  `RootTabView` 挡在协议页后面。而 `SealUITests` 的用例都是 `app.launch()` 后直接去找
+  根界面元素（tab 栏 /「待签名，N 个」/ 导入入口），从没点掉这层门 ⇒ 全部停在协议页。
+  证据是 XCTest 在查不到元素时 dump 出来的界面树，上面只有：
+  `隐私政策`、`用户协议`、`《隐私政策》`、`《用户协议》`、`同意并继续`、`暂不使用`。
+  **该提交一行没改 `SealUITests/`**（`git log -- SealUITests/` 自 `c505e4a` 起为空）。
+- **为什么一直没暴露**：2026-10-05 `c505e4a` 是最后一次 `swift-regression` 全绿；
+  之后 100 次 run 里 **70 次 `cancelled`**（被新推送顶掉，job 根本没跑完）
+  ⇒ 直到 2026-10-08 才第一次真跑完并报出来，很容易被误判成「本轮改动引入的回归」。
+- **为什么早该有测试**：门控（合规）与其它 UI 是**互斥**关系 ——
+  门控一旦生效，其它 UI 用例就全部失效。这类「前置门」必须在加进来时同步测试，
+  否则它会**静默换掉**整个 UI 测试套件的语义。
+- **修复**：
+  - 生产侧只加一个**显式**启动参数 `--ui-testing-agreement-accepted`（`needsAgreementOnboarding(arguments:)`），
+    `SealApp` **一行未动**。真实用户拿不到这个参数（iOS 上启动参数只有 Xcode / `simctl` 能传）
+    ⇒ 门控对真实首启的行为完全不变。
+  - ⚠️ 刻意**不**写成「`--ui-testing-` 前缀」这类隐式规则：AGENTS.md §3 明确
+    「显式集合，禁止前缀与数字区间」—— 前缀规则会让「哪些参数能开门」不可枚举。
+  - `SealUITests/ImportFlowUITests.swift`（两处启动点）与 `RootNavigationUITests.swift` 补上该参数。
+  - 新增 `SealUITests/AgreementGateUITests.swift`：**真正**覆盖门控 ——
+    断言「未同意时看不到主界面」→ 点「同意并继续」→ 断言**真的进得去主界面**。
+    「未同意」这个前提用启动参数 `-seal.agreedAgreementVersion 0` 钉进 `NSArgumentDomain`
+    （优先级高于持久域、不落盘）⇒ 不依赖模拟器里攒下来的 `UserDefaults`、不受执行顺序影响。
+  - 两类用例分工：既有用例**显式越过**门控（快、确定）；门控本身由新用例负责。
+    只留旁路 ⇒ 门控被删掉也没人知道。
+- **涉及文件**：`Seal/Features/Settings/AgreementOnboardingView.swift`、
+  `SealUITests/ImportFlowUITests.swift`、`SealUITests/RootNavigationUITests.swift`、
+  `SealUITests/AgreementGateUITests.swift`（新增）、`docs/knowledge/PITFALLS.md`。
+- **验证状态**：守卫断言本体 **835 项 0 failures**；593 条变异锚点**全部存在**；
+  涉及改动文件的 **4 条变异 4/4 保持判别力**。
+  ⚠️ 本机**无 Swift 工具链、无 iOS 模拟器** ⇒ 这几处 Swift / UI 测试改动**只能靠 CI 编译与真跑**，
+  待 CI 终审。
+- **教训**：① 看到「单测全绿、只有 UI 用例红」且报错两次 run 逐字相同时，
+  先怀疑**前置门 / 环境**，不要怀疑业务逻辑。
+  ② CI 历史里大量 `cancelled` 会造成**假绿/假静默** —— 判断「是不是我改坏的」必须看
+  「上一次**真正跑完**的 run」而不是「上一次 run」。
+  ③ 给界面加**前置门**（协议 / 登录 / 引导）时必须同步 UI 测试，
+  否则它会静默把整套 UI 用例变成「门控用例」。
+
+---
 
 - **现象**：MJ 要求全量审查，查出 27 个问题（10 严重/9 中等/8 轻微）。
 - **根因**：见 `~/workspace/Seal全量问题集锦.md`，每个问题都有文件行号。

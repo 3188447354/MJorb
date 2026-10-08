@@ -80,6 +80,9 @@ final class ImportFlowUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = [
             "--ui-testing-empty",
+            // ⚠️ 必须显式越过开屏协议门控：它把整个根界面挡在协议页后面，
+            //    不带这个参数时下面三行断言全会超时（2026-10-08 CI 的真实报红）。
+            "--ui-testing-agreement-accepted",
             "-UIPreferredContentSizeCategoryName",
             "UICTContentSizeCategoryAccessibilityExtraExtraExtraLarge"
         ]
@@ -91,7 +94,11 @@ final class ImportFlowUITests: XCTestCase {
 
     @MainActor
     private func launch(with argument: String) -> XCUIApplication {
-        let app = XCUIApplication(); app.launchArguments = [argument]; app.launch(); return app
+        let app = XCUIApplication()
+        // 见上：协议门控不越过的话，所有用例都停在协议页。
+        app.launchArguments = [argument, "--ui-testing-agreement-accepted"]
+        app.launch()
+        return app
     }
     @MainActor
     private func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement { app.descendants(matching: .any)[identifier].firstMatch }

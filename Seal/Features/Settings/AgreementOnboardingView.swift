@@ -191,7 +191,32 @@ struct AgreementOnboardingView: View {
     }
 }
 
+/// UI 测试用的启动参数：声明「本次启动视为已同意协议」。
+///
+/// 🔴 为什么必须有（2026-10-07 引入本门控时漏掉的同步）：
+/// 门控把**整个** `RootTabView` 挡在协议页后面，而 `SealUITests` 的用例都是
+/// `app.launch()` 之后直接去找根界面的元素（tab 栏 / 「待签名，N 个」/ 导入入口）
+/// ⇒ 它们全部停在协议页，7 个用例一起红，
+/// `swift-regression` 从 2026-10-05 最后一次全绿之后再没绿过。
+/// 而中间几十次 run 全是 `cancelled`（被新推送顶掉），这个红点一直没暴露 ——
+/// 直到 2026-10-08 才第一次真的跑完并报出来，很容易被误当成「本轮改动引入的回归」。
+///
+/// ⚠️ 只认**显式**参数，**不**写成「`--ui-testing-` 前缀」这类隐式规则
+/// （AGENTS.md §3：显式集合，禁止前缀与数字区间）：
+/// 前缀规则会让「到底哪些参数能开门」不可枚举，下一个加 UI 测试的人无从自查。
+///
+/// 真实用户拿不到这个参数：iOS 上启动参数只有 Xcode / `simctl launch` 能传，
+/// 别的 App 无法为 Seal 指定 —— 所以门控对真实首启的行为完全不变。
+let uiTestingAgreementAcceptedArgument = "--ui-testing-agreement-accepted"
+
 /// 检查是否需要展示协议页：没同意过，或协议版本更新了。
-func needsAgreementOnboarding() -> Bool {
-    UserDefaults.standard.integer(forKey: AgreementVersion.storageKey) < AgreementVersion.current
+///
+/// - Parameter arguments: 可注入，便于单测；默认取进程启动参数。
+func needsAgreementOnboarding(
+    arguments: [String] = ProcessInfo.processInfo.arguments
+) -> Bool {
+    if arguments.contains(uiTestingAgreementAcceptedArgument) {
+        return false
+    }
+    return UserDefaults.standard.integer(forKey: AgreementVersion.storageKey) < AgreementVersion.current
 }

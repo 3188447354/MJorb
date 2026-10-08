@@ -8,9 +8,12 @@ name: Rebuild Unicorn (armv8.0 / no LSE)
 # 本工作流从 pinned 源码重编一份**不带 LSE** 的 Unicorn.xcframework，
 # 当场量 `verify-no-lse.py`（LSE=0 + minOS ≤ 17.4），把产物与缓存一并产出。
 #
-# ⚠️ 只手工触发：这是「换预编译件」级别的动作，不该跟着普通提交自动跑。
-#    触发方式：`gh workflow run "Rebuild Unicorn (armv8.0 / no LSE)" --ref <branch>`
-#    产出（artifact `unicorn-armv8.0`）下载后解到 `Vendor/AnisetteKit/` 入库。
+# ⚠️ **为什么不只靠 `workflow_dispatch`**：GitHub 只把**默认分支（main）**上的工作流
+#    注册进 workflow 列表 ⇒ 本文件只存在于 `perf/signing-renewal-speed` 时
+#    `gh workflow run "Rebuild Unicorn…"` 会报 `could not find any workflows named …` ✗。
+#    ⇒ 与同仓的 `rebuild-rustbridge-ios16.yml` 一样，补一条 **push + paths** 自触发：
+#      改这三个文件里的任意一个就会重编（改构建配方本就该重编），
+#      稳态下 `ensure-unicorn.sh` 会因指纹命中在 1 分钟内早退，代价可忽略。
 on:
   workflow_dispatch:
     inputs:
@@ -18,6 +21,13 @@ on:
         description: "目标 CPU 型号（默认 apple-a10：A10 无 LSE，= iOS 17.4 能跑的最老芯片）"
         required: false
         default: "apple-a10"
+  push:
+    branches:
+      - perf/signing-renewal-speed
+    paths:
+      - .github/workflows/rebuild-unicorn-ios.yml
+      - Scripts/ensure-unicorn.sh
+      - Scripts/verify-no-lse.py
 
 permissions:
   contents: read

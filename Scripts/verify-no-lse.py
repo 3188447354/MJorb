@@ -23,6 +23,20 @@
 1. **零 LSE**：扫到的 arm64 Mach-O 里不得出现 `FEAT_LSE` 指令（CAS* / LDxx* / SWP* / STxx*）。
 2. **minOS 不高于给定值**（传 `--max-ios-version` 时）：预编译件不得要求比 App 更高的系统，
    否则在低版本设备上照样起不来（与 `verify-rustbridge-minos.sh` 是同一类问题）。
+   只对 **iOS 家族平台**（`LC_BUILD_VERSION.platform` ∈ {2 iOS, 7 iOSSimulator}）生效；
+   macOS 等其它切片只做展示、不参与该断言 —— 拿 iOS 的 17.4 去卡 macOS 切片没有意义。
+
+## ⚠️ 适用范围：别拿它去扫整个 App
+
+**只对「单一 C/C++ 代码库、用固定 `-mcpu` 基线编出来的产物」有意义**，
+典型就是 `Vendor/AnisetteKit/Unicorn.xcframework`。
+
+**不要**拿它去扫整个 `build/Seal_*.ipa`，也不要扫 `RustBridge.xcframework` ⚠️ ——
+Rust 的 `compiler_builtins` **自带两套 outlined atomics**（`lse_cas1_relax.o` /
+`lse_swp1_acq.o` … 与对应的 LL/SC 版本），由 `is_aarch64_feature_detected!("lse")`
+**运行时分派**：非 LSE 的 A10 永远不会执行到那几个目标文件。
+实测 `RustBridge.xcframework` 稳含约 9000 条 LSE，却**在 A10 上工作完全正常** ⇒
+盲目扫它只会得到纯假报警，并逼着人去「修」一个并不存在的问题。
 
 ## 实现
 
@@ -61,6 +75,16 @@ LC_SEGMENT_64 = 0x19
 LC_SYMTAB = 0x02
 LC_BUILD_VERSION = 0x32
 LC_VERSION_MIN_IPHONEOS = 0x25
+
+# `build_version_command.platform` 取值（<mach-o/loader.h>）
+PLATFORM_NAMES = {
+    1: "macOS", 2: "iOS", 3: "tvOS", 4: "watchOS", 5: "bridgeOS",
+    6: "macCatalyst", 7: "iOSSimulator", 8: "tvOSSimulator",
+    9: "watchOSSimulator", 10: "driverKit", 11: "visionOS",
+    12: "visionOSSimulator",
+}
+# 只有这两个平台参与 `--max-ios-version` 断言
+IOS_PLATFORMS = ("iOS", "iOSSimulator")
 
 # ── LSE 编码掩码（见模块 docstring）─────────────────────────────────────────
 FAMILY_CAS = "CAS/CASP"
@@ -204,15 +228,38 @@ def symbols(data):
 
 
 def min_os(data):
-    """返回该 Mach-O 声明的 iOS minOS（'X.Y'），没有则 None。"""
+    """返回 `(平台名, 'X.Y')`；没有版本命令则返回 `(None, None)`。
+
+    ⚠️ 偏移量必须精确。`build_version_command` 的布局是::
+
+        uint32 cmd      (+0)   = LC_BUILD_VERSION
+        uint32 cmdsize  (+4)
+        uint32 platform (+8)   ← 1 macOS / 2 iOS / 7 iOSSimulator …
+        uint32 minos    (+12)  ← X.Y.Z 编码成 nibble
+        uint32 sdk      (+16)
+        uint32 ntools   (+20)
+
+    本函数**曾把 minos 读成 +16（即 sdk）** ⇒ 对 Rust 的目标文件读到 `0.0`（静默假绿灯）、
+    对 asn1 的目标文件读到 `26.5`（假报警）——**这道断言实际上从未校验过 minOS**。
+    数值对照（`RustBridge.xcframework/ios-arm64`，真实部署目标 16.0）::
+
+        member                min_os()   off+8(platform)  off+12(minos)  off+16(sdk)
+        cgu.00.rcgu.o         0.0        2 (iOS)          16.0  ✓        0.0
+
+    `version_min_command`（老的 `LC_VERSION_MIN_IPHONEOS`）布局不同::
+
+        uint32 cmd (+0) / cmdsize (+4) / version (+8) / sdk (+12)
+    """
     for cmd, off in load_commands(data):
         if cmd == LC_BUILD_VERSION:
-            version = struct.unpack_from("<I", data, off + 16)[0]
-            return "%d.%d" % (version >> 16, (version >> 8) & 0xFF)
+            platform = struct.unpack_from("<I", data, off + 8)[0]
+            version = struct.unpack_from("<I", data, off + 12)[0]
+            return (PLATFORM_NAMES.get(platform, "platform%d" % platform),
+                    "%d.%d" % (version >> 16, (version >> 8) & 0xFF))
         if cmd == LC_VERSION_MIN_IPHONEOS:
             version = struct.unpack_from("<I", data, off + 8)[0]
-            return "%d.%d" % (version >> 16, (version >> 8) & 0xFF)
-    return None
+            return ("iOS", "%d.%d" % (version >> 16, (version >> 8) & 0xFF))
+    return (None, None)
 
 
 def version_tuple(text):
@@ -232,7 +279,7 @@ def version_tuple(text):
 class Report(object):
     def __init__(self):
         self.lse = []          # (label, symbol, addr, word, family)
-        self.min_os = []       # (label, minos)
+        self.min_os = []       # (label, platform, minos)，platform 为 None 表示没有版本命令
         self.arm64 = 0
         self.skipped = 0
         self.objects = 0
@@ -244,9 +291,9 @@ class Report(object):
             return
         self.arm64 += 1
         self.objects += 1
-        detected = min_os(blob)
-        if detected:
-            self.min_os.append((label, detected))
+        platform, detected = min_os(blob)
+        if platform:
+            self.min_os.append((label, platform, detected))
         syms = symbols(blob)
         sym_addrs = [s[0] for s in syms]
         for addr, size, offset in text_sections(blob):
@@ -378,12 +425,21 @@ def main(argv=None):
 
     if args.max_ios_version:
         limit = version_tuple(args.max_ios_version)
-        for obj, detected in report.min_os:
+        others = {}
+        for obj, platform, detected in report.min_os:
+            if platform not in IOS_PLATFORMS:
+                # macOS / tvOS / visionOS 等切片不参与 iOS minOS 断言，只做展示
+                others.setdefault(platform, set()).add(detected)
+                continue
             value = version_tuple(detected)
             if limit and value and value > limit:
-                print("  ❌ minOS 过高: %s 声明 iOS %s（上限 %s）"
-                      % (obj, detected, args.max_ios_version))
-                failures.append("%s 的 minOS 高于 %s" % (obj, args.max_ios_version))
+                print("  ❌ minOS 过高: %s 声明 %s %s（上限 %s）"
+                      % (obj, platform, detected, args.max_ios_version))
+                failures.append("%s 的 %s minOS %s 高于 %s"
+                                % (obj, platform, detected, args.max_ios_version))
+        for platform in sorted(others):
+            print("  （非 iOS 平台，不参与 minOS 断言）%s: %s"
+                  % (platform, ", ".join(sorted(others[platform]))))
 
     if report.unreadable:
         print("  ⚠️  无法读取 %d 个文件" % len(report.unreadable))
@@ -392,7 +448,8 @@ def main(argv=None):
         print("  FAIL: " + "；".join(sorted(set(failures))))
         return 1
     print("  OK: arm64 产物零 LSE%s"
-          % ("，minOS ≤ %s" % args.max_ios_version if args.max_ios_version else ""))
+          % ("，iOS 家族 minOS ≤ %s" % args.max_ios_version
+             if args.max_ios_version else ""))
     return 0
 
 

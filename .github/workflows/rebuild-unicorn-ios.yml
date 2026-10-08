@@ -34,7 +34,16 @@ permissions:
 
 jobs:
   rebuild:
-    runs-on: macos-26
+    # ⚠️ 为什么是 `macos-26-intel` 而不是 `macos-26`：
+    #   `macos-26`（arm64）与 `macos-26-intel`（x86_64）**是同一个 runner 镜像**
+    #   （探针实测两者都报 `Image: macos-26`，Xcode 26.0–26.6 与 cmake 齐全），
+    #   只是硬件架构不同 ⇒ 是两个**独立**的机器池。
+    #   2026-10-08 实测：`macos-26` 池子枯竭 —— 排队 job 连 runner 都拿不到、
+    #   `steps=[]`，并在 15 分 02 秒被掐掉（`cancelled`）；
+    #   同一次探针里 `macos-26-intel` / `macos-15` / `macos-15-intel` 全部 **4–8 秒**分配成功。
+    #   本工作流只做交叉编译（`CMAKE_OSX_ARCHITECTURES=arm64`），**与宿主架构无关**，
+    #   所以走 Intel 池子拿 Xcode 26.5 是等价的、且能立刻开跑。
+    runs-on: macos-26-intel
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6.0.2

@@ -94,7 +94,7 @@ struct UpdateNoticeView: View {
                         .padding(.top, 14)
                     ScrollView {
                         VStack(alignment: .leading, spacing: 12) {
-                            ForEach(changeItems(from: notice.message), id: \.self) { item in
+                            ForEach(Array(changeItems(from: notice.message).enumerated()), id: \.offset) { _, item in
                                 HStack(alignment: .top, spacing: 8) {
                                     Circle()
                                         .fill(Color.sealAccent)

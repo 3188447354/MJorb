@@ -214,18 +214,51 @@ actor SigningCoordinator {
     /// - 有新版待安装（pendingSelfUpdateSource）
     /// - 证书/私钥缺失
     /// - 账号不匹配
+    ///
+    /// ⚠️ 预测条件必须与 `shouldUseProfileOnlyRenewal` 的 guard 对齐（2026-10-08）：
+    /// 预测只查 admissionDecision + 证书，执行时还查「账号一致、Bundle ID 一致、
+    /// 设备绑定」—— 漏查会导致"预测走快路径、实际走完整重签"，Seal 在并行组里
+    /// 被杀进程，整轮续签结果丢失。拿不准的一律返回 false（串行殿后，无害）。
+    ///
+    /// ⚠️ 本签名的字面形式不能改（R117④ 守卫做字符串断言）；完整判据在双参重载里。
+    /// 无队列上下文时，用记录自身的绑定账号做预测（最优近似）。
     func predictsProfileOnlyForSeal(app: AppRecord) async -> Bool {
+        await predictsProfileOnlyForSeal(app: app, accountID: app.accountID)
+    }
+
+    /// 带队列账号的预测（批量续签用）：`accountID` 取自队列项，`RenewalAccountResolver`
+    /// 可能解析出与记录绑定不同的账号，此时执行侧必回落 fullResign，预测必须判 false。
+    func predictsProfileOnlyForSeal(app: AppRecord, accountID: UUID?) async -> Bool {
         guard app.isSeal else { return false }
+        // 执行侧要求 app.accountID == 传入的 accountID；队列没账号时无法预测。
+        guard let accountID, app.accountID == accountID else { return false }
         let renewalPolicy = policy(for: app)
         // 直接调策略的 admissionDecision，不手写重复逻辑（防两处分叉）
         let predicted: ProfileOnlyRenewalPolicy.Decision =
             await renewalPolicy.admissionDecision(for: app)
         guard case .eligible = predicted else { return false }
-        // 证书私钥必须在本机（否则实际执行时会回落 fullResign）。
         let liveIdentity = await renewalPolicy.liveIdentity(for: app)
+        // 证书私钥必须在本机（否则实际执行时会回落 fullResign）。
         guard ProfileOnlyRenewalPolicy.effectiveCertificateSerialNumber(
             app: app, liveIdentity: liveIdentity
         ) != nil else { return false }
+        // —— 以下三项是 shouldUseProfileOnlyRenewal 有、旧预测没有的 ——
+        // ① Bundle ID 一致：执行侧 targetBundleIdentifier 按同一规则计算。
+        guard let targetBundleIdentifier = try? BundleIDPolicy.targetBundleIdentifier(
+            for: app,
+            requestedBundleIdentifier: app.mappedBundleIdentifier ?? app.preferredBundleIdentifier
+        ),
+        app.mappedBundleIdentifier?.caseInsensitiveCompare(targetBundleIdentifier) == .orderedSame
+        else { return false }
+        // ② 设备绑定：拿不到设备标识时无法确认，保守返回 false。
+        guard let deviceIdentifier = await installChannel.storedDeviceIdentifier(),
+              !deviceIdentifier.isEmpty,
+              ProfileOnlyRenewalPolicy.isBoundToCurrentDevice(
+                  app: app,
+                  deviceIdentifier: deviceIdentifier,
+                  liveIdentity: liveIdentity
+              )
+        else { return false }
         return true
     }
 
@@ -2067,11 +2100,19 @@ actor SigningCoordinator {
                 )
             }
             do {
+                // 性能：signedData 已在内存（上面刚读过做验证），直接传给 prepare 复用，
+                // 避免 prepare 再读一次 30MB 文件（双份内存）。
                 let transaction = try await selfReplacement.prepare(
                     app: updated,
                     accountID: accountID,
-                    signedIPARelativePath: signedPath
+                    signedIPARelativePath: signedPath,
+                    preloadedData: signedData
                 )
+                // prepare 与 submitPrepared 之间隔着 updateState/progress，
+                // 若抛错 submitPrepared 走不到，30MB 缓存会泄漏。这里兜底删掉。
+                defer {
+                    Task { await selfReplacement.dropPreparedData(transactionID: transaction.id) }
+                }
                 try await updateState(appID: app.id, stage: .pushing)
                 await progress(SigningStageUpdate(stage: .pushing, app: app))
                 try await selfReplacement.submitPrepared(
@@ -2155,7 +2196,7 @@ actor SigningCoordinator {
             )
             updated.lastInstalledAt = Date()
             try await appStore.save(updated)
-            removeStaleProfiles(signedData: signedData, effectiveBundleID: effectiveBundleID)
+            await removeStaleProfiles(signedData: signedData, effectiveBundleID: effectiveBundleID)
             return updated
         } catch {
             // An existing Bundle ID may belong to the previous signing generation.
@@ -2225,7 +2266,7 @@ actor SigningCoordinator {
     /// **新** ID ⇒ 旧 ID 的 profile 不在这条路径原本的覆盖范围内，会一直堆。
     /// 每条都要过设备端核验（会抛错的 `isAppInstalled` + 阳性对照），
     /// 见 `DeviceProfileCleaner.removeProfiles` 阶段 B。
-    private func removeStaleProfiles(signedData: Data, effectiveBundleID: String) {
+    private func removeStaleProfiles(signedData: Data, effectiveBundleID: String) async {
         let embeddedProfiles = SignedArtifactProfileReader.embeddedProfiles(in: signedData)
         guard embeddedProfiles.isEmpty == false else {
             return
@@ -2234,25 +2275,25 @@ actor SigningCoordinator {
         for profile in embeddedProfiles {
             keepingByBundleID[profile.bundleIdentifier] = profile.uuid
         }
-        Task {
-            // 宽松受保护集合：Seal 记录里出现过的**全部** Bundle ID（含扩展，不要求
-            // `signedArtifactStatus == .installed`）。与上面 `keepingByBundleID`（只有本次
-            // 安装产物里的那几个 ID）是**两个不同的集合**，见
-            // `ProfileReclaimPolicy.isReclaimableOrphan`。
-            // 少了它，其它 App 的扩展 ID 会变成回收候选，而扩展的设备端核验恒为「没装」
-            // ⇒ 删掉正在用的扩展 profile（2026-09-17 真机发生过）。
-            // 读不到记录时集合为空 ⇒ `removeProfiles` fail closed，整轮不回收（路径 1 不受影响）。
-            let records = (try? await appStore.fetchAll()) ?? []
-            let summary = await DeviceProfileCleaner.removeStaleProfiles(
-                keepingByBundleID: keepingByBundleID,
-                protectedBundleIDs: ProfileReclaimPolicy.protectedBundleIDs(records: records),
-                reclaimSealOrphans: true
-            )
-            try? await logStore?.append(
-                category: .installation,
-                message: "安装后旧描述文件清理（主 \(effectiveBundleID)，共 \(keepingByBundleID.count) 个 Bundle ID）：\(summary.logMessage)"
-            )
-        }
+        // 2026-10-08：原先是 fire-and-forget 的 Task，App 被杀时清理中断且无记录。
+        // 改成 await，等清理做完再返回（调用方在安装成功后调用，不阻断关键路径）。
+        // 宽松受保护集合：Seal 记录里出现过的**全部** Bundle ID（含扩展，不要求
+        // `signedArtifactStatus == .installed`）。与上面 `keepingByBundleID`（只有本次
+        // 安装产物里的那几个 ID）是**两个不同的集合**，见
+        // `ProfileReclaimPolicy.isReclaimableOrphan`。
+        // 少了它，其它 App 的扩展 ID 会变成回收候选，而扩展的设备端核验恒为「没装」
+        // ⇒ 删掉正在用的扩展 profile（2026-09-17 真机发生过）。
+        // 读不到记录时集合为空 ⇒ `removeProfiles` fail closed，整轮不回收（路径 1 不受影响）。
+        let records = (try? await appStore.fetchAll()) ?? []
+        let summary = await DeviceProfileCleaner.removeStaleProfiles(
+            keepingByBundleID: keepingByBundleID,
+            protectedBundleIDs: ProfileReclaimPolicy.protectedBundleIDs(records: records),
+            reclaimSealOrphans: true
+        )
+        try? await logStore?.append(
+            category: .installation,
+            message: "安装后旧描述文件清理（主 \(effectiveBundleID)，共 \(keepingByBundleID.count) 个 Bundle ID）：\(summary.logMessage)"
+        )
     }
 
     /// 安装失败时把自诊断信息（Seal 构建号 + 签名包结构摘要）写入日志，

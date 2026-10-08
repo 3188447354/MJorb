@@ -23,7 +23,7 @@ struct AgreementOnboardingView: View {
                     .resizable()
                     .frame(width: 62, height: 62)
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .padding(.top, 32)
+                    .padding(.top, 40)
                     .padding(.bottom, 16)
 
                 // 标题（单行）
@@ -31,7 +31,7 @@ struct AgreementOnboardingView: View {
                     .font(.system(size: 26, weight: .bold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
-                    .padding(.bottom, 6)
+                    .padding(.bottom, 8)
 
                 // 副标题（单行）
                 Text("开始前，请花一分钟了解我们如何处理你的数据。")
@@ -39,7 +39,7 @@ struct AgreementOnboardingView: View {
                     .foregroundStyle(Color.sealTextSecondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
-                    .padding(.bottom, 20)
+                    .padding(.bottom, 24)
 
                 // 信任摘要
                 VStack(spacing: 0) {
@@ -49,7 +49,7 @@ struct AgreementOnboardingView: View {
                         detail: "账号、设备与签名资料默认保留在此设备。"
                     )
                     Divider()
-                        .padding(.leading, 40)
+                        .padding(.leading, 44)
                     trustRow(
                         icon: "lock.shield",
                         title: "仅用于必要的 Apple 通信",
@@ -113,8 +113,8 @@ struct AgreementOnboardingView: View {
                 }
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-                .padding(.horizontal, 18)
-                .padding(.bottom, 12)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 16)
 
                 // 主按钮
                 Button("同意并继续") {
@@ -126,8 +126,8 @@ struct AgreementOnboardingView: View {
                 .frame(maxWidth: .infinity)
                 .frame(minHeight: 52)
                 .background(Color.sealAccent, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-                .padding(.horizontal, 18)
-                .padding(.bottom, 4)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 12)
 
                 // 次按钮
                 Button("暂不使用") {
@@ -136,9 +136,9 @@ struct AgreementOnboardingView: View {
                 }
                 .font(.system(size: 14))
                 .foregroundStyle(Color.sealTextSecondary)
-                .padding(.top, 11)
+                .padding(.vertical, 8)
             }
-            .padding(.bottom, 8)
+            .padding(.bottom, 20)
         }
         .sealScreenBackground()
         .alert("需要您的同意", isPresented: $showDeclineHint) {
@@ -167,7 +167,6 @@ struct AgreementOnboardingView: View {
             Spacer()
         }
         .padding(.vertical, 12)
-        .padding(.horizontal, 4)
     }
 
     /// 协议文档行：图标 + 名称 + 日期 + 箭头

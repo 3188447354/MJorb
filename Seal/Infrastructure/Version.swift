@@ -24,6 +24,8 @@ enum Version {
         while text.hasPrefix("v") || text.hasPrefix("V") {
             text.removeFirst()
         }
-        return text.components(separatedBy: ".").compactMap { Int($0) }
+        // 问题13修复：转不成 Int 的分段按 0 处理，而不是丢弃。
+        // 否则 "1.0.0-beta" 会被当成 "1.0"（"0-beta" 被 compactMap 丢掉）。
+        return text.components(separatedBy: ".").map { Int($0) ?? 0 }
     }
 }

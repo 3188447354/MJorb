@@ -74,7 +74,7 @@ Text("如您对本协议有任何疑问，可通过应用内「加入社群」�
         VStack(spacing: 2) {
             Text(AgreementMetadata.Terms.title)
                 .font(.headline)
-            Text("v\(AgreementMetadata.Terms.version) · \(AgreementMetadata.Terms.effectiveDate)生效")
+            Text("v\(AgreementVersion.current) · \(AgreementMetadata.Terms.effectiveDate)生效")
                 .font(.caption2)
                 .foregroundStyle(Color.sealTextSecondary)
         }

@@ -50,6 +50,16 @@ enum SelfReplacementPolicy {
             // 失败（11 秒），而同一台设备另一次 8 秒就结算成功了 ⇒ 耗时没有判别力。
             // ⇒ 用一个**明确的宽限期**表达「还没装完」：窗口内保留事务（下次启动再判），
             //   窗口过了才按未安装关闭。
+            //
+            // 2026-10-08：宽限期依赖 `returnedAt`，但进程可能在 `install()` 返回前
+            // 被杀 —— 此时 submission 已认领（install 命令已下发）、`returnedAt` 为 nil，
+            // 旧逻辑直接跳过宽限期按终态关闭。无法区分"installd 还在装"和"安装失败"，
+            // 保守起见把"已下发但从未返回"也视为宽限期内（下次启动重判），别直接终态关闭。
+            // `returnedAt` 有值但宽限期已过 ⇒ installd 早该装完，仍是旧身份就是真失败。
+            //
+            // ⚠️ 下面两行的字面形式不能改写（R77① 守卫做字符串断言）。
+            let withinReplacementGrace = withinReplacementGrace
+                || (transaction.submission != nil && transaction.submission?.returnedAt == nil)
             return withinReplacementGrace ? .awaitNextLaunch : .closeAsNotInstalled
         }
         return .requireRecovery(reason: "当前 Seal 与安装前身份、候选身份都不一致")

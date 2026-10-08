@@ -4,10 +4,8 @@ import XCTest
 /// 协议版本与同意状态的最小测试。
 final class AgreementVersionTests: XCTestCase {
 
-    private let testKey = "seal.test.agreedAgreementVersion"
-
     override func tearDown() {
-        UserDefaults.standard.removeObject(forKey: testKey)
+        UserDefaults.standard.removeObject(forKey: AgreementVersion.storageKey)
         super.tearDown()
     }
 
@@ -29,11 +27,10 @@ final class AgreementVersionTests: XCTestCase {
         XCTAssertTrue(needsAgreementOnboarding())
     }
 
-    /// 元数据不为空
+    /// 元数据不为空，且版本号只有一个源
     func testAgreementMetadataNotEmpty() {
         XCTAssertFalse(AgreementMetadata.Privacy.effectiveDate.isEmpty)
         XCTAssertFalse(AgreementMetadata.Terms.effectiveDate.isEmpty)
-        XCTAssertGreaterThan(AgreementMetadata.Privacy.version, 0)
-        XCTAssertGreaterThan(AgreementMetadata.Terms.version, 0)
+        XCTAssertGreaterThan(AgreementVersion.current, 0)
     }
 }

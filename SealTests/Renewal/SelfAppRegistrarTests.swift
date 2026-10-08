@@ -547,7 +547,8 @@ private actor FakeSelfReplacing: SelfReplacing {
     func prepare(
         app: AppRecord,
         accountID: UUID,
-        signedIPARelativePath: String
+        signedIPARelativePath: String,
+        preloadedData: Data? = nil
     ) async throws -> SelfReplacementTransaction {
         throw SelfReplacementFailure.bundleShapeChanged
     }
@@ -556,6 +557,8 @@ private actor FakeSelfReplacing: SelfReplacing {
         transactionID: UUID,
         progress: @escaping @Sendable (Double) async -> Void
     ) async throws {}
+
+    func dropPreparedData(transactionID: UUID) async {}
 
     func reconcileAtLaunch() async throws -> SelfReplacementReconcileAction {
         reconcileAction

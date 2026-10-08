@@ -5,6 +5,22 @@
 
 ---
 
+## 2026-10-08 全量审计 27 问题修复（4 路并行）
+
+- **现象**：MJ 要求全量审查，查出 27 个问题（10 严重/9 中等/8 轻微）。
+- **根因**：见 `~/workspace/Seal全量问题集锦.md`，每个问题都有文件行号。
+- **修复**：
+  - 图标/标签组：updatePreferredIcon 加 load 刷新；导入抽屉图标昵称合并保存；同 build 异包标签走指纹；列表行走解码缓存；FIFO 改 LRU。
+  - 签名/续签组：自替换 IPA 复用 Data（省 30MB）；预测补齐 5 条件；renewalExecutionPaths 每轮清空；SELF-111 宽限期补洞；启动兜底只清标记不记已装；prepare 加 defer 清缓存；removeStaleProfiles 改 await。
+  - 日志/设置组：导出先发通知落盘；LogRound 收尾未闭合块；SEAL-MEM-001 移到 mirror 后；协议版本只留一个源；测试 tearDown 清对 key；删 setReminderHours/communityCard 死代码；ForEach 改 offset。
+  - 内存/版本组：NSCache 传 cost；countLimit 统一 10；compareVersions 调 Version.compare；beta 版按 0 处理；observer 存 token。
+  - 开屏页：间距改 8pt 基准（40/16/8/24/16/12）。
+- **涉及文件**：24 个（见 git status）。
+- **验证状态**：守卫 831 项 0 failures，未推，等 MJ 说推。
+- **教训**："全量保存+陈旧快照"是图标问题的万恶之源；NSCache 不传 cost 上限形同虚设。
+
+---
+
 ## 2026-10-08 476ea0f 「有新版本待安装」标签常驻：只改了详情页，漏了列表行
 
 - **现象**：MJ 反馈 Seal 自替换后，已安装列表 Seal 行的「有新版本待安装」标签一直在，点进去详情页标签也不消失。

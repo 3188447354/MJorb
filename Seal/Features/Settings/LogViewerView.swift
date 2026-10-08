@@ -10,6 +10,9 @@ extension Notification.Name {
     /// Seal 自身记录更新完成（自安装重启后的结算）：应用页收到后刷新列表，
     /// "有新版本待安装"标签自动消失，不用手动切页面。
     static let sealSelfRecordUpdated = Notification.Name("sealSelfRecordUpdated")
+    /// 导出日志前强制落盘：LogViewerView 发出，AppContainer 监听并调 logStore.forceMirrorToDocuments()。
+    /// 解决"每次点导出第一下都说日志文件不存在"——View 拿不到 logStore，只能走通知（参考 sealClearLogs 模式）。
+    static let sealForceMirrorLogs = Notification.Name("sealForceMirrorLogs")
 }
 
 /// 日志查看页：只显示人话卡片，不显示原始日志。
@@ -123,33 +126,34 @@ struct LogViewerView: View {
     }
 
     private func exportLogs() {
-        // 直接读 Documents 里的 Seal-log.txt 文件，确保导出的是文件夹的完整日志
-        // 第一次点击也能用（不依赖内存 rounds 是否加载完成）
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        let logURL = docs?.appendingPathComponent("Seal-log.txt")
-        guard let url = logURL,
-              let text = try? String(contentsOf: url, encoding: .utf8),
-              !text.isEmpty else {
-            exportURL = nil
-            isExporting = true
-            return
+        // 先通知日志系统把内存缓冲强制落盘（跳过 30 秒节流），再读文件。
+        // 不这么做的话，文件可能还没生成/是旧的，就会出现"第一下说文件不存在"。
+        // 待优化：等通知确认机制，现在给落盘留 0.8 秒。
+        Task {
+            NotificationCenter.default.post(name: .sealForceMirrorLogs, object: nil)
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            let logURL = docs?.appendingPathComponent("Seal-log.txt")
+            let text = logURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
+            await MainActor.run {
+                guard !text.isEmpty else {
+                    exportURL = nil
+                    isExporting = true
+                    return
+                }
+                // 固定文件名、每次覆盖：分享完不堆积 tmp 文件（之前带时间戳，每次留一个）。
+                let tmpURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("Seal-日志.txt")
+                try? FileManager.default.removeItem(at: tmpURL)
+                do {
+                    try text.write(to: tmpURL, atomically: true, encoding: .utf8)
+                    exportURL = tmpURL
+                } catch {
+                    exportURL = nil
+                }
+                isExporting = true
+            }
         }
-        let tmpURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Seal-日志-\(formattedDate()).txt")
-        try? FileManager.default.removeItem(at: tmpURL)
-        do {
-            try text.write(to: tmpURL, atomically: true, encoding: .utf8)
-            exportURL = tmpURL
-        } catch {
-            exportURL = nil
-        }
-        isExporting = true
-    }
-
-    private func formattedDate() -> String {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyyMMdd-HHmmss"
-        return fmt.string(from: Date())
     }
 
     private func clearLogs() async {
@@ -206,6 +210,23 @@ struct LogRound: Identifiable {
             }
             if inBlock {
                 currentLines.append(message)
+            }
+        }
+        // 收尾：文件尾部未闭合的块（崩溃/被杀时最后一轮没写完）也要拼出来，
+        // 否则"死在哪一步"的那轮在日志页根本看不到。
+        if inBlock && !currentLines.isEmpty {
+            if let round = buildRound(from: currentLines, date: currentDate) {
+                rounds.append(LogRound(
+                    title: round.title + "（未完成）",
+                    items: round.items,
+                    footer: round.footer.isEmpty ? "App 异常退出，该轮未完成" : round.footer
+                ))
+            } else {
+                rounds.append(LogRound(
+                    title: "未完成",
+                    items: [],
+                    footer: "App 异常退出，最后一轮日志不完整"
+                ))
             }
         }
         return rounds

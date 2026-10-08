@@ -2860,32 +2860,6 @@ final class SettingsViewModel: ObservableObject {
         notificationStatus = await notificationScheduler.status(sealEnabled: notificationPreferences.isEnabled)
     }
 
-    func setReminderHours(_ hours: Int) async {
-        guard let notificationPreferences,
-              let notificationScheduler,
-              let appStore else { return }
-        reminderHours = NotificationPreferences.fixedLeadHours
-        notificationPreferences.leadHours = NotificationPreferences.fixedLeadHours
-        do {
-            try await notificationScheduler.reschedule(
-                apps: try await appStore.fetchAll(),
-                enabled: notificationsEnabled,
-                leadHours: NotificationPreferences.fixedLeadHours
-            )
-            notificationStatus = await notificationScheduler.status(sealEnabled: notificationsEnabled)
-        } catch {
-            let diagnostic = NotificationSchedulingFailure.diagnostic(for: error)
-            let failure = Self.failure(
-                title: "无法设置提醒",
-                reason: "提醒时间未能更新。",
-                recovery: "去系统设置打开通知权限后重试",
-                code: "SEAL-NOTIFY-002b"
-            )
-            alertFailure = failure
-            try? await logStore?.append(category: .system, level: .error, message: "SEAL-NOTIFY-002b 底层诊断：\(diagnostic)", code: failure.code)
-        }
-    }
-
     func refreshStorageUsage() async {
         guard let fileStore else {
             storageUsage = .empty

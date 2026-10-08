@@ -340,7 +340,11 @@ struct AppsRootView: View {
                     Button {
                         openApp(app, in: pageMode)
                     } label: {
-                        ImportedAppRow(app: app, iconData: viewModel.iconData[app.id])
+                        ImportedAppRow(
+                            app: app,
+                            iconData: viewModel.iconData[app.id],
+                            decodedImage: viewModel.decodedIcon(for: app.id)
+                        )
                             .padding(.horizontal, 16)
                             .padding(.vertical, 10)
                             .contentShape(Rectangle())

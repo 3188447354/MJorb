@@ -15,12 +15,16 @@ protocol SelfReplacing: Actor {
     func prepare(
         app: AppRecord,
         accountID: UUID,
-        signedIPARelativePath: String
+        signedIPARelativePath: String,
+        preloadedData: Data?
     ) async throws -> SelfReplacementTransaction
     func submitPrepared(
         transactionID: UUID,
         progress: @escaping @Sendable (Double) async -> Void
     ) async throws
+    /// 丢弃 prepare 缓存的 IPA Data（调用方在 prepare 成功后用 defer 兜底，
+    /// 防止 submitPrepared 没走到时 30MB 常驻）。
+    func dropPreparedData(transactionID: UUID) async
     func reconcileAtLaunch() async throws -> SelfReplacementReconcileAction
     func settle() async throws -> SettledSelfReplacement
     func closeAsNotInstalled() async throws
@@ -112,13 +116,21 @@ actor SelfReplacementCoordinator: SelfReplacing {
     func prepare(
         app: AppRecord,
         accountID: UUID,
-        signedIPARelativePath: String
+        signedIPARelativePath: String,
+        preloadedData: Data? = nil
     ) async throws -> SelfReplacementTransaction {
         let running = try readRunningIdentity()
         guard running.isComplete else {
             throw SelfReplacementFailure.runningIdentityUnknown(running.readErrors)
         }
-        let ipaData = try await fileStore.read(relativePath: signedIPARelativePath)
+        // 调用方（installSignedIPA）已把 IPA 读进内存做验证，直接复用，
+        // 省一次 30MB 全文件磁盘读。没传才自己读。
+        let ipaData: Data
+        if let preloadedData {
+            ipaData = preloadedData
+        } else {
+            ipaData = try await fileStore.read(relativePath: signedIPARelativePath)
+        }
         let id = UUID()
         let candidate = try ipaIdentityReader.read(ipaData: ipaData, transactionID: id)
         if let mismatch = SelfReplacementPolicy.shapeMismatch(
@@ -192,6 +204,13 @@ actor SelfReplacementCoordinator: SelfReplacing {
             try? await store.recordTransportReturn(transactionID: transactionID, result: "threw")
             throw error
         }
+    }
+
+    /// 丢弃 prepare 缓存的 IPA Data。调用方在 prepare 成功后用 defer 兜底调用，
+    /// 防止 prepare 与 submitPrepared 之间抛错时 30MB 常驻（submitPrepared 走到
+    /// 时自己会删，这里再删一次是无害的幂等操作）。
+    func dropPreparedData(transactionID: UUID) async {
+        preparedDataByTransactionID.removeValue(forKey: transactionID)
     }
 
     func reconcileAtLaunch() async throws -> SelfReplacementReconcileAction {

@@ -4,6 +4,9 @@ import UIKit
 struct ImportedAppRow: View {
     let app: AppRecord
     let iconData: Data?
+    /// 问题10修复：调用方传入解码后的图片（走 ViewModel 缓存），避免每次 body 都 UIImage(data:) 重解码。
+    /// 为 nil 时回退到 iconData 直接解码（保底）。
+    var decodedImage: UIImage? = nil
 
     var body: some View {
         HStack(spacing: 14) {
@@ -100,8 +103,8 @@ struct ImportedAppRow: View {
 
     @ViewBuilder private var icon: some View {
         Group {
-            if let iconData,
-               let image = UIImage(data: iconData) {
+            // 优先用缓存的解码图，没有才现场解码
+            if let image = decodedImage ?? iconData.flatMap({ UIImage(data: $0) }) {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
@@ -195,11 +198,8 @@ struct ImportedAppRow: View {
     /// 返回 nil 表示无待安装（不显示标签）。
     private static func pendingUpdateKind(_ app: AppRecord) -> ProfileOnlyRenewalPolicy.PendingUpdateKind? {
         if app.isSeal {
-            // 自替换后：如果记录的 build 号和运行的一致，说明已装上新版，直接不显示标签
-            let runningBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-            if let rb = runningBuild, rb == app.buildNumber {
-                return nil
-            }
+            // 问题3修复：build 号一致不直接隐藏，继续走指纹判断。
+            // 同 build 异包导入时，记录 build 已被写成新包的，靠指纹才能区分"已装"和"待装"。
             let runningVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
             let kind = ProfileOnlyRenewalPolicy.pendingUpdateKind(
                 recordedVersion: app.version,

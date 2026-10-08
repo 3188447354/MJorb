@@ -243,15 +243,8 @@ enum AppSigningPresentationHelpers {
         runningVersion: String?,
         runningBuildNumber: String? = nil
     ) -> String? {
-        // Seal 自替换后：如果记录的 build 号和运行的一致，说明已装上新版，
-        // 即使 fingerprint 残留也不显示标签（等 SelfAppRegistrar 清理）。
-        let effectiveRunningBuild = runningBuildNumber
-            ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-        if app.isSeal,
-           let runningBuild = effectiveRunningBuild,
-           runningBuild == app.buildNumber {
-            return nil
-        }
+        // 问题3修复：build 号一致不直接隐藏，继续走指纹判断（hasPendingUpdateSource 内部已处理）。
+        // 同 build 异包导入时，靠指纹区分"已装"和"待装"。
         guard app.isSeal,
               ProfileOnlyRenewalPolicy.hasPendingUpdateSource(
                   recordedVersion: app.version,

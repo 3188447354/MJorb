@@ -331,7 +331,8 @@ private actor RecordingSelfReplacement: SelfReplacing {
     func prepare(
         app: AppRecord,
         accountID: UUID,
-        signedIPARelativePath: String
+        signedIPARelativePath: String,
+        preloadedData: Data? = nil
     ) async throws -> SelfReplacementTransaction {
         prepareCount += 1
         preparedAppID = app.id
@@ -360,6 +361,8 @@ private actor RecordingSelfReplacement: SelfReplacing {
     ) async throws {
         submitCount += 1
     }
+
+    func dropPreparedData(transactionID: UUID) async {}
 
     func reconcileAtLaunch() async throws -> SelfReplacementReconcileAction { .none }
 

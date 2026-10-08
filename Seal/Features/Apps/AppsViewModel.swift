@@ -34,11 +34,27 @@ final class AppsViewModel: ObservableObject {
     private var decodedIconOrder: [NSString] = []
     private let decodedIconMaxCount = 10
 
+    /// 问题22修复：内存警告观察者 token，deinit 时移除，避免观察者泄漏。
+    /// nonisolated(unsafe)：NotificationCenter 的 add/removeObserver 线程安全；
+    /// deinit 是非隔离上下文，不能直接访问 @MainActor 隔离属性。
+    nonisolated(unsafe) private var memoryWarningObserver: NSObjectProtocol?
+
+    deinit {
+        if let observer = memoryWarningObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
     /// 取指定 App 的解码后图标（走 NSCache，未命中时解码并缓存）。
     /// 硬上限 10 张，超了删最旧的。
     func decodedIcon(for appID: UUID) -> UIImage? {
         let key = appID.uuidString as NSString
         if let cached = decodedIconCache.object(forKey: key) {
+            // 问题24修复：LRU，命中时把 key 移到末尾，避免常用图标被误删
+            if let idx = decodedIconOrder.firstIndex(of: key) {
+                decodedIconOrder.remove(at: idx)
+                decodedIconOrder.append(key)
+            }
             return cached
         }
         guard let data = iconData[appID], let image = UIImage(data: data) else {
@@ -49,7 +65,9 @@ final class AppsViewModel: ObservableObject {
             decodedIconCache.removeObject(forKey: oldest)
             decodedIconOrder.removeFirst()
         }
-        decodedIconCache.setObject(image, forKey: key)
+        // 问题11修复：totalCostLimit 只有传 cost 才生效，按 RGBA 估算内存占用
+        let cost = Int(image.size.width * image.size.height * 4)
+        decodedIconCache.setObject(image, forKey: key, cost: cost)
         if !decodedIconOrder.contains(key) {
             decodedIconOrder.append(key)
         }
@@ -206,11 +224,12 @@ final class AppsViewModel: ObservableObject {
         iconData = [:]
         decodedIconCache.removeAllObjects()
         decodedIconOrder.removeAll()
-        decodedIconCache.countLimit = 50
+        decodedIconCache.countLimit = 10
         decodedIconCache.totalCostLimit = 50 * 1024 * 1024
         phase = .idle
         isImportSheetPresented = false
-        NotificationCenter.default.addObserver(
+        // 问题22修复：存下 token，deinit 时移除观察者
+        memoryWarningObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didReceiveMemoryWarningNotification,
             object: nil,
             queue: .main
@@ -1742,6 +1761,9 @@ final class AppsViewModel: ObservableObject {
                 iconData[updated.id] = newIconData
             }
             invalidateDecodedIcon(for: updated.id)
+            // 问题8修复：跟 updatePreferredDisplayName 保持一致，保存成功后刷新 apps，
+            // 避免后续用旧记录保存时把新图标路径覆盖掉。
+            await load(force: true)
             return true
         } catch {
             alertFailure = ImportFailure(
@@ -2329,11 +2351,6 @@ final class AppsViewModel: ObservableObject {
                     //（2026-09-29 真机反馈「通知成功了、进 App 抽屉却有延迟」）。
                     persistPendingBatchResult(forceSealAwaiting: false)
                 }
-                // 续签完成立即强制镜像日志到 Documents，跳过 30 秒节流，
-                // 让用户进日志页立马能看到本轮日志。
-                // 必须 await：日志页收到 .sealRenewalCompleted 后直接读文件，
-                // fire-and-forget 会造成"刷新了但读到旧文件"的竞态。
-                await logStore?.forceMirrorToDocuments()
                 // 续签完成清理图片解码缓存，释放续签过程中积累的内存
                 clearDecodedIconCache()
                 // 深度清理：URLSession 缓存、临时文件
@@ -2348,6 +2365,13 @@ final class AppsViewModel: ObservableObject {
                     message: "续签完成缓存状态：iconData \(iconDataCount)项/\(iconDataBytes/1024)KB，解码缓存 \(cacheOrderCount)项",
                     code: "SEAL-MEM-001"
                 )
+                // 续签完成立即强制镜像日志到 Documents，跳过 30 秒节流，
+                // 让用户进日志页立马能看到本轮日志。
+                // 必须 await：日志页收到 .sealRenewalCompleted 后直接读文件，
+                // fire-and-forget 会造成"刷新了但读到旧文件"的竞态。
+                // 注意顺序：必须放在所有 append 之后，否则本轮最后几条
+                // （含上面的 SEAL-MEM-001）要等下个 30 秒窗口才落盘。
+                await logStore?.forceMirrorToDocuments()
                 // 续签后立即重排通知（用新到期时间），并刷新状态，避免提醒时间滞后
                 // 同时刷新内存中的应用列表，让已安装页立即显示新日期
                 // 两阶段提交：重排完成后再发 .sealRenewalCompleted，观察者读到的是新状态，不用睡2秒碰运气
@@ -3592,9 +3616,12 @@ final class AppsViewModel: ObservableObject {
                 _ = await updatePreferredIcon(for: record, data: iconData)
             }
             // 导入时改的自定义名称：应用到新记录上。
+            // 问题2修复：updatePreferredIcon 已刷新 apps，这里用最新记录，
+            // 避免旧 record 的 preferredIconRelativePath 覆盖刚保存的新图标。
             if let displayName = pendingImportDisplayName {
                 pendingImportDisplayName = nil
-                _ = await updatePreferredDisplayName(for: record, name: displayName)
+                let latest = apps.first(where: { $0.id == record.id }) ?? record
+                _ = await updatePreferredDisplayName(for: latest, name: displayName)
             }
             await load(force: true)
             // load 会重建整个 iconData，在这里设置确保不被覆盖

@@ -152,14 +152,9 @@ actor ImportWorkflow {
     }
 
     /// 版本号比较：返回 >0 表示 v1 > v2，<0 表示 v1 < v2，=0 表示相等
+    /// 问题12修复：统一走 Version.compare，避免两套实现行为不一致（v 前缀处理）。
     private static func compareVersions(_ v1: String, _ v2: String) -> Int {
-        // 空版本视为 0
-        if v1.isEmpty && v2.isEmpty { return 0 }
-        if v1.isEmpty { return -1 }
-        if v2.isEmpty { return 1 }
-        // 用 numeric 比较，正确处理 1.10 > 1.9
-        let result = v1.compare(v2, options: .numeric)
-        switch result {
+        switch Version.compare(v1, v2) {
         case .orderedAscending: return -1
         case .orderedDescending: return 1
         case .orderedSame: return 0

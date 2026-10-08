@@ -117,9 +117,10 @@ actor SelfAppRegistrar {
         // 旧条件（必须不一致）永远不满足，导致「有新版本待安装」常驻。
         if let existing, existing.pendingUpdateSourceFingerprint != nil {
             var updated = existing
-            if let pending = updated.pendingUpdateSourceFingerprint {
-                updated.installedFingerprint = pending
-            }
+            // 2026-10-08：只清待安装标记，不把 pending 记为已装指纹。
+            // 这段兜底跑在启动时，没有"新包真的落盘"的证据；若自替换实际失败，
+            // 把 pending 写成 installedFingerprint，会让下次导入同包时被误判
+            // "已安装过"而不提示更新。标记清掉后红标消失，指纹保持原样。
             updated.pendingUpdateSourceFingerprint = nil
             try await appStore.save(updated)
             try? await logStore?.append(

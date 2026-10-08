@@ -280,7 +280,7 @@ private actor StubSelfReplacement: SelfReplacing {
         settlePayload = payload
     }
 
-    func prepare(app: AppRecord, accountID: UUID, signedIPARelativePath: String) async throws -> SelfReplacementTransaction {
+    func prepare(app: AppRecord, accountID: UUID, signedIPARelativePath: String, preloadedData: Data? = nil) async throws -> SelfReplacementTransaction {
         prepareCallCount += 1
         throw SelfReplacementStoreError.pendingNotFound
     }
@@ -288,6 +288,8 @@ private actor StubSelfReplacement: SelfReplacing {
     func submitPrepared(transactionID: UUID, progress: @escaping @Sendable (Double) async -> Void) async throws {
         submitCallCount += 1
     }
+
+    func dropPreparedData(transactionID: UUID) async {}
 
     func reconcileAtLaunch() async throws -> SelfReplacementReconcileAction { action }
 

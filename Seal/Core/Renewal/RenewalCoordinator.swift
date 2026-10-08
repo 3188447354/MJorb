@@ -245,6 +245,8 @@ actor RenewalCoordinator {
         triggerSource: RenewalTriggerSource,
         progress: @escaping @Sendable (BatchRefreshEvent) async -> Void
     ) async throws -> BatchRefreshResult {
+        // 问题21修复：每轮开始清空路径记录，避免上一轮的旧路径污染本轮判断
+        renewalExecutionPaths.removeAll()
         let apps = try await appStore.fetchAll()
         let queuedApps = queue.compactMap { item in apps.first(where: { $0.id == item.appID }) }
         await progress(.prepared(apps: queuedApps))
@@ -302,6 +304,10 @@ actor RenewalCoordinator {
     ) async throws -> BatchRefreshResult {
         await progress(.started(total: queue.count))
 
+        // 路径信号是「本轮」的临时状态（2026-10-08 问题6）：不清空的话，第二轮会读到
+        // 第一轮的旧值，把"需自替换确认"误判成"普通成功"。
+        renewalExecutionPaths.removeAll()
+
         // 轮次计时：首尾各取一次 Date()，约百纳秒，不增加续签耗时（要求 8）。
         let roundStart = Date()
         let roundNumber = Self.nextRoundNumber()
@@ -332,7 +338,7 @@ actor RenewalCoordinator {
         var serialLastItems: [RefreshQueueItem] = []
         for item in queue {
             if let app = appsByID[item.appID], app.isSeal,
-               await signingCoordinator.predictsProfileOnlyForSeal(app: app) == false {
+               await signingCoordinator.predictsProfileOnlyForSeal(app: app, accountID: item.accountID) == false {
                 // Seal 且预测走 fullResign（或不确定）⇒ 串行殿后。
                 serialLastItems.append(item)
             } else {

@@ -658,9 +658,9 @@ final class SettingsViewModel: ObservableObject {
                 message: "用户已明确撤销证书。完整 Serial：\(serialNumber)"
             )
             await load(force: true)
-            if let refreshedAccount = accounts.first(where: { $0.id == account.id }) {
-                await refreshCertificateInventory(for: refreshedAccount, force: true)
-            }
+            // 撤销后不立即从 Portal 回读清单：Apple 侧撤销有传播延迟，立即拉会把刚删掉的
+            // 证书又带回来。本地已用 removeRevokedCertificateFromInventory 同步移除，
+            // 用户下拉刷新时会再与 Portal 对账。
             logs = (try? await logStore?.entries()) ?? logs
             await refreshLogExportText()
         } catch let failure as ImportFailure {

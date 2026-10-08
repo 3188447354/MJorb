@@ -761,6 +761,14 @@ final class AppsViewModel: ObservableObject {
         )
     }
 
+    /// 签名成功后直接标记该 App 证书可用，不等后台重算（后台读钥匙串有延迟，
+    /// 且刚签名完本机一定有私钥，直接置 .ready 是安全的）。
+    /// 后续 refreshCertAvailability() 会再校验一次，若真有问题会纠回来。
+    func markLocalCertificateReady(for appID: UUID) {
+        localCertificateAvailabilityByAppID[appID] = .ready
+    }
+    }
+
     /// 一次读完所有账号的密钥 —— 邮箱显示与「本机证书状态」都从这里派生。
     ///
     /// 两者共用一次读取是**刻意的**：它们本来就要一起用，分两次读会把 N 个账号的
@@ -3053,6 +3061,9 @@ final class AppsViewModel: ObservableObject {
                 lifecycleStatus: completed.belongsInInstalledList ? .active : .unknown
             )
             await cleanTemporaryFilesIfNeeded(appID: completed.id)
+            // 签名成功本机一定有私钥，直接置为可用，不等后台重算（后台有延迟）。
+            // 后续 load() 的后台任务会再校验一次，若真有问题会纠回来。
+            markLocalCertificateReady(for: completed.id)
             await load(force: true)
         } catch is CancellationError {
             signingSession = nil

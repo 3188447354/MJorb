@@ -5,6 +5,21 @@
 
 ---
 
+## 2026-10-09 三个 UI 状态不消失 bug 修复
+
+- **现象**：MJ 真机反馈（build 263）：① 覆盖更新完成后"有新版本待安装"标签不消失；② 撤销证书后已撤销的证书不从列表消失；③ 抽屉里"需重新签名"文案签名后不消失（有延迟）。
+- **根因**：
+  - ① SigningCoordinator 安装成功后确实清了 pendingUpdateSourceFingerprint 并 save，但 UI 侧的刷新依赖 load()，若时序不对标签残留。
+  - ② revokeCertificate 里先调 removeRevokedCertificateFromInventory 从内存删，紧接着又调 refreshCertificateInventory(force:true) 从 Apple 拉清单；Apple 侧撤销有传播延迟，刚删的又被拉回来。
+  - ③ 抽屉文案读 localCertificateAvailabilityByAppID 缓存，只在 load() 后台任务里更新；签名完成后缓存还是旧值。且远端已加 refreshCertAvailability() 同步重算，但签名完成路径没调它。
+- **修复**：
+  - ③ AppsViewModel 新增 markLocalCertificateReady(for:)：签名成功后直接把该 App 的证书状态置为 .ready（签名刚用私钥签完，本机一定有），不等后台重算。后续 refreshCertAvailability() 会再校验纠错。与远端的 refreshCertAvailability() 共存。
+  - ② 删掉撤销成功后的立即 refreshCertificateInventory(force:true)，本地移除已足够；用户下拉刷新时再与 Portal 对账。
+  - ① 签名完成路径已有 load(force:true)，本次未改代码，待真机验证若仍复现再深查。
+- **涉及文件**：Seal/Features/Apps/AppsViewModel.swift、Seal/Features/Settings/SettingsViewModel.swift。
+- **验证状态**：守卫 831 项 0 failures，未推，等 MJ 说推。真机未验证。
+- **教训**："删了又拉回来"是撤销类操作的经典坑——本地删完别立刻全量回读，要么延迟，要么加已删过滤。
+
 ## 2026-10-08 自更新失败的「同版本」角：草稿被转正 + 丢弃后又被旧快照写回
 
 - **现象**：Seal 自更新失败（`.closeAsNotInstalled`）后，记录里的有效期 / 证书序列号

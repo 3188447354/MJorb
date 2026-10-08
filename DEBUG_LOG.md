@@ -5,6 +5,50 @@
 
 ---
 
+## 2026-10-08 自更新失败的「同版本」角：草稿被转正 + 丢弃后又被旧快照写回
+
+- **现象**：Seal 自更新失败（`.closeAsNotInstalled`）后，记录里的有效期 / 证书序列号
+  会显示成**候选包**那份 —— 而设备上跑的仍是旧包，那份身份设备上根本不存在。
+  后果不是显示难看，是**用户直到被吊销都收不到提醒**（提醒读的就是记录里的有效期）。
+- **根因（两层，缺一不可）**：
+  1. **判据只认版本号**：`reconcileSealRecordFromRunningBundleIfNeeded` 里判断
+     「候选没在设备上」用的是 `hasPendingSelfUpdateSource && version != 运行版本`。
+     **同版本**续签的自更新失败时两边版本**完全相同** ⇒ 判据恒为 false
+     ⇒ `commitPendingSnapshot()` 把签名阶段的草稿转正成顶层真相。
+  2. **返回值破坏了调用契约**：`.closeAsNotInstalled` 分支结尾是 `return false`，
+     而 `reconcileSelfReplacement` 的契约写的是「返回**是否推进了记录**，调用方在结算后
+     **必须重新读取记录**，避免用旧快照覆盖刚确认的真实身份」。这里明明推进了记录却报 false
+     ⇒ 调用方**不重读**，手上那份旧快照（还带着刚被丢弃的 `pendingSignedSnapshot`）
+     继续往后走，后面几轮对账把它**原样写回库**：刚丢弃的候选身份当场复活。
+     真机上「同版本失败」正好同时踩中这两层，所以现象是稳定复现的。
+- **修复**：
+  - `reconcileSealRecordFromRunningBundleIfNeeded` 新增参数
+    `candidateConfirmedNotInstalled: Bool = false` —— 由**调用方显式声明**候选的去向，
+    不再让结算函数从版本号猜。判据改为
+    `candidateIsOffDevice = candidateConfirmedNotInstalled || (有待安装源 && 版本不一致)`。
+  - `.closeAsNotInstalled` 调用点传 `candidateConfirmedNotInstalled: true`，
+    并把结尾改成 **`return true`**（「不算成功」已经由 `settlePendingBatchSealResult(to: .failed)`
+    表达，与返回值是两件事）。
+- **测试**：新增 `SelfAppRegistrarTests.sameVersionFailedSelfReplacementDiscardsThePendingSnapshot`
+  —— 记录版本与运行包**一致**、顶层是旧 profile、草稿里是候选身份，
+  跑完 `ensureRegistered()` 后断言草稿为 nil、顶层仍是设备现实、候选证书序列号没被写上顶层。
+- **顺手重做开屏协议页版式**（用户反馈「大小、间隙太割裂」）：
+  一张玻璃卡片 = 一组同类信息（信任摘要一张卡 / 协议入口一张卡），
+  组内细线内缩对齐文字起点，组间同一档间距；间距只留四档、圆角只留两档；
+  主按钮改用设计系统的 `sealPrimaryAction`（原来手写的 52pt / 字号 17 / 圆角 15 与全 App 不一致）。
+  ⚠️ 保留 `欢迎使用 Seal` / `同意并继续` / `暂不使用` 三条 UI 用例锚点，一条都没动。
+- **涉及文件**：`Seal/Core/Renewal/SelfAppRegistrar.swift`、
+  `Seal/Features/Settings/AgreementOnboardingView.swift`、
+  `SealTests/Renewal/SelfAppRegistrarTests.swift`、`docs/knowledge/PITFALLS.md`。
+- **教训**：① 「两个原因**同时**成立才会复现」的 bug，只修一层会得到「修了但没好转」——
+  改完必须把整条链上的每一跳都重新走一遍。
+  ② 返回值的**契约写在注释里**就得当成契约遵守：`false` 在这里被当成「本轮不算成功」用，
+  但它真正的含义是「记录没变，你别重读」——**同一句话被两个含义借用，必然出错**。
+  ③ 内存里的旧副本 + 后面还有几轮同样的对账 = **沉默的写回**。凡是「算一次、存一份、
+  后面还会再算几次」的链路，都要问一句「手上这份还是最新的吗」。
+
+---
+
 ## 2026-10-08 同版本续签 / 自更新失败不落库（结算缺口）+「需重新签名」文案滞后一拍
 
 - **现象（MJ 真机）**：重新续签 + 安装替换 Seal 之后，点进应用详情页，颜色已经更新，

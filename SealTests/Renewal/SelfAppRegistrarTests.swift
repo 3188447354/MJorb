@@ -331,6 +331,92 @@ struct SelfAppRegistrarTests {
         #expect(updated.provisioningProfileExpirationDate == runningExpiry)
     }
 
+    /// R73③（2026-10-08）：`.closeAsNotInstalled` 刚确认「候选没落到设备上」，但草稿是
+    /// **签名阶段**写下来的，还留在记录里。而**同版本**续签的自更新失败时，记录版本与
+    /// 运行包版本**完全相同** —— 那条「有待安装源且版本不一致」的回滚判据恒为 false，
+    /// 于是草稿会被 `commitPendingSnapshot()` 转正，记录从此显示一个设备上并不存在的
+    /// 有效期/证书，用户直到被吊销都收不到提醒。
+    ///
+    /// ⇒ 判据必须由调用方**显式**告诉结算（`candidateConfirmedNotInstalled: true`），
+    /// 不能让结算函数从版本号猜。本用例把它钉死。
+    @Test
+    func sameVersionFailedSelfReplacementDiscardsThePendingSnapshot() async throws {
+        let fixture = try makeSealFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let runningExpiry = Date(timeIntervalSince1970: 1_700_000_000)   // 设备上真正在跑的那份
+        let candidateExpiry = Date(timeIntervalSince1970: 1_750_000_000) // 签名阶段乐观写下的那份
+
+        // 顶层 = 设备现实（旧 profile）；草稿 = 签名阶段写下的候选身份（尚未确认落盘）。
+        var seal = makeSealRecord(
+            fixture,
+            expiry: runningExpiry,
+            profileUUID: "OLD-PROFILE",
+            profileName: "Seal"
+        )
+        seal.hasPendingSelfUpdateSource = true
+        seal.pendingSignedSnapshot = PendingSignedSnapshot(
+            expiryDate: candidateExpiry,
+            provisioningProfileUUID: "CANDIDATE-PROFILE",
+            provisioningProfileName: "Seal Renewed",
+            provisioningProfileCreationDate: nil,
+            provisioningProfileExpirationDate: candidateExpiry,
+            certificateSerialNumber: "CANDIDATE-CERT",
+            signingTargets: [],
+            extensionSnapshots: []
+        )
+        try await fixture.appStore.save(seal)
+
+        // 运行包仍是旧包，而且**版本号与记录一致** —— 这正是同版本续签的形态。
+        let registrar = SelfAppRegistrar(
+            metadata: SelfAppMetadata(
+                bundleURL: fixture.currentBundle,
+                bundleIdentifier: "com.mjorb.seal",
+                originalBundleIdentifier: "com.mjorb.seal",
+                name: "Seal",
+                version: "1.0",
+                buildNumber: "1",
+                iconData: nil,
+                expirationDate: runningExpiry,
+                signingTeamIdentifier: nil,
+                signingApplicationIdentifier: nil,
+                provisioningProfileUUID: "OLD-PROFILE",
+                provisioningProfileName: "Seal",
+                provisioningProfileCreationDate: nil
+            ),
+            appStore: fixture.appStore,
+            accountRepository: EmptyAccountRepository(),
+            fileStore: fixture.fileStore,
+            selfReplacement: FakeSelfReplacing(
+                reconcileAction: .closeAsNotInstalled,
+                settled: SettledSelfReplacement(
+                    transactionID: UUID(),
+                    installedIdentity: InstalledIdentity(
+                        bundleURL: fixture.currentBundle,
+                        version: "1.0",
+                        buildNumber: "1",
+                        targets: [],
+                        readErrors: []
+                    ),
+                    mainBundleIdentifier: "com.mjorb.seal",
+                    mainProfileUUID: "OLD-PROFILE",
+                    installedIdentityReadAt: Date()
+                )
+            )
+        )
+
+        try await registrar.ensureRegistered()
+
+        let updated = try #require(try await fixture.appStore.fetchAll().first)
+        #expect(updated.pendingSignedSnapshot == nil, "候选已确认没落盘 ⇒ 草稿必须丢弃，绝不能转正")
+        #expect(updated.provisioningProfileUUID == "OLD-PROFILE", "顶层必须是设备上真正在跑的那份 profile")
+        #expect(updated.provisioningProfileName == "Seal")
+        #expect(updated.expiryDate == runningExpiry)
+        #expect(updated.provisioningProfileExpirationDate == runningExpiry)
+        // 转正会把草稿里的候选证书序列号写到顶层 —— 这是「草稿真的没被转正」的第二个信号。
+        #expect(updated.certificateSerialNumber != "CANDIDATE-CERT")
+    }
+
     /// 运行包读不到 profile 身份时（解析失败）不得凭空改写已有值 —— 只保留 Team/账号回补。
     @Test
     func missingProfileIdentityLeavesStoredProfileFieldsAlone() async throws {

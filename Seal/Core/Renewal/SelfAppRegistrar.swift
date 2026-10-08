@@ -273,8 +273,12 @@ actor SelfAppRegistrar {
             //
             // 自更新路径在**签名阶段**把 profile 相关写进 `pendingSignedSnapshot` 草稿。
             // 而这里刚刚确认「候选没落盘」⇒ 设备上 Seal 用的还是**旧 profile**。
-            // `reconcileSealRecordFromRunningBundleIfNeeded` 会识别回滚
-            //（有待安装源且版本不一致）⇒ 丢弃 pending，以运行包的真实身份为准。
+            //
+            // ⚠️ 判据必须由调用方**显式**给出（`candidateConfirmedNotInstalled: true`），
+            //    不能指望结算函数自己从版本号推出来：**同版本**续签的自更新失败时，
+            //    记录版本与运行包版本**完全相同**，那条「有待安装源且版本不一致」的回滚判据
+            //    恒为 false ⇒ 草稿会被当成有效真相转正，记录停在一个设备上不存在的有效期。
+            //    而这个分支**已经明确知道**候选没装成，所以要直接告诉结算，别让它猜。
             //
             // 不拉回来，维护作业第 4 步的 `AppMaintenanceJob.profileKeepMap` 就会拿这份
             // 错位记录当「必须保留的那一份」，把设备上**正在用的旧 profile** 判成旧账删掉
@@ -285,7 +289,8 @@ actor SelfAppRegistrar {
                     try await reconcileSealRecordFromRunningBundleIfNeeded(
                         existing: existing,
                         metadata: metadata,
-                        accounts: accounts
+                        accounts: accounts,
+                        candidateConfirmedNotInstalled: true
                     )
                 } catch {
                     // 回补失败不阻断启动：`AppMaintenanceJob.profileKeepMap` 对 Seal 那条
@@ -305,7 +310,14 @@ actor SelfAppRegistrar {
                 message: "自替换结算：仍在安装前身份，候选未落盘；事务已关闭，本轮不记为成功。已按运行中的 Bundle 回补记录（描述文件 / 证书序列号 / 安装状态），避免用签名阶段的乐观值参与后续清理。",
                 code: "SEAL-SELF-111"
             )
-            return false
+            // ⚠️ 必须返回 `true`：上面**确实推进了记录**（回补），而调用方只有拿到 `true`
+            //    才会重读记录 —— 否则它手上那份**旧快照**（还带着刚被丢弃的
+            //    `pendingSignedSnapshot`）会继续往下走，被后面几轮对账原样写回库
+            //    ⇒ 刚丢弃的候选身份又复活（同版本续签时尤其致命：版本判据分辨不出来）。
+            //    返回值的契约见 `reconcileSelfReplacement` 的说明：它是
+            //    「是否发生了结算（记录被推进）」，**不是**「本轮是否算成功」——
+            //    后者已经由上面的 `settlePendingBatchSealResult(to: .failed)` 表达。
+            return true
         case .requireRecovery(let reason):
             try await selfReplacement.requireRecovery(reason: reason)
             try? await logStore?.append(
@@ -446,10 +458,14 @@ actor SelfAppRegistrar {
     ///
     /// **运行中的 Bundle 才是唯一可信证据**：它要么是新包（续签生效，读到新 profile），
     /// 要么是旧包（续签失败，读到旧 profile）。因此这里按 profile 身份结算，而不是按版本号。
+    /// - Parameter candidateConfirmedNotInstalled: 调用方**已经确认**「这次自更新的候选包
+    ///   没有落到设备上」（目前只有 `.closeAsNotInstalled` 一种）。默认 `false`：
+    ///   其余调用点只是「顺手对一次账」，并不知道候选的去向。
     private func reconcileSealRecordFromRunningBundleIfNeeded(
         existing: AppRecord,
         metadata: SelfAppMetadata,
-        accounts: [AppleAccountRecord]
+        accounts: [AppleAccountRecord],
+        candidateConfirmedNotInstalled: Bool = false
     ) async throws {
         let resolvedTeamID = metadata.signingTeamIdentifier ?? existing.signingTeamID
         let resolvedAccountID = SelfAppAccountBinding.resolvedAccountID(
@@ -470,12 +486,21 @@ actor SelfAppRegistrar {
             changed = true
         }
 
-        // ── 两阶段确认：pending 的去留由「是否回滚」决定 ──
-        // 回滚 = 有待安装源且记录版本与运行版本不一致（自更新失败，仍跑旧包）。
-        // 回滚时丢弃 pending，以运行包的真实身份为准；非回滚时 pending 是有效的新真相，转正。
+        // ── 两阶段确认：pending 的去留由「候选到底在不在设备上」决定 ──
+        //
+        // ① 调用方**显式声明**候选已确认没落盘（`.closeAsNotInstalled`：启动自替换对账
+        //    刚把这次自更新判死）。这是**唯一**能覆盖「同版本」的判据 ——
+        //    同版本续签的自更新失败时 `version` 与运行包完全相同，下面那个版本比较恒为 false，
+        //    光看版本号分辨不出来 ⇒ 签名阶段写下的候选身份会被 `commitPendingSnapshot()`
+        //    转正，记录从此显示一个设备上并不存在的有效期（用户直到被吊销都收不到提醒）。
+        // ② 有待安装源且记录版本 ≠ 运行版本（自更新失败，仍在跑旧包）。
+        //
+        // 两者任一成立 ⇒ 候选不在设备上：丢弃 pending、以运行包的真实身份为准。
+        // 否则 pending 是有效的新真相，转正。
         // 这替代了旧的 `versionMismatch` 守卫：profile-only 续签后设备有新 profile
         // 但运行包内嵌旧 profile，非回滚时不再用旧值回盖新记录。
-        let isRollback = existing.hasPendingSelfUpdateSource && existing.version != metadata.version
+        let candidateIsOffDevice = candidateConfirmedNotInstalled
+            || (existing.hasPendingSelfUpdateSource && existing.version != metadata.version)
 
         // 把运行包里读到的 profile 身份收进记录（就地），返回是否真的改动过。
         func adoptRunningBundleProfileIdentity() -> Bool {
@@ -527,7 +552,7 @@ actor SelfAppRegistrar {
         }
 
         if existing.pendingSignedSnapshot != nil {
-            if isRollback {
+            if candidateIsOffDevice {
                 updated.discardPendingSnapshot()
                 changed = true
             } else {
@@ -538,7 +563,7 @@ actor SelfAppRegistrar {
         // 运行包（= 设备现实）最后覆盖标量身份：无论上面是「丢弃草稿」还是「转正草稿」，
         // 落库的 `provisioningProfile*` / `expiryDate` 都必须描述设备上真正在跑的那一份。
         // `signingTargets` 不在这里覆盖 —— 它来自草稿（Mach-O 读不到），是产物的账本。
-        if isRollback || runningBundleProfileIdentityIsAuthoritative(),
+        if candidateIsOffDevice || runningBundleProfileIdentityIsAuthoritative(),
            adoptRunningBundleProfileIdentity() {
             changed = true
         }

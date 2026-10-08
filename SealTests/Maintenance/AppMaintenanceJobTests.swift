@@ -283,32 +283,36 @@ struct AppMaintenanceJobTests {
         #expect(identical == false)
     }
 
+    /// Seal 的 profile **一律**不由维护作业处置 —— 记录值与运行时读数都可能是错的：
+    /// 记录值会被签名阶段的乐观推进写坏（`SEAL-SELF-111`），而运行时读数在 profile-only
+    /// 续签后仍是**旧**的 embedded profile（只注入了新描述文件，没重装 App）。
+    /// ⇒ 严格 keep-map 里没有它，宽松 `protectedBundleIDs` 必须兜住它：
+    /// 既不会被误删，也不会因为「漏进候选」而被回收。
     @Test
-    func sealRunningProfileOverridesTheRecordedValue() async throws {
+    func sealIsNeverKeptByTheMaintenanceSweep() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
-        let sealID = UUID()
+        let sealBundleID = "com.mjorb.seal.TEAMID"
         let store = InMemoryAppStore(records: [
             makeRecord(
-                appID: sealID,
-                mappedBundleIdentifier: "com.mjorb.seal.TEAMID",
+                appID: UUID(),
+                mappedBundleIdentifier: sealBundleID,
                 provisioningProfileUUID: "STALE-RECORD-UUID",
                 isSeal: true
             )
         ])
         let sweeper = RecordingProfileSweeper()
 
-        let job = makeJob(
-            fixture,
-            store: store,
-            profileSweeper: sweeper,
-            sealRunningProfileUUID: { "LIVE-RUNNING-UUID" }
-        )
+        let job = makeJob(fixture, store: store, profileSweeper: sweeper)
         _ = await job.run()
 
-        // 记录里的值可能落后于现实；删掉正在用的那一份会让 Seal 下次启动直接失败。
-        let maps = await sweeper.receivedKeepMaps
-        #expect(maps.first?["com.mjorb.seal.TEAMID"] == "LIVE-RUNNING-UUID")
+        let keepMaps = await sweeper.receivedKeepMaps
+        let protectedSets = await sweeper.receivedProtectedSets
+        #expect(keepMaps.count == 1)
+        #expect(keepMaps.first?[sealBundleID] == nil,
+                "Seal 不得进严格保留集合：记录里那份可能落后于设备现实")
+        #expect(protectedSets.first?.contains(sealBundleID) == true,
+                "宽松集合必须兜住 Seal，否则它会成为回收候选")
     }
 
     @Test
@@ -318,7 +322,7 @@ struct AppMaintenanceJobTests {
             mappedBundleIdentifier: "   ",
             provisioningProfileUUID: "   "
         )
-        let map = AppMaintenanceJob.profileKeepMap(records: [record], sealProfileUUID: nil)
+        let map = AppMaintenanceJob.profileKeepMap(records: [record])
         #expect(map.isEmpty)
     }
 
@@ -341,8 +345,7 @@ struct AppMaintenanceJobTests {
             extensions: [extensionRecord]
         )
         let installedMap = AppMaintenanceJob.profileKeepMap(
-            records: [installed],
-            sealProfileUUID: nil
+            records: [installed]
         )
         #expect(installedMap["com.example.demo"] == "MAIN-UUID")
         #expect(installedMap["com.example.demo.share"] == "EXTENSION-UUID")
@@ -355,52 +358,57 @@ struct AppMaintenanceJobTests {
             extensions: [extensionRecord]
         )
         let awaitingMap = AppMaintenanceJob.profileKeepMap(
-            records: [awaiting],
-            sealProfileUUID: nil
+            records: [awaiting]
         )
         #expect(awaitingMap["com.example.demo"] == "MAIN-UUID")
         #expect(awaitingMap["com.example.demo.share"] == nil, "未确认安装的扩展 UUID 不可信")
     }
 
+    /// 纯函数层面：无论记录写成哪种形态，Seal 那一条都必须被摘出严格保留集合。
+    ///
+    /// 历史（两次真机各证伪了一条读数）：
+    ///   · 2026-09-25（构建 38）：用**记录值** ⇒ 它被签名阶段的乐观推进写成新 UUID，
+    ///     安装却没落盘 ⇒ 设备上**正在用的那一份**被当旧账删掉，Seal 当场打不开、
+    ///     「VPN 与设备管理」里的描述文件消失。
+    ///   · 2026-10-07：改读**运行时 UUID** 也不行 ⇒ profile-only 续签只注入新描述文件、
+    ///     不重装 App，`Bundle.main` 里还是旧的 embedded profile，刚注入的新 UUID
+    ///     反而不在集合里 ⇒ 又被当旧账删掉 ⇒ 下次续签用回旧 profile。
+    /// ⇒ 结论：Seal 一条都不进，维护作业不碰它（清理只走自替换结算那条路）。
     @Test
-    func sealKeepEntryNeverFallsBackToTheRecordedProfile() {
-        // Seal 自己的记录值**尤其不可信**：自更新路径在签名阶段就把顶层
-        // `provisioningProfileUUID` 乐观推进（`app.isSeal` ⇒ `advancesInstalledSnapshot`
-        // 恒为 true），而安装可能没落盘（`SEAL-SELF-111`）⇒ 记录指向一份设备上并不存在的
-        // profile。拿它当保留集合，设备上**正在用的那一份**会被判成旧账删掉
-        // ⇒ Seal 当场打不开、「VPN 与设备管理」里的描述文件消失（真机构建 38）。
+    func sealKeepEntryIsDroppedForEveryRecordShape() {
+        let sealBundleID = "com.mjorb.seal.TTEAM000001"
         let seal = makeRecord(
             appID: UUID(),
-            mappedBundleIdentifier: "com.mjorb.seal.TTEAM000001",
+            mappedBundleIdentifier: sealBundleID,
             provisioningProfileUUID: "OPTIMISTIC-NEW-UUID",
             signedArtifactStatus: .installed,
             isSeal: true
         )
 
-        // ① 读到运行时身份 ⇒ 以它为准，覆盖记录里的乐观值。
-        let withRunning = AppMaintenanceJob.profileKeepMap(
-            records: [seal],
-            sealProfileUUID: "RUNNING-OLD-UUID"
-        )
-        #expect(withRunning["com.mjorb.seal.TTEAM000001"] == "RUNNING-OLD-UUID",
-                "Seal 的保留项必须用运行时读到的真实 profile")
+        // ① 看起来「已确认」（`.installed` + 非空 UUID）也照样摘掉。
+        let confirmedLooking = AppMaintenanceJob.profileKeepMap(records: [seal])
+        #expect(confirmedLooking[sealBundleID] == nil,
+                "Seal 的记录值再像已确认也不可信，不得进保留集合")
 
-        // ② 读不到运行时身份 ⇒ 整条摘出保留集合（宁缺勿滥），
-        //    绝不回退到被乐观推进的记录值。
-        let withoutRunning = AppMaintenanceJob.profileKeepMap(
-            records: [seal],
-            sealProfileUUID: nil
-        )
-        #expect(withoutRunning["com.mjorb.seal.TTEAM000001"] == nil,
-                "读不到运行时身份时不得回退到记录值")
-
-        // ③ 空白值同样不得回退。
-        let blankRunning = AppMaintenanceJob.profileKeepMap(
-            records: [seal],
-            sealProfileUUID: "   "
-        )
-        #expect(blankRunning["com.mjorb.seal.TTEAM000001"] == nil,
+        // ② 空白值本来就会被开头的守卫跳过；这里守的是「不得因为空而回退到别的来源」。
+        var blank = seal
+        blank.provisioningProfileUUID = "   "
+        #expect(AppMaintenanceJob.profileKeepMap(records: [blank])[sealBundleID] == nil,
                 "空白运行时值不得回退到记录值")
+
+        // ③ 同一批里混着别的应用时**只**摘 Seal，别人的保留项照旧。
+        let mixed = AppMaintenanceJob.profileKeepMap(records: [
+            seal,
+            makeRecord(
+                appID: UUID(),
+                mappedBundleIdentifier: "com.example.demo",
+                provisioningProfileUUID: "DEMO-UUID",
+                signedArtifactStatus: .installed
+            )
+        ])
+        #expect(mixed[sealBundleID] == nil)
+        #expect(mixed["com.example.demo"] == "DEMO-UUID",
+                "摘 Seal 不能把别的应用一起摘掉")
     }
 
     @Test
@@ -525,8 +533,7 @@ struct AppMaintenanceJobTests {
         gate: (any MaintenanceLeasing)? = nil,
         store: InMemoryAppStore = InMemoryAppStore(),
         recovery: AppRecordRecovery? = nil,
-        profileSweeper: (any StaleProfileSweeping)? = nil,
-        sealRunningProfileUUID: (@Sendable () -> String?)? = nil
+        profileSweeper: (any StaleProfileSweeping)? = nil
     ) -> AppMaintenanceJob {
         AppMaintenanceJob(
             // 默认闸门「永不失效」，用来测正常路径
@@ -536,8 +543,7 @@ struct AppMaintenanceJobTests {
             recovery: recovery,
             selfAppRegistrar: nil,
             logStore: nil,
-            profileSweeper: profileSweeper,
-            sealRunningProfileUUID: sealRunningProfileUUID
+            profileSweeper: profileSweeper
         )
     }
 

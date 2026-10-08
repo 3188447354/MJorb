@@ -31,11 +31,32 @@ struct ProfileOnlyRenewalRecordUpdaterTests {
             to: &app
         )
 
+        // ── 第一阶段：只写草稿，顶层一律不动 ──
+        // 顶层描述的是「设备上已确认的那份构建」，界面读的就是顶层（守卫 E 包）。
+        // 续签阶段就把顶层推进到新 profile，安装失败时界面会显示一个设备上并不存在的
+        // 有效期（用户以为续签成功，直到被吊销都收不到提醒）⇒ 现在只写 pending。
+        #expect(app.provisioningProfileUUID == "OLD-MAIN", "转正前顶层不得被推进")
+        #expect(app.provisioningProfileExpirationDate == oldExpiry)
+        #expect(app.expiryDate == oldExpiry)
+
+        let pending = try #require(app.pendingSignedSnapshot)
+        #expect(pending.provisioningProfileUUID == "NEW-MAIN")
+        #expect(pending.provisioningProfileExpirationDate == newExpiry)
+        #expect(pending.expiryDate == newExpiry)
+        #expect(pending.signingTargets.compactMap(\.profileUUID).sorted() == ["NEW-EXTENSION", "NEW-MAIN"])
+        #expect(pending.extensionSnapshots.first?.provisioningProfileUUID == "NEW-EXTENSION")
+        #expect(pending.extensionSnapshots.first?.provisioningProfileExpirationDate == newExpiry)
+
+        // ── 第二阶段：设备端逐份读回确认后由调用方转正 ──
+        // （生产上的调用点在 `SigningCoordinator.renewProfilesOnly`，紧跟在注入成功之后。）
+        app.commitPendingSnapshot()
+
         #expect(app.provisioningProfileUUID == "NEW-MAIN")
         #expect(app.provisioningProfileExpirationDate == newExpiry)
         #expect(app.expiryDate == newExpiry)
         #expect(app.signingTargets.compactMap(\.profileUUID).sorted() == ["NEW-EXTENSION", "NEW-MAIN"])
         #expect(app.extensions.first?.provisioningProfileUUID == "NEW-EXTENSION")
+        #expect(app.pendingSignedSnapshot == nil, "转正后草稿必须清空")
         #expect(app.signedArtifactStatus == .installed)
     }
 
@@ -67,12 +88,23 @@ struct ProfileOnlyRenewalRecordUpdaterTests {
         // 关键不变量（R65⑩）：记录**不能塌成一条**。若沿用 `SigningTargetRecord(binding:)`
         // （它拿 **profile 内**的 bundleIdentifier 当键），两条记录会都变成主 App
         // ⇒ 缓存与安装前校验逐项匹配失配 ✗。
+        let pending = try #require(app.pendingSignedSnapshot)
+        #expect(pending.signingTargets.count == 2)
+        #expect(
+            pending.signingTargets.map(\.bundleIdentifier).sorted()
+                == [mainBundleIdentifier, extensionBundleIdentifier].sorted()
+        )
+        // 扩展记录的描述文件身份必须是**共享的那一份**（而不是「缺失」）。
+        #expect(pending.extensionSnapshots.first?.provisioningProfileUUID == "NEW-MAIN")
+        #expect(pending.extensionSnapshots.first?.provisioningProfileExpirationDate == newExpiry)
+
+        // 转正之后同样不能塌：两条目标、扩展指向共享的那一份主描述文件。
+        app.commitPendingSnapshot()
         #expect(app.signingTargets.count == 2)
         #expect(
             app.signingTargets.map(\.bundleIdentifier).sorted()
                 == [mainBundleIdentifier, extensionBundleIdentifier].sorted()
         )
-        // 扩展记录的描述文件身份必须是**共享的那一份**（而不是「缺失」）。
         #expect(app.extensions.first?.provisioningProfileUUID == "NEW-MAIN")
         #expect(app.extensions.first?.provisioningProfileExpirationDate == newExpiry)
     }

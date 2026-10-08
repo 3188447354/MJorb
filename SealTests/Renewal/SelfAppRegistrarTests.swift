@@ -288,15 +288,19 @@ struct SelfAppRegistrarTests {
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let runningExpiry = Date(timeIntervalSince1970: 1_700_000_000)
         let optimisticallyWrittenExpiry = Date(timeIntervalSince1970: 1_750_000_000)
-        // 记录里是「以为装上了」的新值……
-        try await fixture.appStore.save(
-            makeSealRecord(
-                fixture,
-                expiry: optimisticallyWrittenExpiry,
-                profileUUID: "NEW-PROFILE",
-                profileName: "Seal Renewed"
-            )
+        // 记录里是「以为装上了」的新值……（旧模型在签名阶段就把顶层乐观推进成这个样子）
+        var optimisticRecord = makeSealRecord(
+            fixture,
+            expiry: optimisticallyWrittenExpiry,
+            profileUUID: "NEW-PROFILE",
+            profileName: "Seal Renewed"
         )
+        // ⚠️ 「自更新失败」的前提就是**导入过自更新源却没装成**。
+        // 没有这个标记，启动对账无法把「候选根本没落盘」和「profile-only 续签」区分开 ——
+        // 后者设备上**确实**有新 profile（只是运行包里还是旧的 embedded profile），
+        // 回盖会把刚续的 profile 打回原地。所以判据必须是这个标记，不是「版本号变了没」。
+        optimisticRecord.hasPendingSelfUpdateSource = true
+        try await fixture.appStore.save(optimisticRecord)
 
         // ……但运行中的 Bundle 仍是旧包（profile 是旧的）。
         let registrar = makeRegistrar(

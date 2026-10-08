@@ -476,35 +476,71 @@ actor SelfAppRegistrar {
         // 这替代了旧的 `versionMismatch` 守卫：profile-only 续签后设备有新 profile
         // 但运行包内嵌旧 profile，非回滚时不再用旧值回盖新记录。
         let isRollback = existing.hasPendingSelfUpdateSource && existing.version != metadata.version
+
+        // 把运行包里读到的 profile 身份收进记录（就地），返回是否真的改动过。
+        func adoptRunningBundleProfileIdentity() -> Bool {
+            var adopted = false
+            if let uuid = metadata.provisioningProfileUUID,
+               uuid != updated.provisioningProfileUUID {
+                updated.provisioningProfileUUID = uuid
+                adopted = true
+            }
+            if let name = metadata.provisioningProfileName,
+               name != updated.provisioningProfileName {
+                updated.provisioningProfileName = name
+                adopted = true
+            }
+            if let creationDate = metadata.provisioningProfileCreationDate,
+               creationDate != updated.provisioningProfileCreationDate {
+                updated.provisioningProfileCreationDate = creationDate
+                adopted = true
+            }
+            if let expiry = metadata.expirationDate,
+               expiry != updated.expiryDate || expiry != updated.provisioningProfileExpirationDate {
+                updated.expiryDate = expiry
+                updated.provisioningProfileExpirationDate = expiry
+                adopted = true
+            }
+            return adopted
+        }
+
+        // 运行包报出的 profile 身份是否**权威到可以回盖记录里那份**。
+        //
+        // ① 运行包的有效期更晚 ⇒ 设备上这份比记录知道的更晚签（续签只会把有效期往后推）。
+        //    R07 的典型：用户在别处重新签了 Seal 再装回来，版本号没变 ⇒ 只比版本号看不出来。
+        // ② 反向（记录更晚、运行包更早）**默认不动** —— profile-only 续签只注入新描述文件、
+        //    不重装 App，`Bundle.main` 里仍是旧的 embedded profile，回盖会把刚续的 profile 打回原地。
+        //    唯一的例外是「记录里那份还没被确认落到设备上」：**存在待安装的自更新源**
+        //    （导入过自更新源但没装成）时，那份新身份只存在于签名产物里，设备上并没有。
+        //    旧模型「签名阶段乐观推进顶层」留下的错位记录（自更新失败、版本号没变的那种）
+        //    也只能靠这条自愈 —— 否则它会一直显示一个设备上不存在的有效期。
+        func runningBundleProfileIdentityIsAuthoritative() -> Bool {
+            guard let runningUUID = metadata.provisioningProfileUUID,
+                  runningUUID != existing.provisioningProfileUUID else { return false }
+            guard let runningExpiry = metadata.expirationDate else { return false }
+            guard let recordedExpiry = existing.provisioningProfileExpirationDate ?? existing.expiryDate else {
+                // 记录里没有有效期可比 ⇒ 采纳运行包不会让 UI 退化成「无到期日」。
+                return true
+            }
+            if runningExpiry > recordedExpiry { return true }
+            return existing.hasPendingSelfUpdateSource
+        }
+
         if existing.pendingSignedSnapshot != nil {
             if isRollback {
                 updated.discardPendingSnapshot()
-                // 回滚：以运行包的真实 profile 身份为准。
-                if let uuid = metadata.provisioningProfileUUID,
-                   uuid != existing.provisioningProfileUUID {
-                    updated.provisioningProfileUUID = uuid
-                    changed = true
-                }
-                if let name = metadata.provisioningProfileName,
-                   name != existing.provisioningProfileName {
-                    updated.provisioningProfileName = name
-                    changed = true
-                }
-                if let creationDate = metadata.provisioningProfileCreationDate,
-                   creationDate != existing.provisioningProfileCreationDate {
-                    updated.provisioningProfileCreationDate = creationDate
-                    changed = true
-                }
-                if let expiry = metadata.expirationDate,
-                   expiry != existing.expiryDate || expiry != existing.provisioningProfileExpirationDate {
-                    updated.expiryDate = expiry
-                    updated.provisioningProfileExpirationDate = expiry
-                    changed = true
-                }
+                changed = true
             } else {
                 updated.commitPendingSnapshot()
                 changed = true
             }
+        }
+        // 运行包（= 设备现实）最后覆盖标量身份：无论上面是「丢弃草稿」还是「转正草稿」，
+        // 落库的 `provisioningProfile*` / `expiryDate` 都必须描述设备上真正在跑的那一份。
+        // `signingTargets` 不在这里覆盖 —— 它来自草稿（Mach-O 读不到），是产物的账本。
+        if isRollback || runningBundleProfileIdentityIsAuthoritative(),
+           adoptRunningBundleProfileIdentity() {
+            changed = true
         }
 
         // ── 证书序列号：同版本续签可能换证书，只能以运行包真实 CMS 签名者为准回补 ──

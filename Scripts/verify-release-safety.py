@@ -3215,9 +3215,16 @@ def violations(load=read):
           and "app.provisioningProfileUUID =" not in apply_result,
           "E: top-level profile fields must not advance before install verification")
     snapshot = load("Seal/Core/Signing/SignedArtifactSnapshot.swift")
+    # ⚠️ 不能只查裸 token `awaitingVerification`：本文件第 14 行的**注释**里也有这个词，
+    #    于是把 `return isSeal ? .installed : .awaitingVerification` 退成 `return .installed`
+    #    之后 token 仍在 ⇒ 断言照旧通过 ⇒ 变异抓不住。
+    #    （2026-10-08 CI run 37764867836 真实报红：`Guard failed mutation check:
+    #     E: signed artifact and installed snapshot must be separated`。同一类坑见
+    #     文件上方 R118 的 `strip_comments` 注释：**查 token 前先想注释里有没有**。）
+    #    必须查**那一行返回表达式**本身。
     check("static func statusAfterSigning(" in snapshot
           and "static func advanceInstalled(" in snapshot
-          and "awaitingVerification" in snapshot,
+          and "return isSeal ? .installed : .awaitingVerification" in snapshot,
           "E: signed artifact and installed snapshot must be separated")
     # 必须排除被注释掉的调用：单纯 `in` 匹配会把 `// SignedArtifactSnapshot.advanceInstalled(`
     # 也算进去（守卫自己的变异检查抓到了这一点）。

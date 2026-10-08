@@ -43,9 +43,6 @@ final class AppMaintenanceJob {
     private let selfAppRegistrar: SelfAppRegistrar?
     private let logStore: SealLogStore?
     private let profileSweeper: (any StaleProfileSweeping)?
-    /// 读 Seal 自己**正在运行**的那份 profile UUID。记录里的值可能落后于现实，
-    /// 而删掉正在用的那一份会让 Seal 下次启动直接失败，所以以运行时读数为准。
-    private let sealRunningProfileUUID: (@Sendable () -> String?)?
 
     init(
         gate: any MaintenanceLeasing,
@@ -54,8 +51,7 @@ final class AppMaintenanceJob {
         recovery: AppRecordRecovery?,
         selfAppRegistrar: SelfAppRegistrar?,
         logStore: SealLogStore?,
-        profileSweeper: (any StaleProfileSweeping)? = nil,
-        sealRunningProfileUUID: (@Sendable () -> String?)? = nil
+        profileSweeper: (any StaleProfileSweeping)? = nil
     ) {
         self.gate = gate
         self.appStore = appStore
@@ -64,7 +60,6 @@ final class AppMaintenanceJob {
         self.selfAppRegistrar = selfAppRegistrar
         self.logStore = logStore
         self.profileSweeper = profileSweeper
-        self.sealRunningProfileUUID = sealRunningProfileUUID
     }
 
     /// Seal 自注册：**不受空闲门禁限制**，启动时无条件调用。
@@ -235,10 +230,7 @@ final class AppMaintenanceJob {
         let summary: ProfileCleanupSummary
         do {
             let records = try await appStore.fetchAll()
-            let keep = Self.profileKeepMap(
-                records: records,
-                sealProfileUUID: sealRunningProfileUUID?()
-            )
+            let keep = Self.profileKeepMap(records: records)
             summary = await profileSweeper.sweepStaleProfiles(
                 keepingByBundleID: keep,
                 // ⚠️ 宽松集合：记录里出现过的**全部** Bundle ID（含扩展，**不**要求
@@ -284,7 +276,7 @@ final class AppMaintenanceJob {
     ///（不像顶层 profile 字段那样等安装校验通过），所以「签名成功但安装失败」时，
     /// 扩展记录指向的是一份设备上并不存在的 profile。拿它当保留集合，
     /// 会把真正在用的那一份删掉，扩展当场失效。
-    static func profileKeepMap(records: [AppRecord], sealProfileUUID: String?) -> [String: String] {
+    static func profileKeepMap(records: [AppRecord]) -> [String: String] {
         var map: [String: String] = [:]
         for record in records {
             // 「哪个字段代表生效的 Bundle ID」只有一处实现（`ProfileReclaimPolicy`），
@@ -314,26 +306,22 @@ final class AppMaintenanceJob {
                 map[extensionBundleID] = extensionUUID
             }
         }
-        // Seal 自己：**只信运行时读到的真实 profile**，绝不回退记录值。
-        //
-        // 记录值对 Seal 尤其不可信（2026-09-25，构建 38 真机）：两阶段提交前，自更新路径在签名阶段就把
-        // 顶层 `provisioningProfileUUID` 乐观推进，而安装可能没落盘（`SEAL-SELF-111`）⇒ 记录指向一份设备上并不存在的
-        // profile。拿它当保留集合，设备上**正在用的那一份**会被判成旧账删掉 ⇒ Seal 当场
-        // 打不开、「VPN 与设备管理」里的描述文件消失。
-        // 现签名阶段只写 pending，顶层保持已确认值，此注释保留作历史教训。
-        //
-        // 读不到运行时值就**把这条从严格集合里摘掉**（宁缺勿滥 —— 与本函数开头
-        // 「拿不到当前在用的是哪一份就整条跳过」是同一条纪律）：Seal 的 profile 于是走不到
-        // 「路径 1」的删除分支，而它的 Bundle ID 一定在 `protectedBundleIDs` 里
-        // ⇒ 也不会成为回收候选。净效果是一份都不会被误删；代价只是本轮少清一份 Seal 的
-        // 旧 profile，那条路径另有 `SEAL-PROFILE-322` 自替换结算清理负责。
         // Seal 自己：**永远不进保留集合**。
         //
-        // 原因（2026-10-07 真机）：profile-only 续签只注入新 profile、不重装 App，
-        // `Bundle.main` 里还是旧的 embedded profile。保留集合若用运行时 UUID，
-        // 刚注入的新 UUID 就不在集合里 ⇒ 被当旧账删掉 ⇒ 下次续签又用回旧 profile。
-        // 索性 Seal 的 profile 维护作业一律不动（`protectedBundleIDs` 会兜住不被回收），
-        // 清理只走 `SEAL-PROFILE-322` 自替换结算那条路。
+        // 两条读数都证明过不可信，所以不再挑一个来用：
+        //   · **记录值** —— 2026-09-25（构建 38）真机：自更新路径曾在签名阶段就把顶层
+        //     `provisioningProfileUUID` 乐观推进，而安装可能没落盘（`SEAL-SELF-111`）⇒
+        //     记录指向一份设备上并不存在的 profile。拿它当保留集合，设备上**正在用的那一份**
+        //     会被判成旧账删掉 ⇒ Seal 当场打不开、「VPN 与设备管理」里的描述文件消失。
+        //   · **运行时值** —— 2026-10-07 真机：profile-only 续签只注入新 profile、不重装 App，
+        //     `Bundle.main` 里还是旧的 embedded profile ⇒ 保留集合若用运行时 UUID，
+        //     刚注入的新 UUID 反而不在集合里 ⇒ 被当旧账删掉 ⇒ 下次续签又用回旧 profile。
+        //
+        // 索性**整条摘出去**（宁缺勿滥，与本函数开头「拿不到当前在用的是哪一份就整条跳过」
+        // 是同一条纪律）：Seal 的 profile 于是走不到「路径 1」的删除分支，而它的 Bundle ID
+        // 一定在 `protectedBundleIDs` 里 ⇒ 也不会成为回收候选。净效果是一份都不会被误删；
+        // 代价只是本轮少清一份 Seal 的旧 profile，那条路径另有 `SEAL-PROFILE-322`
+        // 自替换结算清理负责。
         if let seal = records.first(where: { $0.isSeal }),
            let sealBundleID = ProfileReclaimPolicy.effectiveBundleID(
                mapped: seal.mappedBundleIdentifier,

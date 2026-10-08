@@ -226,13 +226,7 @@ struct AppContainer {
                 recovery: appRecordRecovery,
                 selfAppRegistrar: selfAppRegistrar,
                 logStore: logStore,
-                profileSweeper: DeviceProfileCleaner(),
-                sealRunningProfileUUID: {
-                    guard let identity = try? identityReader.read(bundleURL: Bundle.main.bundleURL) else {
-                        return nil
-                    }
-                    return identity.mainTarget?.profileUUID
-                }
+                profileSweeper: DeviceProfileCleaner()
             )
 
             return AppContainer(

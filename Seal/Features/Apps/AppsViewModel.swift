@@ -22,9 +22,19 @@ final class AppsViewModel: ObservableObject {
     @Published private(set) var accounts: [AppleAccountRecord]
     @Published private(set) var fullAccountEmails: [UUID: String] = [:]
     /// 每个**已安装**应用的「本机是否持有当前证书私钥」（界面在「证书序列号」行下面用）。
-    /// 与 `fullAccountEmails` 在**同一批** Keychain 读取里算出（见 `load()`），不额外读一次钥匙串。
+    /// 与 `fullAccountEmails` 在**同一批** Keychain 读取里算出，不额外读一次钥匙串。
+    ///
+    /// ⚠️ **它必须跟着 `apps` 走**：这个状态的输入是「记录里的 `certificateSerialNumber`」，
+    /// 而续签 / 自替换结算会改掉那个字段。只在这里算一次（旧实现只写在 `load()` 的后台任务里）
+    /// 会出现**文案与颜色不同帧**：详情页的颜色读的是当前记录、已经变了，
+    /// 而「需重新签名」文案读的是这份快照、还停在旧序列号上，要等下一次 `load()` 才消失
+    ///（2026-10-08 真机：重新续签 + 安装替换 Seal 后正是这个现象）。
+    /// ⇒ 非初始化路径上任何写入 `apps` 的地方都必须紧接着调用 `refreshCertAvailability()`。
     @Published private(set) var localCertificateAvailabilityByAppID:
         [UUID: ProfileOnlyRenewalPolicy.LocalCertificateAvailability] = [:]
+    /// 一次 Keychain 读取的结果（与 `fullAccountEmails` 同批）。
+    /// 存下来是为了让上面那份派生状态能在**记录变化时**就地重算 —— 不必再读一次钥匙串。
+    private var accountSecrets: [UUID: AccountSecret] = [:]
     @Published private(set) var activeAccountID: UUID?
     @Published private(set) var iconData: [UUID: Data]
     /// 解码后的图标缓存（性能优化 2026-10-04）：`UIImage(data:)` 的 PNG/JPEG 解码
@@ -530,6 +540,9 @@ final class AppsViewModel: ObservableObject {
 
             // 快速显示应用列表
             apps = fetched
+            // 记录一变就重算本机证书状态：颜色读记录、文案读这份派生值，
+            // 两者必须同帧（见 `refreshCertAvailability()`）。
+            refreshCertAvailability()
             accounts = fetchedAccounts
             activeAccountID = resolvedAccountID
             hasLoaded = true
@@ -556,13 +569,10 @@ final class AppsViewModel: ObservableObject {
                 // 拆成两次读会把 N 个账号的钥匙串访问翻倍，而它们本来就要一起用。
                 let secrets = await self.loadAccountSecrets(for: fetchedAccounts)
                 guard await self.isCurrentLoad(generation) else { return }
-                let availability = ProfileOnlyRenewalPolicy.availabilityByAppID(
-                    apps: fetched,
-                    secretsByAccount: secrets
-                )
                 await MainActor.run {
+                    self.accountSecrets = secrets
                     self.fullAccountEmails = secrets.mapValues { $0.email }
-                    self.localCertificateAvailabilityByAppID = availability
+                    self.refreshCertAvailability()
                 }
 
                 var icons: [UUID: Data] = [:]
@@ -738,6 +748,17 @@ final class AppsViewModel: ObservableObject {
         for app: AppRecord
     ) -> ProfileOnlyRenewalPolicy.LocalCertificateAvailability {
         localCertificateAvailabilityByAppID[app.id] ?? .undetermined
+    }
+
+    /// 用**当前**的 `apps` 与 `accountSecrets` 重算上面那份派生状态。
+    ///
+    /// 判据一律走 `ProfileOnlyRenewalPolicy`（与续签准入同源，R85②），这里只负责「什么时候算」。
+    /// 触发点只有两个：记录被换掉、密钥读回来 —— 也就是它的两个输入各变一次。
+    private func refreshCertAvailability() {
+        localCertificateAvailabilityByAppID = ProfileOnlyRenewalPolicy.availabilityByAppID(
+            apps: apps,
+            secretsByAccount: accountSecrets
+        )
     }
 
     /// 一次读完所有账号的密钥 —— 邮箱显示与「本机证书状态」都从这里派生。

@@ -5,6 +5,58 @@
 
 ---
 
+## 2026-10-08 同版本续签 / 自更新失败不落库（结算缺口）+「需重新签名」文案滞后一拍
+
+- **现象（MJ 真机）**：重新续签 + 安装替换 Seal 之后，点进应用详情页，颜色已经更新，
+  但「需重新签名」文案没有**立马**更新（要等下一次刷新才变）。
+- **根因（同一天查出两处）**：
+  1. **结算缺口** —— `SelfAppRegistrar.reconcileSealRecordFromRunningBundleIfNeeded`：
+     两阶段提交重构（`6c080cc`）把「按运行包结算 profile 身份」整段挪进了
+     `if existing.pendingSignedSnapshot != nil` 分支 ⇒ **没有草稿时整个对账空转**。
+     于是这两类记录永远停在签名阶段的乐观值：
+     ① 自更新失败（有待安装源但候选没落盘）；
+     ② 用户在别处重签了 Seal 再装回来 —— **版本号不变**，只比版本号看不出来（R07 正是防这个）。
+  2. **派生状态只算一次** —— `AppsViewModel.localCertificateAvailabilityByAppID`
+     只在 `load()` 的后台任务里算一次，输入是记录里的 `certificateSerialNumber`；
+     而续签 / 自替换结算会改那个字段 ⇒ 颜色（读记录，已变）与文案（读快照，还是旧的）**不同帧**。
+- **修复**：
+  - 对账改成两步：① 草稿去留按回滚判据（丢弃 / 转正）；② **标量身份**最后统一由
+    「运行包 = 设备现实」覆盖。触发覆盖的条件是**能区分情形**的标记：
+    **回滚**（有待安装源且版本不一致）或**运行包报出的有效期更晚**。
+    ⚠️ 反向（记录更新、运行包是旧 embedded profile）**绝不回盖** ——
+    profile-only 续签只注入新描述文件、不重装 App，回盖会把刚续的 profile 打回原地；
+    唯一的例外是「**存在待安装的自更新源**」（那份新身份只存在于签名产物里）。
+  - `AppsViewModel` 存下 `accountSecrets`，新增 `refreshCertAvailability()`，
+    在**写入 `apps` 之后**与**密钥读回之后**各重算一次（两个输入各变一次算一次）。
+- **顺手清理死参数**：`profileKeepMap(records:sealProfileUUID:)` 的 `sealProfileUUID`
+  自 2026-10-07（Seal 永不进严格保留集合）起已无用处，连同
+  `AppMaintenanceJob.sealRunningProfileUUID` 与 `AppContainer` 里读运行包的那段闭包一起删掉。
+- **测试同步（CI run 37764867836 报红 4 套件 / 7 测试 / 21 断言）**：全部是「生产代码改了、
+  断言没跟上」，逐条对齐语义：
+  - `ProfileOnlyRenewalRecordUpdaterTests`（2）：改断言两阶段草稿 + 转正后顶层（保留 R65⑭ 要求的测试名）。
+  - `AppMaintenanceJobTests`（2）：改断言 Seal **永不**进严格保留集合（旧名 `sealRunningProfileOverrides…`
+    的语义已反转，随重命名对齐）。
+  - `SelfAppRegistrarTests`（1）：`failedSelfUpdateRollsBackToTheRunningBundleProfile` 夹具补
+    `hasPendingSelfUpdateSource = true` —— 「自更新失败」的前提就是导入过自更新源；
+    没有这个标记就无法把它和 profile-only 续签区分开。
+  - `SelfAppPendingHandoffTests`（1）：靠上面那处生产修复通过，断言未改。
+- **同时修掉守卫唯一那条变异未命中**：`E: signed artifact and installed snapshot must be separated`
+  的断言查的是**裸 token** `awaitingVerification`，而 `SignedArtifactSnapshot.swift` 第 14 行的
+  **注释**里也有这个词 ⇒ 把返回表达式退成 `return .installed` 之后 token 仍在、照样通过。
+  改成查**那一行表达式**本身（见 PITFALLS 第 6 条新增的第二种形态）。
+- **涉及文件**：`Seal/Core/Renewal/SelfAppRegistrar.swift`、`Seal/Features/Apps/AppsViewModel.swift`、
+  `Seal/Core/Maintenance/AppMaintenanceJob.swift`、`Seal/Application/AppContainer.swift`、
+  4 个测试文件、`Scripts/verify-release-safety.py`、`docs/knowledge/PITFALLS.md`。
+- **验证状态**：守卫断言本体 **835 项 0 failures**；593 条变异锚点**全部存在**；
+  涉及改动文件的 **82 条变异 82/82 保持判别力**（含之前漏抓的 E 条）。
+  待 CI 终审：`swift-regression`（841 个单测）+ `build-package`（全量 593 条变异）。
+- **教训**：① 「没有草稿就什么都不做」等于把整条自愈链掐断 —— 写条件分支时要问「不满足条件时谁兜底」。
+  ② 派生状态的两个输入各变一次就要各算一次，否则 UI 会**不同帧**。
+  ③ 改行为时把配套入口（死参数）一起删掉，否则后人会以为它还在起作用。
+  ④ 断言查 token 前先想**注释里有没有同一个词**（同一类坑第 6 条已经记过一次了）。
+
+---
+
 ## 2026-10-08 全量审计 27 问题修复（4 路并行）
 
 - **现象**：MJ 要求全量审查，查出 27 个问题（10 严重/9 中等/8 轻微）。

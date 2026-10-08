@@ -104,9 +104,8 @@ struct ImportedAppRow: View {
                let image = UIImage(data: iconData) {
                 Image(uiImage: image)
                     .resizable()
-                        .scaledToFill()
-                        .accessibilityHidden(true)
-                }
+                    .scaledToFill()
+                    .accessibilityHidden(true)
             } else {
                 Image(systemName: "app.fill")
                     .resizable()

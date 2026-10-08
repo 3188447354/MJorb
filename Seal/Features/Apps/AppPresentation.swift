@@ -249,8 +249,7 @@ enum AppSigningPresentationHelpers {
             ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
         if app.isSeal,
            let runningBuild = effectiveRunningBuild,
-           let recordedBuild = app.buildNumber,
-           runningBuild == recordedBuild {
+           runningBuild == app.buildNumber {
             return nil
         }
         guard app.isSeal,

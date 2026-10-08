@@ -195,6 +195,11 @@ struct ImportedAppRow: View {
     /// 返回 nil 表示无待安装（不显示标签）。
     private static func pendingUpdateKind(_ app: AppRecord) -> ProfileOnlyRenewalPolicy.PendingUpdateKind? {
         if app.isSeal {
+            // 自替换后：如果记录的 build 号和运行的一致，说明已装上新版，直接不显示标签
+            let runningBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+            if let rb = runningBuild, rb == app.buildNumber {
+                return nil
+            }
             let runningVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
             let kind = ProfileOnlyRenewalPolicy.pendingUpdateKind(
                 recordedVersion: app.version,

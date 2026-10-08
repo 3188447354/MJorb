@@ -5821,3 +5821,144 @@ FAIL: Mutation anchor missing: Seal/Features/Apps/SigningProgressView.swift
 **验证状态**：隔离副本里守卫 **PASS（461 断言 / 243 变异）** —— 计数与本地实测一致
 （CI 那次是 462 / 244），证明对方那 1 条检查 + 1 个锚点确已撤净 ✓。
 **CI ✓**：run `35557258917` 全绿（`build-package` 4m49s 含守卫步骤 / `swift-regression` 9m0s / `signer-tests` 1m3s）。
+
+---
+
+### 2026-10-08 · iPad 7（A10）「登录 Apple ID → 点添加 → 秒退」：预编译件带了 A10 没有的 LSE 指令
+
+**现象**：iPad 第 7 代（A10，iPadOS 18.7.10）上爱思助手签名的 Seal 1.3.45，
+Win 配对成功后用 WiFi 登录 Apple ID，**输入完账号密码、点「添加」就闪退到桌面**。
+
+**崩溃日志（决定性）**：
+
+- `EXC_BAD_INSTRUCTION` / `SIGILL`，例外交付子码 `0xC8E9FD56`
+- 出错指令 `casal x9, x22, [x10]`，崩在 **`thread 5`（后台线程）**
+- `codeSigningFlags=570434309`
+
+`casal` 是 **ARMv8.1 的 LSE（Large System Extension）原子指令**。
+**A10 是 Apple 唯一一颗「对外标示 ARMv8.1-A、实测却没实现 LSE」的芯片** ——
+LLVM `AArch64Processors.td` 里 `AppleA10 = [HasV8_0aOps, SHA2, AES, FPARMv8, NEON,
+PerfMon, CRC, RDM, PAN, LOR, VH]`，**没有 `FeatureLSE`**；`AppleA11` 起才有。
+⇒ 走到这条指令就是 SIGILL，与「设备太老」无关（A10 在 iOS 17.4 的最低支持范围内）。
+
+**排除代码缺陷**：Apple 官方文档明确 —— ARM 上 Swift 运行时错误（强解包 nil）报
+`SIGTRAP`，**不报 `SIGILL`** ⇒ 不是 Seal 自己的 Swift 代码。
+
+**三重实证定位到 Unicorn**：
+
+1. 崩溃日志的指令字 `0xC8E9FD56` 与 `casal x9, x22, [x10]` **逐位一致**
+2. 本地 `Seal_1.3.8.ipa` 主程序反汇编：`_cpu_exec_aarch64 @ 0x100866ff0` 就是同一条指令、
+   **连寄存器都一样**（`casal x9, x22, [x10]`）
+3. 解包 Unicorn 官方预编译包：`ios-arm64` 切片含 **93 条 LSE**
+   （`cputlb.c` 84 / `bitmap.c` 4 / `translate-all.c` 4 / `cpu-exec.c` 1）
+
+**根因（上游构建脚本的漏洞）**：`mahee96/unicorn` 的 `build_xcframework.sh`
+**没有设 `CMAKE_OSX_DEPLOYMENT_TARGET`** ⇒ clang 按 SDK 默认版本选目标 CPU：
+
+    clang/lib/Driver/ToolChains/Arch/AArch64.cpp: getAArch64TargetCPUByTriple
+      // "iOS 26 only runs on apple-a12 and later CPUs"
+      if (!Triple.isOSVersionLT(26)) return "apple-a12";     ← 带 LSE
+
+`apple-a12` 有 LSE ⇒ 生成的**宿主代码**带 LSE ⇒ 在 A10 上走到就 SIGILL。
+
+⚠️ **换版本解决不了**：`2.1.4-multiarch`（当前用的）与更新的 `2.1.4-xcf-a53ddc9`
+**两个官方包都是 93 条 LSE** ⇒ 必须自己从源码重编。
+
+⚠️ **归属纠正**：`libCoreADI.so` 里那 94 条 LSE **不是元凶** —— 它是被 Unicorn
+**软件模拟执行**的 guest ELF 代码；真凶是 Unicorn 自己的宿主代码（`cputlb.c` 等）。
+
+**修复**：`Scripts/ensure-unicorn.sh` 从 pinned commit
+（`62d0155ffd4c886d14cf7aa26b7f3ed759617c71` = 上游 `2.1.4-multiarch` 对应提交，
+**除指令集基线外行为与现状完全一致**）重编，只改两处：
+
+    -DCMAKE_OSX_DEPLOYMENT_TARGET="$IPHONEOS_DEPLOYMENT_TARGET"   # ① 显式部署目标
+    -DCMAKE_C_FLAGS="-mcpu=$UNICORN_TARGET_CPU"                   # ② apple-a10（无 LSE）
+
+`IPHONEOS_DEPLOYMENT_TARGET=17.4` ⇒ 目标 CPU 正好钉在 A10（17.4 能跑的最老芯片）。
+装 `ensure-rustbridge.sh` 同一套路数：指纹命中早退、指纹不符重编、**通过守卫才写指纹**。
+
+**本次一并查出的问题**：
+
+1. ⚠️ **`verify-no-lse.py` 的 minOS 断言一直失效**（自己写的 bug）：
+   `build_version_command` 的 `minos` 在 **`+12`**，我写成了 **`+16`（= `sdk`）**。
+   实测 `RustBridge.xcframework`：`off+8=2(iOS) / off+12=16.0(minos) / off+16=0.0(sdk)`，
+   而 `min_os()` 返回 `0.0`。⇒ Rust 目标文件读 0.0（静默假绿灯）、
+   asn1 目标文件读 26.5（假报警）。**已修**，并补上 `platform` 字段：
+   只有 iOS 家族（platform 2/7）参与 `--max-ios-version` 断言。
+2. ⚠️ **切片数从 7 降到 2**：上游出 mac / tvOS / visionOS / iOS（设备+模拟器，
+   模拟器含 x86_64）共 7 个切片，本方案只出 `ios-arm64` + `ios-arm64-simulator`（均 arm64）。
+   CI 全在 macos-26(arm64) 上跑 ⇒ **不影响 CI**；但**Intel Mac 的模拟器构建**会缺 x86_64 切片，
+   `Package.swift` 声明的 `.macOS(.v12)` 也会没有对应切片。**待补**（见下）。
+3. ⚠️ **本守卫不能扫 Rust 产物**：`RustBridge.xcframework` 稳含约 **8980 条 LSE**
+   （Rust `compiler_builtins` 的 outlined atomics，靠
+   `is_aarch64_feature_detected!("lse")` 运行时分派，A10 永远走不到）
+   ⇒ 拿它扫整个 `Seal_*.ipa` 会得到纯假报警。**已写进守卫的 docstring 与坑位 8**。
+4. ⚠️ **CI 扇出**：本分支上一次推送同时命中 `ios-fast.yml`（**无 paths 过滤**）、
+   `ios.yml`（paths 含 `Scripts/**`）与新加的 rebuild 工作流 ⇒ 2–3 个 run 挤在一起，
+   后一次推送的 `cancel-in-progress` 把前一个刚起的 run 杀掉（实测只活 1m10s）。
+5. ⚠️ **`b11b080`（#102）从未构建成功**：其 `fast-ipa` job `started_at=08:27:44 →
+   completed_at=08:42:46`、`conclusion=cancelled`、**`steps=[]` 且日志 blob 不存在**
+   （`BlobNotFound`）⇒ 在队列里等了 15 分钟、一个步骤都没跑就被取消了。
+   **artifact 数量 = 0**；现存最新的可用包是 `Seal-101`（来自 `9b97f57`）。
+   `b11b080` 相对 `9b97f57` **只领先 1 个提交**（25 个文件）。
+
+**涉及文件**：`Scripts/verify-no-lse.py`（新增）、`Scripts/ensure-unicorn.sh`（新增）、
+`.github/workflows/rebuild-unicorn-ios.yml`（新增）、`docs/knowledge/PITFALLS.md`。
+**待办**：切片补回 `ios-arm64_x86_64-simulator`（+ `macos-arm64_x86_64`）；
+给 rebuild 工作流加 `concurrency`；`Package.swift` 的 remote binaryTarget 改本地 path
+（**须等产物入库后**，否则 SPM 解析会因缺目录直接失败）。
+
+**验证状态**：本机无 macOS ⇒ **无法本地编译**，`-mcpu=apple-a10` 能否编过 + LSE 是否归零
+只能由云端 rebuild 工作流实测（产物下载后本地跑 `verify-no-lse.py` 复量：
+必须 **0 条 LSE** 且 arm64 对象数非 0，防"全空假绿"）。
+守卫基线：`Checks: 831, Failures: 0`（本地 Windows 实跑）。
+
+### 2026-10-08 · rebuild 工作流"一直 Queued"：macOS 机器池枯竭 + Intel 宿主不等价（两次失败后成功）
+
+**现象**：`Rebuild Unicorn (armv8.0 / no LSE)` 在 Actions 页面上一直 `Queued`，23 分钟不变。
+**第一层诊断（不是编译慢）**：`in_progress = 0`、`queued = 1`，即**一步都没跑**；
+两条独立 job 都是入队后**恰好 15 分 02 秒**被回收（`conclusion=cancelled`、`steps=[]`、
+`runner_name` 为空、日志 blob 直接 `BlobNotFound`）。GitHub 状态页全绿、仓库 public
+（标准 runner 免费不限量）、账号级 macOS 并发 0/5 占用 ⇒ 只剩一种解释：**该镜像池没有机器**。
+
+**定位手法（受控实验，不猜）**：往临时分支 `ci/probe-runner` 推一个只有 `runs-on` + `sw_vers`
+的矩阵探针（`macos-26` / `macos-15` / `macos-15-intel` / `macos-26-intel`），20 秒出结论，用完删分支：
+
+| 标签 | 分配耗时 | 结果 |
+|---|---|---|
+| `macos-26` | — | 一直 queued，从未拿到 runner |
+| `macos-26-intel` | 4s | success |
+| `macos-15` | 8s | success |
+| `macos-15-intel` | 4s | success |
+
+**第二个错误（我自己犯的）**：据此把 `runs-on` 改成 `macos-26-intel` —— 理由写的是
+"本作业只做交叉编译，与宿主架构无关"。run `37757816680` 秒级拿到 runner，却在第 6 步真实失败：
+
+```
+CMake Error at CMakeLists.txt:394 (message):
+  qemu/configure failed (1): "…/clang" cannot build an executable (is your linker broken?)
+```
+
+读上游源码定位（`CMakeLists.txt:384-392` / `293-342` / `option(UNICORN_FUZZ … OFF)` 第 85 行）：
+它把 `qemu/configure` 当**本机**编译跑，`--extra-cflags` 里**只有 `-isysroot`、没有 `-arch`**
+（`${CMAKE_C_FLAGS}` 仅在 `UNICORN_FUZZ=ON` 时才拼进去）⇒ configure 的探测按**宿主机架构**编译
+⇒ Intel 宿主得到 `x86_64-apple-ios`，iPhoneOS SDK 没有 x86_64 切片 ⇒ 链接测试失败。
+**教训**：`CMAKE_OSX_ARCHITECTURES` 对**嵌套的 autoconf configure** 不生效；
+判断"能不能换 Intel"必须读构建脚本，不能只看自己传的 flags。
+
+**修复**：`runs-on: macos-15`（arm64，探针实测 8 秒可用），并把 Xcode 选择放宽为
+"有 `Xcode_26.5.app` 就用它，否则取最新 `Xcode_26*.app`"（`macos-15` 只装到 26.3/26.4），
+断言主版本为 26。run **`37758408740` 十步全绿**。
+
+**产物事实（回读，非推断）**：
+- 实际用 **Xcode 26.3**（Build 17C529）+ cmake 4.4.3，源码 pinned `62d0155f…`
+- 两个切片都是 **3.0M**；`.source-fingerprint` = `2b583d60ab06…`（完整值 `2b583d60ab0677ebc519470ec63e4dbaa9a8503be71ac9a8ea82b28fca9b60a5`）
+- zip sha256 = `1babf1e68be49ab764e61d68775acf3102e84f85f9c8e80d7b1813d8b46bd041`（下载后本地复算一致）
+- `verify-no-lse.py`：**`arm64 Mach-O=146`（对象数非 0 ⇒ 不是全空假绿）、0 条 LSE、iOS 家族 minOS ≤ 17.4`**
+  —— CI 内（步骤 7）与下载后本地复量，两处一致
+- **正对照**：同一脚本扫上游 `2.1.4-multiarch` 仍报 **558 条 LSE**（含
+  `ios-arm64/libunicorn.a(cpu-exec.c.o) @0x53c 0xC8E9FD56 cas/casp ← _cpu_exec_aarch64`，
+  与用户崩溃日志逐位一致）⇒ 扫描器没坏，确实是产物变干净了
+
+**本轮提交**：`7346df0`（换 `macos-26-intel` + 修 `verify-no-lse.py` 的 minOS 偏移）、
+`b4c2aa0`（换回 arm64 `macos-15` + 放宽 Xcode 选择）。守卫 `Checks: 831, Failures: 0` 保持。

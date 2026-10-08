@@ -112,6 +112,12 @@ jobs:
           RUST_TOOLCHAIN: 1.97.1
         run: bash Scripts/ensure-rustbridge.sh
 
+      # 复用仓库内 vendored 的 `Unicorn.xcframework`（不再拉上游远程二进制包）。
+      # 指纹命中即早退、不重编，但**当场复核产物**：零 ARMv8.1 LSE 指令 + minOS ≤ 17.4。
+      # 漏跑 ⇒ 可能用到带 LSE 的旧库 ⇒ A10/A10X（iPad 第 6/7 代）在 `_cpu_exec_aarch64` 秒退。
+      - name: Ensure Unicorn matches vendored xcframework (no ARMv8.1 LSE)
+        run: bash Scripts/ensure-unicorn.sh
+
       - name: Verify vendored RustBridge supports iOS 16
         run: MAX_IOS_VERSION=16.0 bash Scripts/verify-rustbridge-minos.sh
 
@@ -217,6 +223,11 @@ jobs:
         env:
           RUST_TOOLCHAIN: 1.97.1
         run: bash Scripts/ensure-rustbridge.sh
+
+      # 同上：本 job 要跑 iOS 模拟器，SPM 解析 `Vendor/AnisetteKit` 前
+      # `Unicorn.xcframework` 必须已在位（切片只有 arm64 ⇒ 宿主须为 Apple Silicon）。
+      - name: Ensure Unicorn matches vendored xcframework (no ARMv8.1 LSE)
+        run: bash Scripts/ensure-unicorn.sh
 
       - name: Select pinned Xcode 26.5
         run: |

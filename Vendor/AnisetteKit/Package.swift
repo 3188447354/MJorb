@@ -10,11 +10,20 @@
 import PackageDescription
 
 #if canImport(Darwin)
+// ⚠️ 这里**故意**不用上游 `mahee96/unicorn` 的远程二进制包
+//   （原来是 releases/download/2.1.4-multiarch/Unicorn.xcframework.zip）。
+//   原因：上游预编译件按 iOS 26 部署目标编译，clang 因此选 `apple-a12` 目标 CPU
+//   （带 FEAT_LSE），产物里有 93 条 ARMv8.1 LSE 原子指令（CAS* / LDADD* / SWP*）。
+//   而 A10/A10X（iPad 第 6/7 代、iPad Pro 2017）是 Apple **唯一**对外标示 ARMv8.1-A、
+//   却未实现 LSE 的芯片 ⇒ 一旦执行到 `_cpu_exec_aarch64` 里的 `casal` 就是 SIGILL 秒退。
+//   实测：`2.1.4-multiarch` 与更新的 `2.1.4-xcf-a53ddc9` **两个官方包都含 LSE**，
+//   换版本解决不了 ⇒ 改为使用仓库内 vendored、由 `Scripts/ensure-unicorn.sh`
+//   从 pinned 源码以 `-mcpu=apple-a10` 重编的零 LSE 产物。
+//   校验：`python3 Scripts/verify-no-lse.py Vendor/AnisetteKit/Unicorn.xcframework`（须 0 条）。
 let unicornBinaryTargets: [Target] = [
     .binaryTarget(
         name: "Unicorn",
-        url: "https://github.com/mahee96/unicorn/releases/download/2.1.4-multiarch/Unicorn.xcframework.zip",
-        checksum: "4f61907db6aafc56fb3e336b524d742342312f498bb40739f1da55fb4a24614a"
+        path: "Unicorn.xcframework"
     )
 ]
 let unicornCoreDependencies: [Target.Dependency] = [
@@ -66,7 +75,9 @@ let package = Package(
                 "Native", 
                 "Tests",
                 "README.md",
-                "LICENSE"
+                "LICENSE",
+                // 由上面的 .binaryTarget(path:) 独占，不能再被本 target 当源码/资源收集
+                "Unicorn.xcframework"
             ],
             sources: ["Sources"]
         ),

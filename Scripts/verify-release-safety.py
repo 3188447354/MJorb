@@ -6939,6 +6939,60 @@ def violations(load=read):
           "按真实剩余时间判会造出「显示 4 天却着橙色告警」的半天窗口（3.5–4.0 天），"
           "数字与颜色自相矛盾；这一条与「数字取整」是两件事，各自要有单测钉住")
 
+    # ── R118：ARMv8.1 LSE 指令集基线（2026-10-08 A10 秒退事故）─────────────────
+    #   事故：iPad 第 7 代（A10，iPadOS 18.7.10）「登录 Apple ID → 点添加 → 秒退」，
+    #     `EXC_BAD_INSTRUCTION / Illegal instruction: 4`，出错指令 `casal x9, x22, [x10]`，
+    #     例外子码 `0xC8E9FD56` 与该指令字**逐位一致**。
+    #   根因：A10 是 Apple **唯一**对外标示 ARMv8.1-A、实测**未实现 LSE** 的芯片；
+    #     而上游 Unicorn 预编译件按 iOS 26 部署目标编译 ⇒ clang 选 `apple-a12`（带 FEAT_LSE）
+    #     ⇒ 执行到 `_cpu_exec_aarch64` 的 `casal` 就是 SIGILL。**不是设备太老**。
+    #   下面四条钉住整条修复链，缺任何一环都会被悄悄回退（这一条比崩溃本身更重要：
+    #   回退之后本地/模拟器上**完全看不出问题**，只有 A10/A10X 真机会秒退）。
+    r118_fast = load(".github/workflows/ios-fast.yml")
+    r118_release = load(".github/workflows/ios-release.yml")
+    r118_ios = load(".github/workflows/ios.yml")
+    r118_recipe = load("Scripts/ensure-unicorn.sh")
+    # ⚠️ 必须先去注释再判「不得出现远程包」：本文件注释里**故意**写了事故经过
+    # （含 `2.1.4-multiarch` 字样），不 strip 会自己把自己判红（见 PITFALLS 第 6 条）。
+    r118_package = strip_comments(load("Vendor/AnisetteKit/Package.swift"))
+    r118_step = "Ensure Unicorn matches vendored xcframework (no ARMv8.1 LSE)"
+    r118_run = "bash Scripts/ensure-unicorn.sh"
+
+    check(r118_step in r118_fast and r118_run in r118_fast
+          and r118_step in r118_release and r118_run in r118_release,
+          "R118①: 两条出包通路（`ios-fast.yml` / `ios-release.yml`）都必须跑 "
+          "`ensure-unicorn.sh` ✗ —— 漏跑则仓库内 vendored 的 `Unicorn.xcframework` "
+          "无人校验，缺件时 SPM 直接失败、被替换成带 LSE 的件时**毫无提示** ⇒ "
+          "A10/A10X（iPad 第 6/7 代）继续在 `_cpu_exec_aarch64` 的 `casal` 上秒退")
+
+    # `ios.yml` 有两个 job 都依赖该 xcframework，所以按 job 切片各查一次，
+    # 而不是只查「整个文件里出现过」——后者在一个 job 被删掉步骤时仍会假通过。
+    r118_bp = section_or_empty(r118_ios, "\n  build-package:", "\n  swift-regression:")
+    r118_sr = section_or_empty(r118_ios, "\n  swift-regression:", "\n  signer-tests:")
+    check(r118_step in r118_bp and r118_run in r118_bp
+          and r118_step in r118_sr and r118_run in r118_sr,
+          "R118②: `ios.yml` 的 **build-package 与 swift-regression 两个 job 都要**跑 "
+          "`ensure-unicorn.sh` ✗ —— 两者都在 Apple Silicon 上解析 `Vendor/AnisetteKit`，"
+          "缺件即 SPM 失败；且 swift-regression 要跑 iOS 模拟器，"
+          "而该 xcframework 只出 arm64 切片（Intel 宿主跑不了）")
+
+    check('path: "Unicorn.xcframework"' in r118_package
+          and "2.1.4-multiarch" not in r118_package
+          and "4f61907db6aafc56fb3e336b524d742342312f498bb40739f1da55fb4a24614a"
+              not in r118_package,
+          "R118③: `Vendor/AnisetteKit/Package.swift` 的 Unicorn 必须指向**仓库内 vendored** 的 "
+          "`Unicorn.xcframework`（本地 path），不得回退到上游远程二进制包 ✗ —— "
+          "上游 `2.1.4-multiarch` 与 `2.1.4-xcf-a53ddc9` **两个官方包都含 93 条 LSE**，"
+          "换版本解决不了；把 checksum 写死在 `Package.swift` 会让人误以为「已经钉住了」")
+
+    check('UNICORN_TARGET_CPU="${UNICORN_TARGET_CPU:-apple-a10}"' in r118_recipe
+          and "-mcpu=$UNICORN_TARGET_CPU" in r118_recipe
+          and "--max-ios-version" in r118_recipe,
+          "R118④: `Scripts/ensure-unicorn.sh` 必须把目标 CPU 钉成 `apple-a10`（`-mcpu=`）"
+          "**并在写指纹前**量产物的 LSE 与 minOS ✗ —— 只声明 "
+          "`CMAKE_OSX_DEPLOYMENT_TARGET` 不够，必须验**产物机器码**；"
+          "否则「声明了 17.4、却编出带 LSE 的库」这类事故会原样重演")
+
     handoff_failures = HANDOFF_GUARD["violations"](load)
     checks += 6
     failures.extend(handoff_failures)
@@ -9002,10 +9056,13 @@ def main():
          "                    try await reconcileSealRecordFromRunningBundleIfNeeded(",
          "                    // 回补调用被移除（变异）",
          "R73①:"),
-        # ── R74：读不到运行时身份时回退记录值 ⇒ R74① 报红 ──
+        # ── R74：Seal 进了严格保留集合（不再被摘出）⇒ R74① 报红 ──
+        #    ⚠️ 2026-10-08：`if let seal …` 后面的 `else` 分支已删（改成纯 `if let`），
+        #    锚点从 `} else { … }` 换成当前真实形态（`map.removeValue` 那一行）。
+        #    b11b080 改代码时漏同步，而该提交从未跑过 CI ⇒ 一直没暴露。
         ("Seal/Core/Maintenance/AppMaintenanceJob.swift",
-         "            } else {\n                map.removeValue(forKey: sealBundleID)\n            }",
-         "            } else {\n                map[sealBundleID] = seal.provisioningProfileUUID ?? \"\"\n            }",
+         "            map.removeValue(forKey: sealBundleID)\n",
+         "            map[sealBundleID] = \"\"\n",
          "R74①:"),
         # ── R77：宽限期失效（退回终态关闭）⇒ R77① 报红 ──
         ("Seal/Core/Renewal/SelfReplacementPolicy.swift",
@@ -9090,9 +9147,12 @@ def main():
          '                code: "SEAL-IPA-213x"',
          "Import: 覆盖更新的成功与回落都必须留痕"),
         # ⑭ 确认页去掉「新建副本（不覆盖）」出口 ⇒ 多副本路径在 UI 上无法到达 ✓ 报红。
+        #    ⚠️ 2026-10-08：原锚点打的是 `if isOverwriteUpdate {`，但该视图里
+        #    **还有第二处**同字符串（另一处缩进不同）⇒ 只替换第一处时断言仍被满足，
+        #    变异空转。改锚点「出口文案」本身（全文件唯一）。
         ("Seal/Features/Import/ImportConfirmationView.swift",
-         "                if isOverwriteUpdate {",
-         "                if false {",
+         '"新建副本（不覆盖）"',
+         '"导入为新条目"',
          "Import: 覆盖更新必须给用户「新建副本」出口"),
         # ⑮ 确认页不再显示覆盖对象 ⇒ 用户看不到「替换哪一条、从哪个版本到哪个版本」✓ 报红。
         ("Seal/Features/Import/ImportConfirmationView.swift",
@@ -9649,26 +9709,41 @@ def main():
         # ① 把版本判据翻过来（相等才算「有待安装」）⇒ R89① 报红。
         #    ⚠️ 2026-10-02：判据加了「同版本＋指纹」的第二分支（导入同版本 IPA 覆盖更新），
         #    `return` 改成了 `if { return true }`，锚点同步更新；变异体保持「翻转比较符」。
+        #    ⚠️ 2026-10-08：判据重写成 `switch Version.compare(...)`，锚点同步为当前形态；
+        #    变异体改成「退化成字符串相等」—— `Version.compare` 从判据里消失 ⇒ R89① 报红。
         ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
-         "        if Version.compare(recorded, running) != .orderedSame { return true }\n",
-         "        if Version.compare(recorded, running) == .orderedSame { return true }\n",
+         "        switch Version.compare(recorded, running) {\n"
+         "        case .orderedDescending:\n"
+         "            return .newVersion\n"
+         "        case .orderedAscending:\n"
+         "            return .downgrade\n"
+         "        case .orderedSame:\n"
+         "            break\n"
+         "        }\n",
+         "        if recorded == running {\n"
+         "            return .none\n"
+         "        }\n",
          "R89①: 「有已导入的更新源」判据必须是**版本比较**"),
         # ② 算了版本却不据此回落（`_ =` 丢弃结果）⇒ R89② 报红。
         #    **这正是本次要修的 bug 的形态**：判据在、但不影响控制流。
         #    ⚠️ 2026-10-02：调用点新增 `pendingUpdateSourceFingerprint` 参数
         #    （同版本 IPA 覆盖更新），锚点与变异体同步更新。
         ("Seal/Core/Renewal/ProfileOnlyRenewalPolicy.swift",
+         # ⚠️ 2026-10-08：调用点新增了 `installedFingerprint:`（同版本 IPA 覆盖更新），
+         # 且 `pendingUpdateSourceFingerprint:` 末尾多了逗号 —— 锚点与变异体一并同步。
          "            guard hasPendingUpdateSource(\n"
          "                recordedVersion: app.version,\n"
          "                runningVersion: liveIdentity.runningVersion,\n"
-         "                pendingUpdateSourceFingerprint: app.pendingUpdateSourceFingerprint\n"
+         "                pendingUpdateSourceFingerprint: app.pendingUpdateSourceFingerprint,\n"
+         "                installedFingerprint: app.installedFingerprint\n"
          "            ) == false else {\n"
          "                return .requiresFullResign(.pendingSelfUpdateSource)\n"
          "            }\n",
          "            _ = hasPendingUpdateSource(\n"
          "                recordedVersion: app.version,\n"
          "                runningVersion: liveIdentity.runningVersion,\n"
-         "                pendingUpdateSourceFingerprint: app.pendingUpdateSourceFingerprint\n"
+         "                pendingUpdateSourceFingerprint: app.pendingUpdateSourceFingerprint,\n"
+         "                installedFingerprint: app.installedFingerprint\n"
          "            )\n",
          "R89②: 实时身份通道必须比对"),
         # ③ 忘了归一化空串 ⇒ R89③ 报红（空串会被当成 0，与任何版本都不等 ⇒ 误判成有待安装）。
@@ -9678,7 +9753,10 @@ def main():
          "R89③: 运行版本必须随实时身份一起取出"),
         # ④ 传**记录**版本而不是**运行**版本 ⇒ R89④ 报红。
         #    这是最隐蔽的一种退化：代码看起来仍然「比了版本」，但两边是同一个值 ⇒ 判据恒假。
-        ("Seal/Core/Signing/SigningCoordinator.swift",
+        #    ⚠️ 2026-10-08：锚点文件纠正为 `SealRenewalPolicy.swift` ——
+        #    那条 `runningVersion: metadata?.version,` 在规矩盒子里（policy 文件），
+        #    原来指向 `SigningCoordinator.swift` 是错的（那里没有这行 ⇒ 变异空转）。
+        ("Seal/Core/Renewal/SealRenewalPolicy.swift",
          "            runningVersion: metadata?.version,\n",
          "            runningVersion: app.version,\n",
          "R89④: 调用点必须传**正在运行的版本**"),
@@ -10431,10 +10509,12 @@ def main():
          "static let value: CFString = kSecAttrAccessibleWhenUnlockedThisDeviceOnly",
          "R106①:"),
         # ② 只留 `SealApp.init()` 一个调用点（锁屏冷启动迁移被拒后没人补做）⇒ R106② 报红。
+        #    ⚠️ 2026-10-08：第二处调用点实际缩进是 24/28 空格（原锚点按 16/20 写）⇒
+        #    匹配不到、变异空转。按当前真实缩进修正。
         ("Seal/App/SealApp.swift",
-         "                migrateKeychainAccessibility: {\n"
-         "                    container.migrateKeychainAccessibilityIfNeeded()\n",
-         "                migrateKeychainAccessibility: {\n",
+         "                        migrateKeychainAccessibility: {\n"
+         "                            container.migrateKeychainAccessibilityIfNeeded()\n",
+         "                        migrateKeychainAccessibility: {\n",
          "R106②:"),
         # ③ `errorCode` 退回恒 1（真机日志又只剩 `Seal.KeychainError 1`）⇒ R106③ 报红。
         ("Seal/Infrastructure/Security/KeychainVault.swift",
@@ -10515,15 +10595,19 @@ def main():
          "manager.pausesLocationUpdatesAutomatically = false",
          "manager.pausesLocationUpdatesAutomatically = true",
          "R110②:"),
-        # ③ `SealApp.init()` 里第二路被退成重复音频 start（正常启动丢一路）⇒ R110③ 报红。
+        # ③ 定位保活被「复活」（`SealApp.init()` 又起第二路）⇒ R110③ 报红。
+        #    ⚠️ 2026-10-08：定位保活 2026-10-07 已退役 ⇒ 旧锚点（那一行本身）在文件里
+        #    已不存在、变异空转。改成「在音频那行后面插一路定位」——这正是要防的退化。
         ("Seal/App/SealApp.swift",
-         "container.locationKeepAlive.start()",
-         "container.backgroundKeepAlive.start()",
+         "        container.backgroundKeepAlive.start()\n",
+         "        container.backgroundKeepAlive.start()\n"
+         "        container.locationKeepAlive.start()\n",
          "R110③:"),
-        # ④ 快捷指令后台唤起里第二路被退成重复音频 start（后台续签丢兜底）⇒ R110④ 报红。
+        # ④ 快捷指令后台唤起里定位保活被「复活」⇒ R110④ 报红（同上）。
         ("Seal/Features/Intents/SealRenewalIntent.swift",
-         "container.locationKeepAlive.start()",
-         "container.backgroundKeepAlive.start()",
+         "            container.backgroundKeepAlive.start()\n",
+         "            container.backgroundKeepAlive.start()\n"
+         "            container.locationKeepAlive.start()\n",
          "R110④:"),
         # ── R111：发布成功后必须自动同步官网 ──
         # ① 把同步调用**挪到** `gh release create` 之前（注入一份）⇒ 会同步到上一版，R111① 报红。
@@ -10558,6 +10642,21 @@ def main():
          "        continue-on-error: true\n",
          "",
          "R111③:"),
+        # ── R118：ARMv8.1 LSE 指令集基线（2026-10-08 A10 秒退）──
+        # ① 删掉出包通路上的 ensure-unicorn 步骤（最可能的回退形态：以为「xcframework
+        #    已经入库了，这一步多余」）⇒ R118① 报红。
+        (".github/workflows/ios-fast.yml",
+         "      - name: Ensure Unicorn matches vendored xcframework (no ARMv8.1 LSE)\n"
+         "        run: bash Scripts/ensure-unicorn.sh\n\n",
+         "",
+         "R118①:"),
+        # ② `Package.swift` 回退到上游远程二进制包（= 换回带 LSE 的件）⇒ R118③ 报红。
+        ("Vendor/AnisetteKit/Package.swift",
+         'path: "Unicorn.xcframework"',
+         'url: "https://github.com/mahee96/unicorn/releases/download/2.1.4-multiarch/'
+         'Unicorn.xcframework.zip",\n'
+         '        checksum: "4f61907db6aafc56fb3e336b524d742342312f498bb40739f1da55fb4a24614a"',
+         "R118③:"),
     ]
     # 变异检查每一遍都会把所有源文件**重新读一遍**：200+ 文件 × 90 多遍 ≈ 2 万次磁盘读。
     # 本仓在 OneDrive 同步目录里，单次读延迟不稳定 —— 实测同一份代码整轮耗时在

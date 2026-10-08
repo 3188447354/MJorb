@@ -238,7 +238,8 @@ final class AppsViewModel: ObservableObject {
         apps = []
         accounts = []
         iconData = [:]
-        clearDecodedIconCache()
+        decodedIconCache.removeAllObjects()
+        decodedIconOrder.removeAll()
         phase = .idle
         isImportSheetPresented = false
         alertFailure = startupFailure
@@ -265,7 +266,8 @@ final class AppsViewModel: ObservableObject {
         self.apps = apps
         accounts = []
         iconData = [:]
-        clearDecodedIconCache()
+        decodedIconCache.removeAllObjects()
+        decodedIconOrder.removeAll()
         phase = .idle
         sheetDraft = draft
         isImportSheetPresented = draft != nil

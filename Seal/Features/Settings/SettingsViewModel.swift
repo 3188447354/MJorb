@@ -3023,7 +3023,7 @@ final class SettingsViewModel: ObservableObject {
                     try await appStore.save(clearedRecord)
                 }
                 do {
-                    try fileStore.removeSignedIPA(appID: record.id)
+                    try await fileStore.removeSignedIPA(appID: record.id)
                 } catch {
                     // 删除未完成时恢复原记录，确保用户仍可正常复用现有签名包。
                     if hadArtifactMetadata {

@@ -23,16 +23,20 @@ struct AgreementOnboardingView: View {
     @State private var showDeclineHint = false
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            background
+        GeometryReader { geo in
+            ZStack(alignment: .bottom) {
+                background
 
-            VStack(spacing: 0) {
-                Spacer().frame(height: 190)
-                brandSection
-                Spacer()
+                // 品牌区只占上半屏，避开底部 sheet
+                VStack(spacing: 0) {
+                    Spacer().frame(height: 80)
+                    brandSection
+                    Spacer()
+                }
+                .frame(height: geo.size.height * 0.38)
+
+                consentSheet(height: geo.size.height * 0.62)
             }
-
-            consentSheet
         }
         .ignoresSafeArea()
         .onAppear {
@@ -129,7 +133,7 @@ struct AgreementOnboardingView: View {
         .shadow(color: Color.blue.opacity(0.18), radius: 28, y: 14)
     }
 
-    private var consentSheet: some View {
+    private func consentSheet(height: CGFloat) -> some View {
         VStack(spacing: 0) {
             Capsule()
                 .fill(Color.gray.opacity(0.22))
@@ -183,7 +187,7 @@ struct AgreementOnboardingView: View {
             Spacer(minLength: 36)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 810)
+        .frame(height: height)
         .background(.white.opacity(0.95))
         .clipShape(
             UnevenRoundedRectangle(
@@ -198,27 +202,24 @@ struct AgreementOnboardingView: View {
     }
 
     private var agreementDescription: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            HStack(spacing: 4) {
-                Text("使用前，请阅读")
+        VStack(alignment: .center, spacing: 11) {
+            // 协议链接单独成行，避免断行丑
+            HStack(spacing: 16) {
                 NavigationLink { PrivacyNoticeView() } label: {
                     Text("《隐私政策》")
                         .foregroundStyle(Color(red: 0.00, green: 0.48, blue: 1.0))
                 }
                 .buttonStyle(.plain)
 
-                Text("和")
-
                 NavigationLink { UserAgreementView() } label: {
                     Text("《用户协议》")
                         .foregroundStyle(Color(red: 0.00, green: 0.48, blue: 1.0))
                 }
                 .buttonStyle(.plain)
-
-                Text("。")
             }
 
             Text("点击“同意并继续”，即表示你已阅读并同意上述协议。")
+                .multilineTextAlignment(.center)
         }
         .font(.system(size: 18, weight: .medium))
         .foregroundStyle(Color(red: 0.28, green: 0.34, blue: 0.47))

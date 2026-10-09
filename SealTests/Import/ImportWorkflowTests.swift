@@ -313,8 +313,8 @@ struct ImportWorkflowTests {
             size: 10,
             state: .installed,
             ipaRelativePath: previousOriginalPath,
-            installedFingerprint: "previous-installed-fingerprint",
             preferredBundleIdentifier: "com.mjorb.seal.TEAM000001",
+            installedFingerprint: "previous-installed-fingerprint",
             isSeal: true,
             isPinned: true,
             importedAt: Date(timeIntervalSince1970: 100)

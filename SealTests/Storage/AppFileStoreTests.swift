@@ -109,7 +109,7 @@ struct AppFileStoreTests {
     }
 
     @Test
-    func removesStaleTemporaryFilesAtStartup() throws {
+    func removesStaleTemporaryFilesWhenUserRequestsCleanup() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let stale = fixture.cache.appending(path: "Seal/Temp/stale.tmp")
@@ -119,10 +119,14 @@ struct AppFileStoreTests {
         )
         try Data("stale".utf8).write(to: stale)
 
-        _ = AppFileStore(
+        let store = AppFileStore(
             documentsDirectory: fixture.documents,
             cacheDirectory: fixture.cache
         )
+
+        // 临时缓存要保留到用户主动清理；否则设置页的清理入口会永远没有可清内容。
+        #expect(FileManager.default.fileExists(atPath: stale.path))
+        try await store.clearTemporaryFiles()
 
         #expect(FileManager.default.fileExists(atPath: stale.path) == false)
     }

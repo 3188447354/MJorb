@@ -8,29 +8,42 @@ enum AgreementVersion {
 
 /// 首次启动（或协议更新后）的协议同意页。
 ///
-/// 视觉：开屏欢迎页 + 底部确认 Sheet。
-/// 上半：品牌图标（76pt）→ "Seal" → 副标题"为你的应用，保持可用。"
-/// 下半：白色底部 Sheet（圆角 28，非系统 sheet，不可下拉关闭）→
-///   标题"欢迎使用 Seal" → 两行说明（协议名可点）→ "同意并继续" / "暂不使用"。
+/// 视觉（2026-10-09 新设计）：白色背景 + 蓝色光斑 → 品牌区（大图标 190pt + 渐变标题）
+/// → 底部白色确认 Sheet（圆角 46，810 高）→ "欢迎使用 Seal" → 协议说明 → "同意并继续" / "暂不使用"。
 ///
 /// 约束：只改视觉层。协议门控（SealApp.swift）、AgreementVersion、
 /// 协议正文（PrivacyNoticeView / UserAgreementView）、签名功能一律不动。
+/// "暂不使用" 实际是留在协议页并提示必须同意，不写"不同意并退出"。
 struct AgreementOnboardingView: View {
     var onAgreed: () -> Void
     var onDeclined: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
     @State private var showDeclineHint = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            // 上半：品牌区，居中
-            Spacer()
-            brandHeader
-            Spacer()
-            // 下半：底部确认 Sheet
-            bottomSheet
+        ZStack(alignment: .bottom) {
+            background
+
+            VStack(spacing: 0) {
+                Spacer().frame(height: 190)
+                brandSection
+                Spacer()
+            }
+
+            consentSheet
         }
-        .sealScreenBackground()
+        .ignoresSafeArea()
+        .onAppear {
+            guard !reduceMotion else {
+                appeared = true
+                return
+            }
+            withAnimation(.spring(response: 0.7, dampingFraction: 0.82)) {
+                appeared = true
+            }
+        }
         .alert("需要您的同意", isPresented: $showDeclineHint) {
             Button("好的", role: .cancel) { }
         } message: {
@@ -38,133 +51,185 @@ struct AgreementOnboardingView: View {
         }
     }
 
-    // MARK: - 上半屏：品牌
+    private var background: some View {
+        ZStack {
+            Color.white
 
-    private var brandHeader: some View {
-        VStack(spacing: 14) {
-            Image("SealBrandIcon")
-                .resizable()
-                .frame(width: 76, height: 76)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .shadow(color: Color.sealAccent.opacity(0.18), radius: 12, y: 6)
+            Circle()
+                .fill(Color(red: 0.57, green: 0.83, blue: 1.0).opacity(0.40))
+                .frame(width: 370, height: 370)
+                .blur(radius: 70)
+                .offset(y: -125)
 
-            Text("Seal")
-                .font(.system(size: 27, weight: .bold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+            Circle()
+                .fill(Color(red: 0.82, green: 0.94, blue: 1.0).opacity(0.72))
+                .frame(width: 290, height: 290)
+                .blur(radius: 60)
+                .offset(x: 115, y: 170)
 
-            Text("为你的应用，保持可用。")
-                .font(.system(size: 15))
-                .foregroundStyle(Color.sealTextSecondary)
-                .multilineTextAlignment(.center)
+            Circle()
+                .fill(Color.white.opacity(0.95))
+                .frame(width: 260, height: 260)
+                .blur(radius: 65)
+                .offset(x: -135, y: 260)
         }
-        .padding(.horizontal, 20)
     }
 
-    // MARK: - 下半屏：底部确认 Sheet
+    private var brandSection: some View {
+        VStack(spacing: 18) {
+            sealIcon
 
-    /// 自定义底部 Sheet：白色、顶部圆角 28、不可下拉关闭。
-    private var bottomSheet: some View {
+            Text("Seal")
+                .font(.system(size: 52, weight: .bold, design: .rounded))
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.05, green: 0.17, blue: 0.39),
+                            Color(red: 0.10, green: 0.30, blue: 0.63)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+
+            Text("为你的应用，保持可用。")
+                .font(.system(size: 24, weight: .medium))
+                .foregroundStyle(Color(red: 0.22, green: 0.29, blue: 0.46))
+        }
+        .opacity(appeared ? 1 : 0)
+        .scaleEffect(appeared ? 1 : 0.94)
+    }
+
+    private var sealIcon: some View {
+        Group {
+            if let image = UIImage(named: "SealBrandIcon") {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                ZStack {
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.23, green: 0.80, blue: 0.96),
+                            Color(red: 0.00, green: 0.34, blue: 0.98)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+
+                    Image(systemName: "feather")
+                        .font(.system(size: 62, weight: .medium))
+                        .foregroundStyle(.white)
+                        .rotationEffect(.degrees(-20))
+                }
+            }
+        }
+        .frame(width: 190, height: 190)
+        .clipShape(RoundedRectangle(cornerRadius: 43, style: .continuous))
+        .shadow(color: Color.blue.opacity(0.18), radius: 28, y: 14)
+    }
+
+    private var consentSheet: some View {
         VStack(spacing: 0) {
-            // 拖拽指示条（纯视觉装饰）
-            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                .fill(Color.secondary.opacity(0.25))
-                .frame(width: 36, height: 5)
-                .padding(.top, 10)
-                .padding(.bottom, 16)
+            Capsule()
+                .fill(Color.gray.opacity(0.22))
+                .frame(width: 58, height: 6)
+                .padding(.top, 23)
 
             Text("欢迎使用 Seal")
-                .font(.system(size: 22, weight: .bold))
-                .padding(.bottom, 12)
+                .font(.system(size: 31, weight: .bold))
+                .foregroundStyle(Color(red: 0.02, green: 0.07, blue: 0.17))
+                .padding(.top, 75)
 
-            agreementNotes
-                .padding(.bottom, 20)
+            agreementDescription
+                .padding(.top, 62)
+                .padding(.horizontal, 42)
 
-            Button("同意并继续") {
+            Button(action: {
                 UserDefaults.standard.set(AgreementVersion.current, forKey: AgreementVersion.storageKey)
                 onAgreed()
+            }) {
+                Text("同意并继续")
+                    .font(.system(size: 29, weight: .bold))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 78)
+                    .foregroundStyle(.white)
+                    .background(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.04, green: 0.47, blue: 1.0),
+                                Color(red: 0.00, green: 0.37, blue: 0.93)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 21, style: .continuous))
+                    .shadow(color: Color.blue.opacity(0.20), radius: 14, y: 8)
             }
-            .sealPrimaryAction(cornerRadius: 14)
-            .padding(.bottom, 8)
+            .buttonStyle(.plain)
+            .padding(.horizontal, 49)
+            .padding(.top, 78)
 
             Button("暂不使用") {
                 showDeclineHint = true
                 onDeclined()
             }
-            .font(.system(size: 16, weight: .medium))
-            .foregroundStyle(Color.sealTextSecondary)
-            .frame(maxWidth: .infinity)
-            .frame(minHeight: 44)
+            .font(.system(size: 25, weight: .medium))
+            .foregroundStyle(Color(red: 0.44, green: 0.49, blue: 0.62))
+            .buttonStyle(.plain)
+            .padding(.top, 44)
+
+            Spacer(minLength: 36)
         }
-        .padding(.horizontal, 24)
-        .padding(.bottom, 20)
-        .background(Color.white)
+        .frame(maxWidth: .infinity)
+        .frame(height: 810)
+        .background(.white.opacity(0.95))
         .clipShape(
             UnevenRoundedRectangle(
-                cornerRadii: .init(topLeading: 28, topTrailing: 28)
+                topLeadingRadius: 46,
+                bottomLeadingRadius: 0,
+                bottomTrailingRadius: 0,
+                topTrailingRadius: 46,
+                style: .continuous
             )
         )
-        .shadow(color: .black.opacity(0.08), radius: 16, y: -4)
+        .shadow(color: .black.opacity(0.06), radius: 20, y: -4)
     }
 
-    /// 两行说明：《隐私政策》《用户协议》可点，分别进对应页面。
-    /// 用流式布局，支持 Dynamic Type 放大不裁切。
-    private var agreementNotes: some View {
-        VStack(spacing: 8) {
-            // 第一行：使用前，请阅读《隐私政策》和《用户协议》。
-            HStack(spacing: 0) {
+    private var agreementDescription: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 4) {
                 Text("使用前，请阅读")
-                    .foregroundStyle(Color.sealTextSecondary)
                 NavigationLink { PrivacyNoticeView() } label: {
                     Text("《隐私政策》")
-                        .fontWeight(.semibold)
-                        .foregroundStyle(Color.sealAccent)
+                        .foregroundStyle(Color(red: 0.00, green: 0.48, blue: 1.0))
                 }
                 .buttonStyle(.plain)
+
                 Text("和")
-                    .foregroundStyle(Color.sealTextSecondary)
+
                 NavigationLink { UserAgreementView() } label: {
                     Text("《用户协议》")
-                        .fontWeight(.semibold)
-                        .foregroundStyle(Color.sealAccent)
+                        .foregroundStyle(Color(red: 0.00, green: 0.48, blue: 1.0))
                 }
                 .buttonStyle(.plain)
+
                 Text("。")
-                    .foregroundStyle(Color.sealTextSecondary)
             }
-            // 第二行：点击"同意并继续"，即表示你已阅读并同意上述协议。
+
             Text("点击“同意并继续”，即表示你已阅读并同意上述协议。")
-                .foregroundStyle(Color.sealTextSecondary)
         }
-        .font(.system(size: 14))
-        .multilineTextAlignment(.center)
+        .font(.system(size: 18, weight: .medium))
+        .foregroundStyle(Color(red: 0.28, green: 0.34, blue: 0.47))
         .fixedSize(horizontal: false, vertical: true)
-        // 协议链接最小点击高度 44pt
-        .padding(.vertical, 4)
     }
 }
 
 /// UI 测试用的启动参数：声明「本次启动视为已同意协议」。
-///
-/// 🔴 为什么必须有（2026-10-07 引入本门控时漏掉的同步）：
-/// 门控把**整个** `RootTabView` 挡在协议页后面，而 `SealUITests` 的用例都是
-/// `app.launch()` 之后直接去找根界面的元素（tab 栏 / 「待签名，N 个」/ 导入入口）
-/// ⇒ 它们全部停在协议页，7 个用例一起红，
-/// `swift-regression` 从 2026-10-05 最后一次全绿之后再没绿过。
-/// 而中间几十次 run 全是 `cancelled`（被新推送顶掉），这个红点一直没暴露 ——
-/// 直到 2026-10-08 才第一次真的跑出来，很容易被误当成「本轮改动引入的回归」。
-///
-/// ⚠️ 只认**显式**参数，**不**写成「`--ui-testing-` 前缀」这类隐式规则
-/// （AGENTS.md §3：显式集合，禁止前缀与数字区间）：
-/// 前缀规则会让「到底哪些参数能开门」不可枚举，下一个加 UI 测试的人无从自查。
-///
-/// 真实用户拿不到这个参数：iOS 上启动参数只有 Xcode / `simctl launch` 能传，
-/// 别的 App 无法为 Seal 指定 —— 所以门控对真实首启的行为完全不变。
 let uiTestingAgreementAcceptedArgument = "--ui-testing-agreement-accepted"
 
 /// 检查是否需要展示协议页：没同意过，或协议版本更新了。
-///
-/// - Parameter arguments: 可注入，便于单测；默认取进程启动参数。
 func needsAgreementOnboarding(
     arguments: [String] = ProcessInfo.processInfo.arguments
 ) -> Bool {

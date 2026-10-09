@@ -308,7 +308,9 @@ final class AppsViewModel: ObservableObject {
         let installedKeys = installedAppIdentityKeys
         return apps
             .filter(\.belongsInUnsignedList)
-            .filter { $0.userIdentityKeys.isDisjoint(with: installedKeys) }
+            // 2026-10-09: 覆盖更新包（replacesInstalledAppID 非空）就是要和已安装的同 ID，
+            // 不能用 identityKeys 过滤掉，否则待签名页永远空。
+            .filter { $0.replacesInstalledAppID != nil || $0.userIdentityKeys.isDisjoint(with: installedKeys) }
             .sorted { lhs, rhs in
                 if lhs.importedAt != rhs.importedAt { return lhs.importedAt > rhs.importedAt }
                 return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending

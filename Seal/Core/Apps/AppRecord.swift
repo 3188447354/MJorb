@@ -340,6 +340,16 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         signedArtifactStatus = hasSignedArtifact ? .available : .missing
     }
 
+    /// 删除可再生的已签名包后，保留原始 IPA、安装历史与用户配置。
+    /// 下次安装或续签会重新签名，不能再复用已删除的产物元数据。
+    mutating func clearSignedArtifact() {
+        signedIPARelativePath = nil
+        signedIPASHA256 = nil
+        signedIPAFileSize = nil
+        signedIPAModificationDate = nil
+        signedArtifactStatus = .missing
+    }
+
     var belongsInInstalledList: Bool {
         // 2026-10-09：待签名的 Seal 更新包（replacesInstalledAppID 非空）不进已安装列表，
         // 进待签名列表。否则覆盖更新的新包会和已安装的 Seal 并列显示。

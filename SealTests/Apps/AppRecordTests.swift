@@ -269,4 +269,35 @@ struct AppRecordTests {
         #expect(record.signedIPASHA256 == String(repeating: "a", count: 64))
         #expect(record.signedArtifactStatus == .available)
     }
+
+    @Test
+    func clearingSignedArtifactKeepsInstalledRecordAndOriginalIPA() {
+        var record = AppRecord(
+            originalBundleIdentifier: "com.example.installed",
+            mappedBundleIdentifier: "com.example.installed.seal",
+            name: "Installed",
+            version: "1.0",
+            buildNumber: "1",
+            size: 1,
+            state: .installed,
+            lastInstalledAt: Date(),
+            ipaRelativePath: "Apps/installed/Original.ipa",
+            signedIPARelativePath: "Apps/installed/Signed.ipa",
+            signedIPASHA256: String(repeating: "a", count: 64),
+            signedIPAFileSize: 4_096,
+            signedIPAModificationDate: Date(),
+            signedArtifactStatus: .installed,
+            importedAt: Date()
+        )
+
+        record.clearSignedArtifact()
+
+        #expect(record.ipaRelativePath == "Apps/installed/Original.ipa")
+        #expect(record.belongsInInstalledList)
+        #expect(record.signedIPARelativePath == nil)
+        #expect(record.signedIPASHA256 == nil)
+        #expect(record.signedIPAFileSize == nil)
+        #expect(record.signedIPAModificationDate == nil)
+        #expect(record.signedArtifactStatus == .missing)
+    }
 }

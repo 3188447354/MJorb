@@ -9,6 +9,10 @@ enum StorageMaintenanceSummary {
         resultText(prefix: "已清理未使用文件", freedBytes: freedBytes)
     }
 
+    static func signedPackagesCleared(freedBytes: Int64) -> String {
+        resultText(prefix: "已清理签名包", freedBytes: freedBytes)
+    }
+
     private static func resultText(prefix: String, freedBytes: Int64) -> String {
         let freed = max(0, freedBytes)
         guard freed > 0 else {

@@ -17,7 +17,7 @@ enum AgreementOnboardingLayout {
 /// 首次启动（或协议更新后）的协议同意页。
 ///
 /// 视觉（2026-10-09 新设计）：白色背景 + 低饱和蓝色光斑 → 品牌区（112pt 官方图标 + 渐变标题）
-/// → 签名页同款 29pt 顶角确认抽屉 → "欢迎使用 Seal" → 协议说明 → "同意并继续" / "暂不使用"。
+/// → 系统原生确认抽屉 → "欢迎使用 Seal" → 协议说明 → "同意并继续" / "暂不使用"。
 ///
 /// 约束：只改视觉层。协议门控（SealApp.swift）、AgreementVersion、
 /// 协议正文（PrivacyNoticeView / UserAgreementView）、签名功能一律不动。
@@ -29,24 +29,37 @@ struct AgreementOnboardingView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appeared = false
     @State private var showDeclineHint = false
+    @State private var isConsentSheetPresented = true
 
     var body: some View {
         GeometryReader { geo in
-            ZStack(alignment: .bottom) {
+            ZStack(alignment: .top) {
                 background
 
-                // 品牌区只占上半屏，避开底部 sheet
+                // 不能放进 bottom-aligned ZStack：静态抽屉会与品牌区共用底边，完全遮住品牌。
                 VStack(spacing: 0) {
-                    Spacer().frame(height: 80)
+                    Spacer().frame(height: max(geo.safeAreaInsets.top + 38, 70))
                     brandSection
                     Spacer()
                 }
-                .frame(height: geo.size.height * 0.38)
-
-                consentSheet(height: geo.size.height * 0.62)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
         }
         .ignoresSafeArea()
+        .sheet(isPresented: $isConsentSheetPresented) {
+            AgreementConsentSheet(
+                onAgreed: onAgreed,
+                onDeclined: {
+                    showDeclineHint = true
+                    onDeclined()
+                }
+            )
+            .presentationDetents([.fraction(0.62), .large])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(.white)
+            // 协议门控不允许通过向下拖动绕过；拖动仍可在两个 detent 之间切换。
+            .interactiveDismissDisabled()
+        }
         .onAppear {
             guard !reduceMotion else {
                 appeared = true
@@ -142,22 +155,26 @@ struct AgreementOnboardingView: View {
         .shadow(color: Color.blue.opacity(0.14), radius: 16, y: 8)
     }
 
-    private func consentSheet(height: CGFloat) -> some View {
-        VStack(spacing: 0) {
-            Capsule()
-                .fill(Color.gray.opacity(0.25))
-                .frame(width: 40, height: 5)
-                .padding(.top, 10)
+}
 
+/// 原生 sheet 的内容。协议门控由外层禁用交互式关闭，内容只负责明确的同意/暂不使用动作。
+private struct AgreementConsentSheet: View {
+    let onAgreed: () -> Void
+    let onDeclined: () -> Void
+
+    private var drawerHorizontalInset: CGFloat { AgreementOnboardingLayout.horizontalInset }
+
+    var body: some View {
+        VStack(spacing: 0) {
             Text("欢迎使用 Seal")
                 .font(.title.weight(.bold))
                 .foregroundStyle(Color(red: 0.02, green: 0.07, blue: 0.17))
-                .padding(.top, 20)
+                .padding(.top, 24)
                 .minimumScaleFactor(0.8)
 
             agreementDescription
                 .padding(.top, 20)
-                .padding(.horizontal, AgreementOnboardingLayout.horizontalInset)
+                .padding(.horizontal, drawerHorizontalInset)
 
             Spacer()
 
@@ -186,11 +203,10 @@ struct AgreementOnboardingView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, AgreementOnboardingLayout.horizontalInset)
+            .padding(.horizontal, drawerHorizontalInset)
             .padding(.top, 14)
 
             Button("暂不使用") {
-                showDeclineHint = true
                 onDeclined()
             }
             .font(.body)
@@ -200,18 +216,6 @@ struct AgreementOnboardingView: View {
             .padding(.bottom, 24)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: height)
-        .background(.white)
-        .clipShape(
-            UnevenRoundedRectangle(
-                topLeadingRadius: AgreementOnboardingLayout.drawerCornerRadius,
-                bottomLeadingRadius: 0,
-                bottomTrailingRadius: 0,
-                topTrailingRadius: AgreementOnboardingLayout.drawerCornerRadius,
-                style: .continuous
-            )
-        )
-        .shadow(color: .black.opacity(0.08), radius: 16, y: -4)
     }
 
     private var agreementDescription: some View {

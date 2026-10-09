@@ -757,8 +757,8 @@ final class AppsViewModel: ObservableObject {
     /// 用**当前**的 `apps` 与 `accountSecrets` 重算上面那份派生状态。
     ///
     /// 判据一律走 `ProfileOnlyRenewalPolicy`（与续签准入同源，R85②），这里只负责「什么时候算」。
-    /// 只在钥匙串重读后调用（`accountSecrets` 更新时），不在 `apps` 变化时调用——
-    /// 那时 secrets 还是旧的，算出来必错。
+    /// 在钥匙串快照与 `apps` 已配对时调用。签名成功会先写入完成记录、再重读钥匙串，
+    /// 这样抽屉不会继续拿旧序列号显示“需重新签名”。
     private func refreshCertAvailability() {
         localCertificateAvailabilityByAppID = ProfileOnlyRenewalPolicy.availabilityByAppID(
             apps: apps,
@@ -770,6 +770,25 @@ final class AppsViewModel: ObservableObject {
     /// 下次钥匙串重读后 `refreshCertAvailability()` 会再校验，若真有问题会纠回来。
     func markLocalCertificateReady(for appID: UUID) {
         localCertificateAvailabilityByAppID[appID] = .ready
+    }
+
+    /// 签名成功后的最小状态对账：先让观察中的抽屉收到最新 App，再以新钥匙串快照重算全部证书文案。
+    /// 不能依赖 `load()` 的后台派生任务；它会在用户已经重新打开抽屉之后才完成。
+    private func reconcileAfterSuccessfulSigning(_ completed: AppRecord) async {
+        if let index = apps.firstIndex(where: { $0.id == completed.id }) {
+            apps[index] = completed
+        }
+
+        // 刚完成签名这一刻已知私钥可用，即使 Keychain 读回因瞬时错误失败也不能误报“需重新签名”。
+        markLocalCertificateReady(for: completed.id)
+
+        let secrets = await loadAccountSecrets(for: accounts)
+        guard secrets.isEmpty == false || accounts.isEmpty else { return }
+        accountSecrets = secrets
+        fullAccountEmails = secrets.mapValues(\.email)
+        refreshCertAvailability()
+        // 成功签名是比一次短暂 Keychain 读取更强的事实；保留该确定状态直到下次完整加载复核。
+        markLocalCertificateReady(for: completed.id)
     }
 
     /// 一次读完所有账号的密钥 —— 邮箱显示与「本机证书状态」都从这里派生。
@@ -3120,14 +3139,7 @@ final class AppsViewModel: ObservableObject {
                 lifecycleStatus: completed.belongsInInstalledList ? .active : .unknown
             )
             await cleanTemporaryFilesIfNeeded(appID: completed.id)
-            // 签名成功本机一定有私钥，直接置为可用，不等后台重算（后台有延迟）。
-            // 后续 load() 的后台任务会再校验一次，若真有问题会纠回来。
-            markLocalCertificateReady(for: completed.id)
-            // 2026-10-09 重设计：直接更新 apps 数组，不等 load() 从库重读。
-            // load() 的 fetchAll 可能有时序问题，直接替换最可靠。
-            if let index = apps.firstIndex(where: { $0.id == completed.id }) {
-                apps[index] = completed
-            }
+            await reconcileAfterSuccessfulSigning(completed)
             await load(force: true)
         } catch is CancellationError {
             signingSession = nil

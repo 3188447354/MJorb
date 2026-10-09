@@ -4,6 +4,7 @@ struct StorageMaintenanceView: View {
     @ObservedObject var viewModel: SettingsViewModel
     @State private var confirmsTemporaryClear = false
     @State private var confirmsUnusedClear = false
+    @State private var confirmsSignedPackageClear = false
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -42,6 +43,18 @@ struct StorageMaintenanceView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("会清理临时缓存和不再使用的多余文件。已安装 App 的签名缓存、账号密码和设备配对信息不会删除。")
+        }
+        .confirmationDialog(
+            "清理签名包？",
+            isPresented: $confirmsSignedPackageClear,
+            titleVisibility: .visible
+        ) {
+            Button("清理签名包", role: .destructive) {
+                Task { await viewModel.clearStoredSignedPackages() }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("会删除全部已签名 IPA 和导出副本；已安装 App、原始 IPA、图标、账号和设备配对信息会保留。下次安装或续签需要重新签名。")
         }
         .sealScreenBackground()
     }
@@ -92,13 +105,15 @@ struct StorageMaintenanceView: View {
         VStack(spacing: 12) {
             Button("清理临时缓存") { confirmsTemporaryClear = true }
                 .sealPrimaryAction(cornerRadius: 12)
+            Button("清理签名包") { confirmsSignedPackageClear = true }
+                .sealOutlineAction(cornerRadius: 12)
             Button("清理未使用文件") { confirmsUnusedClear = true }
                 .sealOutlineAction(cornerRadius: 12)
         }
     }
 
     private var dangerNote: some View {
-        Text(viewModel.storageMaintenanceSummary ?? "签名缓存、账号密码、证书和设备配对信息不会在这里清理。")
+        Text(viewModel.storageMaintenanceSummary ?? "临时缓存、多余文件和签名包可按需清理；账号密码、证书和设备配对信息不会在这里清理。")
             .font(.footnote)
             .foregroundStyle(Color.sealTextSecondary)
             .frame(maxWidth: .infinity, alignment: .leading)

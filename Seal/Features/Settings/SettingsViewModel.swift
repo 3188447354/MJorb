@@ -1365,6 +1365,7 @@ final class SettingsViewModel: ObservableObject {
                     fetchedAt: inventory.fetchedAt
                 )
             }
+            inventory = inventory.filteringDismissedCertificates()
             guard acceptsCertificateInventoryRefresh(ticket) else { return }
             certificateInventories[account.id] = inventory
             certificateInventoryFailures[account.id] = nil
@@ -1765,7 +1766,7 @@ final class SettingsViewModel: ObservableObject {
                   let inventory = try? JSONDecoder().decode(ApplePortalInventory.self, from: data) else {
                 continue
             }
-            cached[account.id] = inventory
+            cached[account.id] = inventory.filteringDismissedCertificates()
         }
         certificateInventories = certificateInventories.filter { validIDs.contains($0.key) }
         for (id, inventory) in cached where certificateInventories[id] == nil {
@@ -2996,16 +2997,71 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    /// 清理可再生成的已签名 IPA。原始 IPA、安装记录和用户偏好一律保留。
+    func clearStoredSignedPackages() async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 清理已签名 IPA")
+        guard let fileStore, let appStore else { return }
+        guard let operationLease = await acquireOperation(.maintainingStorage) else { return }
+        defer { releaseOperation(operationLease) }
+
+        do {
+            await refreshStorageUsage()
+            let signedBefore = storageUsage.signedIPAs
+            let records = try await appStore.fetchAll()
+
+            for record in records {
+                let hadArtifactMetadata = record.signedIPARelativePath != nil
+                    || record.signedIPASHA256 != nil
+                    || record.signedIPAFileSize != nil
+                    || record.signedIPAModificationDate != nil
+                    || record.signedArtifactStatus != nil
+                var clearedRecord = record
+                clearedRecord.clearSignedArtifact()
+
+                // 先持久化“不可复用”，避免文件删除成功但记录仍指向已不存在的 IPA。
+                if hadArtifactMetadata {
+                    try await appStore.save(clearedRecord)
+                }
+                do {
+                    try fileStore.removeSignedIPA(appID: record.id)
+                } catch {
+                    // 删除未完成时恢复原记录，确保用户仍可正常复用现有签名包。
+                    if hadArtifactMetadata {
+                        try? await appStore.save(record)
+                    }
+                    throw error
+                }
+            }
+
+            await refreshStorageUsage()
+            storageMaintenanceSummary = StorageMaintenanceSummary.signedPackagesCleared(
+                freedBytes: signedBefore - storageUsage.signedIPAs
+            )
+            try? await logStore?.append(
+                category: .system,
+                message: "已清理已签名 IPA；原始 IPA、安装记录和账号数据已保留"
+            )
+            logs = (try? await logStore?.entries()) ?? logs
+            await refreshLogExportText()
+        } catch {
+            alertFailure = Self.failure(
+                title: "无法清理签名包",
+                reason: "部分已签名 IPA 正在使用或本地记录无法更新。",
+                recovery: "稍后重新清理",
+                code: "SEAL-STORAGE-003"
+            )
+        }
+    }
+
     func clearIPAAndSigningCache() async {
         try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 清理 IPA 和签名缓存")
         await clearUnusedStorageFiles()
     }
 
     /// Legacy API retained for call-site compatibility.
-    /// This now only clears transient workspaces.
+    /// Its name now matches the real operation: reclaim regenerable signed IPA packages.
     func clearSignedIPACache() async {
-        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 清理已签名 IPA 缓存")
-        await clearTemporaryFiles()
+        await clearStoredSignedPackages()
     }
 
     func clearLogs() async {

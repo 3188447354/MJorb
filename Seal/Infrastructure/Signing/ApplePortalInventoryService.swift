@@ -12,6 +12,20 @@ struct ApplePortalInventory: Codable, Equatable, Sendable {
     var usedBundleIDCount: Int {
         Set(appIDs.map { $0.bundleIdentifier.lowercased() }).count
     }
+
+    /// Apple 门户的撤销状态存在传播延迟；任何重新发布到 UI/缓存的清单都必须再次过滤。
+    func filteringDismissedCertificates() -> Self {
+        Self(
+            accountID: accountID,
+            teamID: teamID,
+            teamName: teamName,
+            appIDs: appIDs,
+            certificates: certificates.filter {
+                CertificateDismissalStore.isDismissed(serialNumber: $0.serialNumber) == false
+            },
+            fetchedAt: fetchedAt
+        )
+    }
 }
 
 struct ApplePortalAppIDSnapshot: Codable, Equatable, Identifiable, Sendable {

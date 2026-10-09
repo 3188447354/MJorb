@@ -27,8 +27,35 @@ struct AgreementOnboardingView: View {
             Spacer()
             brandHeader
             Spacer()
-            // 下半：底部确认 Sheet
-            bottomSheet
+            // 下半：底部确认抽屉（真 SealDrawer，与签名页一致）
+            SealDrawer(
+                title: "欢迎使用 Seal",
+                level: .primary,
+                showsFooter: true,
+                content: {
+                    agreementNotes
+                        .padding(.top, 4)
+                },
+                footer: {
+                    VStack(spacing: 8) {
+                        Button("同意并继续") {
+                            UserDefaults.standard.set(AgreementVersion.current, forKey: AgreementVersion.storageKey)
+                            onAgreed()
+                        }
+                        .sealPrimaryAction(cornerRadius: 14)
+
+                        Button("暂不使用") {
+                            showDeclineHint = true
+                            onDeclined()
+                        }
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(Color.sealTextSecondary)
+                        .frame(maxWidth: .infinity)
+                        .frame(minHeight: 44)
+                    }
+                }
+            )
+            .frame(maxHeight: 340)
         }
         .sealScreenBackground()
         .alert("需要您的同意", isPresented: $showDeclineHint) {
@@ -61,51 +88,7 @@ struct AgreementOnboardingView: View {
         .padding(.horizontal, 20)
     }
 
-    // MARK: - 下半屏：底部确认 Sheet
-
-    /// 自定义底部 Sheet：白色、顶部圆角 28、不可下拉关闭。
-    private var bottomSheet: some View {
-        VStack(spacing: 0) {
-            // 拖拽指示条（纯视觉装饰）
-            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                .fill(Color.secondary.opacity(0.25))
-                .frame(width: 36, height: 5)
-                .padding(.top, 10)
-                .padding(.bottom, 16)
-
-            Text("欢迎使用 Seal")
-                .font(.system(size: 22, weight: .bold))
-                .padding(.bottom, 12)
-
-            agreementNotes
-                .padding(.bottom, 20)
-
-            Button("同意并继续") {
-                UserDefaults.standard.set(AgreementVersion.current, forKey: AgreementVersion.storageKey)
-                onAgreed()
-            }
-            .sealPrimaryAction(cornerRadius: 14)
-            .padding(.bottom, 8)
-
-            Button("暂不使用") {
-                showDeclineHint = true
-                onDeclined()
-            }
-            .font(.system(size: 16, weight: .medium))
-            .foregroundStyle(Color.sealTextSecondary)
-            .frame(maxWidth: .infinity)
-            .frame(minHeight: 44)
-        }
-        .padding(.horizontal, 24)
-        .padding(.bottom, 20)
-        .background(Color.white)
-        .clipShape(
-            UnevenRoundedRectangle(
-                cornerRadii: .init(topLeading: 28, topTrailing: 28)
-            )
-        )
-        .shadow(color: .black.opacity(0.08), radius: 16, y: -4)
-    }
+    // MARK: - 下半屏：底部确认抽屉（已改用真 SealDrawer，见 body）
 
     /// 两行说明：《隐私政策》《用户协议》可点，分别进对应页面。
     /// 用流式布局，支持 Dynamic Type 放大不裁切。

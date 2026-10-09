@@ -333,7 +333,12 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
     }
 
     var belongsInInstalledList: Bool {
-        isSeal || state == .installed || lastInstalledAt != nil || signedArtifactStatus == .installed
+        // 2026-10-09：待签名的 Seal 更新包（replacesInstalledAppID 非空）不进已安装列表，
+        // 进待签名列表。否则覆盖更新的新包会和已安装的 Seal 并列显示。
+        if isSeal, replacesInstalledAppID != nil, state == .imported {
+            return false
+        }
+        return isSeal || state == .installed || lastInstalledAt != nil || signedArtifactStatus == .installed
     }
 
     var belongsInSignedList: Bool {
@@ -341,7 +346,11 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
     }
 
     var belongsInUnsignedList: Bool {
-        isSeal == false && belongsInInstalledList == false
+        // 2026-10-09：待签名的 Seal 更新包进待签名列表。
+        if isSeal, replacesInstalledAppID != nil, state == .imported {
+            return true
+        }
+        return isSeal == false && belongsInInstalledList == false
     }
 
     var userIdentityKeys: Set<String> {

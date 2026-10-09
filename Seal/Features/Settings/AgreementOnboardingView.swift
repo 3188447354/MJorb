@@ -12,6 +12,8 @@ enum AgreementOnboardingLayout {
     static let iconCornerRadius: CGFloat = 26
     static let drawerCornerRadius: CGFloat = 29
     static let horizontalInset: CGFloat = 22
+    static let initialDrawerFraction: CGFloat = 0.44
+    static let compactContentSpacing: CGFloat = 18
 }
 
 /// 首次启动（或协议更新后）的协议同意页。
@@ -29,16 +31,16 @@ struct AgreementOnboardingView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appeared = false
     @State private var showDeclineHint = false
-    @State private var isConsentSheetPresented = true
+    @State private var presentationState = AgreementOnboardingPresentationState()
 
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .top) {
                 background
 
-                // 不能放进 bottom-aligned ZStack：静态抽屉会与品牌区共用底边，完全遮住品牌。
+                // 品牌区相对较短的抽屉下移，避免顶部与底部各自独立而显得割裂。
                 VStack(spacing: 0) {
-                    Spacer().frame(height: max(geo.safeAreaInsets.top + 38, 70))
+                    Spacer().frame(height: max(geo.safeAreaInsets.top + 98, 145))
                     brandSection
                     Spacer()
                 }
@@ -46,15 +48,18 @@ struct AgreementOnboardingView: View {
             }
         }
         .ignoresSafeArea()
-        .sheet(isPresented: $isConsentSheetPresented) {
-            AgreementConsentSheet(
-                onAgreed: onAgreed,
-                onDeclined: {
-                    showDeclineHint = true
-                    onDeclined()
-                }
-            )
-            .presentationDetents([.fraction(0.62), .large])
+        .sheet(isPresented: $presentationState.isConsentSheetPresented) {
+            NavigationStack {
+                AgreementConsentSheet(
+                    onAgreed: onAgreed,
+                    onDeclined: {
+                        presentationState.decline()
+                        showDeclineHint = true
+                        onDeclined()
+                    }
+                )
+            }
+            .presentationDetents([.fraction(AgreementOnboardingLayout.initialDrawerFraction), .large])
             .presentationDragIndicator(.visible)
             .presentationBackground(.white)
             // 协议门控不允许通过向下拖动绕过；拖动仍可在两个 detent 之间切换。
@@ -70,7 +75,9 @@ struct AgreementOnboardingView: View {
             }
         }
         .alert("需要您的同意", isPresented: $showDeclineHint) {
-            Button("好的", role: .cancel) { }
+            Button("好的", role: .cancel) {
+                presentationState.acknowledgeDecline()
+            }
         } message: {
             Text("Seal 需要您同意《隐私政策》与《用户协议》才能继续使用。")
         }
@@ -176,10 +183,9 @@ private struct AgreementConsentSheet: View {
                 .padding(.top, 20)
                 .padding(.horizontal, drawerHorizontalInset)
 
-            Spacer()
-
             Divider()
                 .overlay(Color.sealHairline.opacity(0.65))
+                .padding(.top, AgreementOnboardingLayout.compactContentSpacing)
 
             Button(action: {
                 UserDefaults.standard.set(AgreementVersion.current, forKey: AgreementVersion.storageKey)
@@ -204,7 +210,7 @@ private struct AgreementConsentSheet: View {
             }
             .buttonStyle(.plain)
             .padding(.horizontal, drawerHorizontalInset)
-            .padding(.top, 14)
+            .padding(.top, AgreementOnboardingLayout.compactContentSpacing)
 
             Button("暂不使用") {
                 onDeclined()
@@ -212,8 +218,8 @@ private struct AgreementConsentSheet: View {
             .font(.body)
             .foregroundStyle(.secondary)
             .buttonStyle(.plain)
-            .padding(.top, 16)
-            .padding(.bottom, 24)
+            .padding(.top, 14)
+            .padding(.bottom, AgreementOnboardingLayout.compactContentSpacing)
         }
         .frame(maxWidth: .infinity)
     }
@@ -227,12 +233,14 @@ private struct AgreementConsentSheet: View {
                         .foregroundStyle(Color(red: 0.00, green: 0.48, blue: 1.0))
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("agreement-privacy-link")
 
                 NavigationLink { UserAgreementView() } label: {
                     Text("《用户协议》")
                         .foregroundStyle(Color(red: 0.00, green: 0.48, blue: 1.0))
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("agreement-terms-link")
             }
 
             Text("点击“同意并继续”，即表示你已阅读并同意上述协议。")

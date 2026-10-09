@@ -41,4 +41,23 @@ final class AgreementGateUITests: XCTestCase {
         XCTAssertTrue(app.buttons["import-toolbar-button"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["待签名，0 个"].waitForExistence(timeout: 10))
     }
+
+    @MainActor
+    func testAgreementLinksOpenTheirInAppDocuments() {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "--ui-testing-empty",
+            "-\(Self.storageKey)", "0"
+        ]
+        app.launch()
+
+        XCTAssertTrue(app.buttons["agreement-privacy-link"].waitForExistence(timeout: 10))
+        app.buttons["agreement-privacy-link"].tap()
+        XCTAssertTrue(app.navigationBars["隐私政策"].waitForExistence(timeout: 10))
+
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.buttons["agreement-terms-link"].waitForExistence(timeout: 10))
+        app.buttons["agreement-terms-link"].tap()
+        XCTAssertTrue(app.navigationBars["用户协议"].waitForExistence(timeout: 10))
+    }
 }

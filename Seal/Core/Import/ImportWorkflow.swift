@@ -247,9 +247,12 @@ actor ImportWorkflow {
             )
             // 文件目录键必须与记录 id 一致：`AppFileStore` 用 appID 同时决定
             // `Apps/<appID>/` 目录名与写进记录里的相对路径（`Original.ipa` / `Signed.ipa`），
-            // 两者不一致时签名阶段会去一个不存在的目录取包。覆盖更新复用 `existing.id`
-            // ⇒ 这里必须用同一个 id（否则覆盖后签名必然找不到源包）。
-            let commitAppID = existingSeal?.id ?? existing?.id ?? draft.appID
+            // 两者不一致时签名阶段会去一个不存在的目录取包。
+            // 2026-10-09 重设计：覆盖更新创建**新记录**（新 ID），不再复用 existing.id。
+            // 文件目录用新 ID，记录也用新 ID，两者一致。
+            let isPendingUpdate = existingSeal != nil || (existing?.belongsInInstalledList == true)
+            let newRecordID = UUID()
+            let commitAppID = isPendingUpdate ? newRecordID : (existing?.id ?? draft.appID)
             let preferredIconData: Data?
             if let path = existingSeal?.preferredIconRelativePath
                 ?? existingSeal?.iconRelativePath
@@ -322,7 +325,8 @@ actor ImportWorkflow {
                 replacing: existing,
                 existingSeal: existingSeal,
                 preferenceSource: preferenceSource,
-                pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint
+                pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint,
+                recordID: newRecordID
             )
             record.pendingFileTransactionID = transaction.id
             // 被替换的记录必须逐条记下来，回滚时按 id 恢复：
@@ -461,14 +465,16 @@ actor ImportWorkflow {
         replacing existing: AppRecord?,
         existingSeal: AppRecord?,
         preferenceSource: AppRecord?,
-        pendingUpdateSourceFingerprint: String? = nil
+        pendingUpdateSourceFingerprint: String? = nil,
+        recordID: UUID = UUID()
     ) -> AppRecord {
         if let existingSeal {
             return makeSelfUpdateRecord(
                 draft: draft,
                 files: files,
                 existingSeal: existingSeal,
-                pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint
+                pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint,
+                recordID: recordID
             )
         }
 
@@ -480,12 +486,13 @@ actor ImportWorkflow {
                 draft: draft,
                 files: files,
                 existing: existing,
-                pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint
+                pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint,
+                recordID: recordID
             )
         }
 
         let parsed = draft.parsedIPA
-        let recordID = existing?.id ?? draft.appID
+        let fallbackID = existing?.id ?? draft.appID
         // 导入时保留原始 Bundle ID，不继承之前签名记录的 mappedBundleIdentifier
         // 只有替换已存在的待签名记录时才保留用户设置的 preferredBundleIdentifier
         // 打开签名抽屉时才生成推荐的随机后缀 Bundle ID
@@ -502,7 +509,7 @@ actor ImportWorkflow {
         let isPinned = existing?.isPinned ?? false
 
         return AppRecord(
-            id: recordID,
+            id: fallbackID,
             originalBundleIdentifier: parsed.bundleIdentifier,
             mappedBundleIdentifier: nil,
             name: parsed.name,
@@ -535,10 +542,12 @@ actor ImportWorkflow {
         draft: ImportDraft,
         files: StoredAppFiles,
         existingSeal: AppRecord,
-        pendingUpdateSourceFingerprint: String? = nil
+        pendingUpdateSourceFingerprint: String? = nil,
+        recordID: UUID = UUID()
     ) -> AppRecord {
         let parsed = draft.parsedIPA
         return AppRecord(
+            id: recordID,
             // 新 ID：待签名列表里的一条独立记录
             originalBundleIdentifier: parsed.bundleIdentifier,
             mappedBundleIdentifier: existingSeal.mappedBundleIdentifier,
@@ -583,10 +592,12 @@ actor ImportWorkflow {
         draft: ImportDraft,
         files: StoredAppFiles,
         existing: AppRecord,
-        pendingUpdateSourceFingerprint: String? = nil
+        pendingUpdateSourceFingerprint: String? = nil,
+        recordID: UUID = UUID()
     ) -> AppRecord {
         let parsed = draft.parsedIPA
         return AppRecord(
+            id: recordID,
             // 新 ID：待签名列表里的一条独立记录
             originalBundleIdentifier: parsed.bundleIdentifier,
             mappedBundleIdentifier: existing.mappedBundleIdentifier,

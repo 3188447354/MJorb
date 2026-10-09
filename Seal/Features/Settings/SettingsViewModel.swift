@@ -189,7 +189,7 @@ final class SettingsViewModel: ObservableObject {
     private var isPhonePairingAutomaticCheckRunning = false
     private var certificateInventoryRefreshGate = ApplePortalInventoryRefreshGate()
     private var hasLoaded = false
-    private var loadGeneration = 0
+    private var loadGeneration = SettingsLoadGenerationGate()
     private static let pairingAssistantInboxFileName = "SealPairing.mobiledevicepairing"
     private static let pairingAssistantSource = "Seal 配对助手"
 
@@ -299,16 +299,15 @@ final class SettingsViewModel: ObservableObject {
     func load(force: Bool = false) async {
         guard force || hasLoaded == false else { return }
         guard let accountRepository, let pairingStore else { return }
-        loadGeneration &+= 1
-        let generation = loadGeneration
+        let generation = loadGeneration.issue()
 
         do {
             let fetchedAccounts = try await accountRepository.fetchAll()
-            guard generation == loadGeneration else { return }
+            guard loadGeneration.accepts(generation) else { return }
             let repairedAccounts = try await repairLegacyAccountStatuses(fetchedAccounts)
-            guard generation == loadGeneration else { return }
+            guard loadGeneration.accepts(generation) else { return }
             let displayedAccounts = try await refreshedAccountDisplayNames(repairedAccounts)
-            guard generation == loadGeneration else { return }
+            guard loadGeneration.accepts(generation) else { return }
 
             let loadedPairing: PairingRecord?
             do {
@@ -320,7 +319,7 @@ final class SettingsViewModel: ObservableObject {
                     validationStatus: .fileUnreadable
                 )
             }
-            guard generation == loadGeneration else { return }
+            guard loadGeneration.accepts(generation) else { return }
 
             let preferredAccountID: UUID?
             if let signingPreferenceStore {
@@ -328,7 +327,7 @@ final class SettingsViewModel: ObservableObject {
             } else {
                 preferredAccountID = nil
             }
-            guard generation == loadGeneration else { return }
+            guard loadGeneration.accepts(generation) else { return }
 
             let selectableAccounts = displayedAccounts.filter { AccountAvailabilityPolicy.isSelectable($0) }
             let resolvedAccountID: UUID?
@@ -357,17 +356,21 @@ final class SettingsViewModel: ObservableObject {
                 guard let self else { return }
 
                 _ = await self.importPairingAssistantInboxIfPresent()
+                guard await self.isCurrentLoad(generation) else { return }
 
                 let emails = await self.loadFullAccountEmails(for: displayedAccounts)
+                guard await self.isCurrentLoad(generation) else { return }
                 await MainActor.run { self.fullAccountEmails = emails }
 
                 let storedApps = (try? await self.appStore?.fetchAll()) ?? []
                 let appIcons = await self.loadAppIcons(for: storedApps)
+                guard await self.isCurrentLoad(generation) else { return }
                 await MainActor.run { self.appIconData = appIcons }
 
                 let loadedLogs = (try? await self.logStore?.entries()) ?? []
                 let loadedHistory = (try? await self.signingHistoryStore?.records()) ?? []
                 let historyIcons = await self.loadSigningHistoryIcons(for: loadedHistory)
+                guard await self.isCurrentLoad(generation) else { return }
                 await MainActor.run {
                     self.logs = loadedLogs
                     self.signingHistory = loadedHistory
@@ -386,6 +389,7 @@ final class SettingsViewModel: ObservableObject {
                         loadedNotificationStatus = await notificationScheduler.status(sealEnabled: loadedNotificationsEnabled)
                     }
                 }
+                guard await self.isCurrentLoad(generation) else { return }
                 await MainActor.run {
                     self.notificationsEnabled = loadedNotificationsEnabled
                     self.reminderHours = loadedReminderHours
@@ -398,13 +402,15 @@ final class SettingsViewModel: ObservableObject {
                 } else {
                     loadedStorageUsage = .empty
                 }
+                guard await self.isCurrentLoad(generation) else { return }
                 await MainActor.run {
                     self.storageUsage = loadedStorageUsage
                 }
+                guard await self.isCurrentLoad(generation) else { return }
                 await self.refreshLogExportText()
             }
         } catch {
-            guard generation == loadGeneration else { return }
+            guard loadGeneration.accepts(generation) else { return }
             alertFailure = Self.failure(
                 title: "无法读取设置",
                 reason: "本机保存的设置读不出来，设置项无法加载。",
@@ -412,6 +418,11 @@ final class SettingsViewModel: ObservableObject {
                 code: "SEAL-SET-001"
             )
         }
+    }
+
+    /// `loadGeneration` 属于主 actor；脱离主 actor 的后台读取必须在发布前重新确认代次。
+    private func isCurrentLoad(_ generation: Int) -> Bool {
+        loadGeneration.accepts(generation)
     }
 
     func performLightweightLaunchCheck() async {

@@ -361,7 +361,7 @@ actor CoreDataAppStore: AppStore {
                 return first.name < second.name
             }
 
-        return AppRecord(
+        let record = AppRecord(
             id: id,
             originalBundleIdentifier: originalBundleIdentifier,
             mappedBundleIdentifier: object.value(forKey: "mappedBundleIdentifier") as? String,
@@ -407,19 +407,21 @@ actor CoreDataAppStore: AppStore {
             pendingUpdateSourceFingerprint: object.value(
                 forKey: "pendingUpdateSourceFingerprint"
             ) as? String,
-            installedFingerprint: object.value(forKey: "installedFingerprint") as? String,
-            needsIPAImport: (object.value(forKey: "needsIPAImport") as? NSNumber)?.boolValue ?? false,
             isSeal: (object.value(forKey: "isSeal") as? NSNumber)?.boolValue ?? false,
             isPinned: (object.value(forKey: "isPinned") as? NSNumber)?.boolValue ?? false,
             importedAt: importedAt,
             extensions: appExtensions,
-            importWarnings: [],
             extensionProfileStrategy: (object.value(
                 forKey: "extensionProfileStrategyRaw"
-            ) as? String).flatMap(AppExtensionProfileStrategy.init(rawValue:)),
-            pendingSignedSnapshot: nil,
-            replacesInstalledAppID: object.value(forKey: "replacesInstalledAppID") as? UUID
+            ) as? String).flatMap(AppExtensionProfileStrategy.init(rawValue:))
         )
+        // 2026-10-09: replacesInstalledAppID 是 var，单独赋值。
+        // 不能放在 init 参数里，因为它在参数列表末尾，前面有 4 个非 CoreData 字段
+        //（installedFingerprint/needsIPAImport/importWarnings/pendingSignedSnapshot），
+        // 放在 init 里会导致 valueForUndefinedKey 崩溃。
+        var mutableRecord = record
+        mutableRecord.replacesInstalledAppID = object.value(forKey: "replacesInstalledAppID") as? UUID
+        return mutableRecord
     }
 
     private static func decodeExtension(

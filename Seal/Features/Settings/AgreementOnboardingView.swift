@@ -80,11 +80,12 @@ struct AgreementOnboardingView: View {
     }
 
     private var brandSection: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 16) {
             sealIcon
 
             Text("Seal")
-                .font(.system(size: 52, weight: .bold, design: .rounded))
+                .font(.system(size: 48, weight: .bold, design: .rounded))
+                .minimumScaleFactor(0.7)
                 .foregroundStyle(
                     LinearGradient(
                         colors: [
@@ -97,7 +98,7 @@ struct AgreementOnboardingView: View {
                 )
 
             Text("为你的应用，保持可用。")
-                .font(.system(size: 24, weight: .medium))
+                .font(.title3)
                 .foregroundStyle(Color(red: 0.22, green: 0.29, blue: 0.46))
         }
         .opacity(appeared ? 1 : 0)
@@ -122,41 +123,44 @@ struct AgreementOnboardingView: View {
                     )
 
                     Image(systemName: "feather")
-                        .font(.system(size: 62, weight: .medium))
+                        .font(.system(size: 48, weight: .medium))
                         .foregroundStyle(.white)
                         .rotationEffect(.degrees(-20))
                 }
             }
         }
-        .frame(width: 190, height: 190)
-        .clipShape(RoundedRectangle(cornerRadius: 43, style: .continuous))
-        .shadow(color: Color.blue.opacity(0.18), radius: 28, y: 14)
+        .frame(width: 140, height: 140)
+        .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
+        .shadow(color: Color.blue.opacity(0.18), radius: 20, y: 10)
     }
 
     private func consentSheet(height: CGFloat) -> some View {
         VStack(spacing: 0) {
             Capsule()
-                .fill(Color.gray.opacity(0.22))
-                .frame(width: 58, height: 6)
-                .padding(.top, 23)
+                .fill(Color.gray.opacity(0.25))
+                .frame(width: 36, height: 5)
+                .padding(.top, 12)
 
             Text("欢迎使用 Seal")
-                .font(.system(size: 31, weight: .bold))
+                .font(.title.weight(.bold))
                 .foregroundStyle(Color(red: 0.02, green: 0.07, blue: 0.17))
-                .padding(.top, 75)
+                .padding(.top, 24)
+                .minimumScaleFactor(0.8)
 
             agreementDescription
-                .padding(.top, 62)
-                .padding(.horizontal, 42)
+                .padding(.top, 20)
+                .padding(.horizontal, 24)
+
+            Spacer()
 
             Button(action: {
                 UserDefaults.standard.set(AgreementVersion.current, forKey: AgreementVersion.storageKey)
                 onAgreed()
             }) {
                 Text("同意并继续")
-                    .font(.system(size: 29, weight: .bold))
+                    .font(.headline)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 78)
+                    .frame(height: 54)
                     .foregroundStyle(.white)
                     .background(
                         LinearGradient(
@@ -168,42 +172,39 @@ struct AgreementOnboardingView: View {
                             endPoint: .bottomTrailing
                         )
                     )
-                    .clipShape(RoundedRectangle(cornerRadius: 21, style: .continuous))
-                    .shadow(color: Color.blue.opacity(0.20), radius: 14, y: 8)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 49)
-            .padding(.top, 78)
+            .padding(.horizontal, 24)
 
             Button("暂不使用") {
                 showDeclineHint = true
                 onDeclined()
             }
-            .font(.system(size: 25, weight: .medium))
-            .foregroundStyle(Color(red: 0.44, green: 0.49, blue: 0.62))
+            .font(.body)
+            .foregroundStyle(.secondary)
             .buttonStyle(.plain)
-            .padding(.top, 44)
-
-            Spacer(minLength: 36)
+            .padding(.top, 16)
+            .padding(.bottom, 24)
         }
         .frame(maxWidth: .infinity)
         .frame(height: height)
-        .background(.white.opacity(0.95))
+        .background(.white)
         .clipShape(
             UnevenRoundedRectangle(
-                topLeadingRadius: 46,
+                topLeadingRadius: 24,
                 bottomLeadingRadius: 0,
                 bottomTrailingRadius: 0,
-                topTrailingRadius: 46,
+                topTrailingRadius: 24,
                 style: .continuous
             )
         )
-        .shadow(color: .black.opacity(0.06), radius: 20, y: -4)
+        .shadow(color: .black.opacity(0.08), radius: 16, y: -4)
     }
 
     private var agreementDescription: some View {
-        VStack(alignment: .center, spacing: 11) {
-            // 协议链接单独成行，避免断行丑
+        VStack(alignment: .center, spacing: 8) {
+            // 协议链接单独成行，避免断行
             HStack(spacing: 16) {
                 NavigationLink { PrivacyNoticeView() } label: {
                     Text("《隐私政策》")
@@ -220,10 +221,9 @@ struct AgreementOnboardingView: View {
 
             Text("点击“同意并继续”，即表示你已阅读并同意上述协议。")
                 .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
         }
-        .font(.system(size: 18, weight: .medium))
-        .foregroundStyle(Color(red: 0.28, green: 0.34, blue: 0.47))
-        .fixedSize(horizontal: false, vertical: true)
+        .font(.subheadline)
     }
 }
 

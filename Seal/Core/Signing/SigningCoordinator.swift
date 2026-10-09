@@ -2587,6 +2587,9 @@ actor SigningCoordinator {
             record.id != app.id
                 && record.belongsInInstalledList
                 && record.userIdentityKeys.contains(normalizedTarget)
+                // 2026-10-09: 覆盖更新包（replacesInstalledAppID 非空）就是要替换旧记录，
+                // 不算冲突。跳过它要替换的那个特定记录。
+                && app.replacesInstalledAppID != record.id
         }) else { return }
         throw Self.failure(
             reason: "Bundle ID「\(targetBundleIdentifier)」已被手机上的「\(conflicting.displayName)」占用，同一 Bundle ID 不能同时安装两个应用。",

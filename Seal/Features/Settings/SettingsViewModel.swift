@@ -1809,7 +1809,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     /// 同步时过滤已 dismissal 的证书序列号（撤销成功的 + 用户手动隐藏的）。
-    private func filterDismissedCertificates(_ certificates: [ApplePortalCertificate]) -> [ApplePortalCertificate] {
+    private func filterDismissedCertificates(_ certificates: [ApplePortalCertificateSnapshot]) -> [ApplePortalCertificateSnapshot] {
         let dismissed = UserDefaults.standard.stringArray(forKey: "seal.dismissedCertificateSerials") ?? []
         guard dismissed.isEmpty == false else { return certificates }
         return certificates.filter {

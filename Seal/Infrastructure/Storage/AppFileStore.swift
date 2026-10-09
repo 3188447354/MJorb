@@ -76,9 +76,10 @@ actor AppFileStore {
         temporaryDirectory = cacheDirectory
             .appending(path: "Seal/Temp", directoryHint: .isDirectory)
             .standardizedFileURL
-        try? FileManager.default.removeItem(
-            at: temporaryDirectory.deletingLastPathComponent()
-        )
+        // 2026-10-09：不在 init 里删缓存。之前每次启动都删 cacheDirectory/Seal，
+        // 导致"清理临时缓存"按钮永远没东西可清（用户反馈摆设）。
+        // 清理只在用户点按钮时做。
+        try? FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
     }
 
     static func live() throws -> AppFileStore {
@@ -885,9 +886,18 @@ actor AppFileStore {
     }
 
     func clearTemporaryFiles() throws {
-        let sealCache = temporaryDirectory.deletingLastPathComponent()
-        if FileManager.default.fileExists(atPath: sealCache.path) {
-            try FileManager.default.removeItem(at: sealCache)
+        // 2026-10-09：只清 Temp 目录内容，不删父目录。
+        // 之前删 temporaryDirectory.deletingLastPathComponent()（即 cacheDirectory/Seal），
+        // 把整个 Seal 缓存端掉了，且 init 里也在删，导致按钮成摆设。
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: temporaryDirectory.path) else { return }
+        let contents = try fileManager.contentsOfDirectory(
+            at: temporaryDirectory,
+            includingPropertiesForKeys: nil,
+            options: []
+        )
+        for item in contents {
+            try fileManager.removeItem(at: item)
         }
     }
 

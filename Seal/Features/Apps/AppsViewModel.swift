@@ -1042,7 +1042,7 @@ final class AppsViewModel: ObservableObject {
     @discardableResult
     func importSelfUpdateFile(_ url: URL) async -> Bool {
         try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 导入自更新文件: \(url.lastPathComponent)")
-        await importSelectedFile(url, autoOpenSigning: true)
+        return await importSelectedFile(url, autoOpenSigning: true)
     }
 
     @discardableResult

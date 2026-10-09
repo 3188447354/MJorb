@@ -1794,26 +1794,19 @@ final class SettingsViewModel: ObservableObject {
     }
 
     /// 证书 dismissal 统一入口。
-    /// - persistent=true: 记入 UserDefaults，下次同步时过滤，永久不显示。用于：撤销成功、用户手动隐藏。
+    /// - persistent=true: 记入共享存储，下次同步时过滤，永久不显示。用于：撤销成功、用户手动隐藏。
     /// - persistent=false: 仅从内存移除，下次同步若 Apple 侧还在会回来。用于：撤销失败（用户想删但未确认）。
     func dismissCertificate(serialNumber: String, accountID: UUID, persistent: Bool) {
         if persistent {
-            var dismissed = UserDefaults.standard.stringArray(forKey: "seal.dismissedCertificateSerials") ?? []
-            let normalized = SigningCertificateSelectionPolicy.normalizedSerialNumber(serialNumber)
-            if dismissed.contains(normalized) == false {
-                dismissed.append(normalized)
-                UserDefaults.standard.set(dismissed, forKey: "seal.dismissedCertificateSerials")
-            }
+            CertificateDismissalStore.dismiss(serialNumber: serialNumber)
         }
         removeCertificateFromInventory(serialNumber: serialNumber, accountID: accountID)
     }
 
     /// 同步时过滤已 dismissal 的证书序列号（撤销成功的 + 用户手动隐藏的）。
     private func filterDismissedCertificates(_ certificates: [ApplePortalCertificateSnapshot]) -> [ApplePortalCertificateSnapshot] {
-        let dismissed = UserDefaults.standard.stringArray(forKey: "seal.dismissedCertificateSerials") ?? []
-        guard dismissed.isEmpty == false else { return certificates }
         return certificates.filter {
-            dismissed.contains(SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber)) == false
+            CertificateDismissalStore.isDismissed(serialNumber: $0.serialNumber) == false
         }
     }
 

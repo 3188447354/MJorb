@@ -8,19 +8,13 @@
 ## 2026-10-09 三个 UI 状态不消失 bug 修复
 
 - **现象**：MJ 真机反馈（build 263）：① 覆盖更新完成后"有新版本待安装"标签不消失；② 撤销证书后已撤销的证书不从列表消失；③ 抽屉里"需重新签名"文案签名后不消失（有延迟）。
-- **根因**：
-  - ① SigningCoordinator 安装成功后确实清了 pendingUpdateSourceFingerprint 并 save，但 UI 侧的刷新依赖 load()，若时序不对标签残留。
-  - ② revokeCertificate 里先调 removeRevokedCertificateFromInventory 从内存删，紧接着又调 refreshCertificateInventory(force:true) 从 Apple 拉清单；Apple 侧撤销有传播延迟，刚删的又被拉回来。
-  - ③ 抽屉文案读 localCertificateAvailabilityByAppID 缓存，只在 load() 后台任务里更新；签名完成后缓存还是旧值。且远端已加 refreshCertAvailability() 同步重算，但签名完成路径没调它。
-- **修复**：
-  - ③ AppsViewModel 新增 markLocalCertificateReady(for:)：签名成功后直接把该 App 的证书状态置为 .ready（签名刚用私钥签完，本机一定有），不等后台重算。后续 refreshCertAvailability() 会再校验纠错。与远端的 refreshCertAvailability() 共存。
-  - ② 删掉撤销成功后的立即 refreshCertificateInventory(force:true)，本地移除已足够；用户下拉刷新时再与 Portal 对账。
-  - ① 签名完成路径已有 load(force:true)，本次未改代码，待真机验证若仍复现再深查。
-- **涉及文件**：Seal/Features/Apps/AppsViewModel.swift、Seal/Features/Settings/SettingsViewModel.swift。
-- **验证状态**：守卫 831 项 0 failures，未推，等 MJ 说推。真机未验证。
-- **教训**："删了又拉回来"是撤销类操作的经典坑——本地删完别立刻全量回读，要么延迟，要么加已删过滤。
-- **后续翻车**：MJ 让换 runner 解决排队，我把 ios-fast.yml 的 macos-26 改成 macos-15，结果 macos-15 上没有 Xcode 26.5，构建在 "Select pinned Xcode 26.5" 步骤 1 秒失败。已 revert 回 macos-26。教训：换 runner 前必须先确认目标镜像有 pinned 的 Xcode 版本，不能凭感觉换。
-- **2026-10-09 09:46 补充**：MJ 反馈 I4PC 证书（只存在于 Apple 服务器）撤销失败、消不掉。根因是 Apple revoke API 直接拒绝，旧代码失败后还立即回读，死循环。新增"从列表移除"：SettingsViewModel.hideCertificateLocally 用 UserDefaults 持久化隐藏序列号，refresh 时过滤；UI 上外部证书（.external）显示"从列表移除"按钮。用户可手动隐藏删不掉的孤儿证书。
+- **2026-10-09 重设计**（MJ 要求"重新设计 不要打补丁"）：
+  - ③ 需重新签名：删掉 30 秒覆盖层。根因是 `load()` 里 `apps = fetched` 后立刻 `refreshCertAvailability()`，用的是旧 `accountSecrets`，必错。改成只在钥匙串重读后才重算；`markLocalCertificateReady` 直接置 `.ready`，签名完成路径直接更新 `apps` 数组不等 `load()`。
+  - ② 撤销证书：`dismissCertificate(persistent:)` 统一入口 + `CertificateDismissalStore` 共享存储。签名轮换（`ApplePortalSigningService`）撤销后直接写入共享存储，设置页同步时过滤。
+  - ① 覆盖更新标签：签名成功后直接替换 `apps` 数组中的记录，不等 `load()` 从库重读（有时序问题）。
+- **涉及文件**：`Seal/Features/Apps/AppsViewModel.swift`、`Seal/Features/Settings/SettingsViewModel.swift`、`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、`Seal/Core/Certificates/CertificateDismissalStore.swift`（新建）。
+- **验证状态**：未推，等 MJ 说推。真机未验证。
+- **教训**：缓存+后台同步的架构天然有竞态；"用时算真值"比"缓存+同步"可靠。
 
 ## 2026-10-08 自更新失败的「同版本」角：草稿被转正 + 丢弃后又被旧快照写回
 

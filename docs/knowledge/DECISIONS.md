@@ -2,6 +2,16 @@
 
 为什么这么做，避免重复讨论。
 
+## 2026-10-09: 证书 dismissal 只走统一入口
+
+- **决策**：`SettingsViewModel.dismissCertificate(serialNumber:accountID:persistent:)` 是唯一入口，替代 `hide` / `removeRevoked` / `filterHidden` 三套命名。撤销成功或手动隐藏 → 持久化（UserDefaults）；撤销失败 → 仅内存移除；同步时 `filterDismissedCertificates` 统一过滤。
+- **为什么**：MJ 明确要求「你设计正规的流程，不要左右手打架」——一个状态只走一条流程、一个入口。两套名字各行其是会导致隐藏与移除互相覆盖（撤销失败的证书还留在持久化隐藏里、手动隐藏的证书被同步带回来）。
+
+## 2026-10-09: 「需重新签名」状态读路径加 30 秒覆盖层
+
+- **决策**：签名成功写 `certificateAvailabilityOverride[appID] = (.ready, 现在)`；30 秒内读状态与后台重算都优先采用覆盖层，不查后台快照、不覆盖；30 秒后过期，后台接管。
+- **为什么**：签名后 `load()` 后台读钥匙串（旧缓存）会把刚置的 `.ready` 盖回 `.needsFullResign`，跟签名成功那一笔打架，标签闪回「需重新签名」。刚签完本机一定有私钥，30 秒内直接信这一笔是安全的。
+
 ## 2026-10-08: 图标用双缓存而不是单缓存
 
 - **决策**：`iconData` (原始 Data) + `decodedIconCache` (解码后 UIImage) 双缓存

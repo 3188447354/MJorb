@@ -32,10 +32,6 @@ final class AppsViewModel: ObservableObject {
     /// ⇒ 非初始化路径上任何写入 `apps` 的地方都必须紧接着调用 `refreshCertAvailability()`。
     @Published private(set) var localCertificateAvailabilityByAppID:
         [UUID: ProfileOnlyRenewalPolicy.LocalCertificateAvailability] = [:]
-    /// 签名成功后的覆盖层：带时间戳，30 秒内优先采用，不走后台重算。
-    /// 解决签名后 `load()` 后台读钥匙串（旧缓存）把刚置的 `.ready` 盖回 `.needsFullResign` 的竞态。
-    private var certificateAvailabilityOverride: [UUID: (availability: ProfileOnlyRenewalPolicy.LocalCertificateAvailability, at: Date)] = [:]
-    private static let certificateAvailabilityOverrideTTL: TimeInterval = 30
     /// 一次 Keychain 读取的结果（与 `fullAccountEmails` 同批）。
     /// 存下来是为了让上面那份派生状态能在**记录变化时**就地重算 —— 不必再读一次钥匙串。
     private var accountSecrets: [UUID: AccountSecret] = [:]
@@ -544,9 +540,9 @@ final class AppsViewModel: ObservableObject {
 
             // 快速显示应用列表
             apps = fetched
-            // 记录一变就重算本机证书状态：颜色读记录、文案读这份派生值，
-            // 两者必须同帧（见 `refreshCertAvailability()`）。
-            refreshCertAvailability()
+            // 2026-10-09 重设计：证书可用性不在这里重算。此时 accountSecrets 还是旧的，
+            // 用旧钥匙串算新记录必错。等钥匙串重读回来（下方的 refreshCertAvailability）
+            // 再算。UI 短暂显示旧值，好过显示错值。
             accounts = fetchedAccounts
             activeAccountID = resolvedAccountID
             hasLoaded = true
@@ -748,40 +744,27 @@ final class AppsViewModel: ObservableObject {
 
     /// 该应用「本机是否持有当前证书私钥」——界面在「证书序列号」行下面据此给一句说明。
     /// 读不到时返回 `.undetermined`（**不显示任何话** —— 不能凭空断言缺私钥）。
-    /// 覆盖层 30 秒内的优先采用（签名刚成功，后台数据还没稳定）。
     func localCertificateAvailability(
         for app: AppRecord
     ) -> ProfileOnlyRenewalPolicy.LocalCertificateAvailability {
-        if let override = certificateAvailabilityOverride[app.id],
-           Date().timeIntervalSince(override.at) < Self.certificateAvailabilityOverrideTTL {
-            return override.availability
-        }
-        return localCertificateAvailabilityByAppID[app.id] ?? .undetermined
+        localCertificateAvailabilityByAppID[app.id] ?? .undetermined
     }
 
     /// 用**当前**的 `apps` 与 `accountSecrets` 重算上面那份派生状态。
     ///
     /// 判据一律走 `ProfileOnlyRenewalPolicy`（与续签准入同源，R85②），这里只负责「什么时候算」。
-    /// 触发点只有两个：记录被换掉、密钥读回来 —— 也就是它的两个输入各变一次。
-    /// 覆盖层 30 秒内的 App 跳过，不覆盖签名刚成功时的 `.ready`。
+    /// 只在钥匙串重读后调用（`accountSecrets` 更新时），不在 `apps` 变化时调用——
+    /// 那时 secrets 还是旧的，算出来必错。
     private func refreshCertAvailability() {
-        let now = Date()
-        var recomputed = ProfileOnlyRenewalPolicy.availabilityByAppID(
+        localCertificateAvailabilityByAppID = ProfileOnlyRenewalPolicy.availabilityByAppID(
             apps: apps,
             secretsByAccount: accountSecrets
         )
-        for (appID, override) in certificateAvailabilityOverride {
-            if now.timeIntervalSince(override.at) < Self.certificateAvailabilityOverrideTTL {
-                recomputed[appID] = override.availability
-            }
-        }
-        localCertificateAvailabilityByAppID = recomputed
     }
 
-    /// 签名成功后写入覆盖层：30 秒内读状态、后台重算都优先采用 `.ready`，不跟后台打架。
-    /// 刚签名完本机一定有私钥，直接置 `.ready` 是安全的；30 秒后后台数据稳定了，无缝接管。
+    /// 签名成功后直接置 `.ready`：刚用私钥签完，本机一定有，不等钥匙串重读。
+    /// 下次钥匙串重读后 `refreshCertAvailability()` 会再校验，若真有问题会纠回来。
     func markLocalCertificateReady(for appID: UUID) {
-        certificateAvailabilityOverride[appID] = (.ready, Date())
         localCertificateAvailabilityByAppID[appID] = .ready
     }
 
@@ -3080,6 +3063,11 @@ final class AppsViewModel: ObservableObject {
             // 签名成功本机一定有私钥，直接置为可用，不等后台重算（后台有延迟）。
             // 后续 load() 的后台任务会再校验一次，若真有问题会纠回来。
             markLocalCertificateReady(for: completed.id)
+            // 2026-10-09 重设计：直接更新 apps 数组，不等 load() 从库重读。
+            // load() 的 fetchAll 可能有时序问题，直接替换最可靠。
+            if let index = apps.firstIndex(where: { $0.id == completed.id }) {
+                apps[index] = completed
+            }
             await load(force: true)
         } catch is CancellationError {
             signingSession = nil

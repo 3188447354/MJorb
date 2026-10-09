@@ -1674,6 +1674,8 @@ actor ApplePortalSigningService {
             // 每撤销一张立刻持久化，避免进程在多张证书之间被系统终止后仍把已撤销
             // P12 当成有效材料；随后马上尝试创建，成功即停止继续撤销。
             try await persistRevokedSigningMaterial(updatedSecret, [candidate.serialNumber])
+            // 加入 dismissal：避免 Apple 列表延迟导致已撤销证书在设置页重现。
+            CertificateDismissalStore.dismiss(serialNumber: candidate.serialNumber)
             await diagnostic("证书轮换：已撤销并持久化 \(revokedSerials.count) 张，立即创建本机证书")
             do {
                 let identity = try await createSigningIdentity(

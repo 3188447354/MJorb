@@ -149,12 +149,10 @@ struct SigningProgressView: View {
         }
     }
 
-    /// 底部阶段轨道：标题 + 五格。五格本体在 `SigningStageTrack`（批量抽屉共用同一个视图）。
+    /// 底部阶段轨道：五格。五格本体在 `SigningStageTrack`（批量抽屉共用同一个视图）。
+    /// 2026-10-09 用户要求：去掉"签名进度"/"续签进度"小标题，只留五格轨道。
     private func stageProgressSection(_ stage: SigningStage) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(isRenewal ? "续签进度" : "签名进度")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.sealTextSecondary)
             SigningStageTrack(
                 stage: stage,
                 realProgress: session?.installProgress,
@@ -243,10 +241,7 @@ struct SigningProgressView: View {
                         // 值由状态变化驱动（时钟已 `paused`）⇒ 补一层隐式动画让弧线**平滑推进**，
                         // 而不是一格一格跳。这不与逐帧时钟打架（转弧那支才受时钟驱动）。
                         .animation(.easeOut(duration: 0.28), value: confirmed)
-                    Text("\(Int(confirmed))%")
-                        .font(.system(size: 7, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.sealAccent)
-                        .monospacedDigit()
+                    // 2026-10-09 用户要求：进度环不再显示百分比数字，只留弧线。
                 } else {
                     // 不确定态：主弧正转、副弧（更淡）反转，形成持续「推进」的观感。
                     // 两弧各用独立周期、且**都乘整 360°** —— 否则回绕时会突兀反跳（见

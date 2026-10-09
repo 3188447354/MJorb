@@ -2205,12 +2205,16 @@ actor SigningCoordinator {
                 expiryDate: expirationDate
             )
             updated.lastInstalledAt = Date()
-            // 2026-10-09 重设计：覆盖更新走待签名流程。安装成功后，删除被替换的旧已安装记录。
+            // 覆盖更新在设备核验成功后才切换记录；旧记录删除与新记录转正必须同一个
+            // AppStore 事务提交，不能留下“旧记录没了、新记录还没落盘”的窗口。
             if let replacedID = updated.replacesInstalledAppID {
-                try? await appStore.delete(id: replacedID)
-                updated.replacesInstalledAppID = nil
+                var committed = updated
+                committed.replacesInstalledAppID = nil
+                try await appStore.commitInstalledReplacement(committed, replacing: replacedID)
+                updated = committed
+            } else {
+                try await appStore.save(updated)
             }
-            try await appStore.save(updated)
             await removeStaleProfiles(signedData: signedData, effectiveBundleID: effectiveBundleID)
             return updated
         } catch {

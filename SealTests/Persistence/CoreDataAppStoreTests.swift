@@ -145,6 +145,19 @@ struct CoreDataAppStoreTests {
         #expect(try await store.fetchAll() == [])
     }
 
+    @Test
+    func replacingInstalledRecordCommitsNewRecordAndRemovesOldRecordTogether() async throws {
+        let store = try CoreDataAppStore(inMemory: true)
+        let old = makeRecord(name: "Installed")
+        let replacement = makeRecord(name: "Update")
+        try await store.save(old)
+
+        try await store.commitInstalledReplacement(replacement, replacing: old.id)
+
+        let records = try await store.fetchAll()
+        #expect(records == [replacement])
+    }
+
     private func makeRecord(
         id: UUID = UUID(),
         name: String,

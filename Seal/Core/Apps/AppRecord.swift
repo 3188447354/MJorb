@@ -332,6 +332,14 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         signedIPARelativePath?.isEmpty == false && signedIPASHA256?.isEmpty == false
     }
 
+    /// 设备端已确认不再安装该 App 时，保留本地 IPA 与签名产物，
+    /// 仅撤销“已安装”的派生状态。设备探测不是用户删除资料的授权。
+    mutating func markMissingOnDevice() {
+        state = .signed
+        lastInstalledAt = nil
+        signedArtifactStatus = hasSignedArtifact ? .available : .missing
+    }
+
     var belongsInInstalledList: Bool {
         // 2026-10-09：待签名的 Seal 更新包（replacesInstalledAppID 非空）不进已安装列表，
         // 进待签名列表。否则覆盖更新的新包会和已安装的 Seal 并列显示。

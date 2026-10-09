@@ -455,12 +455,10 @@ private extension ImportWorkflowTests {
 // MARK: - 覆盖更新：导入新版 → 覆盖安装已安装应用（2026-09-25 用户反馈）
 
 extension ImportWorkflowTests {
-    /// 用户报「新导入的话就在待签页，覆盖更新安装就到已签名」。
-    /// 覆盖更新必须**复用已安装记录**（同 id / 同签名身份）并**清空旧版签名产物**：
-    /// 身份变了 installd 会并存第二个 App；旧签名产物留着会让「复用已签名包直接安装」
-    /// 把**旧版本**装回设备（用户会以为「更新没生效」）。
+    /// 覆盖更新导入的是独立待签名记录：旧的已安装记录必须保留，直到安装并通过
+    /// 设备核验；新记录继承安装身份并精确指向旧记录，供安装成功时原子切换。
     @Test
-    func overwriteUpdateReusesInstalledRecordIdentityAndClearsSignedArtifacts() async throws {
+    func overwriteUpdateCreatesPendingReplacementWithoutMutatingInstalledRecord() async throws {
         let environment = try makeEnvironment()
         defer { try? FileManager.default.removeItem(at: environment.root) }
         let installedID = UUID()
@@ -508,40 +506,36 @@ extension ImportWorkflowTests {
 
         let updated = try requireCompleted(await workflow.state)
         let records = try await environment.appStore.fetchAll()
-        // 只留一条记录：覆盖更新复用已安装记录，不新建
-        #expect(records.count == 1)
-        #expect(updated.id == installedID)
+        #expect(records.count == 2)
+        #expect(updated.id != installedID)
         #expect(updated.version == "1.2.3")
-        #expect(updated.state == .installed)
-        #expect(updated.belongsInInstalledList)
-        // 签名身份必须保留：换了身份 installd 就会并存第二个 App
+        #expect(updated.state == .imported)
+        #expect(updated.belongsInInstalledList == false)
+        #expect(updated.belongsInUnsignedList)
+        #expect(updated.replacesInstalledAppID == installedID)
+        // 签名身份必须保留：换了身份 installd 就不能覆盖设备上的同一 App。
         #expect(updated.mappedBundleIdentifier == "com.example.demo.TEAM000001")
         #expect(updated.accountID == accountID)
         #expect(updated.signingTeamID == "TEAM000001")
-        #expect(updated.certificateSerialNumber == "SERIAL")
-        #expect(updated.signedDeviceIdentifier == "DEVICE")
-        #expect(updated.lastInstalledAt == installed.lastInstalledAt)
-        // 旧版签名产物必须清空
+        #expect(updated.lastInstalledAt == nil)
+        // 新包尚未签名，不能携带旧版本签名产物。
         #expect(updated.signedIPARelativePath == nil)
         #expect(updated.signedIPASHA256 == nil)
         #expect(updated.signedArtifactStatus == nil)
-        #expect(updated.hasPendingSelfUpdateSource)
-        // 文件目录键必须与记录 id 一致：AppFileStore 用 appID 同时决定目录名与相对路径，
-        // 两者不一致时签名阶段会去一个不存在的目录取包（覆盖后必然失败）。
-        #expect(updated.ipaRelativePath == originalPath)
+        // 两条记录各自使用与 UUID 相符的目录，旧版资料在新包验证前不可被覆盖。
+        #expect(updated.ipaRelativePath == "Apps/\(updated.id.uuidString)/Original.ipa")
         #expect(FileManager.default.fileExists(atPath: oldIPA.path))
-        #expect(try Data(contentsOf: oldIPA) != Data("old".utf8))
-        // 草稿自己的 appID 不该在磁盘上留下任何目录
+        #expect(try Data(contentsOf: oldIPA) == Data("old".utf8))
+        // 草稿自己的 appID 不该在磁盘上留下目录；更新记录使用自己的新 UUID。
         #expect(FileManager.default.fileExists(
             atPath: environment.documents.appending(path: "Apps/\(draftAppID.uuidString)").path
         ) == false)
     }
 
-    /// 复核不过必须**安全回落**成新建，绝不覆盖别的记录。
-    /// 待签名记录是「同一 IPA 导入多个副本、用不同 Bundle ID 分别签名并存」那条刻意
-    /// 保留路径的产物，被替换掉就毁掉了多副本能力。
+    /// 已明确选择覆盖的目标若不是已安装记录，必须中止并提示重新选择；
+    /// 静默回落新建会制造用户没有要求的同身份副本。
     @Test
-    func overwriteUpdateFallsBackToNewRecordWhenTargetIsNotInstalled() async throws {
+    func overwriteUpdateFailsWhenTargetIsNotInstalled() async throws {
         let environment = try makeEnvironment()
         defer { try? FileManager.default.removeItem(at: environment.root) }
         let pendingID = UUID()
@@ -566,17 +560,16 @@ extension ImportWorkflowTests {
         await workflow.prepare(sourceURL: source)
         await workflow.confirm(target: .replaceInstalled(appID: pendingID))
 
-        let imported = try requireCompleted(await workflow.state)
+        let failure = try requireFailed(await workflow.state)
         let records = try await environment.appStore.fetchAll()
-        #expect(records.count == 2)
-        #expect(imported.id == draftAppID)
-        #expect(imported.belongsInInstalledList == false)
+        #expect(failure.code == "SEAL-IPA-217")
+        #expect(records.count == 1)
         #expect(records.contains { $0.id == pendingID })
     }
 
-    /// 目标记录在确认页停留期间被删掉 ⇒ 同样回落新建，而不是「随便挑一条替换」。
+    /// 目标记录在确认页停留期间被删掉 ⇒ 提示重新确认，不能改成新建或随便替换。
     @Test
-    func overwriteUpdateFallsBackWhenTargetRecordIsGone() async throws {
+    func overwriteUpdateFailsWhenTargetRecordIsGone() async throws {
         let environment = try makeEnvironment()
         defer { try? FileManager.default.removeItem(at: environment.root) }
         let installedID = UUID()
@@ -602,9 +595,9 @@ extension ImportWorkflowTests {
         await workflow.prepare(sourceURL: source)
         await workflow.confirm(target: .replaceInstalled(appID: UUID()))
 
-        let imported = try requireCompleted(await workflow.state)
-        #expect(imported.id == draftAppID)
-        #expect(try await environment.appStore.fetchAll().count == 2)
+        let failure = try requireFailed(await workflow.state)
+        #expect(failure.code == "SEAL-IPA-217")
+        #expect(try await environment.appStore.fetchAll().count == 1)
     }
 
     /// 重试必须沿用用户已确认的「覆盖更新」目标：悄悄变回「新建」会让两条记录
@@ -735,6 +728,15 @@ private extension ImportWorkflowTests {
 
         func replaceImportedApp(_ record: AppRecord) throws -> [AppRecord] {
             []
+        }
+
+        func commitInstalledReplacement(_ record: AppRecord, replacing replacedID: UUID) throws {
+            if remainingFailures > 0 {
+                remainingFailures -= 1
+                throw AppStoreError.invalidConfiguration
+            }
+            records.removeAll { $0.id == replacedID || $0.id == record.id }
+            records.append(record)
         }
 
         func delete(id: UUID) {

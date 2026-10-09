@@ -78,6 +78,32 @@ actor CoreDataAppStore: AppStore {
         }
     }
 
+    /// 设备已核验新包安装成功后，把新记录转正并移除旧记录。
+    /// 两项变更必须由同一个 Core Data save 提交，避免中间态让列表与文件记录错配。
+    func commitInstalledReplacement(_ record: AppRecord, replacing replacedID: UUID) throws {
+        try context.performAndWait {
+            do {
+                guard record.id != replacedID else {
+                    throw AppStoreError.invalidConfiguration
+                }
+                guard let replaced = try Self.fetchApp(id: replacedID, context: context) else {
+                    throw AppStoreError.invalidConfiguration
+                }
+                context.delete(replaced)
+                let replacement = try Self.fetchApp(id: record.id, context: context)
+                    ?? NSEntityDescription.insertNewObject(
+                        forEntityName: CoreDataModel.appEntityName,
+                        into: context
+                    )
+                Self.write(record, to: replacement, context: context)
+                try context.save()
+            } catch {
+                context.rollback()
+                throw error
+            }
+        }
+    }
+
     func delete(id: UUID) throws {
         try context.performAndWait {
             do {

@@ -32,4 +32,9 @@ actor InMemoryAppStore: AppStore {
         records.append(record)
         return replaced
     }
+
+    func commitInstalledReplacement(_ record: AppRecord, replacing replacedID: UUID) {
+        records.removeAll { $0.id == replacedID || $0.id == record.id }
+        records.append(record)
+    }
 }

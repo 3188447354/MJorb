@@ -225,20 +225,26 @@ actor ImportWorkflow {
                 runningSealBundleIdentifier: runningSealBundleIdentifier
             )
             // 覆盖更新的目标**当场复核**：用户在导入确认页停留期间记录可能已被删除、
-            // 或已不再是已安装状态 ⇒ 复核不过就回落「新建」，绝不把别的记录覆盖掉。
-            //
-            // ⚠️ 默认仍是「新建」：同一个 IPA 允许导入多个副本、用不同 Bundle ID
-            // 签名后同时安装，那条路径上的记录都是待签名状态，不能被替换掉。
+            // 或已不再是已安装状态。明确选择过“覆盖”的请求不能静默退化为新建，
+            // 否则会制造用户未要求的同身份副本；需要用户重新选择目标或改选新建副本。
             let existing: AppRecord?
             switch target {
             case .newRecord:
                 existing = nil
             case .replaceInstalled(let appID):
-                existing = ImportReplacementPolicy.confirmedReplacement(
+                guard let replacement = ImportReplacementPolicy.confirmedReplacement(
                     appID: appID,
                     for: draft.parsedIPA,
                     in: records
-                )
+                ) else {
+                    throw ImportFailure(
+                        title: "覆盖目标已变化",
+                        reason: "要覆盖的已安装应用已被移除或状态已变化，因此没有导入新副本。",
+                        recovery: "返回后重新选择覆盖目标，或选择新建副本",
+                        code: "SEAL-IPA-217"
+                    )
+                }
+                existing = replacement
             }
             let preferenceSource = Self.preferenceSource(
                 for: draft.parsedIPA,

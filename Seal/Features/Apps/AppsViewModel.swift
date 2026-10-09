@@ -895,7 +895,7 @@ final class AppsViewModel: ObservableObject {
                 }
             }
             for app in missingOnDevice {
-                mutations.append(await delete(app, refreshAfterDeletion: false))
+                mutations.append(await markMissingOnDevice(app))
             }
         } catch {
             if InstalledAppRefreshFailure.shouldLogDiagnostic(for: error) {
@@ -916,6 +916,32 @@ final class AppsViewModel: ObservableObject {
             }
         }
         return InstalledAppRefreshPolicy.requiresReload(after: mutations)
+    }
+
+    /// 外部卸载只改变设备存在状态：用户仍可保留本地 IPA 与签名身份后重新安装。
+    /// `delete(_:)` 是用户明确删除资料的操作，绝不能复用到设备探测路径。
+    private func markMissingOnDevice(_ app: AppRecord) async -> Bool {
+        guard let appStore else { return false }
+        var updated = app
+        updated.markMissingOnDevice()
+        do {
+            try await appStore.save(updated)
+            try? await logStore?.append(
+                category: .system,
+                level: .info,
+                message: "设备确认已卸载：已从已安装列表移除并保留本地签名资料（\(app.displayName)）",
+                code: "SEAL-INSTALL-740"
+            )
+            return true
+        } catch {
+            try? await logStore?.append(
+                category: .system,
+                level: .warning,
+                message: "设备确认已卸载，但本地状态更新失败；已保留现有列表。诊断：\(ErrorDiagnosticFormatter.diagnostic(for: error))",
+                code: "SEAL-INSTALL-741"
+            )
+            return false
+        }
     }
 
     private func installedBundleIdentifier(for app: AppRecord) -> String? {
@@ -3568,6 +3594,13 @@ final class AppsViewModel: ObservableObject {
 
     private func releaseOperation(_ lease: OperationCoordinator.Lease) {
         operationCoordinator?.end(lease)
+        // 回前台时若刚好在签名/安装，设备核验会为了不抢 RSD 会话而跳过。
+        // 操作结束后补一次合并刷新，让用户外部卸载的 App 不必等下一次前后台切换才消失。
+        guard [.signing, .installing, .renewing].contains(lease.kind) else { return }
+        Task { [weak self] in
+            await Task.yield()
+            await self?.refreshInstalledApps(userInitiated: false)
+        }
     }
 
     /// 失败 → 设置页的路由。判据在 `InstallFailureSettingsRoute`（显式码集合 + 可单测）。

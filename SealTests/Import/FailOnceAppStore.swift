@@ -35,4 +35,9 @@ actor FailOnceAppStore: AppStore {
         records.append(record)
         return replaced
     }
+
+    func commitInstalledReplacement(_ record: AppRecord, replacing replacedID: UUID) throws {
+        records.removeAll { $0.id == replacedID || $0.id == record.id }
+        records.append(record)
+    }
 }

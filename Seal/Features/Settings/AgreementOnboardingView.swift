@@ -6,10 +6,18 @@ enum AgreementVersion {
     static let storageKey = "seal.agreedAgreementVersion"
 }
 
+/// 首次协议页与签名抽屉保持同一组几何尺度，避免两个入口出现不同的抽屉语言。
+enum AgreementOnboardingLayout {
+    static let iconSize: CGFloat = 112
+    static let iconCornerRadius: CGFloat = 26
+    static let drawerCornerRadius: CGFloat = 29
+    static let horizontalInset: CGFloat = 22
+}
+
 /// 首次启动（或协议更新后）的协议同意页。
 ///
-/// 视觉（2026-10-09 新设计）：白色背景 + 蓝色光斑 → 品牌区（大图标 190pt + 渐变标题）
-/// → 底部白色确认 Sheet（圆角 46，810 高）→ "欢迎使用 Seal" → 协议说明 → "同意并继续" / "暂不使用"。
+/// 视觉（2026-10-09 新设计）：白色背景 + 低饱和蓝色光斑 → 品牌区（112pt 官方图标 + 渐变标题）
+/// → 签名页同款 29pt 顶角确认抽屉 → "欢迎使用 Seal" → 协议说明 → "同意并继续" / "暂不使用"。
 ///
 /// 约束：只改视觉层。协议门控（SealApp.swift）、AgreementVersion、
 /// 协议正文（PrivacyNoticeView / UserAgreementView）、签名功能一律不动。
@@ -60,13 +68,13 @@ struct AgreementOnboardingView: View {
             Color.white
 
             Circle()
-                .fill(Color(red: 0.57, green: 0.83, blue: 1.0).opacity(0.40))
+                .fill(Color(red: 0.57, green: 0.83, blue: 1.0).opacity(0.30))
                 .frame(width: 370, height: 370)
                 .blur(radius: 70)
                 .offset(y: -125)
 
             Circle()
-                .fill(Color(red: 0.82, green: 0.94, blue: 1.0).opacity(0.72))
+                .fill(Color(red: 0.82, green: 0.94, blue: 1.0).opacity(0.55))
                 .frame(width: 290, height: 290)
                 .blur(radius: 60)
                 .offset(x: 115, y: 170)
@@ -129,29 +137,32 @@ struct AgreementOnboardingView: View {
                 }
             }
         }
-        .frame(width: 140, height: 140)
-        .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
-        .shadow(color: Color.blue.opacity(0.18), radius: 20, y: 10)
+        .frame(width: AgreementOnboardingLayout.iconSize, height: AgreementOnboardingLayout.iconSize)
+        .clipShape(RoundedRectangle(cornerRadius: AgreementOnboardingLayout.iconCornerRadius, style: .continuous))
+        .shadow(color: Color.blue.opacity(0.14), radius: 16, y: 8)
     }
 
     private func consentSheet(height: CGFloat) -> some View {
         VStack(spacing: 0) {
             Capsule()
                 .fill(Color.gray.opacity(0.25))
-                .frame(width: 36, height: 5)
-                .padding(.top, 12)
+                .frame(width: 40, height: 5)
+                .padding(.top, 10)
 
             Text("欢迎使用 Seal")
                 .font(.title.weight(.bold))
                 .foregroundStyle(Color(red: 0.02, green: 0.07, blue: 0.17))
-                .padding(.top, 24)
+                .padding(.top, 20)
                 .minimumScaleFactor(0.8)
 
             agreementDescription
                 .padding(.top, 20)
-                .padding(.horizontal, 24)
+                .padding(.horizontal, AgreementOnboardingLayout.horizontalInset)
 
             Spacer()
+
+            Divider()
+                .overlay(Color.sealHairline.opacity(0.65))
 
             Button(action: {
                 UserDefaults.standard.set(AgreementVersion.current, forKey: AgreementVersion.storageKey)
@@ -172,10 +183,11 @@ struct AgreementOnboardingView: View {
                             endPoint: .bottomTrailing
                         )
                     )
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 24)
+            .padding(.horizontal, AgreementOnboardingLayout.horizontalInset)
+            .padding(.top, 14)
 
             Button("暂不使用") {
                 showDeclineHint = true
@@ -192,10 +204,10 @@ struct AgreementOnboardingView: View {
         .background(.white)
         .clipShape(
             UnevenRoundedRectangle(
-                topLeadingRadius: 24,
+                topLeadingRadius: AgreementOnboardingLayout.drawerCornerRadius,
                 bottomLeadingRadius: 0,
                 bottomTrailingRadius: 0,
-                topTrailingRadius: 24,
+                topTrailingRadius: AgreementOnboardingLayout.drawerCornerRadius,
                 style: .continuous
             )
         )

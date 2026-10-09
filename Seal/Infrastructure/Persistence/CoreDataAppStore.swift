@@ -407,14 +407,18 @@ actor CoreDataAppStore: AppStore {
             pendingUpdateSourceFingerprint: object.value(
                 forKey: "pendingUpdateSourceFingerprint"
             ) as? String,
-            replacesInstalledAppID: object.value(forKey: "replacesInstalledAppID") as? UUID,
+            installedFingerprint: object.value(forKey: "installedFingerprint") as? String,
+            needsIPAImport: (object.value(forKey: "needsIPAImport") as? NSNumber)?.boolValue ?? false,
             isSeal: (object.value(forKey: "isSeal") as? NSNumber)?.boolValue ?? false,
             isPinned: (object.value(forKey: "isPinned") as? NSNumber)?.boolValue ?? false,
             importedAt: importedAt,
             extensions: appExtensions,
+            importWarnings: [],
             extensionProfileStrategy: (object.value(
                 forKey: "extensionProfileStrategyRaw"
-            ) as? String).flatMap(AppExtensionProfileStrategy.init(rawValue:))
+            ) as? String).flatMap(AppExtensionProfileStrategy.init(rawValue:)),
+            pendingSignedSnapshot: nil,
+            replacesInstalledAppID: object.value(forKey: "replacesInstalledAppID") as? UUID
         )
     }
 

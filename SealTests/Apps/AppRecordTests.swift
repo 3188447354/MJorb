@@ -179,4 +179,65 @@ struct AppRecordTests {
         #expect(failure.recovery == "选择其他 IPA")
         #expect(failure.code == "SEAL-IPA-101")
     }
+
+    // MARK: - 2026-10-09 覆盖更新重设计：列表互斥性
+
+    @Test
+    func pendingSealUpdateBelongsInUnsignedList() {
+        // Seal 待签名更新包：不进已安装，只进待签名
+        let oldID = UUID()
+        let record = AppRecord(
+            originalBundleIdentifier: "com.seal.app",
+            name: "Seal",
+            version: "1.0.0",
+            buildNumber: "131",
+            size: 10_000,
+            state: .imported,
+            ipaRelativePath: "Apps/NEW/Original.ipa",
+            isSeal: true,
+            importedAt: Date(),
+            replacesInstalledAppID: oldID
+        )
+        #expect(record.belongsInInstalledList == false)
+        #expect(record.belongsInUnsignedList == true)
+    }
+
+    @Test
+    func installedSealBelongsInInstalledList() {
+        // 正常已安装 Seal：进已安装，不进待签名
+        let record = AppRecord(
+            originalBundleIdentifier: "com.seal.app",
+            name: "Seal",
+            version: "1.0.0",
+            buildNumber: "130",
+            size: 10_000,
+            state: .installed,
+            ipaRelativePath: "Apps/OLD/Original.ipa",
+            isSeal: true,
+            importedAt: Date(),
+            replacesInstalledAppID: nil
+        )
+        #expect(record.belongsInInstalledList == true)
+        #expect(record.belongsInUnsignedList == false)
+    }
+
+    @Test
+    func pendingNonSealUpdateBelongsInUnsignedList() {
+        // 非 Seal 待签名更新包：不进已安装，只进待签名
+        let oldID = UUID()
+        let record = AppRecord(
+            originalBundleIdentifier: "com.example.app",
+            name: "Demo",
+            version: "2.0",
+            buildNumber: "20",
+            size: 10_000,
+            state: .imported,
+            ipaRelativePath: "Apps/NEW/Original.ipa",
+            isSeal: false,
+            importedAt: Date(),
+            replacesInstalledAppID: oldID
+        )
+        #expect(record.belongsInInstalledList == false)
+        #expect(record.belongsInUnsignedList == true)
+    }
 }

@@ -2197,7 +2197,7 @@ actor SigningCoordinator {
             updated.lastInstalledAt = Date()
             // 2026-10-09 重设计：覆盖更新走待签名流程。安装成功后，删除被替换的旧已安装记录。
             if let replacedID = updated.replacesInstalledAppID {
-                try? appStore.delete(id: replacedID)
+                try? await appStore.delete(id: replacedID)
                 updated.replacesInstalledAppID = nil
             }
             try await appStore.save(updated)

@@ -3681,6 +3681,12 @@ final class AppsViewModel: ObservableObject {
                 )
             }
             await logImportReplacementOutcome(requested: requestedOverwrite, record: record)
+            // 2026-10-09: 详细记录导入结果，用于诊断覆盖更新包不显示问题
+            try? await logStore?.append(
+                category: .system,
+                level: .info,
+                message: "[SEAL-IMPORT-DBG] 导入完成：id=\(record.id.uuidString.prefix(8)), isSeal=\(record.isSeal), state=\(record.state), replacesInstalledAppID=\(record.replacesInstalledAppID?.uuidString.prefix(8) ?? "nil"), belongsInInstalled=\(record.belongsInInstalledList), belongsInUnsigned=\(record.belongsInUnsignedList)"
+            )
             if autoOpenSigningAfterImport {
                 autoOpenSigningAfterImport = false
                 if let refreshed = apps.first(where: { $0.id == record.id }) {

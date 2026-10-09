@@ -3835,8 +3835,7 @@ def violations(load=read):
     # 文件目录键必须与记录 id 一致：`AppFileStore` 用 appID 同时决定 `Apps/<appID>/`
     # 目录名与写进记录里的相对路径（`Original.ipa` / `Signed.ipa`）。不一致时签名阶段
     # 会去一个不存在的目录取包 —— 覆盖更新**必然**失败。
-    # 2026-10-09 重设计：覆盖更新用新 ID（newRecordID），不再复用旧 ID。
-    check("let commitAppID = isPendingUpdate ? newRecordID" in workflow,
+    check("let commitAppID = existingSeal?.id ?? existing?.id ?? draft.appID" in workflow,
           "Overwrite: 文件目录键必须与记录 id 一致")
     # 默认仍必须是「新建」：同一个 IPA 导入多个副本、用不同 Bundle ID 分别签名后同时
     # 安装，是仓库刻意保留的路径（那条路径上的记录全是待签名状态）。
@@ -9120,11 +9119,10 @@ def main():
          "        if let existing, existing.belongsInInstalledList {\n            return makeInstalledUpdateRecord(",
          "        if false {\n            return makeInstalledUpdateRecord(",
          "Overwrite: 已安装记录必须走覆盖更新分支"),
-        # ⑧ 文件目录键不用新 ID ⇒ 覆盖后签名阶段找不到源包 ✓ 报红。
-        # 2026-10-09 重设计：覆盖更新必须用 newRecordID。
+        # ⑧ 文件目录键退回 `draft.appID` ⇒ 覆盖后签名阶段找不到源包 ✓ 报红。
         ("Seal/Core/Import/ImportWorkflow.swift",
-         "            let commitAppID = isPendingUpdate ? newRecordID",
-         "            let commitAppID = existing?.id ?? draft.appID",
+         "            let commitAppID = existingSeal?.id ?? existing?.id ?? draft.appID",
+         "            let commitAppID = existingSeal?.id ?? draft.appID",
          "Overwrite: 文件目录键必须与记录 id 一致"),
         # ⑨ 「一律替换」⇒ 毁掉「同一 IPA 导入多个副本」这条刻意保留的路径 ✓ 报红。
         ("Seal/Core/Import/ImportWorkflow.swift",

@@ -571,11 +571,11 @@ actor ImportWorkflow {
             preferredDisplayName: existingSeal.preferredDisplayName,
             preferredIconRelativePath: files.preferredIconRelativePath
                 ?? existingSeal.preferredIconRelativePath,
+            pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint,
             isSeal: true,
             isPinned: true,
             importedAt: Date(),
             extensions: parsed.extensions,
-            pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint,
             replacesInstalledAppID: existingSeal.id
         )
     }
@@ -624,13 +624,13 @@ actor ImportWorkflow {
             preferredDisplayName: existing.preferredDisplayName,
             preferredIconRelativePath: files.preferredIconRelativePath
                 ?? existing.preferredIconRelativePath,
+            pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint,
             isSeal: false,
             isPinned: existing.isPinned,
             importedAt: Date(),
             extensions: parsed.extensions,
             importWarnings: parsed.importWarnings,
             extensionProfileStrategy: existing.extensionProfileStrategy,
-            pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint,
             replacesInstalledAppID: existing.id
         )
     }

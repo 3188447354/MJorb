@@ -3821,17 +3821,14 @@ def violations(load=read):
 
     workflow = load("Seal/Core/Import/ImportWorkflow.swift")
     overwrite = section(workflow, "private static func makeInstalledUpdateRecord(", "\n    }")
-    check("id: existing.id," in overwrite,
-          "Overwrite: 覆盖更新必须复用已安装记录的 id")
+    check("state: .imported," in overwrite,
+          "Overwrite: 覆盖更新必须建新的待签名记录")
     check("mappedBundleIdentifier: existing.mappedBundleIdentifier," in overwrite
           and "accountID: existing.accountID," in overwrite,
           "Overwrite: 覆盖更新必须保留签名身份")
-    check("signedIPARelativePath: nil," in overwrite
-          and "signedIPASHA256: nil," in overwrite
-          and "signedArtifactStatus: nil," in overwrite,
-          "Overwrite: 覆盖更新必须清空旧版签名产物")
-    check("hasPendingSelfUpdateSource: true," in overwrite,
-          "Overwrite: 覆盖更新必须标记待安装新源")
+    # 2026-10-09 重设计：新记录是全新的待签名记录，没有旧签名产物需要清空
+    check("replacesInstalledAppID: existing.id" in overwrite,
+          "Overwrite: 覆盖更新必须标记被替换的已安装记录")
     check("if let existing, existing.belongsInInstalledList {" in workflow
           and "return makeInstalledUpdateRecord(" in workflow,
           "Overwrite: 已安装记录必须走覆盖更新分支")
@@ -9103,9 +9100,9 @@ def main():
          "Overwrite: 覆盖更新必须保留签名身份"),
         # ⑤ 覆盖更新不再复用记录 id ⇒ 记录与文件目录键不一致 ✓ 报红。
         ("Seal/Core/Import/ImportWorkflow.swift",
-         "            id: existing.id,\n            originalBundleIdentifier: parsed.bundleIdentifier,",
-         "            id: draft.appID,\n            originalBundleIdentifier: parsed.bundleIdentifier,",
-         "Overwrite: 覆盖更新必须复用已安装记录的 id"),
+         "            state: .imported,",
+         "            state: .installed,",
+         "Overwrite: 覆盖更新必须建新的待签名记录"),
         # ⑥ 留着旧版签名产物 ⇒ 「复用已签名包直接安装」会把**旧版本**装回设备 ✓ 报红。
         ("Seal/Core/Import/ImportWorkflow.swift",
          "            signedIPARelativePath: nil,\n"

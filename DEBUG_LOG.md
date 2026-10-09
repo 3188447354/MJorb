@@ -5,16 +5,18 @@
 
 ---
 
-## 2026-10-09 三个 UI 状态不消失 bug 修复
+## 2026-10-09 覆盖更新流程重设计：走待签名页
 
-- **现象**：MJ 真机反馈（build 263）：① 覆盖更新完成后"有新版本待安装"标签不消失；② 撤销证书后已撤销的证书不从列表消失；③ 抽屉里"需重新签名"文案签名后不消失（有延迟）。
-- **2026-10-09 重设计**（MJ 要求"重新设计 不要打补丁"）：
-  - ③ 需重新签名：删掉 30 秒覆盖层。根因是 `load()` 里 `apps = fetched` 后立刻 `refreshCertAvailability()`，用的是旧 `accountSecrets`，必错。改成只在钥匙串重读后才重算；`markLocalCertificateReady` 直接置 `.ready`，签名完成路径直接更新 `apps` 数组不等 `load()`。
-  - ② 撤销证书：`dismissCertificate(persistent:)` 统一入口 + `CertificateDismissalStore` 共享存储。签名轮换（`ApplePortalSigningService`）撤销后直接写入共享存储，设置页同步时过滤。
-  - ① 覆盖更新标签：签名成功后直接替换 `apps` 数组中的记录，不等 `load()` 从库重读（有时序问题）。
-- **涉及文件**：`Seal/Features/Apps/AppsViewModel.swift`、`Seal/Features/Settings/SettingsViewModel.swift`、`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`、`Seal/Core/Certificates/CertificateDismissalStore.swift`（新建）。
-- **验证状态**：未推，等 MJ 说推。真机未验证。
-- **教训**：缓存+后台同步的架构天然有竞态；"用时算真值"比"缓存+同步"可靠。
+- **背景**：MJ 要求"其他 ipa 覆盖更新都是已安装列表的 ipa 先到待签名页，签名成功再回来，这样所有状态都能刷新同步了，Seal 能做到吗"。批准后实施。
+- **旧设计**：导入新 IPA 时复用已安装记录的 ID，`state` 保持 `.installed`，标记 `hasPendingSelfUpdateSource=true` + `pendingUpdateSourceFingerprint`。已安装列表显示"有新版本待安装"标签。
+- **新设计**：
+  - `AppRecord` 新增 `replacesInstalledAppID: UUID?` 字段。
+  - `ImportWorkflow.makeSelfUpdateRecord` / `makeInstalledUpdateRecord` 改为建**新的待签名记录**（新 UUID，`state: .imported`），`replacesInstalledAppID` 指向被替换的已安装记录。不再复用 ID、不再标记 pending。
+  - `SigningCoordinator` 安装成功后，若 `replacesInstalledAppID` 非空，删除旧记录，本记录转正。
+  - 流程：导入新 IPA → 待签名列表 → 用户签名 → 成功 → 替换已安装记录。Seal 与其它 IPA 走同一套。
+- **涉及文件**：`Seal/Core/Apps/AppRecord.swift`、`Seal/Core/Import/ImportWorkflow.swift`、`Seal/Core/Signing/SigningCoordinator.swift`、`Scripts/verify-release-safety.py`（守卫同步更新）。
+- **验证状态**：守卫 834 项 0 failures。未推，等 MJ 说推。真机未验证。
+- **注意**：旧版已标记 `hasPendingSelfUpdateSource` 的记录仍会显示标签，直到用户重新导入新包走新流程。
 
 ## 2026-10-08 自更新失败的「同版本」角：草稿被转正 + 丢弃后又被旧快照写回
 

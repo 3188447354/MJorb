@@ -528,6 +528,9 @@ actor ImportWorkflow {
         )
     }
 
+    /// Seal 自更新：新 IPA 作为一条**待签名**记录（`.imported`）进入待签名列表，
+    /// 不再复用已安装记录。用户在待签名页签名，成功后替换旧记录。
+    /// 2026-10-09 重设计：与其它 IPA 覆盖更新走同一套流程，不再特殊标记。
     private static func makeSelfUpdateRecord(
         draft: ImportDraft,
         files: StoredAppFiles,
@@ -536,48 +539,28 @@ actor ImportWorkflow {
     ) -> AppRecord {
         let parsed = draft.parsedIPA
         return AppRecord(
-            id: existingSeal.id,
-            originalBundleIdentifier: existingSeal.originalBundleIdentifier,
+            // 新 ID：待签名列表里的一条独立记录
+            originalBundleIdentifier: parsed.bundleIdentifier,
             mappedBundleIdentifier: existingSeal.mappedBundleIdentifier,
             name: parsed.name,
             version: parsed.version,
             buildNumber: parsed.buildNumber,
             size: parsed.fileSize,
             iconRelativePath: files.iconRelativePath ?? existingSeal.iconRelativePath,
-            state: .installed,
-            expiryDate: existingSeal.expiryDate,
+            state: .imported,
             accountID: existingSeal.accountID,
             signingTeamID: existingSeal.signingTeamID,
-            certificateSerialNumber: existingSeal.certificateSerialNumber,
-            signedDeviceIdentifier: existingSeal.signedDeviceIdentifier,
-            provisioningProfileUUID: existingSeal.provisioningProfileUUID,
-            provisioningProfileName: existingSeal.provisioningProfileName,
-            provisioningProfileCreationDate: existingSeal.provisioningProfileCreationDate,
-            provisioningProfileExpirationDate: existingSeal.provisioningProfileExpirationDate,
-            entitlementValidationStatus: existingSeal.entitlementValidationStatus,
-            capabilityValidationStatus: existingSeal.capabilityValidationStatus,
-            lastSignedAt: existingSeal.lastSignedAt,
-            lastInstalledAt: existingSeal.lastInstalledAt,
-            removedExtensionBundleIdentifiers: existingSeal.removedExtensionBundleIdentifiers,
-            signingTargets: existingSeal.signingTargets,
             ipaRelativePath: files.ipaRelativePath,
-            signedIPARelativePath: nil,
-            signedIPASHA256: nil,
-            signedArtifactStatus: nil,
             preferredBundleIdentifier: existingSeal.preferredBundleIdentifier
                 ?? existingSeal.mappedBundleIdentifier,
             preferredDisplayName: existingSeal.preferredDisplayName,
             preferredIconRelativePath: files.preferredIconRelativePath
                 ?? existingSeal.preferredIconRelativePath,
-            lastInstallFailureCode: nil,
-            lastInstallFailureReason: nil,
-            hasPendingSelfUpdateSource: true,
-            pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint,
-            installedFingerprint: existingSeal.installedFingerprint,
             isSeal: true,
             isPinned: true,
-            importedAt: existingSeal.importedAt,
-            extensions: parsed.extensions
+            importedAt: Date(),
+            extensions: parsed.extensions,
+            replacesInstalledAppID: existingSeal.id
         )
     }
 
@@ -593,6 +576,9 @@ actor ImportWorkflow {
     /// 🔴 必须清空 `signedIPARelativePath` / `signedIPASHA256` / `signedArtifactStatus`：
     /// 它们描述的是**旧版本**的签名产物，留着会让「复用已签名包直接安装」那条路径
     /// 把旧版本装回设备（用户会以为「更新没生效」）。
+    /// 覆盖更新：新 IPA 作为一条**待签名**记录（`.imported`）进入待签名列表，
+    /// 不再复用已安装记录。用户在待签名页签名，成功后替换旧记录。
+    /// 2026-10-09 重设计：与 Seal 自更新走同一套流程。
     private static func makeInstalledUpdateRecord(
         draft: ImportDraft,
         files: StoredAppFiles,
@@ -601,7 +587,7 @@ actor ImportWorkflow {
     ) -> AppRecord {
         let parsed = draft.parsedIPA
         return AppRecord(
-            id: existing.id,
+            // 新 ID：待签名列表里的一条独立记录
             originalBundleIdentifier: parsed.bundleIdentifier,
             mappedBundleIdentifier: existing.mappedBundleIdentifier,
             name: parsed.name,
@@ -609,42 +595,21 @@ actor ImportWorkflow {
             buildNumber: parsed.buildNumber,
             size: parsed.fileSize,
             iconRelativePath: files.iconRelativePath ?? existing.iconRelativePath,
-            state: .installed,
-            expiryDate: existing.expiryDate,
+            state: .imported,
             accountID: existing.accountID,
             signingTeamID: existing.signingTeamID,
-            certificateSerialNumber: existing.certificateSerialNumber,
-            signedDeviceIdentifier: existing.signedDeviceIdentifier,
-            provisioningProfileUUID: existing.provisioningProfileUUID,
-            provisioningProfileName: existing.provisioningProfileName,
-            provisioningProfileCreationDate: existing.provisioningProfileCreationDate,
-            provisioningProfileExpirationDate: existing.provisioningProfileExpirationDate,
-            entitlementValidationStatus: existing.entitlementValidationStatus,
-            capabilityValidationStatus: existing.capabilityValidationStatus,
-            lastSignedAt: existing.lastSignedAt,
-            lastInstalledAt: existing.lastInstalledAt,
-            removedExtensionBundleIdentifiers: existing.removedExtensionBundleIdentifiers,
-            // 覆盖更新：清空旧版的 signingTargets，新版扩展可能不同，
-            // 下次签名时从新 IPA 重新发现。保留旧的会导致续签用错扩展信息。
-            signingTargets: [],
             ipaRelativePath: files.ipaRelativePath,
-            signedIPARelativePath: nil,
-            signedIPASHA256: nil,
-            signedArtifactStatus: nil,
             preferredBundleIdentifier: existing.preferredBundleIdentifier,
             preferredDisplayName: existing.preferredDisplayName,
             preferredIconRelativePath: files.preferredIconRelativePath
                 ?? existing.preferredIconRelativePath,
-            lastInstallFailureCode: nil,
-            lastInstallFailureReason: nil,
-            hasPendingSelfUpdateSource: true,
-            pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint,
             isSeal: false,
             isPinned: existing.isPinned,
-            importedAt: existing.importedAt,
+            importedAt: Date(),
             extensions: parsed.extensions,
             importWarnings: parsed.importWarnings,
-            extensionProfileStrategy: existing.extensionProfileStrategy
+            extensionProfileStrategy: existing.extensionProfileStrategy,
+            replacesInstalledAppID: existing.id
         )
     }
 

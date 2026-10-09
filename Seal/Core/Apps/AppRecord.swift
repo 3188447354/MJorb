@@ -60,6 +60,9 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
     /// 两阶段提交的草稿：签名/续签阶段先写这里，确认成功后整体转正到顶层。
     /// nil = 无进行中的签名/续签。UI 只读顶层 committed 值，不读这里。
     var pendingSignedSnapshot: PendingSignedSnapshot?
+    /// 覆盖更新时，指向被替换的已安装记录 ID。签名安装成功后，删除旧记录，本记录转正为已安装。
+    /// nil = 普通导入，不是覆盖更新。
+    var replacesInstalledAppID: UUID?
 
     init(
         id: UUID = UUID(),
@@ -108,7 +111,8 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         extensions: [AppExtensionRecord] = [],
         importWarnings: [String] = [],
         extensionProfileStrategy: AppExtensionProfileStrategy? = nil,
-        pendingSignedSnapshot: PendingSignedSnapshot? = nil
+        pendingSignedSnapshot: PendingSignedSnapshot? = nil,
+        replacesInstalledAppID: UUID? = nil
     ) {
         self.id = id
         self.originalBundleIdentifier = originalBundleIdentifier
@@ -157,6 +161,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         self.importWarnings = importWarnings
         self.extensionProfileStrategy = extensionProfileStrategy
         self.pendingSignedSnapshot = pendingSignedSnapshot
+        self.replacesInstalledAppID = replacesInstalledAppID
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -207,6 +212,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         case importWarnings
         case extensionProfileStrategy
         case pendingSignedSnapshot
+        case replacesInstalledAppID
     }
 
     init(from decoder: Decoder) throws {
@@ -284,6 +290,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
             PendingSignedSnapshot.self,
             forKey: .pendingSignedSnapshot
         )
+        replacesInstalledAppID = try container.decodeIfPresent(UUID.self, forKey: .replacesInstalledAppID)
         needsIPAImport = try container.decodeIfPresent(Bool.self, forKey: .needsIPAImport) ?? false
     }
 

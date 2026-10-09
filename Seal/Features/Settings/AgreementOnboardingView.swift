@@ -8,76 +8,27 @@ enum AgreementVersion {
 
 /// 首次启动（或协议更新后）的协议同意页。
 ///
-/// 视觉：品牌图标 → 标题 → 两张成组卡片（信任摘要 / 协议入口）→ 底部主次按钮。
+/// 视觉：开屏欢迎页 + 底部确认 Sheet。
+/// 上半：品牌图标（76pt）→ "Seal" → 副标题"为你的应用，保持可用。"
+/// 下半：白色底部 Sheet（圆角 28，非系统 sheet，不可下拉关闭）→
+///   标题"欢迎使用 Seal" → 两行说明（协议名可点）→ "同意并继续" / "暂不使用"。
 ///
-/// 🔴 2026-10-08 重做的原因（用户反馈「UI 布局…大小、间隙太割裂」）：
-/// 旧版把两条信任摘要用裸 `Divider` 串在页面背景上、两条协议入口又是**两张各自带阴影的
-/// 独立卡片** ⇒ 四行同类信息有四种「贴法」；再加上 40 / 24 / 16 / 14 / 12 / 8 混着当间距、
-/// 圆角 18 / 15 / 9 混着用，还手写了一个与设计系统不一致的主按钮（52pt / 字号 17 / 圆角 15）。
-/// 现在：「**一张玻璃卡片 = 一组同类信息**」，组内一条内缩细线分隔，组与组之间同一档间距；
-/// 所有间距只从 `Metrics` 的三档里取、圆角只用两档；主按钮直接走设计系统的
-/// `sealPrimaryAction`（全 App 同一套按下动画与投影）。
+/// 约束：只改视觉层。协议门控（SealApp.swift）、AgreementVersion、
+/// 协议正文（PrivacyNoticeView / UserAgreementView）、签名功能一律不动。
 struct AgreementOnboardingView: View {
     var onAgreed: () -> Void
     var onDeclined: () -> Void
 
     @State private var showDeclineHint = false
 
-    /// 版式常量：集中在此，别让 magic number 再散回各处。
-    ///
-    /// 规则：**间距按「关系」分三档**（块与块 / 紧邻 / 再紧一档），
-    /// **圆角只用两档**（卡片 / 卡片内小方块），按钮圆角跟随全 App 惯例。
-    /// 「割裂感」的根源就是同一类元素每处各调各的数值 —— 这里把它锁死。
-    /// ⚠️ 名字刻意叫 `Metrics` 而不是 `Layout`：SwiftUI 自己有个 `Layout` 协议，
-    /// 嵌套类型同名会在本类型作用域里把它遮住，日后有人在这里写自定义布局会莫名其妙编译不过。
-    private enum Metrics {
-        /// 大块之间：品牌头 → 信任卡片 → 协议卡片。
-        static let section: CGFloat = 22
-        /// 紧邻元素之间：标题 ↔ 副标题、图标 ↔ 文字、卡片内行与行。
-        static let tight: CGFloat = 10
-        /// 再紧一档：卡片内标题与描述之间。
-        static let block: CGFloat = 4
-
-        /// 页面左右安全边距。
-        static let gutter: CGFloat = 20
-        /// 首屏顶部留白（不参与块间距节奏）。
-        static let pageTop: CGFloat = 32
-        /// 底部操作区与安全区之间的留白。
-        static let pageBottom: CGFloat = 18
-        /// 卡片内行的左右内边距。
-        static let rowHorizontal: CGFloat = 14
-        /// 卡片内行的上下内边距（两张卡片**共用同一值** ⇒ 行高节奏一致）。
-        static let rowVertical: CGFloat = 13
-
-        /// 卡片圆角。
-        static let cardCorner: CGFloat = 18
-        /// 主按钮圆角：与全 App 其余 `sealPrimaryAction` 调用点一致（都是 14）。
-        static let buttonCorner: CGFloat = 14
-        /// 卡片内小方块圆角。
-        static let tileCorner: CGFloat = 10
-        /// 卡片内行首图标方块边长。
-        static let tile: CGFloat = 32
-
-        /// 细线粗细。
-        static let hair: CGFloat = 1
-        /// 组内分隔线左端对齐到文字起点（= 行内边距 + 图标方块 + 图标间距）。
-        static var dividerInset: CGFloat { rowHorizontal + tile + tight }
-    }
-
     var body: some View {
         VStack(spacing: 0) {
-            // 顶部内容（一屏放下，不滚动）
-            VStack(spacing: Metrics.section) {
-                brandHeader
-                trustCard
-                documentsCard
-            }
-            .padding(.horizontal, Metrics.gutter)
-            .padding(.top, Metrics.pageTop)
-
-            Spacer(minLength: Metrics.section)
-
-            footer
+            // 上半：品牌区，居中
+            Spacer()
+            brandHeader
+            Spacer()
+            // 下半：底部确认 Sheet
+            bottomSheet
         }
         .sealScreenBackground()
         .alert("需要您的同意", isPresented: $showDeclineHint) {
@@ -87,189 +38,109 @@ struct AgreementOnboardingView: View {
         }
     }
 
-    // MARK: - 上半屏
+    // MARK: - 上半屏：品牌
 
-    /// 品牌图标 + 标题 + 副标题。三段共用 `tight` 间距 ⇒ 读成**一个整体**，而不是三个元素。
     private var brandHeader: some View {
-        VStack(spacing: Metrics.tight) {
+        VStack(spacing: 14) {
             Image("SealBrandIcon")
                 .resizable()
-                .frame(width: 64, height: 64)
-                .clipShape(RoundedRectangle(cornerRadius: Metrics.cardCorner, style: .continuous))
+                .frame(width: 76, height: 76)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .shadow(color: Color.sealAccent.opacity(0.18), radius: 12, y: 6)
 
-            VStack(spacing: Metrics.block) {
-                Text("欢迎使用 Seal")
-                    .font(.system(size: 27, weight: .bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+            Text("Seal")
+                .font(.system(size: 27, weight: .bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
 
-                Text("开始前，请花一分钟了解我们如何处理你的数据。")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.sealTextSecondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.horizontal, Metrics.block)
+            Text("为你的应用，保持可用。")
+                .font(.system(size: 15))
+                .foregroundStyle(Color.sealTextSecondary)
+                .multilineTextAlignment(.center)
         }
+        .padding(.horizontal, 20)
     }
 
-    /// 信任摘要：**一张**卡片包两条，组内细线分隔 —— 不再让两行各自「挂在」页面背景上。
-    private var trustCard: some View {
+    // MARK: - 下半屏：底部确认 Sheet
+
+    /// 自定义底部 Sheet：白色、顶部圆角 28、不可下拉关闭。
+    private var bottomSheet: some View {
         VStack(spacing: 0) {
-            trustRow(
-                icon: "iphone",
-                title: "优先在本机处理",
-                detail: "账号、设备与签名资料默认保留在此设备。"
-            )
-            cardDivider
-            trustRow(
-                icon: "lock.shield",
-                title: "仅用于必要的 Apple 通信",
-                detail: "需要签名时，才与 Apple 服务建立加密连接。"
-            )
-        }
-        .glassSurface(cornerRadius: Metrics.cardCorner)
-    }
+            // 拖拽指示条（纯视觉装饰）
+            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                .fill(Color.secondary.opacity(0.25))
+                .frame(width: 36, height: 5)
+                .padding(.top, 10)
+                .padding(.bottom, 16)
 
-    /// 协议入口：同样是**一张**卡片包两行 —— 两行各自成卡会带来「高度不一致 + 阴影叠加」。
-    private var documentsCard: some View {
-        VStack(spacing: 0) {
-            NavigationLink { PrivacyNoticeView() } label: {
-                documentRow(
-                    title: AgreementMetadata.Privacy.title,
-                    date: AgreementMetadata.Privacy.effectiveDate,
-                    icon: "doc.text"
-                )
-            }
-            .buttonStyle(.plain)
+            Text("欢迎使用 Seal")
+                .font(.system(size: 22, weight: .bold))
+                .padding(.bottom, 12)
 
-            cardDivider
-
-            NavigationLink { UserAgreementView() } label: {
-                documentRow(
-                    title: AgreementMetadata.Terms.title,
-                    date: AgreementMetadata.Terms.effectiveDate,
-                    icon: "doc.plaintext"
-                )
-            }
-            .buttonStyle(.plain)
-        }
-        .glassSurface(cornerRadius: Metrics.cardCorner)
-    }
-
-    /// 组内分隔线：左端对齐到文字起点（跳过图标方块），视觉上属于上一行的「后半段」。
-    private var cardDivider: some View {
-        Rectangle()
-            .fill(Color.sealHairline)
-            .frame(height: Metrics.hair)
-            .padding(.leading, Metrics.dividerInset)
-    }
-
-    // MARK: - 底部操作区
-
-    /// 同意说明 + 主次按钮。三段共用 `tight` 间距，整体贴在下安全区上方。
-    private var footer: some View {
-        VStack(spacing: Metrics.tight) {
-            agreementFootnote
+            agreementNotes
+                .padding(.bottom, 20)
 
             Button("同意并继续") {
                 UserDefaults.standard.set(AgreementVersion.current, forKey: AgreementVersion.storageKey)
                 onAgreed()
             }
-            .sealPrimaryAction(cornerRadius: Metrics.buttonCorner)
+            .sealPrimaryAction(cornerRadius: 14)
+            .padding(.bottom, 8)
 
             Button("暂不使用") {
                 showDeclineHint = true
                 onDeclined()
             }
-            .font(.system(size: 15, weight: .medium))
+            .font(.system(size: 16, weight: .medium))
             .foregroundStyle(Color.sealTextSecondary)
             .frame(maxWidth: .infinity)
             .frame(minHeight: 44)
         }
-        .padding(.horizontal, Metrics.gutter)
-        .padding(.bottom, Metrics.pageBottom)
-    }
-
-    /// 「继续即表示你已阅读并同意《隐私政策》和《用户协议》。」协议名可点。
-    private var agreementFootnote: some View {
-        HStack(spacing: 0) {
-            Text("继续即表示你已阅读并同意")
-                .foregroundStyle(Color.sealTextSecondary)
-            NavigationLink { PrivacyNoticeView() } label: {
-                Text("《\(AgreementMetadata.Privacy.title)》")
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Color.sealAccent)
-            }
-            .buttonStyle(.plain)
-            Text("和")
-                .foregroundStyle(Color.sealTextSecondary)
-            NavigationLink { UserAgreementView() } label: {
-                Text("《\(AgreementMetadata.Terms.title)》")
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Color.sealAccent)
-            }
-            .buttonStyle(.plain)
-            Text("。")
-                .foregroundStyle(Color.sealTextSecondary)
-        }
-        .font(.system(size: 12))
-        .lineLimit(1)
-        .minimumScaleFactor(0.75)
-        .padding(.horizontal, Metrics.block)
-    }
-
-    // MARK: - 行构件
-
-    /// 信任摘要行：图标方块 + 粗体标题 + 描述。行高统一由 `Metrics` 决定，不再逐处微调。
-    private func trustRow(icon: String, title: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: Metrics.tight) {
-            iconTile(icon)
-            VStack(alignment: .leading, spacing: Metrics.block) {
-                Text(title)
-                    .font(.system(size: 15, weight: .semibold))
-                Text(detail)
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(Color.sealTextSecondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, Metrics.rowHorizontal)
-        .padding(.vertical, Metrics.rowVertical)
-    }
-
-    /// 协议文档行：图标方块 + 名称 + 生效日期 + 箭头。
-    private func documentRow(title: String, date: String, icon: String) -> some View {
-        HStack(spacing: Metrics.tight) {
-            iconTile(icon)
-            Text(title)
-                .font(.system(size: 15, weight: .semibold))
-            Spacer(minLength: Metrics.block)
-            Text(date)
-                .font(.system(size: 12))
-                .foregroundStyle(Color.sealTextSecondary)
-            Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.sealTextSecondary.opacity(0.55))
-        }
-        .padding(.horizontal, Metrics.rowHorizontal)
-        .padding(.vertical, Metrics.rowVertical)
-        .contentShape(Rectangle())
-    }
-
-    /// 行首图标方块：两处构件共用同一尺寸与圆角 ⇒ 上下两行的「起点」天然对齐。
-    private func iconTile(_ icon: String) -> some View {
-        Image(systemName: icon)
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(Color.sealAccent)
-            .frame(width: Metrics.tile, height: Metrics.tile)
-            .background(
-                Color.sealAccent.opacity(0.12),
-                in: RoundedRectangle(cornerRadius: Metrics.tileCorner, style: .continuous)
+        .padding(.horizontal, 24)
+        .padding(.bottom, 20)
+        .background(Color.white)
+        .clipShape(
+            UnevenRoundedRectangle(
+                cornerRadii: .init(topLeading: 28, topTrailing: 28)
             )
+        )
+        .shadow(color: .black.opacity(0.08), radius: 16, y: -4)
+    }
+
+    /// 两行说明：《隐私政策》《用户协议》可点，分别进对应页面。
+    /// 用流式布局，支持 Dynamic Type 放大不裁切。
+    private var agreementNotes: some View {
+        VStack(spacing: 8) {
+            // 第一行：使用前，请阅读《隐私政策》和《用户协议》。
+            HStack(spacing: 0) {
+                Text("使用前，请阅读")
+                    .foregroundStyle(Color.sealTextSecondary)
+                NavigationLink { PrivacyNoticeView() } label: {
+                    Text("《隐私政策》")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(Color.sealAccent)
+                }
+                .buttonStyle(.plain)
+                Text("和")
+                    .foregroundStyle(Color.sealTextSecondary)
+                NavigationLink { UserAgreementView() } label: {
+                    Text("《用户协议》")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(Color.sealAccent)
+                }
+                .buttonStyle(.plain)
+                Text("。")
+                    .foregroundStyle(Color.sealTextSecondary)
+            }
+            // 第二行：点击"同意并继续"，即表示你已阅读并同意上述协议。
+            Text("点击“同意并继续”，即表示你已阅读并同意上述协议。")
+                .foregroundStyle(Color.sealTextSecondary)
+        }
+        .font(.system(size: 14))
+        .multilineTextAlignment(.center)
+        .fixedSize(horizontal: false, vertical: true)
+        // 协议链接最小点击高度 44pt
+        .padding(.vertical, 4)
     }
 }
 
@@ -281,7 +152,7 @@ struct AgreementOnboardingView: View {
 /// ⇒ 它们全部停在协议页，7 个用例一起红，
 /// `swift-regression` 从 2026-10-05 最后一次全绿之后再没绿过。
 /// 而中间几十次 run 全是 `cancelled`（被新推送顶掉），这个红点一直没暴露 ——
-/// 直到 2026-10-08 才第一次真的跑完并报出来，很容易被误当成「本轮改动引入的回归」。
+/// 直到 2026-10-08 才第一次真的跑出来，很容易被误当成「本轮改动引入的回归」。
 ///
 /// ⚠️ 只认**显式**参数，**不**写成「`--ui-testing-` 前缀」这类隐式规则
 /// （AGENTS.md §3：显式集合，禁止前缀与数字区间）：

@@ -560,7 +560,7 @@ extension ImportWorkflowTests {
         await workflow.prepare(sourceURL: source)
         await workflow.confirm(target: .replaceInstalled(appID: pendingID))
 
-        let failure = try requireFailed(await workflow.state)
+        let failure = try requireFailure(await workflow.state)
         let records = try await environment.appStore.fetchAll()
         #expect(failure.code == "SEAL-IPA-217")
         #expect(records.count == 1)
@@ -595,7 +595,7 @@ extension ImportWorkflowTests {
         await workflow.prepare(sourceURL: source)
         await workflow.confirm(target: .replaceInstalled(appID: UUID()))
 
-        let failure = try requireFailed(await workflow.state)
+        let failure = try requireFailure(await workflow.state)
         #expect(failure.code == "SEAL-IPA-217")
         #expect(try await environment.appStore.fetchAll().count == 1)
     }

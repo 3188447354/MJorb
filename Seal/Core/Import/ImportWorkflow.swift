@@ -616,6 +616,9 @@ actor ImportWorkflow {
             accountID: existing.accountID,
             signingTeamID: existing.signingTeamID,
             ipaRelativePath: files.ipaRelativePath,
+            signedIPARelativePath: nil,
+            signedIPASHA256: nil,
+            signedArtifactStatus: nil,
             preferredBundleIdentifier: existing.preferredBundleIdentifier,
             preferredDisplayName: existing.preferredDisplayName,
             preferredIconRelativePath: files.preferredIconRelativePath

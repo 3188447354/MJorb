@@ -5596,11 +5596,11 @@ def violations(load=read):
 
     r88_control_at = r88_flat.find("guard controlInstalled else")
     r88_collect_at = r88_flat.find("var missingOnDevice")
-    r88_delete_at = r88_flat.find("mutations.append(await delete(app")
+    r88_delete_at = r88_flat.find("mutations.append(await markMissingOnDevice(app))")
     check(r88_control_at >= 0 and r88_collect_at >= 0 and r88_delete_at >= 0
           and r88_control_at < r88_collect_at < r88_delete_at,
-          "R88③: 阳性对照必须排在「收集缺失」与删除**之前** ✗ —— "
-          "排到后面时代码看起来仍然有对照，但删除已经发生了（顺序就是安全本身）")
+          "R88③: 阳性对照必须排在「收集缺失」与状态变更**之前** ✗ —— "
+          "排到后面时代码看起来仍然有对照，但列表已经被错误改写（顺序就是安全本身）")
 
     check("return false" in squash(section_or_empty(
               r88_code, "guard controlInstalled else", "var missingOnDevice")),
@@ -9691,7 +9691,7 @@ def main():
         #    （代码看起来仍然有对照，但删除已经发生了 —— 顺序就是安全本身）。
         ("Seal/Features/Apps/AppsViewModel.swift",
          '            guard let controlBundleID = Bundle.main.bundleIdentifier,',
-         '            var missingOnDevice: [AppRecord] = []\n            for app in installedRecords { mutations.append(await delete(app, refreshAfterDeletion: false)) }\n            guard let controlBundleID = Bundle.main.bundleIdentifier,',
+         '            var missingOnDevice: [AppRecord] = []\n            for app in installedRecords { mutations.append(await markMissingOnDevice(app)) }\n            guard let controlBundleID = Bundle.main.bundleIdentifier,',
          "R88③: 阳性对照必须排在"),
         # ④ 对照未通过却继续往下走 ⇒ R88④ 报红
         #    （「继续问剩下的」= 让一条不可信的通道去判更多记录）。

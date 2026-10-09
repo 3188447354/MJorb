@@ -293,6 +293,7 @@ actor CoreDataAppStore: AppStore {
         object.setValue(record.pendingFileTransactionID, forKey: "pendingFileTransactionID")
         object.setValue(record.hasPendingSelfUpdateSource, forKey: "hasPendingSelfUpdateSource")
         object.setValue(record.pendingUpdateSourceFingerprint, forKey: "pendingUpdateSourceFingerprint")
+        object.setValue(record.replacesInstalledAppID, forKey: "replacesInstalledAppID")
         object.setValue(record.isSeal, forKey: "isSeal")
         object.setValue(record.isPinned, forKey: "isPinned")
         object.setValue(record.extensionProfileStrategy?.rawValue, forKey: "extensionProfileStrategyRaw")
@@ -406,6 +407,7 @@ actor CoreDataAppStore: AppStore {
             pendingUpdateSourceFingerprint: object.value(
                 forKey: "pendingUpdateSourceFingerprint"
             ) as? String,
+            replacesInstalledAppID: object.value(forKey: "replacesInstalledAppID") as? UUID,
             isSeal: (object.value(forKey: "isSeal") as? NSNumber)?.boolValue ?? false,
             isPinned: (object.value(forKey: "isPinned") as? NSNumber)?.boolValue ?? false,
             importedAt: importedAt,

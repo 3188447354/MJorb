@@ -46,6 +46,7 @@ enum CoreDataModel {
             attribute("pendingFileTransactionID", type: .UUIDAttributeType, optional: true),
             attribute("hasPendingSelfUpdateSource", type: .booleanAttributeType, defaultValue: false),
             attribute("pendingUpdateSourceFingerprint", type: .stringAttributeType, optional: true),
+            attribute("replacesInstalledAppID", type: .UUIDAttributeType, optional: true),
             attribute("isSeal", type: .booleanAttributeType, defaultValue: false),
             attribute("isPinned", type: .booleanAttributeType, defaultValue: false),
             attribute("extensionProfileStrategyRaw", type: .stringAttributeType, optional: true),

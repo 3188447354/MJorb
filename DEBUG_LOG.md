@@ -20,6 +20,7 @@
 - **验证状态**：守卫 831 项 0 failures，未推，等 MJ 说推。真机未验证。
 - **教训**："删了又拉回来"是撤销类操作的经典坑——本地删完别立刻全量回读，要么延迟，要么加已删过滤。
 - **后续翻车**：MJ 让换 runner 解决排队，我把 ios-fast.yml 的 macos-26 改成 macos-15，结果 macos-15 上没有 Xcode 26.5，构建在 "Select pinned Xcode 26.5" 步骤 1 秒失败。已 revert 回 macos-26。教训：换 runner 前必须先确认目标镜像有 pinned 的 Xcode 版本，不能凭感觉换。
+- **2026-10-09 09:46 补充**：MJ 反馈 I4PC 证书（只存在于 Apple 服务器）撤销失败、消不掉。根因是 Apple revoke API 直接拒绝，旧代码失败后还立即回读，死循环。新增"从列表移除"：SettingsViewModel.hideCertificateLocally 用 UserDefaults 持久化隐藏序列号，refresh 时过滤；UI 上外部证书（.external）显示"从列表移除"按钮。用户可手动隐藏删不掉的孤儿证书。
 
 ## 2026-10-08 自更新失败的「同版本」角：草稿被转正 + 丢弃后又被旧快照写回
 

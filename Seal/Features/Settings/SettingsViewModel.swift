@@ -646,8 +646,8 @@ final class SettingsViewModel: ObservableObject {
             try await accountRepository.save(clearedAccount)
             replaceDisplayedAccount(clearedAccount)
 
-            // 立即从内存清单移除已撤销证书，UI 同步无需等网络回读。
-            removeRevokedCertificateFromInventory(serialNumber: serialNumber, accountID: account.id)
+            // 撤销成功：持久化 dismissal，Apple 列表延迟也带不回来。
+            dismissCertificate(serialNumber: serialNumber, accountID: account.id, persistent: true)
             certificateHealthStatuses[account.id] = await localCertificateHealthStatus(
                 account: clearedAccount,
                 portalState: .unknown
@@ -659,17 +659,21 @@ final class SettingsViewModel: ObservableObject {
             )
             await load(force: true)
             // 撤销后不立即从 Portal 回读清单：Apple 侧撤销有传播延迟，立即拉会把刚删掉的
-            // 证书又带回来。本地已用 removeRevokedCertificateFromInventory 同步移除，
-            // 用户下拉刷新时会再与 Portal 对账。
+            // 证书又带回来。本地已用 dismissCertificate(persistent:true) 同步移除并持久化，
+            // 用户下拉刷新时过滤掉，不会重现。
             logs = (try? await logStore?.entries()) ?? logs
             await refreshLogExportText()
         } catch let failure as ImportFailure {
             await load(force: true)
-            await refreshCertificateInventory(for: account, force: true)
+            // 撤销失败不立即回读：失败时证书状态未变，回读只会把原样带回来。
+            // 用户手动下拉刷新时再对账。
+            // 用户点了撤销就是想让它消失，先从内存移除；Apple 侧若仍在，下次刷新会回来。
+            dismissCertificate(serialNumber: serialNumber, accountID: account.id, persistent: false)
             alertFailure = failure
         } catch {
             await load(force: true)
-            await refreshCertificateInventory(for: account, force: true)
+            // 同上：失败不立即回读。用户意图明确，先从内存移除；下次刷新若还在会回来。
+            dismissCertificate(serialNumber: serialNumber, accountID: account.id, persistent: false)
             alertFailure = Self.failure(
                 title: "证书撤销失败",
                 reason: "Apple 服务器未能撤销指定证书。可能原因：网络不稳定、或该证书已被撤销。",
@@ -753,6 +757,8 @@ final class SettingsViewModel: ObservableObject {
                 secret: originalSecret
             )
             invalidateCertificateInventoryRefresh(for: account.id)
+            // 撤销成功：持久化 dismissal，避免 Apple 列表延迟导致旧证书重现。
+            dismissCertificate(serialNumber: serialNumber, accountID: account.id, persistent: true)
 
             // 撤销成功后重新拉清单确认出现空位，才创建 B；确认不了空位就不创建，
             // 避免在仍旧满员的账号上再撞一次确定性 3022/7460。
@@ -1014,13 +1020,14 @@ final class SettingsViewModel: ObservableObject {
                 } catch {
                     // 单张失败不中断：其余候选继续撤，名额尽量释放；失败明细进最终结果。
                     failedSerials.append(certificate.serialNumber)
-                    // Apple 说「找不到」= 它本来就已经不在了：直接从本地清单里摘掉，
+                    // Apple 说「找不到」= 它本来就已经不在了：持久化 dismissal，
                     // 免得 UI 一直挂着一张撤不掉的幽灵证书。
                     let errMsg = error.localizedDescription
                     if errMsg.contains("未找到要撤销的证书") || errMsg.lowercased().contains("not found") {
-                        removeRevokedCertificateFromInventory(
+                        dismissCertificate(
                             serialNumber: certificate.serialNumber,
-                            accountID: account.id
+                            accountID: account.id,
+                            persistent: true
                         )
                     }
                     try? await logStore?.append(
@@ -1540,7 +1547,7 @@ final class SettingsViewModel: ObservableObject {
                 teamID: fetched.teamID,
                 teamName: fetched.teamName,
                 appIDs: certificateInventories[account.id]?.appIDs ?? [],
-                certificates: fetched.certificates,
+                certificates: filterDismissedCertificates(fetched.certificates),
                 fetchedAt: fetched.fetchedAt
             )
             guard acceptsCertificateInventoryRefresh(ticket) else { return }
@@ -1765,7 +1772,8 @@ final class SettingsViewModel: ObservableObject {
     }
 
     /// 撤销成功后立即从内存与缓存清单中移除该证书，UI 无需等网络回读即可同步。
-    private func removeRevokedCertificateFromInventory(serialNumber: String, accountID: UUID) {
+    /// 从内存清单移除证书（不持久化）。调用方决定是否需要持久化。
+    private func removeCertificateFromInventory(serialNumber: String, accountID: UUID) {
         invalidateCertificateInventoryRefresh(for: accountID)
         guard let inventory = certificateInventories[accountID] else { return }
         let normalized = SigningCertificateSelectionPolicy.normalizedSerialNumber(serialNumber)
@@ -1783,6 +1791,30 @@ final class SettingsViewModel: ObservableObject {
         )
         certificateInventories[accountID] = updated
         saveCertificateInventoryCache(updated)
+    }
+
+    /// 证书 dismissal 统一入口。
+    /// - persistent=true: 记入 UserDefaults，下次同步时过滤，永久不显示。用于：撤销成功、用户手动隐藏。
+    /// - persistent=false: 仅从内存移除，下次同步若 Apple 侧还在会回来。用于：撤销失败（用户想删但未确认）。
+    func dismissCertificate(serialNumber: String, accountID: UUID, persistent: Bool) {
+        if persistent {
+            var dismissed = UserDefaults.standard.stringArray(forKey: "seal.dismissedCertificateSerials") ?? []
+            let normalized = SigningCertificateSelectionPolicy.normalizedSerialNumber(serialNumber)
+            if dismissed.contains(normalized) == false {
+                dismissed.append(normalized)
+                UserDefaults.standard.set(dismissed, forKey: "seal.dismissedCertificateSerials")
+            }
+        }
+        removeCertificateFromInventory(serialNumber: serialNumber, accountID: accountID)
+    }
+
+    /// 同步时过滤已 dismissal 的证书序列号（撤销成功的 + 用户手动隐藏的）。
+    private func filterDismissedCertificates(_ certificates: [ApplePortalCertificate]) -> [ApplePortalCertificate] {
+        let dismissed = UserDefaults.standard.stringArray(forKey: "seal.dismissedCertificateSerials") ?? []
+        guard dismissed.isEmpty == false else { return certificates }
+        return certificates.filter {
+            dismissed.contains(SigningCertificateSelectionPolicy.normalizedSerialNumber($0.serialNumber)) == false
+        }
     }
 
     private func certificateInventoryCacheKey(_ accountID: UUID) -> String {

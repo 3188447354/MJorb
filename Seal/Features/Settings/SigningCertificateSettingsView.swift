@@ -444,17 +444,41 @@ struct SigningCertificateSettingsView: View {
             }
             Spacer(minLength: 8)
             if revocationAllowed {
-                Button {
-                    certificatePendingRevocation = certificate
-                } label: {
-                    Text("撤销证书")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.sealDanger)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
-                        .background(Color.sealDanger.opacity(0.12), in: Capsule())
+                VStack(spacing: 8) {
+                    Button {
+                        certificatePendingRevocation = certificate
+                    } label: {
+                        Text("撤销证书")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.sealDanger)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(Color.sealDanger.opacity(0.12), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    // Apple 侧删不掉的孤儿证书（如已撤销但列表仍返回），允许用户本地隐藏。
+                    if labels.contains(.external) {
+                        Button {
+                            if let account = activeAccount {
+                                Task {
+                                    await viewModel.dismissCertificate(
+                                        serialNumber: certificate.serialNumber,
+                                        accountID: account.id,
+                                        persistent: true
+                                    )
+                                }
+                            }
+                        } label: {
+                            Text("从列表移除")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(Color.sealTextSecondary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Color.sealTextSecondary.opacity(0.1), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .buttonStyle(.plain)
             }
         }
         .padding(.vertical, 10)

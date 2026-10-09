@@ -32,6 +32,10 @@ final class AppsViewModel: ObservableObject {
     /// ⇒ 非初始化路径上任何写入 `apps` 的地方都必须紧接着调用 `refreshCertAvailability()`。
     @Published private(set) var localCertificateAvailabilityByAppID:
         [UUID: ProfileOnlyRenewalPolicy.LocalCertificateAvailability] = [:]
+    /// 签名成功后的覆盖层：带时间戳，30 秒内优先采用，不走后台重算。
+    /// 解决签名后 `load()` 后台读钥匙串（旧缓存）把刚置的 `.ready` 盖回 `.needsFullResign` 的竞态。
+    private var certificateAvailabilityOverride: [UUID: (availability: ProfileOnlyRenewalPolicy.LocalCertificateAvailability, at: Date)] = [:]
+    private static let certificateAvailabilityOverrideTTL: TimeInterval = 30
     /// 一次 Keychain 读取的结果（与 `fullAccountEmails` 同批）。
     /// 存下来是为了让上面那份派生状态能在**记录变化时**就地重算 —— 不必再读一次钥匙串。
     private var accountSecrets: [UUID: AccountSecret] = [:]
@@ -744,27 +748,40 @@ final class AppsViewModel: ObservableObject {
 
     /// 该应用「本机是否持有当前证书私钥」——界面在「证书序列号」行下面据此给一句说明。
     /// 读不到时返回 `.undetermined`（**不显示任何话** —— 不能凭空断言缺私钥）。
+    /// 覆盖层 30 秒内的优先采用（签名刚成功，后台数据还没稳定）。
     func localCertificateAvailability(
         for app: AppRecord
     ) -> ProfileOnlyRenewalPolicy.LocalCertificateAvailability {
-        localCertificateAvailabilityByAppID[app.id] ?? .undetermined
+        if let override = certificateAvailabilityOverride[app.id],
+           Date().timeIntervalSince(override.at) < Self.certificateAvailabilityOverrideTTL {
+            return override.availability
+        }
+        return localCertificateAvailabilityByAppID[app.id] ?? .undetermined
     }
 
     /// 用**当前**的 `apps` 与 `accountSecrets` 重算上面那份派生状态。
     ///
     /// 判据一律走 `ProfileOnlyRenewalPolicy`（与续签准入同源，R85②），这里只负责「什么时候算」。
     /// 触发点只有两个：记录被换掉、密钥读回来 —— 也就是它的两个输入各变一次。
+    /// 覆盖层 30 秒内的 App 跳过，不覆盖签名刚成功时的 `.ready`。
     private func refreshCertAvailability() {
-        localCertificateAvailabilityByAppID = ProfileOnlyRenewalPolicy.availabilityByAppID(
+        let now = Date()
+        var recomputed = ProfileOnlyRenewalPolicy.availabilityByAppID(
             apps: apps,
             secretsByAccount: accountSecrets
         )
+        for (appID, override) in certificateAvailabilityOverride {
+            if now.timeIntervalSince(override.at) < Self.certificateAvailabilityOverrideTTL {
+                recomputed[appID] = override.availability
+            }
+        }
+        localCertificateAvailabilityByAppID = recomputed
     }
 
-    /// 签名成功后直接标记该 App 证书可用，不等后台重算（后台读钥匙串有延迟，
-    /// 且刚签名完本机一定有私钥，直接置 .ready 是安全的）。
-    /// 后续 refreshCertAvailability() 会再校验一次，若真有问题会纠回来。
+    /// 签名成功后写入覆盖层：30 秒内读状态、后台重算都优先采用 `.ready`，不跟后台打架。
+    /// 刚签名完本机一定有私钥，直接置 `.ready` 是安全的；30 秒后后台数据稳定了，无缝接管。
     func markLocalCertificateReady(for appID: UUID) {
+        certificateAvailabilityOverride[appID] = (.ready, Date())
         localCertificateAvailabilityByAppID[appID] = .ready
     }
 

@@ -109,9 +109,18 @@ struct PairingSettingsView: View {
     private var phonePairingHero: some View {
         let presentation = phonePresentation
         return VStack(spacing: 10) {
-            Image(systemName: presentation.icon)
-                .font(.system(size: 42, weight: .medium))
-                .foregroundStyle(presentation.color)
+            Group {
+                if presentation.icon == "custom.pairingCode" {
+                    Image("PairingCodeIcon")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 42, height: 42)
+                } else {
+                    Image(systemName: presentation.icon)
+                        .font(.system(size: 42, weight: .medium))
+                }
+            }
+            .foregroundStyle(presentation.color)
             Text(presentation.title)
                 .font(.title2.weight(.semibold))
             Text(presentation.detail)
@@ -246,7 +255,7 @@ struct PairingSettingsView: View {
         case .waitingForSystemConfirmation:
             return ("在系统中配对", "前往 设置 > 隐私与安全性 > 开发者模式，在“与 Seal 配对”中选择 Seal。", "gearshape.2", .sealAccent, "等待系统确认")
         case .showingCode:
-            return ("确认配对码", "将下方配对码与系统设置中的提示核对后确认。", "number.square", .sealAccent, "等待系统确认")
+            return ("确认配对码", "将下方配对码与系统设置中的提示核对后确认。", "custom.pairingCode", .sealAccent, "等待系统确认")
         case .validating:
             return ("验证连接", "正在检查 LocalDevVPN 是否可用。", "arrow.triangle.2.circlepath", .sealAccent, "正在验证")
         case .waitingForLocalDevVPN:

@@ -183,13 +183,9 @@ struct AppsRootView: View {
                 viewModel.dismissOperation()
             }
             // 真正要导入时才切到待签名页：
-            // - 全新应用：切（新记录在待签名页）
-            // - 覆盖更新（含 Seal 自更新）：不切，留在已安装页看标签变化
-            // - 已安装被拦截：不走抽屉，不切
+            // 2026-10-09 重设计：覆盖更新（含 Seal 自更新）也进待签名页，不再留在已安装页。
             .onChange(of: viewModel.isImportSheetPresented) { isPresented in
                 guard isPresented else { return }
-                // 有覆盖候选 ⇒ 在已安装页原地更新，不切 tab
-                guard viewModel.importReplacementCandidate == nil else { return }
                 withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { mode = .unsigned }
             }
             .onChange(of: batchRefreshSheet.wrappedValue?.id) { sessionID in

@@ -3687,14 +3687,14 @@ final class AppsViewModel: ObservableObject {
                     selectedOperationApp = refreshed
                 }
             }
-            // Seal 自更新：必须跳已安装页，不能去待签名。放在最后，避免被上面的 sheet 逻辑覆盖。
-            // 三重判断：isSeal 标志、Bundle ID 含 seal、属于已安装列表，任一命中即跳已安装。
-            let isSealByID = record.mappedBundleIdentifier?.lowercased().contains("seal") ?? false
-            let shouldJumpInstalled = record.isSeal || isSealByID || record.belongsInInstalledList
+            // 2026-10-09 重设计：覆盖更新（Seal 或其它 App）都进待签名页，不再跳已安装。
+            // 待签名的更新包（replacesInstalledAppID 非空）必须去待签名，用户在那签名。
+            let isPendingUpdate = record.replacesInstalledAppID != nil
+            let shouldJumpInstalled = (record.belongsInInstalledList && !isPendingUpdate)
             try? await logStore?.append(
                 category: .system,
                 level: .info,
-                message: "[SEAL-IMPORT-DBG] 导入完成跳转：isSeal=\(record.isSeal), isSealByID=\(isSealByID), belongsInInstalled=\(record.belongsInInstalledList), 跳转已安装=\(shouldJumpInstalled)"
+                message: "[SEAL-IMPORT-DBG] 导入完成跳转：isSeal=\(record.isSeal), belongsInInstalled=\(record.belongsInInstalledList), isPendingUpdate=\(isPendingUpdate), 跳转已安装=\(shouldJumpInstalled)"
             )
             lastImportCompletedInstalledApp = shouldJumpInstalled
             importCompletionCount += 1

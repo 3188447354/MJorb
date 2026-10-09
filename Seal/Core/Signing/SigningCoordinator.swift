@@ -2553,6 +2553,8 @@ actor SigningCoordinator {
             .map(\.id)
         let occupied = try await appStore.fetchAll()
             .filter { $0.id != app.id && $0.belongsInInstalledList }
+            // 2026-10-09: 覆盖更新包要替换旧记录，旧记录不占名额（装完就删）。
+            .filter { $0.id != app.replacesInstalledAppID }
             .filter { record in
                 // 明确由付费账号签名的应用不占免费名额；其余（免费账号 / 记录缺失）计入。
                 guard let accountID = record.accountID else { return true }

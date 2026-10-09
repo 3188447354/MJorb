@@ -213,7 +213,7 @@ struct ImportWorkflowTests {
     }
 
     @Test
-    func importingSealIPAUpdatesTheInstalledSealRecordInsteadOfCreatingADuplicate() async throws {
+    func importingSealIPACreatesPendingReplacementWithoutMutatingInstalledSeal() async throws {
         let environment = try makeEnvironment()
         defer { try? FileManager.default.removeItem(at: environment.root) }
         let sealID = UUID()
@@ -272,24 +272,26 @@ struct ImportWorkflowTests {
 
         let imported = try requireCompleted(await workflow.state)
         let records = try await environment.appStore.fetchAll()
-        #expect(records.count == 1)
-        #expect(imported.id == sealID)
+        #expect(records.count == 2)
+        #expect(imported.id != sealID)
         #expect(imported.isSeal)
-        #expect(imported.state == .installed)
+        #expect(imported.state == .imported)
+        #expect(imported.replacesInstalledAppID == sealID)
+        #expect(imported.belongsInInstalledList == false)
+        #expect(imported.belongsInUnsignedList)
         #expect(imported.version == "2.0")
         #expect(imported.buildNumber == "82")
         #expect(imported.accountID == accountID)
         #expect(imported.signingTeamID == "TEAM000001")
-        #expect(imported.certificateSerialNumber == "SERIAL")
-        #expect(imported.signedDeviceIdentifier == "DEVICE")
-        #expect(imported.lastInstalledAt == installedSeal.lastInstalledAt)
+        #expect(imported.certificateSerialNumber == nil)
+        #expect(imported.signedDeviceIdentifier == nil)
+        #expect(imported.lastInstalledAt == nil)
         #expect(imported.signedIPARelativePath == nil)
         #expect(imported.signedIPASHA256 == nil)
         #expect(imported.signedArtifactStatus == nil)
-        #expect(imported.hasPendingSelfUpdateSource)
-        #expect(imported.ipaRelativePath == previousOriginalPath)
+        #expect(imported.ipaRelativePath == "Apps/\(imported.id.uuidString)/Original.ipa")
         #expect(FileManager.default.fileExists(atPath: oldIPA.path))
-        #expect(try Data(contentsOf: oldIPA) != Data("old-seal".utf8))
+        #expect(try Data(contentsOf: oldIPA) == Data("old-seal".utf8))
     }
 
     /// 同版本导入 Seal 自身 IPA 也要能覆盖更新（2026-10-02 用户需求）：
@@ -311,6 +313,7 @@ struct ImportWorkflowTests {
             size: 10,
             state: .installed,
             ipaRelativePath: previousOriginalPath,
+            installedFingerprint: "previous-installed-fingerprint",
             preferredBundleIdentifier: "com.mjorb.seal.TEAM000001",
             isSeal: true,
             isPinned: true,
@@ -343,9 +346,11 @@ struct ImportWorkflowTests {
         await workflow.confirm()
 
         let imported = try requireCompleted(await workflow.state)
-        #expect(imported.id == sealID)
+        #expect(imported.id != sealID)
         #expect(imported.version == "1.0")
-        #expect(imported.hasPendingSelfUpdateSource)
+        #expect(imported.state == .imported)
+        #expect(imported.replacesInstalledAppID == sealID)
+        #expect(try await environment.appStore.fetchAll().count == 2)
         // 指纹 = 导入源包的 SHA256（流式算的，不整包进内存）。
         let expectedFingerprint = try await environment.fileStore.sha256(
             relativePath: imported.ipaRelativePath
@@ -639,9 +644,11 @@ extension ImportWorkflowTests {
 
         let updated = try requireCompleted(await workflow.state)
         let records = try await environment.appStore.fetchAll()
-        #expect(records.count == 1)
-        #expect(updated.id == installedID)
-        #expect(updated.belongsInInstalledList)
+        #expect(records.count == 2)
+        #expect(updated.id != installedID)
+        #expect(updated.replacesInstalledAppID == installedID)
+        #expect(updated.belongsInInstalledList == false)
+        #expect(records.contains(where: { $0.id == installedID }))
     }
 
     /// 真机现象「连 Seal 自己也装不了」：记录里的身份（original/mapped/preferred）与
@@ -690,10 +697,12 @@ extension ImportWorkflowTests {
         await workflow.confirm()
 
         let imported = try requireCompleted(await workflow.state)
-        #expect(imported.id == sealID)
+        #expect(imported.id != sealID)
         #expect(imported.isSeal)
         #expect(imported.version == "2.0")
-        #expect(try await environment.appStore.fetchAll().count == 1)
+        #expect(imported.state == .imported)
+        #expect(imported.replacesInstalledAppID == sealID)
+        #expect(try await environment.appStore.fetchAll().count == 2)
     }
 }
 

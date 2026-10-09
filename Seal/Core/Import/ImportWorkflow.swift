@@ -575,6 +575,7 @@ actor ImportWorkflow {
             isPinned: true,
             importedAt: Date(),
             extensions: parsed.extensions,
+            pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint,
             replacesInstalledAppID: existingSeal.id
         )
     }
@@ -629,6 +630,7 @@ actor ImportWorkflow {
             extensions: parsed.extensions,
             importWarnings: parsed.importWarnings,
             extensionProfileStrategy: existing.extensionProfileStrategy,
+            pendingUpdateSourceFingerprint: pendingUpdateSourceFingerprint,
             replacesInstalledAppID: existing.id
         )
     }

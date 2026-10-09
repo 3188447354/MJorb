@@ -3829,6 +3829,10 @@ def violations(load=read):
     # 2026-10-09 重设计：新记录是全新的待签名记录，没有旧签名产物需要清空
     check("replacesInstalledAppID: existing.id" in overwrite,
           "Overwrite: 覆盖更新必须标记被替换的已安装记录")
+    check("signedIPARelativePath: nil," in overwrite
+          and "signedIPASHA256: nil," in overwrite
+          and "signedArtifactStatus: nil," in overwrite,
+          "Overwrite: 覆盖更新必须清空旧版签名产物")
     check("if let existing, existing.belongsInInstalledList {" in workflow
           and "return makeInstalledUpdateRecord(" in workflow,
           "Overwrite: 已安装记录必须走覆盖更新分支")
@@ -7023,8 +7027,8 @@ def main():
         ("Seal/Core/Signing/SigningCoordinator.swift", "        var updated = app\n",
          "        var updated = app\n        // InstalledAppDeviceVerifier.isInstalled\n", "R02:"),
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
-         "            try await persistRevokedSigningMaterial(updatedSecret, [candidate.serialNumber])\n            await diagnostic(\"证书轮换：已撤销",
-         "            // revoked state persistence removed\n            await diagnostic(\"证书轮换：已撤销", "R03:"),
+         "            try await persistRevokedSigningMaterial(updatedSecret, [candidate.serialNumber])\n\n            await diagnostic(\"证书轮换：已撤销",
+         "            // revoked state persistence removed\n\n            await diagnostic(\"证书轮换：已撤销", "R03:"),
         (".github/workflows/ios.yml",
          "if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true",
          "if: inputs.publish_release == true",
@@ -9101,8 +9105,8 @@ def main():
          "Overwrite: 覆盖更新必须保留签名身份"),
         # ⑤ 覆盖更新不再复用记录 id ⇒ 记录与文件目录键不一致 ✓ 报红。
         ("Seal/Core/Import/ImportWorkflow.swift",
-         "            state: .imported,",
-         "            state: .installed,",
+         "            iconRelativePath: files.iconRelativePath ?? existing.iconRelativePath,\n            state: .imported,\n            accountID: existing.accountID,",
+         "            iconRelativePath: files.iconRelativePath ?? existing.iconRelativePath,\n            state: .installed,\n            accountID: existing.accountID,",
          "Overwrite: 覆盖更新必须建新的待签名记录"),
         # ⑥ 留着旧版签名产物 ⇒ 「复用已签名包直接安装」会把**旧版本**装回设备 ✓ 报红。
         ("Seal/Core/Import/ImportWorkflow.swift",

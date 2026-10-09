@@ -461,6 +461,7 @@ final class SettingsViewModel: ObservableObject {
     func selectActiveAccount(_ account: AppleAccountRecord) async {
         guard AccountAvailabilityPolicy.isSelectable(account),
               accounts.contains(where: { $0.id == account.id }) else { return }
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 设置页切换账号: \(account.id.uuidString.prefix(8))")
         if activeAccountID != account.id {
             invalidateCertificateInventoryRefresh(for: activeAccountID)
         }
@@ -528,6 +529,7 @@ final class SettingsViewModel: ObservableObject {
               let keychain,
               let accountRepository,
               let applePortalCertificateService else { return }
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 创建本地证书: 账号 \(account.id.uuidString.prefix(8))")
         guard let operationLease = await acquireOperation(.managingCertificate) else { return }
         defer { releaseOperation(operationLease) }
 
@@ -581,6 +583,7 @@ final class SettingsViewModel: ObservableObject {
         serialNumber: String,
         for account: AppleAccountRecord
     ) async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 撤销证书: 序列号 \(serialNumber.prefix(8))…, 账号 \(account.id.uuidString.prefix(8))")
         guard isCertificateOperationRunning == false,
               let keychain,
               let accountRepository,
@@ -689,6 +692,7 @@ final class SettingsViewModel: ObservableObject {
         serialNumber: String,
         for account: AppleAccountRecord
     ) async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 撤销证书并重建: 序列号 \(serialNumber.prefix(8))…, 账号 \(account.id.uuidString.prefix(8))")
         guard isCertificateOperationRunning == false,
               let keychain,
               let accountRepository,
@@ -836,6 +840,7 @@ final class SettingsViewModel: ObservableObject {
         for account: AppleAccountRecord,
         apps: [AppRecord]
     ) async -> CertificateCleanupPlan? {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 准备证书清理: 账号 \(account.id.uuidString.prefix(8))")
         guard isCertificateOperationRunning == false,
               let keychain,
               let applePortalInventoryService else { return nil }
@@ -919,6 +924,7 @@ final class SettingsViewModel: ObservableObject {
         for account: AppleAccountRecord,
         apps: [AppRecord]
     ) async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 执行证书清理: 账号 \(account.id.uuidString.prefix(8))")
         guard plan.revocable.isEmpty == false,
               isCertificateOperationRunning == false,
               let keychain,
@@ -1300,6 +1306,7 @@ final class SettingsViewModel: ObservableObject {
     /// 证书页的 Apple 门户同步。`force` 为 false 时（页面打开），5 分钟内的缓存直接用，
     /// 不打网络；下拉刷新传 `force: true` 强制拉新。多账号并行，不串行等。
     func refreshApplePortalInventories(force: Bool = false) async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 刷新证书库存: 强制=\(force)")
         let selectable = accounts.filter { AccountAvailabilityPolicy.isSelectable($0) }
         await withTaskGroup(of: Void.self) { group in
             for account in selectable {
@@ -1797,6 +1804,7 @@ final class SettingsViewModel: ObservableObject {
     /// - persistent=true: 记入共享存储，下次同步时过滤，永久不显示。用于：撤销成功、用户手动隐藏。
     /// - persistent=false: 仅从内存移除，下次同步若 Apple 侧还在会回来。用于：撤销失败（用户想删但未确认）。
     func dismissCertificate(serialNumber: String, accountID: UUID, persistent: Bool) {
+        Task { try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 隐藏证书: \(serialNumber.prefix(8))…, 账号 \(accountID.uuidString.prefix(8)), 持久=\(persistent)") }
         if persistent {
             CertificateDismissalStore.dismiss(serialNumber: serialNumber)
         }
@@ -1847,6 +1855,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func clearSigningHistory(for accountID: UUID) async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 清除签名历史: 账号 \(accountID.uuidString.prefix(8))")
         guard let signingHistoryStore else { return }
         do {
             try await signingHistoryStore.clear(accountID: accountID)
@@ -1888,6 +1897,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func resetSigningEnvironment() async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 重置签名环境")
         guard let anisetteEnvironment else { return }
         guard let operationLease = await acquireOperation(.managingAccount) else { return }
         defer { releaseOperation(operationLease) }
@@ -1904,6 +1914,7 @@ final class SettingsViewModel: ObservableObject {
         password: String,
         replacing existingAccount: AppleAccountRecord? = nil
     ) async -> Bool {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 添加账号")
         guard accountPhase == .idle,
               let accountClient else { return false }
         guard let operationLease = await acquireOperation(.managingAccount) else { return false }
@@ -2008,6 +2019,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func completeTeamSelection(_ team: AppleTeamRecord) async -> Bool {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 完成团队选择: \(team.name)")
         guard accountPhase == .idle,
               let pending = pendingTeamSelection,
               pending.teams.contains(team) else { return false }
@@ -2038,6 +2050,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func cancelTeamSelection() {
+        Task { try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 取消团队选择") }
         pendingTeamSelection = nil
     }
 
@@ -2114,6 +2127,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func deleteAccount(_ account: AppleAccountRecord) async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 删除账号: \(account.id.uuidString.prefix(8))")
         guard let accountRepository, let keychain else { return }
         guard let operationLease = await acquireOperation(.managingAccount) else { return }
         defer { releaseOperation(operationLease) }
@@ -2254,6 +2268,7 @@ final class SettingsViewModel: ObservableObject {
     /// a candidate credential; the normal channel diagnostic still decides
     /// whether it becomes the verified pairing used by install and renewal.
     func startPhonePairing() async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 开始手机配对")
         guard PhonePairingPresentationPolicy(
             majorOSVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion
         ).usesPhonePairing else {
@@ -2284,6 +2299,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func validatePhonePairing() async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 验证手机配对")
         guard pairingRecord != nil else {
             await startPhonePairing()
             return
@@ -2389,6 +2405,7 @@ final class SettingsViewModel: ObservableObject {
     /// 支持 iOS 17+ RemotePairing（.mobiledevicepairing / JSON）和 iOS 17- Lockdown（.plist）。
     @discardableResult
     func importPairingFile(at sourceURL: URL) async -> Bool {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 导入配对文件: \(sourceURL.lastPathComponent)")
         guard let pairingStore else { return false }
         guard let operationLease = await acquireOperation(.resettingPairing) else { return false }
         defer { releaseOperation(operationLease) }
@@ -2462,6 +2479,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func testConnection() async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 测试连接")
         await load(force: true)
         guard diagnosticState != .running, installChannel != nil else { return }
         guard accounts.isEmpty == false,
@@ -2558,6 +2576,7 @@ final class SettingsViewModel: ObservableObject {
 
     /// 只检查配对+VPN+Minimuxer，不需要 Apple ID 账号
     func testPairingConnection() async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 测试配对连接")
         await load(force: true)
         guard installChannel != nil else {
             diagnosticState = .failed(
@@ -2618,6 +2637,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func testLocalDevVPN() async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 测试 LocalDevVPN")
         await load(force: true)
         guard diagnosticState != .running, installChannel != nil else { return }
         guard pairingRecord != nil else {
@@ -2821,6 +2841,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func setNotificationsEnabled(_ enabled: Bool) async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 设置通知开关: \(enabled)")
         guard let notificationScheduler,
               let notificationPreferences,
               let appStore else { return }
@@ -2910,6 +2931,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func clearTemporaryFiles() async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 清理临时缓存")
         guard let fileStore else { return }
         guard let operationLease = await acquireOperation(.maintainingStorage) else { return }
         defer { releaseOperation(operationLease) }
@@ -2938,6 +2960,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func clearUnusedStorageFiles() async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 清理未使用文件")
         guard let fileStore, let appStore else { return }
         guard let operationLease = await acquireOperation(.maintainingStorage) else { return }
         defer { releaseOperation(operationLease) }
@@ -2974,16 +2997,19 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func clearIPAAndSigningCache() async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 清理 IPA 和签名缓存")
         await clearUnusedStorageFiles()
     }
 
     /// Legacy API retained for call-site compatibility.
     /// This now only clears transient workspaces.
     func clearSignedIPACache() async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 清理已签名 IPA 缓存")
         await clearTemporaryFiles()
     }
 
     func clearLogs() async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 清除日志")
         guard let logStore else { return }
         do {
             try await logStore.clear()
@@ -3000,6 +3026,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func resetCertificate(for account: AppleAccountRecord) async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 重置证书: 账号 \(account.id.uuidString.prefix(8))")
         guard let accountRepository else { return }
         guard let operationLease = await acquireOperation(.managingCertificate) else { return }
         defer { releaseOperation(operationLease) }

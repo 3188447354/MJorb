@@ -295,6 +295,11 @@ actor SigningCoordinator {
         //（2026-09-19 设计讨论 —— 既不用假预估骗人，也不让界面全程静止）。
         onWorkUnits: @escaping @Sendable (SigningWorkUnits) async -> Void = { _ in }
     ) async throws -> AppRecord {
+        try? await logStore?.append(
+            category: .system,
+            level: .info,
+            message: "[SEAL-OP] 签名并安装: appID \(appID.uuidString.prefix(8)), 强制重签=\(forceResign)"
+        )
         guard var app = try await appStore.fetchAll().first(where: { $0.id == appID }) else {
             throw Self.failure(
                 reason: "未找到要签名的应用记录。",
@@ -1475,6 +1480,11 @@ actor SigningCoordinator {
         appID: UUID,
         progress: @escaping @Sendable (SigningStageUpdate) async -> Void
     ) async throws -> AppRecord {
+        try? await logStore?.append(
+            category: .system,
+            level: .info,
+            message: "[SEAL-OP] 安装已签名包: appID \(appID.uuidString.prefix(8))"
+        )
         guard var app = try await appStore.fetchAll().first(where: { $0.id == appID }),
               let signedPath = app.signedIPARelativePath,
               let expectedSHA256 = app.signedIPASHA256,

@@ -361,6 +361,7 @@ final class AppsViewModel: ObservableObject {
 
     func selectActiveAccount(id: UUID) async {
         guard availableAccounts.contains(where: { $0.id == id }) else { return }
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 切换活跃账号: \(id.uuidString.prefix(8))")
         activeAccountID = id
         await signingPreferenceStore?.setActiveAccountID(id)
     }
@@ -396,6 +397,7 @@ final class AppsViewModel: ObservableObject {
     }
 
     func beginRenewalDirectly(for app: AppRecord, overrideAccountID: UUID? = nil) async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 开始续签: \(app.displayName) (\(app.id.uuidString.prefix(8)))")
         guard app.belongsInInstalledList else {
             presentOperation(for: app)
             return
@@ -1025,11 +1027,13 @@ final class AppsViewModel: ObservableObject {
     }
 
     func presentImporter() {
+        Task { try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 打开导入器") }
         guard phase == .idle else { return }
         isImporterPresented = true
     }
 
     func importSelectedFile(_ url: URL) async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 导入文件: \(url.lastPathComponent)")
         _ = await importSelectedFile(url, autoOpenSigning: false)
     }
 
@@ -1037,6 +1041,7 @@ final class AppsViewModel: ObservableObject {
     /// 返回 true 表示 IPA 已成功入库（记录已提交）；失败时保留下载源供用户重试。
     @discardableResult
     func importSelfUpdateFile(_ url: URL) async -> Bool {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 导入自更新文件: \(url.lastPathComponent)")
         await importSelectedFile(url, autoOpenSigning: true)
     }
 
@@ -1068,6 +1073,7 @@ final class AppsViewModel: ObservableObject {
 
     func confirmImport() async {
         guard let workflow else { return }
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 确认导入: 覆盖更新=\(importReplacementCandidate != nil)")
         guard let operationLease = await acquireOperation(.importing) else { return }
         defer { releaseOperation(operationLease) }
         guard let draft = sheetDraft else {
@@ -1094,6 +1100,7 @@ final class AppsViewModel: ObservableObject {
 
     func retryImport() async {
         guard let workflow, sheetDraft != nil else { return }
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 重试导入")
         guard let operationLease = await acquireOperation(.importing) else { return }
         defer { releaseOperation(operationLease) }
         phase = .committing
@@ -1103,6 +1110,7 @@ final class AppsViewModel: ObservableObject {
     }
 
     func cancelImport() async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 取消导入")
         var cleanupFailure: ImportFailure?
         if let workflow {
             await workflow.cancel()
@@ -1125,6 +1133,7 @@ final class AppsViewModel: ObservableObject {
     /// 待签名记录。这是「同一个 IPA 导入多个副本、用不同 Bundle ID 分别签名同时安装」
     /// 那条刻意保留路径的入口。
     func confirmImportAsNewRecord() async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 导入确认为新建副本（不覆盖）")
         importReplacementCandidate = nil
         await confirmImport()
     }
@@ -1223,6 +1232,7 @@ final class AppsViewModel: ObservableObject {
 
     func requestSigning(for app: AppRecord) async {
         guard signingTask == nil, batchRefreshTask == nil else { return }
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 请求签名: \(app.displayName) (\(app.id.uuidString.prefix(8)))")
         await load(force: true)
         // 已安装应用的单项续签与“全部续签/重试失败项”必须共用同一个队列：
         // 这样 profile-only、完整重签、Seal-last 与启动期自替换结算不会各走一份规则。
@@ -1348,6 +1358,7 @@ final class AppsViewModel: ObservableObject {
         completionMode: SigningCompletionMode = .signAndInstall
     ) async {
         guard signingTask == nil, batchRefreshTask == nil else { return }
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 开始签名: \(app.displayName) (\(app.id.uuidString.prefix(8))), 续签=\(app.belongsInInstalledList)")
         let isRenewal = app.belongsInInstalledList
         // 🔴 续签的账号判据集中在 `RenewalAccountResolver`。
         // 旧写法 `(isRenewal ? app.accountID : nil) ?? accountID` 有个隐蔽死角：
@@ -1456,6 +1467,7 @@ final class AppsViewModel: ObservableObject {
     }
 
     func resumePendingVPNAction() async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 恢复 VPN 后继续操作")
         guard let action = pendingVPNAction else {
             _ = await refreshSigningChannel()
             return
@@ -1489,11 +1501,13 @@ final class AppsViewModel: ObservableObject {
     }
 
     func cancelPendingVPNRecovery() {
+        Task { try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 取消 VPN 恢复") }
         pendingVPNAction = nil
         alertFailure = nil
     }
 
     func selectAccount(_ account: AppleAccountRecord, for app: AppRecord) {
+        Task { try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 为应用选择账号: \(app.displayName)，账号 \(account.id.uuidString.prefix(8))") }
         accountSelectionApp = nil
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(350))
@@ -1504,6 +1518,7 @@ final class AppsViewModel: ObservableObject {
     }
 
     func chooseAnotherAccount(for app: AppRecord) async {
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 为应用换账号: \(app.displayName)")
         await load(force: true)
         guard accounts.contains(where: { AccountAvailabilityPolicy.isSelectable($0) }) else {
             alertFailure = ImportFailure(
@@ -1519,6 +1534,7 @@ final class AppsViewModel: ObservableObject {
 
     func retrySigning() {
         guard let session = signingSession else { return }
+        Task { try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 重试签名: \(session.app.displayName)") }
         restartSigning(
             session,
             allowDroppingExtensions: session.allowsDroppingExtensions
@@ -1529,6 +1545,7 @@ final class AppsViewModel: ObservableObject {
     /// 必须强制重新走完整签名（不复用本机缓存的旧签名包），否则会对同一个坏包反复安装。
     func retrySigningFromScratch() {
         guard let session = signingSession else { return }
+        Task { try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 从头重新签名: \(session.app.displayName)") }
         restartSigning(
             session,
             allowDroppingExtensions: session.allowsDroppingExtensions,
@@ -1540,6 +1557,7 @@ final class AppsViewModel: ObservableObject {
     /// 交回 installd 最终裁决（未真正绕过时 installd 仍会拒绝并落到 iOS 拒绝分支）。
     func continueBypassingDeviceLimit() {
         guard let session = signingSession else { return }
+        Task { try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 绕过设备限制继续签名: \(session.app.displayName)") }
         restartSigning(
             session,
             allowDroppingExtensions: session.allowsDroppingExtensions,
@@ -1549,6 +1567,7 @@ final class AppsViewModel: ObservableObject {
 
     func retryWithoutExtensions() {
         guard let session = signingSession else { return }
+        Task { try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 去扩展重试签名: \(session.app.displayName)") }
         restartSigning(
             session,
             allowDroppingExtensions: true
@@ -1565,6 +1584,7 @@ final class AppsViewModel: ObservableObject {
               signingTask == nil,
               batchRefreshTask == nil,
               let signingCoordinator else { return }
+        Task { try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 确认证书牺牲并重试签名: \(session.app.displayName)") }
         // 走同一条阶段推进路径（而不是直接赋值 `status`）：阶段与「本阶段起点」一起落。
         // 绕过 `updateSigningStage` 的话，进度估算的起点会停在**上一个**阶段 ——
         // 表现是进度从旧阶段的数值开始爬，而不是从本阶段的地板值起。
@@ -1639,6 +1659,9 @@ final class AppsViewModel: ObservableObject {
     /// 它会由 installd 自己跑完并按安装校验结果落库。
     func cancelSigning() {
         let appName = signingSession?.app.displayName
+        if let appName {
+            Task { try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 取消签名: \(appName)") }
+        }
         signingTask?.cancel()
         signingSession = nil
         selectedOperationApp = nil
@@ -1709,6 +1732,7 @@ final class AppsViewModel: ObservableObject {
     @discardableResult
     func updatePreferredBundleIdentifier(for app: AppRecord, value: String) async -> Bool {
         guard let appStore, BundleIDPolicy.isEditable(app) else { return false }
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 修改 Bundle ID: \(app.displayName) -> \(value)")
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if let validationError = BundleIDPolicy.validationError(for: trimmed) {
             alertFailure = ImportFailure(
@@ -1739,6 +1763,7 @@ final class AppsViewModel: ObservableObject {
     @discardableResult
     func updatePreferredDisplayName(for app: AppRecord, name: String) async -> Bool {
         guard let appStore else { return false }
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 修改显示名: \(app.displayName) -> \(name)")
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.isEmpty == false else {
             alertFailure = ImportFailure(
@@ -1769,6 +1794,7 @@ final class AppsViewModel: ObservableObject {
     @discardableResult
     func updatePreferredIcon(for app: AppRecord, data: Data?) async -> Bool {
         guard let appStore, let fileStore else { return false }
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 修改图标: \(app.displayName) (\(app.id.uuidString.prefix(8)))")
         do {
             var updated = app
             if let data {
@@ -1806,6 +1832,7 @@ final class AppsViewModel: ObservableObject {
 
     func retryInstallationForCurrentSigningSession() async {
         guard let session = signingSession else { return }
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 重试安装: \(session.app.displayName)")
         await load(force: true)
         guard let signedApp = apps.first(where: { $0.id == session.app.id && $0.hasSignedArtifact }) else {
             alertFailure = ImportFailure(
@@ -1826,6 +1853,7 @@ final class AppsViewModel: ObservableObject {
     func installSignedArtifact(_ app: AppRecord) async -> Bool {
         guard signingTask == nil, batchRefreshTask == nil, installingCachedPackageAppID == nil,
               let signingCoordinator else { return false }
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 安装已签名包: \(app.displayName) (\(app.id.uuidString.prefix(8)))")
         guard let operationLease = await acquireOperation(.installing, appID: app.id) else { return false }
         defer { releaseOperation(operationLease) }
         installingCachedPackageAppID = app.id
@@ -1890,6 +1918,7 @@ final class AppsViewModel: ObservableObject {
 
     func delete(_ app: AppRecord, refreshAfterDeletion: Bool = true) async -> Bool {
         guard let appStore, let fileStore else { return false }
+        try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 删除应用: \(app.displayName) (\(app.id.uuidString.prefix(8)))")
         guard let operationLease = await acquireOperation(.maintainingStorage, appID: app.id) else { return false }
         defer { releaseOperation(operationLease) }
         do {
@@ -1954,6 +1983,7 @@ final class AppsViewModel: ObservableObject {
     }
 
     func refreshAll() {
+        Task { try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 全部续签") }
         let presentsSheet = backgroundBatchPresentationRequested == false
         backgroundBatchPresentationRequested = false
         startBatchRefresh(presentsSheet: presentsSheet)
@@ -2130,6 +2160,7 @@ final class AppsViewModel: ObservableObject {
 
     /// 「重试失败项」：只重试上一轮失败的 App，避免对已成功应用重复签名/上传/安装。
     func refreshFailedItems() {
+        Task { try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 重试失败的续签项") }
         let failedIDs = batchRefreshSession?.items
             .filter { $0.state == .failed }
             .map { $0.id } ?? []
@@ -2157,6 +2188,7 @@ final class AppsViewModel: ObservableObject {
     ///
     /// 不做「假装已停止」的假象：日志里明确记一笔，用户与开发者都能对上账。
     func cancelBatchRefresh() {
+        Task { try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 取消批量续签") }
         // 已终态项数才是真实已处理数；currentIndex 是最后完成项的队列下标，
         // 并行时完成顺序是乱的，不能拿它当计数（BatchRefreshView 同一教训）。
         let processed = batchRefreshSession?.items.filter {

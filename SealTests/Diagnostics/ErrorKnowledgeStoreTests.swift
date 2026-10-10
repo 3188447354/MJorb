@@ -25,6 +25,13 @@ struct ErrorKnowledgeStoreTests {
         #expect(entry.notEvidenceOf.contains("无法仅凭错误码判断真实原因"))
     }
 
+    @Test
+    func actionIdentifierUsesAnEmptyRouteWhenNoRouteExists() {
+        let action = ErrorKnowledgeAction(title: "导出日志", route: nil)
+
+        #expect(action.id == "导出日志|")
+    }
+
     private var fixtureData: Data {
         Data(
             """

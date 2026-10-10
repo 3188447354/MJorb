@@ -6174,3 +6174,13 @@ CMake Error at CMakeLists.txt:394 (message):
 
 **本轮提交**：`7346df0`（换 `macos-26-intel` + 修 `verify-no-lse.py` 的 minOS 偏移）、
 `b4c2aa0`（换回 arm64 `macos-15` + 放宽 Xcode 选择）。守卫 `Checks: 831, Failures: 0` 保持。
+
+## 2026-10-10 — 错误帮助目录 Swift 编译失败
+
+**症状**：GitHub Actions run `38034517600` 在 Swift regression 阶段失败，编译器报告
+`Cannot find ')' to match opening '(' in string interpolation` 与 `Unterminated string literal`，定位到
+`ErrorKnowledgeAction.id`。
+
+**根因**：字符串插值表达式中的空字符串被误写为 `\\\"\\\"`；插值内部应使用普通 `\"\"`。
+
+**修复**：改为 `"\\(title)|\\(route ?? \"\")"`，并添加 route 为 `nil` 时标识符为 `标题|` 的回归测试。

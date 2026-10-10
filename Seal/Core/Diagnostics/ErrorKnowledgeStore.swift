@@ -24,7 +24,7 @@ struct ErrorKnowledgeAction: Codable, Equatable, Identifiable, Sendable {
     let title: String
     let route: String?
 
-    var id: String { "\(title)|\(route ?? \"\")" }
+    var id: String { "\(title)|\(route ?? "")" }
 }
 
 struct ErrorKnowledgeEntry: Codable, Equatable, Identifiable, Sendable {

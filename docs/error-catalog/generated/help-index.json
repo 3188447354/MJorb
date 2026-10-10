@@ -1,0 +1,84 @@
+{
+  "entries": [
+    {
+      "actions": [
+        {
+          "title": "先等待几分钟后重试"
+        },
+        {
+          "title": "若持续发生，到“我的”重新验证 Apple ID"
+        },
+        {
+          "title": "仍未解决时导出日志"
+        }
+      ],
+      "code": "SEAL-AUTH-102c",
+      "confidence": "conditional",
+      "kind": "failure",
+      "notEvidenceOf": [
+        "不能仅凭此码认定 Apple ID 已失效或密码错误。"
+      ],
+      "source": [
+        "Seal/Infrastructure/Signing/ApplePortalSigningService.swift:certificateFailure",
+        "Seal/Core/Accounts/AppleServiceFailurePolicy.swift:verificationFailureReason"
+      ],
+      "summary": "Apple 在证书请求阶段拒绝了认证状态；这也可能是短时间请求过密后的限制。",
+      "supportData": [
+        "错误码前后的完整签名日志",
+        "是否有多个扩展导致连续注册请求"
+      ]
+    },
+    {
+      "actions": [
+        {
+          "title": "若发生在 App ID 注册阶段，先等待几分钟后重试"
+        },
+        {
+          "title": "若持续发生，到“我的”重新验证 Apple ID"
+        },
+        {
+          "title": "仍未解决时导出日志"
+        }
+      ],
+      "code": "SEAL-AUTH-107",
+      "confidence": "conditional",
+      "kind": "failure",
+      "notEvidenceOf": [
+        "不能仅凭此码认定 Apple ID 已失效。"
+      ],
+      "source": [
+        "Seal/Infrastructure/Signing/ApplePortalSigningService.swift:failure"
+      ],
+      "summary": "Apple 返回了会话过期；在签名的 App ID 注册阶段，它也可能表示短时请求限制。",
+      "supportData": [
+        "错误发生阶段",
+        "错误码前后的 Apple 请求日志"
+      ]
+    },
+    {
+      "actions": [
+        {
+          "title": "重新尝试签名一次"
+        },
+        {
+          "title": "仍未解决时导出日志"
+        }
+      ],
+      "code": "SEAL-SIGN-501",
+      "confidence": "unknown",
+      "kind": "failure",
+      "notEvidenceOf": [
+        "不能仅凭此码认定 IPA 损坏、证书失效或 Apple ID 异常。"
+      ],
+      "source": [
+        "Seal/Infrastructure/Signing/ApplePortalSigningService.swift:failure"
+      ],
+      "summary": "签名工具未能完成当前 IPA；需要查看底层诊断才能确定是包内容、签名材料还是运行环境问题。",
+      "supportData": [
+        "错误码后的详情行",
+        "IPA 的来源与大小"
+      ]
+    }
+  ],
+  "schemaVersion": 1
+}

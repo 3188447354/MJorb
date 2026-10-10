@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -63,9 +64,39 @@ def load_catalog(catalog_directory: Path) -> list[dict[str, Any]]:
     return entries
 
 
+def generate_help_index(entries: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Return a stable, offline-safe payload for both the App and website."""
+    ordered_entries = sorted(entries, key=lambda entry: entry["code"])
+    return {
+        "schemaVersion": 1,
+        "entries": ordered_entries,
+    }
+
+
+def source_error_codes(root: Path) -> set[str]:
+    pattern = re.compile(r"SEAL-[A-Z]+-[0-9]+[a-z]?")
+    codes: set[str] = set()
+    for path in (root / "Seal").rglob("*.swift"):
+        codes.update(pattern.findall(path.read_text(encoding="utf-8")))
+    return codes
+
+
+def write_help_index(root: Path, entries: list[dict[str, Any]]) -> Path:
+    destination = root / "docs" / "error-catalog" / "generated" / "help-index.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(
+        generate_help_index(entries),
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    ) + "\n"
+    destination.write_text(payload, encoding="utf-8")
+    return destination
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("validate",))
+    parser.add_argument("command", choices=("validate", "generate", "report"))
     parser.add_argument("--root", type=Path, default=Path.cwd())
     args = parser.parse_args()
     entries = load_catalog(args.root / "docs" / "error-catalog")
@@ -74,6 +105,20 @@ def main() -> int:
         for error in result.errors:
             print(f"ERROR: {error}")
         return 1
+    if args.command == "generate":
+        destination = write_help_index(args.root, entries)
+        print(f"Generated {destination.relative_to(args.root)} with {len(entries)} entries.")
+        return 0
+    if args.command == "report":
+        catalog_codes = {entry["code"] for entry in entries}
+        source_codes = source_error_codes(args.root)
+        uncataloged = sorted(source_codes - catalog_codes)
+        print(f"Cataloged codes: {len(catalog_codes)}")
+        print(f"Source codes: {len(source_codes)}")
+        print(f"Uncataloged source codes: {len(uncataloged)}")
+        for code in uncataloged:
+            print(code)
+        return 0
     print(f"Validated {len(entries)} error catalog entries.")
     return 0
 

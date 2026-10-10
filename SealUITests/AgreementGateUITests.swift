@@ -29,7 +29,7 @@ final class AgreementGateUITests: XCTestCase {
         app.launch()
 
         // ① 门控生效：停在协议页，看不到根界面。
-        XCTAssertTrue(app.staticTexts["欢迎使用 Seal"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["欢迎使用"].waitForExistence(timeout: 10))
         let agree = app.buttons["同意并继续"]
         XCTAssertTrue(agree.exists)
         XCTAssertTrue(app.buttons["暂不使用"].exists)

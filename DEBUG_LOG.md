@@ -6184,3 +6184,12 @@ CMake Error at CMakeLists.txt:394 (message):
 **根因**：字符串插值表达式中的空字符串被误写为 `\\\"\\\"`；插值内部应使用普通 `\"\"`。
 
 **修复**：改为 `"\\(title)|\\(route ?? \"\")"`，并添加 route 为 `nil` 时标识符为 `标题|` 的回归测试。
+
+## 2026-10-10 — 协议门控 UI 回归用例文案失配
+
+**症状**：GitHub Actions run `38037596205` 的 862 个单元测试通过，但
+`AgreementGateUITests.testFirstLaunchBlocksTheAppUntilTheAgreementsAreAccepted` 失败，找不到旧标题“欢迎使用 Seal”。
+
+**根因**：当前首次协议抽屉的正式标题已是“欢迎使用”；协议链接用例同时通过，证明门控与抽屉存在，只有 UI 用例仍断言旧文案。
+
+**修复**：将门控存在性断言同步为“欢迎使用”，保留同意、暂不使用和主界面不可见的原有门控断言。

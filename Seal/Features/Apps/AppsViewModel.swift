@@ -3235,7 +3235,10 @@ final class AppsViewModel: ObservableObject {
             )
             await load(force: true)
         } catch {
-            let failure = Self.signingFailure(for: error)
+            let failure = Self.signingFailure(
+                for: error,
+                operation: isRenewal ? .renew : .sign
+            )
             signingSession?.status = .failed(failure)
             await appendSingleOperationRound(
                 operation: isRenewal ? .singleRenewal : .singleSigning,
@@ -3729,16 +3732,29 @@ final class AppsViewModel: ObservableObject {
     ///
     /// ⚠️ `nonisolated`：判据是**纯函数**，必须能从测试 target 直接调
     ///（`@MainActor` 类的 static func 默认是 MainActor 隔离的，测试里调不到）。
-    nonisolated static func signingFailure(for error: Error) -> ImportFailure {
+    nonisolated static func signingFailure(
+        for error: Error,
+        operation: FailureOperation = .sign
+    ) -> ImportFailure {
         if let failure = error as? ImportFailure { return failure }
         guard DeviceChannelTransientPolicy.isTransientChannelFailure(error) else {
-            return unexpectedSigningFailure(error)
+            return FailureClassifier.classify(
+                error,
+                operation: operation,
+                origin: .signing
+            )
         }
         return ImportFailure(
             title: "无法连接设备",
             reason: "续签时设备通道不可用，已自动重试仍未恢复。",
             recovery: "确认手机已解锁、与 Seal 在同一 Wi-Fi，并已打开 LocalDevVPN 后重试",
-            code: "SEAL-SIGN-504"
+            code: "SEAL-SIGN-504",
+            condition: .tunnelUnavailable,
+            action: .openLocalDevVPN,
+            route: .localDevVPN,
+            retryDisposition: .manual,
+            operation: operation,
+            origin: .deviceChannel
         )
     }
 

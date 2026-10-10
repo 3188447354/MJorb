@@ -278,14 +278,20 @@ actor RenewalCoordinator {
         return AppleServiceFailurePolicy.isNetworkError(error)
     }
 
-    /// 把任意错误归一化成 ImportFailure，同时保留原始错误描述，不再吞掉根因
+    /// 批量续签的失败出口。原始异常只在这里进入分类器，避免下游按错误码或文案猜测原因。
     private func normalize(_ error: Error) -> ImportFailure {
-        if let failure = error as? ImportFailure { return failure }
-        return ImportFailure(
-            title: "续签失败",
-            reason: "续签过程遇到错误，已自动重试仍未恢复。请检查网络和设备连接后，再重新发起续签；如果反复失败，\(ImportFailure.sendLogToAuthor)。",
-            recovery: "检查网络和设备连接后，再重新发起续签",
-            code: "SEAL-RENEW-500"
+        Self.normalizedFailure(for: error, operation: .batchRenew)
+    }
+
+    /// 纯函数，供每个续签入口使用同一份异常分类规则。
+    nonisolated static func normalizedFailure(
+        for error: Error,
+        operation: FailureOperation
+    ) -> ImportFailure {
+        FailureClassifier.classify(
+            error,
+            operation: operation,
+            origin: .signing
         )
     }
 

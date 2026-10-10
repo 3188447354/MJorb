@@ -202,4 +202,29 @@ struct DeviceChannelTransientPolicyTests {
         #expect(otherFailure.code == "SEAL-SIGN-500")
         #expect(InstallFailureSettingsRoute.route(forCode: otherFailure.code) == nil)
     }
+
+    @Test("单应用签名：Apple 超时不能被压成未知签名错误")
+    func singleAppFailureClassificationKeepsAppleTimeoutAction() {
+        let failure = AppsViewModel.signingFailure(for: URLError(.timedOut))
+
+        #expect(failure.code == "SEAL-NET-102")
+        #expect(failure.condition == .appleServiceUnavailable)
+        #expect(failure.action == .retry)
+        #expect(failure.operation == .sign)
+        #expect(failure.origin == .signing)
+    }
+
+    @Test("批量续签：Apple 超时不能被压成未知续签错误")
+    func batchRenewalFailureClassificationKeepsAppleTimeoutAction() {
+        let failure = RenewalCoordinator.normalizedFailure(
+            for: URLError(.timedOut),
+            operation: .batchRenew
+        )
+
+        #expect(failure.code == "SEAL-NET-102")
+        #expect(failure.condition == .appleServiceUnavailable)
+        #expect(failure.action == .retry)
+        #expect(failure.operation == .batchRenew)
+        #expect(failure.origin == .signing)
+    }
 }

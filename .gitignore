@@ -18,6 +18,8 @@ Vendor/Build/
 *.p12
 *.mobileprovision
 Auth.json
+# 错误知识库的模块名可与凭据文件同名；该目录是受版本控制的公开帮助内容。
+!docs/error-catalog/auth.json
 PairingFile.plist
 *.pairing
 *.log

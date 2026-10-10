@@ -347,6 +347,24 @@ fn seal_issue_validate_failed(error: impl std::fmt::Display) -> SealIssue {
     )
 }
 
+/// 局域网发现（mDNS）失败。
+fn seal_issue_mdns(error: impl std::fmt::Display) -> SealIssue {
+    SealIssue::new(
+        "mdns",
+        "局域网发现已停止",
+        format!(
+            "后台的局域网设备发现（mDNS）失败：{}",
+            seal_error_text(error)
+        ),
+        &[
+            "本程序当前只用 USB 数据线配对，这条提示不影响你的配对操作，可以直接关闭。",
+            "如果电脑上的安全软件拦截了 UDP 5353（mDNS），放行后重启本程序即可恢复。",
+            "需要用到局域网校验时，重启本程序就会重新开始发现。",
+        ],
+        SealIssueRetry::None,
+    )
+}
+
 /// 写入 Seal 失败。
 fn seal_issue_install_failed(name: &str, error: impl std::fmt::Display) -> SealIssue {
     SealIssue::new(

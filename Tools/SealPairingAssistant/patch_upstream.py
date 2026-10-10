@@ -654,7 +654,135 @@ def patch_error_dialogs(text: str) -> str:
         "pairing validation dialog",
     )
 
+    # mDNS 局域网发现的失败也要弹窗（上游用 expect() 直接 panic）
+    text = replace_once(
+        text,
+        """    let discover_sender = idevice_sender.clone();
+    rt.spawn(async move {
+        discover::start_discover(discover_sender).await;
+    });""",
+        """    let discover_sender = idevice_sender.clone();
+    let discover_gui_sender = gui_sender.clone();
+    rt.spawn(async move {
+        discover::start_discover(discover_sender, discover_gui_sender).await;
+    });""",
+        "discover gui channel wiring",
+    )
+    text = replace_once(
+        text,
+        "    DeviceReadFailure(IdeviceError),\n}",
+        "    DeviceReadFailure(IdeviceError),\n    MdnsFailure(String),\n}",
+        "mdns failure variant",
+    )
+    text = replace_once(
+        text,
+        """                GuiCommands::DeviceReadFailure(idevice_error) => {
+                    let issue = seal_issue_device_read(&format!("{idevice_error:?}"));
+                    self.seal_raise_issue(issue);
+                }
+""",
+        """                GuiCommands::DeviceReadFailure(idevice_error) => {
+                    let issue = seal_issue_device_read(&format!("{idevice_error:?}"));
+                    self.seal_raise_issue(issue);
+                }
+                GuiCommands::MdnsFailure(detail) => {
+                    let issue = seal_issue_mdns(&detail);
+                    self.seal_raise_issue(issue);
+                }
+""",
+        "mdns failure arm",
+    )
+
     return text
+
+
+def patch_discover(path: pathlib.Path) -> None:
+    """移除 mDNS 发现里会 panic 的 expect()，并把起停状态上报给界面弹窗。"""
+
+    text = path.read_text(encoding="utf-8")
+    text = replace_once(
+        text,
+        "use log::{debug, warn};\n",
+        "use log::{debug, error, warn};\n",
+        "discover error logging import",
+    )
+    text = replace_once(
+        text,
+        "use crate::IdeviceCommands;\n",
+        "use crate::{GuiCommands, IdeviceCommands};\n",
+        "discover gui channel import",
+    )
+    text = replace_once(
+        text,
+        """pub async fn start_discover(sender: UnboundedSender<IdeviceCommands>) {
+    let service_name = format!("_{}._{}.local", SERVICE_NAME, SERVICE_PROTOCOL);
+    println!("Starting mDNS discovery for {} with mdns", service_name);
+
+    let stream = mdns::discover::all(&service_name, Duration::from_secs(1))
+        .expect("Unable to start mDNS discover stream")
+        .listen();
+    pin_mut!(stream);
+
+    while let Some(Ok(response)) = stream.next().await {""",
+        """/// 把局域网发现的失败上报到界面。
+fn seal_report_mdns(gui_sender: &UnboundedSender<GuiCommands>, detail: String) {
+    let _ = gui_sender.send(GuiCommands::MdnsFailure(detail));
+}
+
+pub async fn start_discover(
+    sender: UnboundedSender<IdeviceCommands>,
+    gui_sender: UnboundedSender<GuiCommands>,
+) {
+    let service_name = format!("_{}._{}.local", SERVICE_NAME, SERVICE_PROTOCOL);
+    println!("Starting mDNS discovery for {} with mdns", service_name);
+
+    // 上游这里用 expect()：mDNS 起不来会 panic，release 版没有控制台，等于无声无息地丢掉这条能力。
+    let stream = match mdns::discover::all(&service_name, Duration::from_secs(1)) {
+        Ok(stream) => stream.listen(),
+        Err(error) => {
+            error!("Failed to start mDNS discovery: {error:?}");
+            seal_report_mdns(&gui_sender, format!("{error:?}"));
+            return;
+        }
+    };
+    pin_mut!(stream);
+
+    // 上游写成 while let Some(Ok(..))：流里出现一次错误就静默退出循环，同样没有任何提示。
+    loop {
+        let response = match stream.next().await {
+            Some(Ok(response)) => response,
+            Some(Err(error)) => {
+                error!("mDNS discovery stream error: {error:?}");
+                seal_report_mdns(&gui_sender, format!("{error:?}"));
+                return;
+            }
+            None => return,
+        };
+""",
+        "discover panic removal",
+    )
+    text = replace_once(
+        text,
+        """            debug!("Discovered {mac_addr} at {addr}");
+            sender
+                .send(IdeviceCommands::DiscoveredDevice((
+                    addr,
+                    mac_addr.to_string(),
+                )))
+                .unwrap();""",
+        """            debug!("Discovered {mac_addr} at {addr}");
+            if sender
+                .send(IdeviceCommands::DiscoveredDevice((
+                    addr,
+                    mac_addr.to_string(),
+                )))
+                .is_err()
+            {
+                return;
+            }""",
+        "discover send without panic",
+    )
+    path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def patch_locale(path: pathlib.Path, expected: str, replacement: str) -> None:
@@ -719,7 +847,9 @@ def verify(root: pathlib.Path) -> None:
         "seal_issue_seal_missing",
         "seal_issue_device_read",
         "seal_issue_validate_failed",
+        "seal_issue_mdns",
         "DeviceReadFailure",
+        "MdnsFailure",
         "解决办法",
         "知道了",
     ]
@@ -758,6 +888,23 @@ def verify(root: pathlib.Path) -> None:
     if 'raw-window-handle = "0.6.2"' not in cargo:
         raise RuntimeError("Windows backdrop dependency missing")
 
+    discover = (root / "src" / "discover.rs").read_text(encoding="utf-8")
+    for item in (
+        "use log::{debug, error, warn};",
+        "use crate::{GuiCommands, IdeviceCommands};",
+        "fn seal_report_mdns(",
+        "上报到界面",
+        "MdnsFailure",
+    ):
+        if item not in discover:
+            raise RuntimeError(f"discover.rs 未接上弹窗上报: {item}")
+    for marker in (
+        'expect("Unable to start mDNS discover stream")',
+        "while let Some(Ok(response)) = stream.next().await",
+    ):
+        if marker in discover:
+            raise RuntimeError(f"discover.rs 仍保留会 panic / 静默退出的上游写法: {marker}")
+
 
 def main() -> int:
     if len(sys.argv) != 2:
@@ -768,6 +915,7 @@ def main() -> int:
     patch_cargo(root / "Cargo.toml")
     stage_ui_assets(root)
     patch_main(root / "src" / "main.rs")
+    patch_discover(root / "src" / "discover.rs")
     patch_locale(
         root / "locales" / "zh-cn.toml",
         'app_title = "idevice pair"',

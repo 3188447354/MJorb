@@ -1797,18 +1797,29 @@ actor MinimuxerInstallChannel: InstallChannel {
             }
         }
         if tunnelReachable == false {
-            return ImportFailure(
-                title: vpnTunnelUnavailableFailure.title,
-                reason: vpnTunnelUnavailableFailure.reason + suffix,
-                recovery: vpnTunnelUnavailableFailure.recovery,
-                code: vpnTunnelUnavailableFailure.code
-            )
+            return failureWithDiagnosticSuffix(vpnTunnelUnavailableFailure, suffix: suffix)
         }
-        return ImportFailure(
-            title: deviceNotRespondingFailure.title,
-            reason: deviceNotRespondingFailure.reason + suffix,
-            recovery: deviceNotRespondingFailure.recovery,
-            code: deviceNotRespondingFailure.code
+        return failureWithDiagnosticSuffix(deviceNotRespondingFailure, suffix: suffix)
+    }
+
+    /// 诊断路径需要把底层详情附到面向用户的原因中，但不能因此把恢复语义退回默认的
+    /// `.unexpected` / `.copyDiagnostics`。复制合同字段让“为什么失败”和“下一步做什么”
+    /// 仍来自同一个失败模板。
+    private static func failureWithDiagnosticSuffix(
+        _ failure: ImportFailure,
+        suffix: String
+    ) -> ImportFailure {
+        ImportFailure(
+            title: failure.title,
+            reason: failure.reason + suffix,
+            recovery: failure.recovery,
+            code: failure.code,
+            condition: failure.condition,
+            action: failure.action,
+            route: failure.route,
+            retryDisposition: failure.retryDisposition,
+            operation: failure.operation,
+            origin: failure.origin
         )
     }
 

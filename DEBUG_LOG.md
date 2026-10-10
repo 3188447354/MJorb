@@ -6321,6 +6321,16 @@ CMake Error at CMakeLists.txt:394 (message):
 
 **验证**：Python 静态回归测试已先红后绿；待完整 iOS CI 复核 Swift 编译、单元/UI 回归与 IPA 构建。
 
+## 2026-10-11 — 通道诊断追加详情时丢失恢复语义
+
+**症状**：完整 iOS CI 的 `InstallChannelDiagnosticClassificationTests` 中，隧道不可达被降级为 `.unexpected` / `.copyDiagnostics`，设备未响应也不再提供“重试”。
+
+**根因**：`discoveryFailure` 的两个兜底分支为追加底层详情重新构造 `ImportFailure`，却只复制了标题、原因、恢复文案和错误码，遗漏了 `condition`、`action`、`route`、重试策略、操作和来源字段；初始化器于是套用了默认的未知错误语义。
+
+**修复**：新增仅追加诊断详情的复制助手，完整保留失败合同的所有结构化字段，保证诊断文本不会改变用户下一步操作。
+
+**验证**：现有安装通道回归测试在 CI 中先失败；待完整 iOS CI 复核修复。
+
 ## 2026-10-11 — 结构化恢复标题函数调用与返回值不符合 Swift 语法
 
 **症状**：完整 iOS CI 在 `SigningProgressView` 报 `Extraneous argument label 'for:' in call`；同一函数的 `switch` 分支产生未使用字符串警告。

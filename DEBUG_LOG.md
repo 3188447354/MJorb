@@ -39,6 +39,13 @@
 - **修复**：单次入口与批量入口统一调用 `FailureClassifier`；单次续签显式传入 `.renew`，批量传入 `.batchRenew`。设备通道仍保留 `SEAL-SIGN-504` 与 LocalDevVPN 路由，并补齐对应的结构化语义，避免其它错误被误导到 VPN。
 - **验证状态**：新增单次与批量 Apple 超时回归。因本机无 Swift/Xcode 工具链，待本批 macOS CI 编译与执行。
 
+## 2026-10-10 profile-only 缺失 App ID 的恢复动作统一
+
+- **现象**：profile-only 续签的两个 App ID 查询路径都识别到 `SEAL-PROFILE-337`，但仍各自手写文案和基础 `ImportFailure`，没有带上“完整重签”的结构化动作。
+- **根因**：已存在 `ImportFailure.profileOnlyAppIDMissing(operation:)` 工厂，但 Apple Portal 实现没有接入它，导致 UI/账号状态逻辑只能重新从错误码推断意图。
+- **修复**：新增 `ApplePortalSigningFailure.profileOnlyAppIDMissing()` 作为门户边界工厂，两条查询路径统一使用；结果固定为 `.fullResign`、`.renew`、`.provisioning`，且账号验证策略不会把它误判为需要重新验证。
+- **验证状态**：新增门户失败工厂回归；待 macOS CI 编译与执行。
+
 ## 2026-10-10 错误帮助的证据边界与日志错误码保留
 
 - **现象**：现有“查看解决办法”直接跳官网，离线时无法查看；日志轮次卡片提取到失败文案后会丢失原始 `SEAL-*` 错误码，导致无法可靠关联解决方案。过去把错误码直接解释成单一根因，也会把网络、设备或 Apple 限制误导成“账号失效”。

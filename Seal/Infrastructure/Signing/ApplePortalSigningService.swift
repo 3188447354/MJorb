@@ -63,6 +63,10 @@ enum ApplePortalAppIDFeatureUpdatePolicy {
 }
 
 enum ApplePortalSigningFailure {
+    static func profileOnlyAppIDMissing() -> ImportFailure {
+        ImportFailure.profileOnlyAppIDMissing(operation: .renew)
+    }
+
     static func make(stage: ApplePortalSigningStage, error: Error) -> ImportFailure {
         if AppleServiceFailurePolicy.isRateLimited(error) {
             return AppleServiceFailurePolicy.rateLimitedFailure(underlying: error)
@@ -2443,14 +2447,7 @@ actor ApplePortalSigningService {
                     if requiresExistingAppIDs,
                        ProfileOnlyRenewalPolicy.portalAppIDDecision(isPresent: false)
                             == .requiresFullResign {
-                        throw Self.failure(
-                            title: "App ID 身份已变化",
-                            reason: "Apple 门户中找不到当前已安装应用的 "
-                                + mappedBundleID
-                                + " App ID；仅更新描述文件不会注册新的 App ID。",
-                            recovery: "执行完整重签以重新建立应用身份",
-                            code: "SEAL-PROFILE-337"
-                        )
+                        throw ApplePortalSigningFailure.profileOnlyAppIDMissing()
                     }
                     do {
                         // 多扩展 App（如抖音）在 App ID 阶段密集建号，Apple 会掐断会话返回 1100。
@@ -2763,14 +2760,7 @@ actor ApplePortalSigningService {
                     requestedBundleIdentifier: target.mappedBundleIdentifier
                 )
             }) else {
-                throw Self.failure(
-                    title: "App ID 身份已变化",
-                    reason: "Apple 门户中找不到当前已安装应用的 "
-                        + target.mappedBundleIdentifier
-                        + " App ID；仅更新描述文件不会注册新的 App ID。",
-                    recovery: "执行完整重签以重新建立应用身份",
-                    code: "SEAL-PROFILE-337"
-                )
+                throw ApplePortalSigningFailure.profileOnlyAppIDMissing()
             }
             preparedAppIDs.append((target.mappedBundleIdentifier, appID))
         }

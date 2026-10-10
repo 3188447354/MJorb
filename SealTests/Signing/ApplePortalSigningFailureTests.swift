@@ -98,6 +98,17 @@ struct ApplePortalSigningFailureTests {
         #expect(failure.reason.contains("-1001") == false)
     }
 
+    @Test
+    func profileOnlyMissingAppIDRequiresFullResignWithoutAccountReverification() {
+        let failure = ApplePortalSigningFailure.profileOnlyAppIDMissing()
+
+        #expect(failure.code == "SEAL-PROFILE-337")
+        #expect(failure.condition == .fullResignRequired)
+        #expect(failure.action == .fullResign)
+        #expect(failure.operation == .renew)
+        #expect(AppleServiceFailurePolicy.shouldRequireReverification(failure) == false)
+    }
+
     /// 创建 App ID 的顺序：**主 App 必须排在最前**（2026-09-17）。
     ///
     /// 这条只在真机上才看得出后果，所以必须由单测钉住：

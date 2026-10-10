@@ -97,13 +97,6 @@ struct AppContainer {
                     try? await logStore.clear()
                 }
             }
-            // 导出日志前强制落盘：日志页点导出时发出 sealForceMirrorLogs，
-            // 这里跳过 30 秒节流立即镜像，否则"第一下说文件不存在"。
-            Task {
-                for await _ in NotificationCenter.default.notifications(named: .sealForceMirrorLogs) {
-                    await logStore.forceMirrorToDocuments()
-                }
-            }
             let installChannel = MinimuxerInstallChannel(
                 pairingStore: pairingStore,
                 logDirectory: sealDirectory.appending(

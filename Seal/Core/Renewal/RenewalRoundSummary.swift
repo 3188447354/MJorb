@@ -18,9 +18,25 @@ enum RenewalTriggerSource: String, Sendable {
     }
 }
 
+/// 日志轮次的操作类型。单项操作也使用与批量续签相同的卡片语法，
+/// 这样日志页和导出文件只需维护一套解析与呈现逻辑。
+enum RenewalRoundOperation: Equatable, Sendable {
+    case batchRenewal
+    case singleRenewal
+    case singleSigning
+
+    var headerLabel: String? {
+        switch self {
+        case .batchRenewal: nil
+        case .singleRenewal: "单独续签"
+        case .singleSigning: "单独签名"
+        }
+    }
+}
+
 /// 轮次里单个 App 的结果（供轮次总结用）。
 struct RenewalRoundItem: Sendable {
-    enum Outcome: Sendable {
+    enum Outcome: Equatable, Sendable {
         case succeeded
         case failed
         case needsAction
@@ -49,6 +65,7 @@ struct RenewalRoundItem: Sendable {
 struct RenewalRoundSummary: Sendable {
     let roundNumber: Int
     let triggerSource: RenewalTriggerSource
+    let operation: RenewalRoundOperation
     let startedAt: Date
     let endedAt: Date
     let items: [RenewalRoundItem]
@@ -65,9 +82,14 @@ struct RenewalRoundSummary: Sendable {
     /// 不出现诊断码/Bundle ID 等术语；日志里不放重试按钮。
     func humanReadableMessage() -> String {
         let time = Self.timeFormatter.string(from: startedAt)
+        let header = if let label = operation.headerLabel {
+            "▶ \(label) · \(time) · \(triggerSource.displayName) · \(items.count)个App"
+        } else {
+            "▶ 第\(roundNumber)轮 · \(time) · \(triggerSource.displayName) · \(items.count)个App"
+        }
         var lines = [
             "━━━━━━━━━━━━━━━━━━━━━━━━",
-            "▶ 第\(roundNumber)轮 · \(time) · \(triggerSource.displayName) · \(items.count)个App",
+            header,
             "────────────────────────────────",
         ]
         for item in items {

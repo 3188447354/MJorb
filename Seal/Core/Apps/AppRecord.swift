@@ -301,7 +301,6 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
             && certificateSerialNumber?.isEmpty == false
             && signedDeviceIdentifier?.isEmpty == false
             && provisioningProfileExpirationDate != nil
-            && signedIPARelativePath?.isEmpty == false
     }
 
     /// 普通 IPA 一律共享主描述文件；Seal 自身暂不进入这一期策略。
@@ -340,13 +339,18 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         signedArtifactStatus = hasSignedArtifact ? .available : .missing
     }
 
-    /// 删除可再生的已签名包后，保留原始 IPA、安装历史与用户配置。
-    /// 下次安装或续签会重新签名，不能再复用已删除的产物元数据。
-    mutating func clearSignedArtifact() {
+    /// 删除可再生的已签名 IPA 缓存元数据，不触碰设备上已安装应用的续签身份。
+    /// 描述文件续签只依赖已安装身份、证书私钥与签名目标；缓存不存在时仅不能离线重装。
+    mutating func clearSignedIPACacheMetadata() {
         signedIPARelativePath = nil
         signedIPASHA256 = nil
         signedIPAFileSize = nil
         signedIPAModificationDate = nil
+    }
+
+    /// 供「应用不在设备上」等旧调用路径使用：缓存和已安装产物同时失效。
+    mutating func clearSignedArtifact() {
+        clearSignedIPACacheMetadata()
         signedArtifactStatus = .missing
     }
 

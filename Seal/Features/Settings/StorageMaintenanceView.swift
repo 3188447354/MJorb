@@ -11,7 +11,9 @@ struct StorageMaintenanceView: View {
             VStack(spacing: 20) {
                 summaryCard
                 usageCard
-                actionCard
+                if hasMaintenanceActions {
+                    actionCard
+                }
                 dangerNote
             }
             .padding(20)
@@ -45,16 +47,16 @@ struct StorageMaintenanceView: View {
             Text("会清理临时缓存和不再使用的多余文件。已安装 App 的签名缓存、账号密码和设备配对信息不会删除。")
         }
         .confirmationDialog(
-            "清理签名包？",
+            "释放可重建安装缓存？",
             isPresented: $confirmsSignedPackageClear,
             titleVisibility: .visible
         ) {
-            Button("清理签名包", role: .destructive) {
+            Button("释放可重建安装缓存", role: .destructive) {
                 Task { await viewModel.clearStoredSignedPackages() }
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("会删除全部已签名 IPA 和导出副本；已安装 App、原始 IPA、图标、账号和设备配对信息会保留。下次安装或续签需要重新签名。")
+            Text("只删除已确认安装完成的 Signed.ipa 缓存。手机上的 App、原始 IPA、续签身份、描述文件、账号和设备配对信息均会保留；后续只更新描述文件不受影响。")
         }
         .sealScreenBackground()
     }
@@ -103,13 +105,25 @@ struct StorageMaintenanceView: View {
 
     private var actionCard: some View {
         VStack(spacing: 12) {
-            Button("清理临时缓存") { confirmsTemporaryClear = true }
-                .sealPrimaryAction(cornerRadius: 12)
-            Button("清理签名包") { confirmsSignedPackageClear = true }
-                .sealOutlineAction(cornerRadius: 12)
-            Button("清理未使用文件") { confirmsUnusedClear = true }
-                .sealOutlineAction(cornerRadius: 12)
+            if viewModel.storageUsage.temporary > 0 {
+                Button("清理临时缓存") { confirmsTemporaryClear = true }
+                    .sealPrimaryAction(cornerRadius: 12)
+            }
+            if viewModel.reclaimableSignedIPACacheCount > 0 {
+                Button("释放可重建安装缓存") { confirmsSignedPackageClear = true }
+                    .sealOutlineAction(cornerRadius: 12)
+            }
+            if viewModel.storageUsage.temporary + viewModel.storageUsage.orphaned > 0 {
+                Button("清理未使用文件") { confirmsUnusedClear = true }
+                    .sealOutlineAction(cornerRadius: 12)
+            }
         }
+    }
+
+    private var hasMaintenanceActions: Bool {
+        viewModel.storageUsage.temporary > 0
+            || viewModel.storageUsage.orphaned > 0
+            || viewModel.reclaimableSignedIPACacheCount > 0
     }
 
     private var dangerNote: some View {

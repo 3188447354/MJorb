@@ -153,6 +153,7 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var reminderHours = 24
     @Published private(set) var notificationStatus = NotificationScheduleStatus.disabled
     @Published private(set) var storageUsage: SettingsStorageUsage = .empty
+    @Published private(set) var reclaimableSignedIPACacheCount = 0
     @Published private(set) var storageMaintenanceSummary: String?
     @Published private(set) var logExportText = ""
     @Published var alertFailure: ImportFailure?
@@ -2921,6 +2922,7 @@ final class SettingsViewModel: ObservableObject {
     func refreshStorageUsage() async {
         guard let fileStore else {
             storageUsage = .empty
+            reclaimableSignedIPACacheCount = 0
             return
         }
         do {
@@ -2937,8 +2939,12 @@ final class SettingsViewModel: ObservableObject {
                 history = []
             }
             storageUsage = try await fileStore.storageUsage(apps: apps, signingHistory: history)
+            reclaimableSignedIPACacheCount = apps.count {
+                SignedIPACacheCleanupPolicy.decision(for: $0) == .reclaimable
+            }
         } catch {
             storageUsage = .empty
+            reclaimableSignedIPACacheCount = 0
         }
     }
 
@@ -3020,26 +3026,17 @@ final class SettingsViewModel: ObservableObject {
             let signedBefore = storageUsage.signedIPAs
             let records = try await appStore.fetchAll()
 
-            for record in records {
-                let hadArtifactMetadata = record.signedIPARelativePath != nil
-                    || record.signedIPASHA256 != nil
-                    || record.signedIPAFileSize != nil
-                    || record.signedIPAModificationDate != nil
-                    || record.signedArtifactStatus != nil
+            for record in records where SignedIPACacheCleanupPolicy.decision(for: record) == .reclaimable {
                 var clearedRecord = record
-                clearedRecord.clearSignedArtifact()
+                clearedRecord.clearSignedIPACacheMetadata()
 
-                // 先持久化“不可复用”，避免文件删除成功但记录仍指向已不存在的 IPA。
-                if hadArtifactMetadata {
-                    try await appStore.save(clearedRecord)
-                }
+                // 元数据只标记缓存缺失，绝不改写已安装身份/续签资格。
+                try await appStore.save(clearedRecord)
                 do {
-                    try await fileStore.removeSignedIPA(appID: record.id)
+                    try await fileStore.removeSignedIPACache(appID: record.id)
                 } catch {
                     // 删除未完成时恢复原记录，确保用户仍可正常复用现有签名包。
-                    if hadArtifactMetadata {
-                        try? await appStore.save(record)
-                    }
+                    try? await appStore.save(record)
                     throw error
                 }
             }
@@ -3050,7 +3047,7 @@ final class SettingsViewModel: ObservableObject {
             )
             try? await logStore?.append(
                 category: .system,
-                message: "已清理已签名 IPA；原始 IPA、安装记录和账号数据已保留"
+                message: "已释放可重建安装缓存；原始 IPA、已安装身份、描述文件、账号和设备配对信息均已保留"
             )
             logs = (try? await logStore?.entries()) ?? logs
             await refreshLogExportText()
@@ -3088,6 +3085,28 @@ final class SettingsViewModel: ObservableObject {
                 reason: "日志文件仍在使用，无法清理。",
                 recovery: "稍后重新清理",
                 code: "SEAL-LOG-001"
+            )
+        }
+    }
+
+    /// 日志页等待 actor 完成写入后才打开分享面板，避免首次导出读到不存在的旧文件。
+    func materializeLogExport() async throws -> URL {
+        guard let logStore else {
+            throw Self.failure(
+                title: "无法导出日志",
+                reason: "日志服务尚未就绪。",
+                recovery: "返回后稍候再试",
+                code: "SEAL-LOG-002"
+            )
+        }
+        do {
+            return try await logStore.materializeExport()
+        } catch {
+            throw Self.failure(
+                title: "无法导出日志",
+                reason: "日志文件写入失败：\(error.localizedDescription)",
+                recovery: "检查可用存储空间后重试",
+                code: "SEAL-LOG-002"
             )
         }
     }

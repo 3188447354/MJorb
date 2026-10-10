@@ -5,6 +5,14 @@
 
 ---
 
+## 2026-10-10 存储缓存、单项日志与首次导出可靠性
+
+- **现象**：清理 `Signed.ipa` 后，应用记录被降级为“缺少已安装产物”，正常的描述文件续签被误导为完整重签；日志首次导出通过通知后固定等待 0.8 秒，异步镜像慢时会报“日志文件不存在”；单项签名/续签没有与“续签全部”相同的轮次摘要和真实共用耗时。
+- **根因**：把可重建的安装缓存、已安装身份和续签准入混在同一组字段/状态里；导出页没有对日志 actor 的写入完成确认；轮次格式只在 `RenewalCoordinator` 的批量路径生成。
+- **修复**：新增纯 `SignedIPACacheCleanupPolicy`，仅回收稳定已安装的缓存，并只清除缓存元数据；profile-only 准入不再依赖 `Signed.ipa`；日志导出改为 `SealLogStore.materializeExport()` 返回已落盘 URL；单项操作复用轮次摘要格式，成功和失败都记录真实耗时及“共用 x 秒”。
+- **涉及文件**：`AppRecord`、`ProfileOnlyRenewalPolicy`、`SignedIPACacheCleanupPolicy`、`SettingsViewModel`、`SealLogStore`、`LogViewerView`、`RenewalRoundSummary`、`AppsViewModel`。
+- **验证状态**：已新增回归测试；Windows 无 Xcode/Swift 工具链，待完整 iOS CI 编译、单测和真机验证。
+
 ## 2026-10-09 覆盖更新流程重设计：走待签名页
 
 - **背景**：MJ 要求"其他 ipa 覆盖更新都是已安装列表的 ipa 先到待签名页，签名成功再回来，这样所有状态都能刷新同步了，Seal 能做到吗"。批准后实施。

@@ -10,19 +10,18 @@ extension Notification.Name {
     /// Seal 自身记录更新完成（自安装重启后的结算）：应用页收到后刷新列表，
     /// "有新版本待安装"标签自动消失，不用手动切页面。
     static let sealSelfRecordUpdated = Notification.Name("sealSelfRecordUpdated")
-    /// 导出日志前强制落盘：LogViewerView 发出，AppContainer 监听并调 logStore.forceMirrorToDocuments()。
-    /// 解决"每次点导出第一下都说日志文件不存在"——View 拿不到 logStore，只能走通知（参考 sealClearLogs 模式）。
-    static let sealForceMirrorLogs = Notification.Name("sealForceMirrorLogs")
 }
 
 /// 日志查看页：只显示人话卡片，不显示原始日志。
 /// 导出按钮在右上角（毛玻璃圆按钮，无文字）。
 struct LogViewerView: View {
+    @ObservedObject var viewModel: SettingsViewModel
     @State private var rounds: [LogRound] = []
     @State private var isExporting = false
     @State private var exportURL: URL?
     @State private var showClearConfirm = false
     @State private var selectedError: LogRound.LogRoundItem?
+    @State private var exportFailure: ImportFailure?
 
     var body: some View {
         ScrollView {
@@ -90,6 +89,13 @@ struct LogViewerView: View {
                 Text((err.reason ?? "暂无具体解决办法，可复制错误信息到社群求助。"))
             }
         }
+        .alert(item: $exportFailure) { failure in
+            Alert(
+                title: Text(failure.title),
+                message: Text("\(failure.reason)\n\n\(failure.recovery)"),
+                dismissButton: .default(Text("好的"))
+            )
+        }
         .task {
             await loadRounds()
         }
@@ -126,32 +132,24 @@ struct LogViewerView: View {
     }
 
     private func exportLogs() {
-        // 先通知日志系统把内存缓冲强制落盘（跳过 30 秒节流），再读文件。
-        // 不这么做的话，文件可能还没生成/是旧的，就会出现"第一下说文件不存在"。
-        // 待优化：等通知确认机制，现在给落盘留 0.8 秒。
         Task {
-            NotificationCenter.default.post(name: .sealForceMirrorLogs, object: nil)
-            try? await Task.sleep(nanoseconds: 800_000_000)
-            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-            let logURL = docs?.appendingPathComponent("Seal-log.txt")
-            let text = logURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
-            await MainActor.run {
-                guard !text.isEmpty else {
-                    exportURL = nil
+            do {
+                let url = try await viewModel.materializeLogExport()
+                await MainActor.run {
+                    exportURL = url
                     isExporting = true
-                    return
                 }
-                // 固定文件名、每次覆盖：分享完不堆积 tmp 文件（之前带时间戳，每次留一个）。
-                let tmpURL = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("Seal-日志.txt")
-                try? FileManager.default.removeItem(at: tmpURL)
-                do {
-                    try text.write(to: tmpURL, atomically: true, encoding: .utf8)
-                    exportURL = tmpURL
-                } catch {
-                    exportURL = nil
+            } catch let failure as ImportFailure {
+                await MainActor.run { exportFailure = failure }
+            } catch {
+                await MainActor.run {
+                    exportFailure = ImportFailure(
+                        title: "无法导出日志",
+                        reason: error.localizedDescription,
+                        recovery: "稍后重试",
+                        code: "SEAL-LOG-002"
+                    )
                 }
-                isExporting = true
             }
         }
     }
@@ -332,7 +330,14 @@ struct LogRound: Identifiable {
         }
 
         var newParts = parts
-        newParts[0] = dateStr
+        if parts[0].hasPrefix("第") {
+            newParts[0] = dateStr
+            return newParts.joined(separator: " · ")
+        }
+        // 单项签名/续签也采用同一张轮次卡片；保留操作名，避免它被日期替换掉。
+        newParts.removeFirst()
+        newParts.insert(dateStr, at: 0)
+        newParts.insert(parts[0], at: 3)
         return newParts.joined(separator: " · ")
     }
 }

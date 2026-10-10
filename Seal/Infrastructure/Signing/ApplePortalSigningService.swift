@@ -681,7 +681,7 @@ actor ApplePortalSigningService {
         account: AppleAccountRecord,
         secret: AccountSecret,
         deviceIdentifier: String,
-        originalIPAURL: URL,
+        originalIPAURL: URL?,
         workspaceRoot: URL,
         targetBundleIdentifier: String,
         certificateSerialNumber: String,
@@ -746,6 +746,14 @@ actor ApplePortalSigningService {
         ) {
             preparationInput = .fastPath(targets)
         } else {
+            guard let originalIPAURL else {
+                throw Self.failure(
+                    title: "续签身份信息不完整",
+                    reason: "本地记录缺少可用于只更新描述文件的签名目标，且原始 IPA 不可用。",
+                    recovery: "重新导入原始 IPA 后执行完整签名",
+                    code: "SEAL-PROFILE-332"
+                )
+            }
             let prepared = try signingWorkspace.prepare(
                 ipaURL: originalIPAURL,
                 workspaceRoot: workspaceRoot,

@@ -230,9 +230,9 @@ enum ProfileOnlyRenewalPolicy {
     /// ⚠️ 这里删掉的是「按身份一刀切」，**不是安全边界**：记录不完整（缺已装产物 /
     /// 缺签名身份 / 缺目标记录）时，下面几条判据**一条都没有放松**，照旧回落完整重签。
     static func evaluate(app: AppRecord) -> Decision {
-        guard app.state == .installed,
-              app.signedArtifactStatus == .installed,
-              app.hasSignedArtifact else {
+        // `Signed.ipa` 是可再生的安装缓存，不是手机上已安装产物的续签身份。
+        // 维护页删除缓存后仍可只更新描述文件；真正的身份完整性由后续字段逐项验证。
+        guard app.state == .installed else {
             return .requiresFullResign(.missingInstalledArtifact)
         }
 

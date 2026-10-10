@@ -65,4 +65,24 @@ struct SealLogStoreTests {
         #expect(try await relaunched.entries().map(\.message) == ["persisted-before-relaunch"])
     }
 
+    @Test
+    func materializeExportCreatesReadableDocumentOnFirstRequest() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "SealTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let documents = directory.appending(path: "Documents", directoryHint: .isDirectory)
+        let store = SealLogStore(
+            fileURL: directory.appending(path: "Logs.json"),
+            documentsDirectory: documents,
+            fileProtector: MarkerFileProtector()
+        )
+
+        try await store.append(category: .renewal, message: "单独续签完成")
+        let exportURL = try await store.materializeExport()
+
+        #expect(exportURL == documents.appending(path: "Seal-log.txt"))
+        #expect(FileManager.default.fileExists(atPath: exportURL.path))
+        #expect(try String(contentsOf: exportURL, encoding: .utf8).contains("单独续签完成"))
+    }
+
 }

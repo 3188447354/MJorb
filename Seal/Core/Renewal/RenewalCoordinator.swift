@@ -427,6 +427,7 @@ actor RenewalCoordinator {
         let summary = RenewalRoundSummary(
             roundNumber: roundNumber,
             triggerSource: triggerSource,
+            operation: .batchRenewal,
             startedAt: roundStart,
             endedAt: roundEnd,
             items: sortedItems

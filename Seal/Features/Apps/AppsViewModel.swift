@@ -791,6 +791,43 @@ final class AppsViewModel: ObservableObject {
         markLocalCertificateReady(for: completed.id)
     }
 
+    /// 单项签名与单项续签写入和「续签全部」相同的轮次语法。
+    /// 日志页/导出页只解析这一份格式，耗时取真实起止时间，不做预估。
+    private func appendSingleOperationRound(
+        operation: RenewalRoundOperation,
+        app: AppRecord,
+        startedAt: Date,
+        outcome: RenewalRoundItem.Outcome,
+        failure: ImportFailure? = nil
+    ) async {
+        let endedAt = Date()
+        let item = RenewalRoundItem(
+            appName: app.name,
+            outcome: outcome,
+            duration: endedAt.timeIntervalSince(startedAt),
+            profileExpirationDate: outcome == .succeeded
+                ? (app.provisioningProfileExpirationDate ?? app.expiryDate)
+                : nil,
+            failureCode: failure?.code,
+            failureReason: failure?.reason,
+            failureRecovery: failure?.recovery
+        )
+        let summary = RenewalRoundSummary(
+            roundNumber: 0,
+            triggerSource: .manual,
+            operation: operation,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            items: [item]
+        )
+        let hasFailure = outcome == .failed || outcome == .needsAction
+        try? await logStore?.append(
+            category: operation == .singleSigning ? .signing : .renewal,
+            level: hasFailure ? .warning : .info,
+            message: summary.humanReadableMessage()
+        )
+    }
+
     /// 一次读完所有账号的密钥 —— 邮箱显示与「本机证书状态」都从这里派生。
     ///
     /// 两者共用一次读取是**刻意的**：它们本来就要一起用，分两次读会把 N 个账号的
@@ -3092,6 +3129,7 @@ final class AppsViewModel: ObservableObject {
             return
         }
         defer { releaseOperation(operationLease) }
+        let operationStartedAt = Date()
         let attemptedBundleIdentifier = try? BundleIDPolicy.targetBundleIdentifier(
             for: app,
             requestedBundleIdentifier: requestedBundleIdentifier
@@ -3120,11 +3158,11 @@ final class AppsViewModel: ObservableObject {
             )
             let action: SigningHistoryRecord.Action = isRenewal ? .renew : .sign
             signingSession?.status = .succeeded(completed)
-            let successMessage = signingSession?.renewalExecutionPath?.successTitle
-                ?? (isRenewal ? "续签完成" : "签名并安装成功")
-            try? await logStore?.append(
-                category: isRenewal ? .renewal : .signing,
-                message: successMessage
+            await appendSingleOperationRound(
+                operation: isRenewal ? .singleRenewal : .singleSigning,
+                app: completed,
+                startedAt: operationStartedAt,
+                outcome: .succeeded
             )
             // 签名/续签完成立即强制镜像日志，让日志页立马能看到。
             // 必须 await：fire-and-forget 会造成"刷新了但读到旧文件"的竞态（批量路径已修过）。
@@ -3146,6 +3184,14 @@ final class AppsViewModel: ObservableObject {
         } catch let failure as ImportFailure {
             signingSession?.status = .failed(failure)
 
+            await appendSingleOperationRound(
+                operation: isRenewal ? .singleRenewal : .singleSigning,
+                app: app,
+                startedAt: operationStartedAt,
+                outcome: .failed,
+                failure: failure
+            )
+
             try? await logStore?.append(
                 category: .signing,
                 level: .error,
@@ -3166,6 +3212,13 @@ final class AppsViewModel: ObservableObject {
         } catch {
             let failure = Self.signingFailure(for: error)
             signingSession?.status = .failed(failure)
+            await appendSingleOperationRound(
+                operation: isRenewal ? .singleRenewal : .singleSigning,
+                app: app,
+                startedAt: operationStartedAt,
+                outcome: .failed,
+                failure: failure
+            )
             if failure.code == "SEAL-SIGN-500" {
                 try? await logStore?.append(
                     category: .signing,

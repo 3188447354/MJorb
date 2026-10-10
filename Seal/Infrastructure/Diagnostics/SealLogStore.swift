@@ -2,6 +2,7 @@ import Foundation
 
 actor SealLogStore {
     private let fileURL: URL
+    private let documentsDirectory: URL
     private let maximumEntries: Int
     private let fileProtector: any FileProtecting
     private let encoder = JSONEncoder()
@@ -22,9 +23,13 @@ actor SealLogStore {
     init(
         fileURL: URL,
         maximumEntries: Int = 1000,
-        fileProtector: any FileProtecting = CompleteFileProtector()
+        fileProtector: any FileProtecting = CompleteFileProtector(),
+        documentsDirectory: URL? = nil
     ) {
         self.fileURL = fileURL
+        self.documentsDirectory = documentsDirectory
+            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? fileURL.deletingLastPathComponent()
         self.maximumEntries = maximumEntries
         self.fileProtector = fileProtector
         encoder.outputFormatting = [.sortedKeys]
@@ -134,6 +139,19 @@ actor SealLogStore {
         mirrorToDocuments()
     }
 
+    /// 将当前内存缓冲确定性写入可分享的日志文件，并在写入成功后才返回 URL。
+    /// 不能让界面靠通知加固定延时猜测 actor 是否已完成镜像。
+    func materializeExport() throws -> URL {
+        let exportURL = documentsDirectory.appending(path: "Seal-log.txt")
+        try FileManager.default.createDirectory(
+            at: documentsDirectory,
+            withIntermediateDirectories: true
+        )
+        try exportText().write(to: exportURL, atomically: true, encoding: .utf8)
+        lastMirrorDate = Date()
+        return exportURL
+    }
+
     /// 把最近日志镜像到 Documents（文件 App → 我的 iPhone → Seal → Seal-log.txt）
     /// 2026-10-04: 节流到 30 秒一次。高频 flush 时全量 encode+写文件是 MB 级磁盘写。
     private func mirrorToDocuments() {
@@ -142,16 +160,7 @@ actor SealLogStore {
             return
         }
         lastMirrorDate = now
-        guard let documents = FileManager.default.urls(
-            for: .documentDirectory,
-            in: .userDomainMask
-        ).first else { return }
-        let text = (try? exportText()) ?? ""
-        try? text.write(
-            to: documents.appendingPathComponent("Seal-log.txt"),
-            atomically: true,
-            encoding: .utf8
-        )
+        try? materializeExport()
     }
 
     private func persist(_ entries: [SealLogEntry]) {

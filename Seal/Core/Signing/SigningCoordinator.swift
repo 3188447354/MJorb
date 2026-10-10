@@ -601,13 +601,14 @@ actor SigningCoordinator {
 
             if useProfileOnlyRenewal {
                 // 走到这里说明设备端身份核验已完成（上方已 join + 留痕 + 可能 markTainted）。
-                let originalURL = try await fileStore.fileURL(relativePath: app.ipaRelativePath)
                 return try await renewProfilesOnly(
                     app: app,
                     account: account,
                     secret: secret,
                     deviceIdentifier: deviceIdentifier,
-                    originalIPAURL: originalURL,
+                    // 快路径不会读取此文件；旧记录缺签名目标时才由门户层解包回退。
+                    // 原包缺失不能阻断已有完整身份的描述文件续签。
+                    originalIPAURL: try? await fileStore.fileURL(relativePath: app.ipaRelativePath),
                     workspaceRoot: workspaceRoot,
                     targetBundleIdentifier: targetBundleIdentifier,
                     progress: progress,
@@ -1044,7 +1045,7 @@ actor SigningCoordinator {
         account: AppleAccountRecord,
         secret: AccountSecret,
         deviceIdentifier: String,
-        originalIPAURL: URL,
+        originalIPAURL: URL?,
         workspaceRoot: URL,
         targetBundleIdentifier: String,
         progress: @escaping @Sendable (SigningStageUpdate) async -> Void,

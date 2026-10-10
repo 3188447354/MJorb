@@ -742,7 +742,7 @@ actor AppFileStore {
     }
 
 
-    func removeSignedIPA(appID: UUID) throws {
+    func removeSignedIPACache(appID: UUID) throws {
         let appsRoot = documentsDirectory.appending(path: "Apps", directoryHint: .isDirectory)
         let signedIPA = appsRoot
             .appending(path: appID.uuidString, directoryHint: .isDirectory)
@@ -753,10 +753,6 @@ actor AppFileStore {
         }
         if FileManager.default.fileExists(atPath: signedIPA.path) {
             try FileManager.default.removeItem(at: signedIPA)
-        }
-        let exports = exportDirectory(appID: appID)
-        if FileManager.default.fileExists(atPath: exports.path) {
-            try FileManager.default.removeItem(at: exports)
         }
     }
 

@@ -82,6 +82,25 @@ struct ProfileOnlyRenewalPolicyTests {
     }
 
     @Test
+    func installedThirdPartyAppKeepsProfileOnlyEligibilityAfterSignedCacheMetadataIsRemoved() {
+        // `Signed.ipa` 是可重建的安装缓存，不是设备上已安装包的续签身份。
+        // 清缓存后只要签名目标、证书、设备和描述文件身份仍完整，就必须继续走
+        // 「只更新描述文件」；否则“释放缓存”会偷偷把用户送进完整重签和重装。
+        var app = makeEligibleApp()
+        app.clearSignedIPACacheMetadata()
+
+        #expect(
+            ProfileOnlyRenewalPolicy.evaluate(app: app)
+                == .eligible(
+                    targetBundleIdentifiers: [
+                        "com.example.demo.TEAM123456",
+                        "com.example.demo.TEAM123456.share"
+                    ]
+                )
+        )
+    }
+
+    @Test
     func eligibilityDoesNotDependOnTheExtensionProfileStrategy() {
         // 回归钉（2026-09-24 真机）：曾经按「共享主描述文件 + 含扩展 ⇒ 完整重签」一刀切，
         // 把含扩展应用的快路径整个丢掉 —— 抖音续签从「仅更新描述文件」变成

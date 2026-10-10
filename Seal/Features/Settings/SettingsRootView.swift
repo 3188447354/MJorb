@@ -150,7 +150,7 @@ struct SettingsRootView: View {
                         .buttonStyle(.plain)
                         sectionDivider
 
-                        NavigationLink { LogViewerView() } label: {
+                        NavigationLink { LogViewerView(viewModel: viewModel) } label: {
                             settingsRow(
                                 title: "日志",
                                 value: nil,

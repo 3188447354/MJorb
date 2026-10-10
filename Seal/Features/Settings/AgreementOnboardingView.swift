@@ -52,6 +52,8 @@ struct AgreementOnboardingView: View {
             NavigationStack {
                 AgreementConsentSheet(
                     onAgreed: onAgreed,
+                    onOpenPolicy: { presentationState.openPolicy() },
+                    onClosePolicy: { presentationState.closePolicy() },
                     onDeclined: {
                         presentationState.decline()
                         showDeclineHint = true
@@ -59,8 +61,12 @@ struct AgreementOnboardingView: View {
                     }
                 )
             }
-            .presentationDetents([.fraction(AgreementOnboardingLayout.initialDrawerFraction), .large])
-            .presentationDragIndicator(.visible)
+            .presentationDetents(
+                presentationState.isReadingPolicy
+                    ? [.large]
+                    : [.fraction(AgreementOnboardingLayout.initialDrawerFraction)]
+            )
+            .presentationDragIndicator(.hidden)
             .presentationBackground(.white)
             // 协议门控不允许通过向下拖动绕过；拖动仍可在两个 detent 之间切换。
             .interactiveDismissDisabled()
@@ -129,9 +135,10 @@ struct AgreementOnboardingView: View {
                     )
                 )
 
-            Text("为你的应用，保持可用。")
+            Text("为你的应用保持可用")
                 .font(.title3)
                 .foregroundStyle(Color(red: 0.22, green: 0.29, blue: 0.46))
+
         }
         .opacity(appeared ? 1 : 0)
         .scaleEffect(appeared ? 1 : 0.94)
@@ -171,6 +178,8 @@ struct AgreementOnboardingView: View {
 /// 原生 sheet 的内容。协议门控由外层禁用交互式关闭，内容只负责明确的同意/暂不使用动作。
 private struct AgreementConsentSheet: View {
     let onAgreed: () -> Void
+    let onOpenPolicy: () -> Void
+    let onClosePolicy: () -> Void
     let onDeclined: () -> Void
 
     private var drawerHorizontalInset: CGFloat { AgreementOnboardingLayout.horizontalInset }
@@ -232,19 +241,27 @@ private struct AgreementConsentSheet: View {
         VStack(alignment: .center, spacing: 8) {
             // 协议链接单独成行，避免断行
             HStack(spacing: 16) {
-                NavigationLink { PrivacyNoticeView() } label: {
+                NavigationLink {
+                    PrivacyNoticeView()
+                        .onDisappear { onClosePolicy() }
+                } label: {
                     Text("《隐私政策》")
                         .foregroundStyle(Color(red: 0.00, green: 0.48, blue: 1.0))
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("agreement-privacy-link")
+                .simultaneousGesture(TapGesture().onEnded { onOpenPolicy() })
 
-                NavigationLink { UserAgreementView() } label: {
+                NavigationLink {
+                    UserAgreementView()
+                        .onDisappear { onClosePolicy() }
+                } label: {
                     Text("《用户协议》")
                         .foregroundStyle(Color(red: 0.00, green: 0.48, blue: 1.0))
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("agreement-terms-link")
+                .simultaneousGesture(TapGesture().onEnded { onOpenPolicy() })
             }
 
             Text("点击“同意并继续”，即表示你已阅读并同意上述协议。")

@@ -17,8 +17,7 @@ extension Notification.Name {
 struct LogViewerView: View {
     @ObservedObject var viewModel: SettingsViewModel
     @State private var rounds: [LogRound] = []
-    @State private var isExporting = false
-    @State private var exportURL: URL?
+    @State private var exportDocument: LogExportDocument?
     @State private var showClearConfirm = false
     @State private var selectedError: LogRound.LogRoundItem?
     @State private var exportFailure: ImportFailure?
@@ -102,15 +101,8 @@ struct LogViewerView: View {
         .onReceive(NotificationCenter.default.publisher(for: .sealRenewalCompleted)) { _ in
             Task { await loadRounds() }
         }
-        .sheet(isPresented: $isExporting) {
-            if let url = exportURL {
-                ShareSheet(activityItems: [url])
-            } else {
-                // 兜底：理论上不会走到（exportLogs 里已判空），避免空白抽屉
-                Text("日志文件不存在")
-                    .foregroundColor(.secondary)
-                    .padding()
-            }
+        .sheet(item: $exportDocument) { document in
+            ShareSheet(activityItems: [document.url])
         }
     }
 
@@ -136,8 +128,16 @@ struct LogViewerView: View {
             do {
                 let url = try await viewModel.materializeLogExport()
                 await MainActor.run {
-                    exportURL = url
-                    isExporting = true
+                    guard let document = LogExportDocument(url: url) else {
+                        exportFailure = ImportFailure(
+                            title: "无法导出日志",
+                            reason: "日志文件写入后未找到。",
+                            recovery: "稍后重试",
+                            code: "SEAL-LOG-002"
+                        )
+                        return
+                    }
+                    exportDocument = document
                 }
             } catch let failure as ImportFailure {
                 await MainActor.run { exportFailure = failure }

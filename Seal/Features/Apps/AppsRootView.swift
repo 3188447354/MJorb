@@ -100,6 +100,12 @@ struct AppsRootView: View {
                     app: app,
                     viewModel: viewModel,
                     onRenew: {
+                        // The action drawer must relinquish its route before the
+                        // renewal progress drawer starts. Otherwise SwiftUI can
+                        // re-present this stale item for one frame when progress
+                        // dismisses.
+                        installedActionApp = nil
+                        detailApp = nil
                         operationAppID = app.id
                         Task { @MainActor in
                             try? await Task.sleep(for: .milliseconds(250))
@@ -207,8 +213,8 @@ struct AppsRootView: View {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .sealSelfRecordUpdated)) { _ in
-                // 自安装重启后 SelfAppRegistrar 更新了记录，刷新列表让标签消失
-                Task { await viewModel.load(force: true) }
+                // 自安装重启后，记录与证书派生状态必须同一轮发布。
+                Task { await viewModel.reloadSelfRecordSnapshot() }
             }
         }
         .sealScreenBackground()
@@ -442,6 +448,10 @@ struct AppsRootView: View {
     }
 
     private func operationSheetDismissed() {
+        // A completed signing/renewal must never reveal an older action route
+        // during the native dismissal transaction.
+        installedActionApp = nil
+        detailApp = nil
         viewModel.dismissOperation()
         guard let operationAppID else { return }
         self.operationAppID = nil

@@ -21,4 +21,14 @@ final class AgreementOnboardingLayoutTests: XCTestCase {
         XCTAssertTrue(state.isConsentSheetPresented)
         XCTAssertFalse(state.isAwaitingDeclineAcknowledgement)
     }
+
+    func testPolicyNavigationExpandsAndReturnRestoresCompactDrawer() {
+        var state = AgreementOnboardingPresentationState()
+
+        state.openPolicy()
+        XCTAssertTrue(state.isReadingPolicy)
+
+        state.closePolicy()
+        XCTAssertFalse(state.isReadingPolicy)
+    }
 }

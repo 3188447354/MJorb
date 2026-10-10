@@ -5,6 +5,14 @@
 
 ---
 
+## 2026-10-10 抽屉路由、日志导出与 Seal 自替换状态同步
+
+- **现象**：单项签名/续签结束时会闪回旧的应用操作抽屉；日志导出有时打开“日志文件不存在”的空白页；Seal 自替换重开后仍显示“需重新签名”，手动刷新才消失；欢迎页抽屉会在阅读协议后保持过高。
+- **根因**：应用操作抽屉的选择状态在续签开始和结果关闭时仍保留；日志 sheet 由独立的布尔值与 URL 驱动，存在不同渲染事务；自替换通知走渐进式 `load()`，记录先发布而证书派生状态异步更新；协议页没有阅读/欢迎两种 detent 状态。
+- **修复**：续签前和操作关闭时清除旧路由；日志分享页改由已验证存在的 `LogExportDocument` 单一状态驱动；自替换通知走原子快照刷新；欢迎页固定紧凑，进入协议时切大页、返回恢复紧凑。
+- **涉及文件**：`AppsRootView`、`AppsViewModel`、`LogViewerView`、`LogExportDocument`、`AgreementOnboardingView`、`AgreementOnboardingPresentationState` 与对应测试。
+- **验证状态**：已完成静态差异与错误码唯一性检查；Windows 无 iOS 编译工具链，待完整 iOS CI 编译、单测与真机回归。
+
 ## 2026-10-10 Profile-only 续签回归断言语义对齐
 
 - **现象**：完整 iOS CI 的两个 `ProfileOnlyRenewalPolicyTests` 失败；实际判定为 `incompleteSigningIdentity`，旧断言仍期待 `missingInstalledArtifact`。

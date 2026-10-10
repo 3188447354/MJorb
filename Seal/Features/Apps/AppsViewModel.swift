@@ -624,6 +624,31 @@ final class AppsViewModel: ObservableObject {
         }
     }
 
+    /// 自替换后的通知不能走渐进式 `load()`：记录先发布、钥匙串派生状态后发布时，
+    /// 用户可在两者之间打开抽屉并看到过期的“需重新签名”。
+    func reloadSelfRecordSnapshot() async {
+        guard let appStore else { return }
+        do {
+            let fetchedApps = try await appStore.fetchAll()
+            let fetchedAccounts = try await accountRepository?.fetchAll() ?? []
+            let secrets = await loadAccountSecrets(for: fetchedAccounts)
+
+            apps = fetchedApps
+            accounts = fetchedAccounts
+            accountSecrets = secrets
+            fullAccountEmails = secrets.mapValues(\.email)
+            refreshCertAvailability()
+            hasLoaded = true
+        } catch {
+            try? await logStore?.append(
+                category: .system,
+                level: .warning,
+                message: "Seal 自替换状态同步失败，保留当前界面状态。诊断：\(ErrorDiagnosticFormatter.diagnostic(for: error))",
+                code: "SEAL-APP-004"
+            )
+        }
+    }
+
     /// 后台任务的加载代次校验。`loadGeneration` 属于主 actor，后台任务必须 `await` 访问。
     private func isCurrentLoad(_ generation: Int) -> Bool {
         loadGeneration == generation

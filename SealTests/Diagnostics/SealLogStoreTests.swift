@@ -4,6 +4,14 @@ import Testing
 
 struct SealLogStoreTests {
     @Test
+    func exportDocumentRejectsMissingFile() {
+        let missing = FileManager.default.temporaryDirectory
+            .appending(path: "SealTests-missing-\(UUID().uuidString)")
+
+        #expect(LogExportDocument(url: missing) == nil)
+    }
+
+    @Test
     func keepsOnlyNewestEntries() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "SealTests-\(UUID().uuidString)", directoryHint: .isDirectory)

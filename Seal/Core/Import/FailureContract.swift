@@ -9,6 +9,7 @@ enum FailureCondition: String, Codable, Equatable, Sendable {
     case twoFactorAuthenticationRequired
     case signingAccountUnavailable
     case accountVerificationRequired
+    case recordedSigningIdentityUnavailable
     case fullResignRequired
     case pairingRequired
     case deviceTrustRequired

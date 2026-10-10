@@ -51,6 +51,26 @@ struct FailureContractTests {
     }
 
     @Test
+    func recordedRenewalIdentityLossNeverFallsBackToAnotherTeam() {
+        let failure = ImportFailure(
+            title: "找不到原来的签名账号",
+            reason: "原账号已被删除，且没有同一团队的可用账号。",
+            recovery: "前往「我的」添加原团队的 Apple ID",
+            code: "SEAL-AUTH-104g",
+            condition: .recordedSigningIdentityUnavailable,
+            action: .addAccount,
+            route: .account,
+            retryDisposition: .manual,
+            operation: .renew,
+            origin: .authentication
+        )
+
+        #expect(failure.operation == .renew)
+        #expect(failure.action == .addAccount)
+        #expect(failure.condition == .recordedSigningIdentityUnavailable)
+    }
+
+    @Test
     func equalFailuresIncludeFailureSemantics() {
         let first = ImportFailure(
             title: "签名失败",

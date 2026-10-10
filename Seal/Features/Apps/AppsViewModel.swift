@@ -1400,8 +1400,14 @@ final class AppsViewModel: ObservableObject {
             alertFailure = ImportFailure(
                 title: "Apple ID 需要重新验证",
                 reason: "\(app.name) 记录的签名账号（\(email)）当前不可用，需要先在「我的」里重新验证后才能续签。",
-                recovery: "去「我的」",
-                code: "SEAL-AUTH-104f"
+                recovery: "前往「我的」重新验证 Apple ID",
+                code: "SEAL-AUTH-104f",
+                condition: .accountVerificationRequired,
+                action: .reauthenticateAccount,
+                route: .account,
+                retryDisposition: .manual,
+                operation: .renew,
+                origin: .authentication
             )
             return nil
         case .recordedAccountMissing(let teamID):
@@ -1414,8 +1420,14 @@ final class AppsViewModel: ObservableObject {
             alertFailure = ImportFailure(
                 title: "找不到原来的签名账号",
                 reason: "\(app.name) 原来由团队 \(team) 的 Apple ID 签名，该账号已被删除，当前也没有同一团队的可用账号。换用其他团队的账号续签会导致它之前保存的登录信息和数据用不了，因此没有自动继续。",
-                recovery: "去「我的」",
-                code: "SEAL-AUTH-104g"
+                recovery: "前往「我的」添加原团队的 Apple ID",
+                code: "SEAL-AUTH-104g",
+                condition: .recordedSigningIdentityUnavailable,
+                action: .addAccount,
+                route: .account,
+                retryDisposition: .manual,
+                operation: .renew,
+                origin: .authentication
             )
             return nil
         case .noSelectableAccount:

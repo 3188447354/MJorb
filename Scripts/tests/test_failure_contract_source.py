@@ -76,6 +76,24 @@ class FailureContractSourceTests(unittest.TestCase):
         self.assertIn("condition: .accountVerificationRequired", source)
         self.assertIn("action: .reauthenticateAccount", source)
 
+    def test_recorded_renewal_account_failures_keep_their_team_safe_actions(self) -> None:
+        source = (ROOT / "Seal/Features/Apps/AppsViewModel.swift").read_text(
+            encoding="utf-8"
+        )
+        needs_verification = source.split(
+            "case .recordedAccountNeedsVerification", 1
+        )[1].split("case .recordedAccountMissing", 1)[0]
+        missing_original = source.split(
+            "case .recordedAccountMissing", 1
+        )[1].split("case .noSelectableAccount", 1)[0]
+
+        self.assertIn("condition: .accountVerificationRequired", needs_verification)
+        self.assertIn("action: .reauthenticateAccount", needs_verification)
+        self.assertIn("operation: .renew", needs_verification)
+        self.assertIn("condition: .recordedSigningIdentityUnavailable", missing_original)
+        self.assertIn("action: .addAccount", missing_original)
+        self.assertIn("operation: .renew", missing_original)
+
 
 if __name__ == "__main__":
     unittest.main()

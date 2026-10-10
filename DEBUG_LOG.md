@@ -6380,3 +6380,13 @@ CMake Error at CMakeLists.txt:394 (message):
 **修复**：新增 `AccountAvailabilityFailure` 单一出口：`SEAL-AUTH-104h` 表示没有签名账号，唯一动作为“添加 Apple ID”；`SEAL-AUTH-104i` 表示账号存在但都需要重新验证，唯一动作为“重新验证 Apple ID”。三个入口统一使用该工厂，续签留痕取生成失败对象的实际错误码；签名进度抽屉也识别“添加 Apple ID”动作并通过账户路由打开对应页面。
 
 **验证**：新工厂的静态合同测试先失败后通过；本地 14 项 Python 审计／合同测试通过。替换旧码后重新生成的真实库存为 424 个唯一标识、797 次出现、139 个直接失败出口，其中 30 个已显式合同化、109 个仍待审计。Swift 编译和完整 iOS CI 尚未执行。
+
+## 2026-10-11 — 续签原账号状态没有进入失败合同
+
+**症状**：续签解析器已能区分“原账号仍在但需要重新验证”（`SEAL-AUTH-104f`）和“原账号已删除且找不到同 Team 账号”（`SEAL-AUTH-104g`），但弹窗仍只靠普通文本表达，界面层无法可靠判断前者应验证、后者必须补回原团队账号。
+
+**根因**：两条 `ImportFailure` 直接构造没有结构化字段；若后续 UI 继续按错误码或标题推断，容易把后者错误地引导到任意账号续签，破坏同 Team 才能保留签名身份的安全边界。
+
+**修复**：`104f` 设为 `accountVerificationRequired → reauthenticateAccount → account`；`104g` 设为 `recordedSigningIdentityUnavailable → addAccount → account`，两条均标注为 `renew` / `authentication`。文案明确后者需要添加原团队 Apple ID，而不是换任意账号继续。
+
+**验证**：静态回归测试先红后绿；本地 15 项 Python 审计／合同测试通过。库存为 424 个唯一标识、797 次出现、139 个直接失败出口，其中 32 个已显式合同化、107 个仍待审计。Swift 编译和完整 iOS CI 尚未执行。

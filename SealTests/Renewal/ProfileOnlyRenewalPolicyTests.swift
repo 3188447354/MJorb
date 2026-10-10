@@ -180,9 +180,10 @@ struct ProfileOnlyRenewalPolicyTests {
                 == .eligible(targetBundleIdentifiers: ["com.example.demo.TEAM123456"])
         )
         // 没有实时身份时，同一条记录必须照旧回落完整重签（**不是**后门）。
+        // `Signed.ipa` 已是可清理缓存，不能再把它是否存在当成续签身份的缺失原因。
         #expect(
             ProfileOnlyRenewalPolicy.evaluate(app: app, liveIdentity: nil)
-                == .requiresFullResign(.missingInstalledArtifact)
+                == .requiresFullResign(.incompleteSigningIdentity)
         )
     }
 
@@ -348,7 +349,7 @@ struct ProfileOnlyRenewalPolicyTests {
         #expect(foreign == nil)
         #expect(
             ProfileOnlyRenewalPolicy.evaluate(app: app, liveIdentity: foreign)
-                == .requiresFullResign(.missingInstalledArtifact)
+                == .requiresFullResign(.incompleteSigningIdentity)
         )
     }
 

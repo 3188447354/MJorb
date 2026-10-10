@@ -13,6 +13,14 @@
 - **涉及文件**：`AppsRootView`、`AppsViewModel`、`LogViewerView`、`LogExportDocument`、`AgreementOnboardingView`、`AgreementOnboardingPresentationState` 与对应测试。
 - **验证状态**：已完成静态差异与错误码唯一性检查；Windows 无 iOS 编译工具链，待完整 iOS CI 编译、单测与真机回归。
 
+## 2026-10-10 协议正文切换白屏与欢迎抽屉跳变
+
+- **现象**：点开隐私政策或用户协议时短暂白半屏、卡顿；返回时欢迎抽屉从大页瞬间缩回小页。
+- **根因**：同一原生 sheet 在 `NavigationLink` push 的同时，把 detent 集合从紧凑替换为大页；UIKit 因呈现容器重配出现白屏与非连续高度变化。
+- **修复**：欢迎抽屉固定唯一紧凑 detent；协议正文改为叠加在其上的独立全屏原生阅读页，关闭阅读页即回到未改变高度的欢迎抽屉。
+- **涉及文件**：`AgreementOnboardingView`、`AgreementOnboardingPresentationState`、`AgreementOnboardingLayoutTests`。
+- **验证状态**：待完整 iOS CI 与真机检查切换动画。
+
 ## 2026-10-10 Profile-only 续签回归断言语义对齐
 
 - **现象**：完整 iOS CI 的两个 `ProfileOnlyRenewalPolicyTests` 失败；实际判定为 `incompleteSigningIdentity`，旧断言仍期待 `missingInstalledArtifact`。

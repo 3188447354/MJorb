@@ -22,13 +22,17 @@ final class AgreementOnboardingLayoutTests: XCTestCase {
         XCTAssertFalse(state.isAwaitingDeclineAcknowledgement)
     }
 
-    func testPolicyNavigationExpandsAndReturnRestoresCompactDrawer() {
+    func testReadingPolicyKeepsTheWelcomeDrawerPresented() {
         var state = AgreementOnboardingPresentationState()
 
-        state.openPolicy()
-        XCTAssertTrue(state.isReadingPolicy)
+        state.openPolicy(.privacy)
+
+        XCTAssertTrue(state.isConsentSheetPresented)
+        XCTAssertEqual(state.presentedPolicy, .privacy)
 
         state.closePolicy()
-        XCTAssertFalse(state.isReadingPolicy)
+
+        XCTAssertTrue(state.isConsentSheetPresented)
+        XCTAssertNil(state.presentedPolicy)
     }
 }

@@ -49,27 +49,31 @@ struct AgreementOnboardingView: View {
         }
         .ignoresSafeArea()
         .sheet(isPresented: $presentationState.isConsentSheetPresented) {
-            NavigationStack {
-                AgreementConsentSheet(
-                    onAgreed: onAgreed,
-                    onOpenPolicy: { presentationState.openPolicy() },
-                    onClosePolicy: { presentationState.closePolicy() },
-                    onDeclined: {
-                        presentationState.decline()
-                        showDeclineHint = true
-                        onDeclined()
-                    }
-                )
-            }
-            .presentationDetents(
-                presentationState.isReadingPolicy
-                    ? [.large]
-                    : [.fraction(AgreementOnboardingLayout.initialDrawerFraction)]
+            AgreementConsentSheet(
+                onAgreed: onAgreed,
+                onOpenPolicy: { presentationState.openPolicy($0) },
+                onDeclined: {
+                    presentationState.decline()
+                    showDeclineHint = true
+                    onDeclined()
+                }
             )
+            .presentationDetents([.fraction(AgreementOnboardingLayout.initialDrawerFraction)])
             .presentationDragIndicator(.hidden)
             .presentationBackground(.white)
-            // 协议门控不允许通过向下拖动绕过；拖动仍可在两个 detent 之间切换。
+            // 协议门控不允许通过向下拖动绕过。
             .interactiveDismissDisabled()
+            // 正文不改变这张 sheet 的 detent；它以独立阅读层覆盖，返回后欢迎抽屉仍在原位。
+            .fullScreenCover(item: Binding<AgreementPolicyDocument?>(
+                get: { presentationState.presentedPolicy },
+                set: { document in
+                    if document == nil {
+                        presentationState.closePolicy()
+                    }
+                }
+            )) { document in
+                PolicyDocumentView(document: document) { presentationState.closePolicy() }
+            }
         }
         .onAppear {
             guard !reduceMotion else {
@@ -178,8 +182,7 @@ struct AgreementOnboardingView: View {
 /// 原生 sheet 的内容。协议门控由外层禁用交互式关闭，内容只负责明确的同意/暂不使用动作。
 private struct AgreementConsentSheet: View {
     let onAgreed: () -> Void
-    let onOpenPolicy: () -> Void
-    let onClosePolicy: () -> Void
+    let onOpenPolicy: (AgreementPolicyDocument) -> Void
     let onDeclined: () -> Void
 
     private var drawerHorizontalInset: CGFloat { AgreementOnboardingLayout.horizontalInset }
@@ -241,27 +244,23 @@ private struct AgreementConsentSheet: View {
         VStack(alignment: .center, spacing: 8) {
             // 协议链接单独成行，避免断行
             HStack(spacing: 16) {
-                NavigationLink {
-                    PrivacyNoticeView()
-                        .onDisappear { onClosePolicy() }
+                Button {
+                    onOpenPolicy(.privacy)
                 } label: {
                     Text("《隐私政策》")
                         .foregroundStyle(Color(red: 0.00, green: 0.48, blue: 1.0))
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("agreement-privacy-link")
-                .simultaneousGesture(TapGesture().onEnded { onOpenPolicy() })
 
-                NavigationLink {
-                    UserAgreementView()
-                        .onDisappear { onClosePolicy() }
+                Button {
+                    onOpenPolicy(.terms)
                 } label: {
                     Text("《用户协议》")
                         .foregroundStyle(Color(red: 0.00, green: 0.48, blue: 1.0))
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("agreement-terms-link")
-                .simultaneousGesture(TapGesture().onEnded { onOpenPolicy() })
             }
 
             Text("点击“同意并继续”，即表示你已阅读并同意上述协议。")
@@ -269,6 +268,30 @@ private struct AgreementConsentSheet: View {
                 .foregroundStyle(.secondary)
         }
         .font(.subheadline)
+    }
+}
+
+private struct PolicyDocumentView: View {
+    let document: AgreementPolicyDocument
+    let onClose: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                switch document {
+                case .privacy: PrivacyNoticeView()
+                case .terms: UserAgreementView()
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(action: onClose) {
+                        Image(systemName: "chevron.backward")
+                    }
+                    .accessibilityLabel("返回欢迎页")
+                }
+            }
+        }
     }
 }
 

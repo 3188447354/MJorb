@@ -25,7 +25,7 @@
 
 - `condition`：源码已经确认的事实，例如 `appleServiceUnavailable`、`appleRateLimited`、`credentialsRejected`、`verificationCodeRejected`、`fullResignRequired`、`pairingRequired`、`deviceTrustRequired`、`tunnelUnavailable`、`deviceStorageFull`、`installationStillRunning`、`signedArtifactInvalid`、`localStorageWriteFailed`、`logServiceUnavailable`、`unexpected`。
 - `action`：唯一用户动作，例如 `retry`、`waitThenRetry`、`reauthenticateAccount`、`enterNewVerificationCode`、`fullResign`、`repairPairing`、`trustDevice`、`openLocalDevVPN`、`freeDeviceStorage`、`checkInstallationResult`、`reinstallFromSignedArtifact`、`reimportIPA`、`restartSeal`、`copyDiagnostics`。
-- `route`：可选设置页目标，只有动作确实需要跳转才赋值；不从错误码字符串推断。
+- `route`：可选核心导航意图（账户、证书、配对、LocalDevVPN），只有动作确实需要跳转才赋值；不从错误码字符串推断。核心层只认识 `FailureRoute`，SwiftUI 层才把它单向映射到具体 `SettingsRoute`，避免核心领域依赖界面模块。
 - `retryDisposition`：`none`、`automatic`、`manual`、`waitForInFlightWork`。
 
 再新增不可变的上下文：

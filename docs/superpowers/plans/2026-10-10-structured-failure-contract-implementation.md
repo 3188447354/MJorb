@@ -27,7 +27,7 @@ Expected: the generated `Seal.xcodeproj` lists the app scheme and the test schem
 
 ## Locked file structure
 
-- Create: `Seal/Core/Import/FailureContract.swift` — condition, action, operation, origin, retry, catalog.
+- Create: `Seal/Core/Import/FailureContract.swift` — condition, action, core navigation intent (`FailureRoute`), operation, origin, retry, catalog.
 - Create: `Seal/Core/Import/FailureClassifier.swift` — sole raw-error classification boundary.
 - Create: `Seal/Core/Diagnostics/FailureDiagnosticRecord.swift` — redacted structured diagnostic data.
 - Modify: `Seal/Core/Import/ImportFailure.swift` — legacy-compatible failure envelope with semantic metadata.
@@ -80,6 +80,7 @@ enum FailureCondition: String, Codable, Sendable { case appleServiceUnavailable,
 enum FailureAction: String, Codable, Sendable { case retry, waitThenRetry, reauthenticateAccount, enterNewVerificationCode, fullResign, repairPairing, trustDevice, openLocalDevVPN, freeDeviceStorage, checkInstallationResult, reinstallFromSignedArtifact, reimportIPA, restartSeal, copyDiagnostics }
 enum FailureOperation: String, Codable, Sendable { case sign, renew, batchRenew, install, importIPA, exportLog }
 enum FailureOrigin: String, Codable, Sendable { case authentication, applePortal, provisioning, signing, deviceChannel, installer, fileStore, logStore, unknown }
+enum FailureRoute: String, Codable, Sendable { case account, certificates, pairing, localDevVPN }
 enum FailureRetryDisposition: String, Codable, Sendable { case none, automatic, manual, waitForInFlightWork }
 ```
 
@@ -214,11 +215,11 @@ git commit -m "fix: preserve classified signing and renewal failures"
 ```swift
 @Test(arguments: [
     ("SEAL-INSTALL-704", FailureCondition.deviceTrustRequired, FailureAction.trustDevice, nil),
-    ("SEAL-INSTALL-710", FailureCondition.tunnelUnavailable, FailureAction.openLocalDevVPN, SettingsRoute.localDevVPN),
+    ("SEAL-INSTALL-710", FailureCondition.tunnelUnavailable, FailureAction.openLocalDevVPN, FailureRoute.localDevVPN),
     ("SEAL-INSTALL-702s", FailureCondition.deviceStorageFull, FailureAction.freeDeviceStorage, nil),
     ("SEAL-INSTALL-702t", FailureCondition.installationStillRunning, FailureAction.checkInstallationResult, nil)
 ])
-func installDiagnosticsStayDistinct(code: String, condition: FailureCondition, action: FailureAction, route: SettingsRoute?) {
+func installDiagnosticsStayDistinct(code: String, condition: FailureCondition, action: FailureAction, route: FailureRoute?) {
     let failure = InstallFailureActionPolicy.failure(for: code, operation: .install)
     #expect(failure.condition == condition)
     #expect(failure.action == action)
@@ -234,7 +235,7 @@ Expected: FAIL until route reads metadata.
 
 - [ ] **Step 3: Map diagnostics to metadata**
 
-Keep `MinimuxerInstallChannel`'s concrete diagnostics. Replace `route(forCode:)` with `route(for failure: ImportFailure)`; delete prefix routing and duplicate code sets after the domain factory owns each mapping. Do not send storage, signed artifact, timeout, or trust errors to LocalDevVPN.
+Keep `MinimuxerInstallChannel`'s concrete diagnostics. Replace `route(forCode:)` with `route(for failure: ImportFailure)`; it converts `FailureRoute` to the UI-only `SettingsRoute`. Delete prefix routing and duplicate code sets after the domain factory owns each mapping. Do not send storage, signed artifact, timeout, or trust errors to LocalDevVPN.
 
 - [ ] **Step 4: Verify and commit**
 

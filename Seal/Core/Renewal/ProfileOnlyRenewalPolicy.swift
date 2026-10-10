@@ -232,11 +232,8 @@ enum ProfileOnlyRenewalPolicy {
     static func evaluate(app: AppRecord) -> Decision {
         // `Signed.ipa` 是可再生的安装缓存，不是手机上已安装产物的续签身份。
         // 维护页删除缓存后仍可只更新描述文件；真正的身份完整性由后续字段逐项验证。
-        guard app.state == .installed else {
-            return .requiresFullResign(.missingInstalledArtifact)
-        }
-
-        guard app.accountID != nil,
+        guard app.state == .installed,
+              app.accountID != nil,
               let teamIdentifier = nonBlank(app.signingTeamID),
               let certificateSerialNumber = normalizedSerialNumber(app.certificateSerialNumber),
               let deviceIdentifier = nonBlank(app.signedDeviceIdentifier),

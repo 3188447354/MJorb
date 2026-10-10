@@ -73,11 +73,11 @@ struct SealLogStoreTests {
         let documents = directory.appending(path: "Documents", directoryHint: .isDirectory)
         let store = SealLogStore(
             fileURL: directory.appending(path: "Logs.json"),
-            documentsDirectory: documents,
-            fileProtector: MarkerFileProtector()
+            fileProtector: MarkerFileProtector(),
+            documentsDirectory: documents
         )
 
-        try await store.append(category: .renewal, message: "单独续签完成")
+        try await store.append(category: SealLogEntry.Category.renewal, message: "单独续签完成")
         let exportURL = try await store.materializeExport()
 
         #expect(exportURL == documents.appending(path: "Seal-log.txt"))

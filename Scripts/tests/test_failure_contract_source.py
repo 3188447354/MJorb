@@ -64,6 +64,18 @@ class FailureContractSourceTests(unittest.TestCase):
         self.assertIn("action: .reauthenticateAccount", validation_credentials)
         self.assertIn("operation: .validateAccount", validation_credentials)
 
+    def test_missing_and_unverified_accounts_are_not_emitted_as_one_failure(self) -> None:
+        source = (ROOT / "Seal/Core/Accounts/AccountAvailabilityFailure.swift").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('code: "SEAL-AUTH-104h"', source)
+        self.assertIn("condition: .signingAccountUnavailable", source)
+        self.assertIn("action: .addAccount", source)
+        self.assertIn('code: "SEAL-AUTH-104i"', source)
+        self.assertIn("condition: .accountVerificationRequired", source)
+        self.assertIn("action: .reauthenticateAccount", source)
+
 
 if __name__ == "__main__":
     unittest.main()

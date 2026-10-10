@@ -38,6 +38,19 @@ struct FailureContractTests {
     }
 
     @Test
+    func unavailableAndUnverifiedAccountsHaveDifferentPrimaryActions() {
+        let missing = AccountAvailabilityFailure.missingAccount(operation: .sign)
+        let unverified = AccountAvailabilityFailure.accountNeedsVerification(operation: .renew)
+
+        #expect(missing.code == "SEAL-AUTH-104h")
+        #expect(missing.action == .addAccount)
+        #expect(missing.operation == .sign)
+        #expect(unverified.code == "SEAL-AUTH-104i")
+        #expect(unverified.action == .reauthenticateAccount)
+        #expect(unverified.operation == .renew)
+    }
+
+    @Test
     func equalFailuresIncludeFailureSemantics() {
         let first = ImportFailure(
             title: "签名失败",

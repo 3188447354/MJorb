@@ -620,6 +620,7 @@ struct SigningProgressView: View {
         case .openLocalDevVPN: "打开 LocalDevVPN"
         case .reinstallFromSignedArtifact: "重新安装"
         case .retry: "重新签名"
+        case .addAccount: "添加 Apple ID"
         case .reauthenticateAccount: "重新验证 Apple ID"
         case .enterNewVerificationCode: "输入新验证码"
         case .waitThenRetry, .trustDevice, .freeDeviceStorage,
@@ -637,7 +638,7 @@ struct SigningProgressView: View {
             Task { await viewModel.retryInstallationForCurrentSigningSession() }
         case .retry:
             viewModel.retrySigning()
-        case .repairPairing, .openLocalDevVPN, .reauthenticateAccount:
+        case .repairPairing, .openLocalDevVPN, .addAccount, .reauthenticateAccount:
             // 这些动作应该随 `FailureRoute` 一起到达；缺少 route 时不猜测目标页面。
             viewModel.dismissSigningResult()
             dismiss()

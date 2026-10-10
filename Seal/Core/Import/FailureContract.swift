@@ -7,6 +7,8 @@ enum FailureCondition: String, Codable, Equatable, Sendable {
     case credentialsRejected
     case verificationCodeRejected
     case twoFactorAuthenticationRequired
+    case signingAccountUnavailable
+    case accountVerificationRequired
     case fullResignRequired
     case pairingRequired
     case deviceTrustRequired
@@ -25,6 +27,7 @@ enum FailureCondition: String, Codable, Equatable, Sendable {
 enum FailureAction: String, Codable, Equatable, Sendable {
     case retry
     case waitThenRetry
+    case addAccount
     case reauthenticateAccount
     case enterNewVerificationCode
     case fullResign

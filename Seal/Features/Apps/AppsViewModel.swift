@@ -1351,12 +1351,9 @@ final class AppsViewModel: ObservableObject {
         }
         let availableAccounts = accounts.filter { AccountAvailabilityPolicy.isSelectable($0) }
         guard availableAccounts.isEmpty == false else {
-            alertFailure = ImportFailure(
-                title: "缺少签名账号",
-                reason: accounts.isEmpty ? "尚未添加 Apple ID" : "Apple ID 需要重新验证",
-                recovery: "去「我的」",
-                code: "SEAL-AUTH-104a"
-            )
+            alertFailure = accounts.isEmpty
+                ? AccountAvailabilityFailure.missingAccount(operation: .sign)
+                : AccountAvailabilityFailure.accountNeedsVerification(operation: .sign)
             return
         }
 
@@ -1422,17 +1419,15 @@ final class AppsViewModel: ObservableObject {
             )
             return nil
         case .noSelectableAccount:
+            let failure = accounts.isEmpty
+                ? AccountAvailabilityFailure.missingAccount(operation: .renew)
+                : AccountAvailabilityFailure.accountNeedsVerification(operation: .renew)
             await logAccountResolutionFailure(
                 app: app,
-                code: "SEAL-AUTH-104a",
+                code: failure.code,
                 detail: "没有可用的 Apple ID（账号记录 \(accounts.count) 条）"
             )
-            alertFailure = ImportFailure(
-                title: "缺少签名账号",
-                reason: accounts.isEmpty ? "尚未添加 Apple ID" : "Apple ID 需要重新验证",
-                recovery: "去「我的」",
-                code: "SEAL-AUTH-104a"
-            )
+            alertFailure = failure
             return nil
         }
     }
@@ -1630,12 +1625,10 @@ final class AppsViewModel: ObservableObject {
         try? await logStore?.append(category: .system, level: .info, message: "[SEAL-OP] 为应用换账号: \(app.displayName)")
         await load(force: true)
         guard accounts.contains(where: { AccountAvailabilityPolicy.isSelectable($0) }) else {
-            alertFailure = ImportFailure(
-                title: "缺少签名账号",
-                reason: accounts.isEmpty ? "尚未添加 Apple ID" : "Apple ID 需要重新验证",
-                recovery: "去「我的」",
-                code: "SEAL-AUTH-104d"
-            )
+            let operation: FailureOperation = app.belongsInInstalledList ? .renew : .sign
+            alertFailure = accounts.isEmpty
+                ? AccountAvailabilityFailure.missingAccount(operation: operation)
+                : AccountAvailabilityFailure.accountNeedsVerification(operation: operation)
             return
         }
         accountSelectionApp = app

@@ -128,6 +128,16 @@ struct SettingsRootView: View {
                         .buttonStyle(.plain)
                         sectionDivider
 
+                        settingsLink(value: SettingsRoute.errorHelp) {
+                            settingsRow(
+                                title: "错误帮助",
+                                value: nil,
+                                icon: "exclamationmark.bubble",
+                                showsChevron: true
+                            )
+                        }
+                        sectionDivider
+
                         NavigationLink { PrivacyNoticeView() } label: {
                             settingsRow(
                                 title: "隐私政策",
@@ -199,6 +209,8 @@ struct SettingsRootView: View {
                     LocalDevVPNSettingsView(viewModel: viewModel)
                 case .storage:
                     StorageMaintenanceView(viewModel: viewModel)
+                case .errorHelp:
+                    ErrorHelpLibraryView()
                 }
             }
             .alert(item: $viewModel.alertFailure) { failure in

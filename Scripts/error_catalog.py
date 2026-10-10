@@ -91,6 +91,9 @@ def write_help_index(root: Path, entries: list[dict[str, Any]]) -> Path:
         sort_keys=True,
     ) + "\n"
     destination.write_text(payload, encoding="utf-8")
+    app_destination = root / "Seal" / "Resources" / "ErrorHelp" / "help-index.json"
+    app_destination.parent.mkdir(parents=True, exist_ok=True)
+    app_destination.write_text(payload, encoding="utf-8")
     return destination
 
 

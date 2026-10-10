@@ -1,0 +1,24 @@
+{
+  "entries": [
+    {
+      "code": "SEAL-LOG-002",
+      "kind": "failure",
+      "confidence": "unknown",
+      "summary": "Seal 未能将当前脱敏日志写成可分享的文件。",
+      "notEvidenceOf": [
+        "不能仅凭此码认定历史日志已丢失。",
+        "不能仅凭此码认定签名、续签或安装操作失败。"
+      ],
+      "actions": [
+        {"title": "返回后稍候重试导出"},
+        {"title": "确认 iPhone 可用存储空间后重试"},
+        {"title": "若持续发生，记录错误码并联系作者 MJorb"}
+      ],
+      "supportData": ["错误码后的底层文件写入详情", "可用本地存储空间"],
+      "source": [
+        "Seal/Features/Settings/SettingsViewModel.swift:materializeLogExport",
+        "Seal/Infrastructure/Diagnostics/SealLogStore.swift:materializeExport"
+      ]
+    }
+  ]
+}

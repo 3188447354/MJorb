@@ -51,6 +51,7 @@ targets:
           - "Resources/Anisette/*.so"
     resources:
       - path: Seal/Resources/Anisette
+      - path: Seal/Resources/ErrorHelp
     dependencies:
       - package: ZIPFoundation
       - package: AltSign

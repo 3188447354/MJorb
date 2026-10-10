@@ -20,6 +20,7 @@ struct LogViewerView: View {
     @State private var exportDocument: LogExportDocument?
     @State private var showClearConfirm = false
     @State private var selectedError: LogRound.LogRoundItem?
+    @State private var selectedErrorHelp: ErrorKnowledgeEntry?
     @State private var exportFailure: ImportFailure?
 
     var body: some View {
@@ -78,11 +79,16 @@ struct LogViewerView: View {
         )) {
             Button("复制错误信息") {
                 if let err = selectedError {
-                    let info = err.text + (err.reason.map { "\n原因：\($0)" } ?? "")
+                    let info = (err.code.map { "错误码：\($0)\n" } ?? "")
+                        + err.text + (err.reason.map { "\n原因：\($0)" } ?? "")
                     UIPasteboard.general.string = info
                 }
             }
-            Button("好的", role: .cancel) {}
+            Button("查看解决办法") {
+                if let err = selectedError {
+                    selectedErrorHelp = ErrorKnowledgeStore.bundled().help(for: err.code ?? "SEAL-LOG-UNKNOWN")
+                }
+            }
         } message: {
             if let err = selectedError {
                 Text((err.reason ?? "暂无具体解决办法，可复制错误信息到社群求助。"))
@@ -103,6 +109,11 @@ struct LogViewerView: View {
         }
         .sheet(item: $exportDocument) { document in
             ShareSheet(activityItems: [document.url])
+        }
+        .sheet(item: $selectedErrorHelp) { entry in
+            NavigationStack {
+                ErrorHelpView(entry: entry)
+            }
         }
     }
 
@@ -180,6 +191,7 @@ struct LogRound: Identifiable {
         let succeeded: Bool
         let text: String       // "LiveContainer 成功，用了5.9秒"
         let reason: String?    // 失败原因（人话）
+        let code: String?      // 仅从日志提取，缺失时不猜测
     }
 
     /// 从日志文本解析轮次块（━ 分隔）
@@ -249,7 +261,11 @@ struct LogRound: Identifiable {
         // 如果包含 ▶/✓/✗/■/─/━，直接返回该部分
         for marker in ["▶", "✓", "✗", "○", "◷", "■", "─", "━"] {
             if let range = trimmed.range(of: marker) {
-                return String(trimmed[range.lowerBound...]).trimmingCharacters(in: .whitespaces)
+                let message = String(trimmed[range.lowerBound...]).trimmingCharacters(in: .whitespaces)
+                if let code = errorCode(in: trimmed) {
+                    return "\(message) [\(code)]"
+                }
+                return message
             }
         }
         // 原因行
@@ -259,6 +275,12 @@ struct LogRound: Identifiable {
             }
         }
         return ""
+    }
+
+    private static func errorCode(in text: String) -> String? {
+        let pattern = #"SEAL-[A-Z]+-[0-9]+[a-z]?"#
+        guard let range = text.range(of: pattern, options: .regularExpression) else { return nil }
+        return String(text[range])
     }
 
     private static func buildRound(from lines: [String], date: Date?) -> LogRound? {
@@ -272,14 +294,19 @@ struct LogRound: Identifiable {
                 rawTitle = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
             } else if line.hasPrefix("✓") {
                 let text = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-                items.append(LogRoundItem(succeeded: true, text: text, reason: nil))
+                items.append(LogRoundItem(succeeded: true, text: text, reason: nil, code: nil))
             } else if line.hasPrefix("✗") {
                 let text = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-                items.append(LogRoundItem(succeeded: false, text: text, reason: pendingReason))
+                items.append(LogRoundItem(
+                    succeeded: false,
+                    text: text,
+                    reason: pendingReason,
+                    code: errorCode(in: text) ?? pendingReason.flatMap(errorCode)
+                ))
                 pendingReason = nil
             } else if line.hasPrefix("○") || line.hasPrefix("◷") {
                 let text = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-                items.append(LogRoundItem(succeeded: true, text: text, reason: nil))
+                items.append(LogRoundItem(succeeded: true, text: text, reason: nil, code: nil))
             } else if line.hasPrefix("原因：") {
                 pendingReason = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
                 // 关联到最后一个失败项
@@ -287,7 +314,8 @@ struct LogRound: Identifiable {
                     items[items.count - 1] = LogRoundItem(
                         succeeded: false,
                         text: last.text,
-                        reason: pendingReason
+                        reason: pendingReason,
+                        code: last.code ?? pendingReason.flatMap(errorCode)
                     )
                     pendingReason = nil
                 }

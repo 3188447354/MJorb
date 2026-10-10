@@ -6290,3 +6290,13 @@ CMake Error at CMakeLists.txt:394 (message):
 **修复**：新增 `StartupFailurePolicy`，将未分类启动异常统一为 `SEAL-APP-001` / `localStorageWriteFailed` / `restartSeal`。界面只说明本地数据暂时无法读取，并给出关闭后重新打开 Seal 的操作；保留已有结构化失败，不覆盖其具体语义。
 
 **验证**：新增回归用例断言 Core Data 初始化异常不会出现“存储空间”误导文案，且已分类失败原样保留；Swift/iOS 编译测试待 macOS CI。
+
+## 2026-10-11 — 发布守卫仍断言已废弃的错误码路由
+
+**症状**：完整 iOS CI 在 `verify-release-safety.py` 的 R83/R96 失败，尽管生产代码已经改为使用 `ImportFailure.route` 与可测试的多行 `signingFailure` 声明。
+
+**根因**：守卫与变异测试仍匹配迁移前的 `route(forCode: failure.code)` 及单行函数签名；它们把正确的结构化失败合同当作回归。
+
+**修复**：R83 改为验证 UI 使用 `route(for: failure)`，变异锚点以该调用替换为 `return nil`；R96 改为正则识别 `nonisolated static signingFailure`，不依赖格式化后的单行文本，并同步变异锚点。
+
+**验证**：待完整发布守卫与 macOS CI 复核。

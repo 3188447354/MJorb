@@ -5128,7 +5128,7 @@ def violations(load=read):
     r83_route_tests = load("SealTests/Settings/InstallFailureSettingsRouteTests.swift")
     r83_action_tests = load("SealTests/Installation/InstallChannelDiagnosticClassificationTests.swift")
 
-    check('InstallFailureSettingsRoute.route(forCode: failure.code)' in r83_vm
+    check('InstallFailureSettingsRoute.route(for: failure)' in r83_vm
           and 'hasPrefix("SEAL-INSTALL-") { return .localDevVPN }' not in r83_vm,
           "R83①: `AppsViewModel.settingsRoute` 必须委派给 `InstallFailureSettingsRoute`，"
           "且不得再出现「前缀判断 ⇒ `.localDevVPN`」那条老路 —— 一条前缀判断就把全部安装码"
@@ -6831,7 +6831,7 @@ def violations(load=read):
           "一律 `SEAL-SIGN-500`「签名流程遇到未预期错误」既没有下一步动作、"
           "也看不出这是通道问题（用户导出日志实证）；不登记码表 ⇒ 用户发来日志也判读不出")
 
-    check("nonisolated static func signingFailure(for error: Error) -> ImportFailure" in r96_vm
+    check(re.search(r"nonisolated\s+static\s+func\s+signingFailure\s*\(", r96_vm)
           and "struct DeviceChannelTransientPolicyTests" in r96_tests
           and "func singleAppRetryBudgetMatchesBatch()" in r96_tests
           and "func shouldRetryRespectsBudgetAndChannelJudgement()" in r96_tests
@@ -9429,9 +9429,9 @@ def main():
         # ① 把「前缀 ⇒ `.localDevVPN`」加回路由 ⇒ R83① 报红（用户点「恢复」又跳到
         #    解决不了问题的 VPN 页）。
         ("Seal/Features/Apps/AppsViewModel.swift",
-         "        InstallFailureSettingsRoute.route(forCode: failure.code)\n",
+         "        InstallFailureSettingsRoute.route(for: failure)\n",
          "        if failure.code.hasPrefix(\"SEAL-INSTALL-\") { return .localDevVPN }\n"
-         "        return InstallFailureSettingsRoute.route(forCode: failure.code)\n",
+         "        return nil\n",
          "R83①: `AppsViewModel.settingsRoute` 必须委派给"),
         # ② 往通道码集合里塞一个与隧道无关的码（设备存储不足）⇒ R83③ 报红。
         ("Seal/Features/Settings/InstallFailureSettingsRoute.swift",
@@ -10438,8 +10438,8 @@ def main():
          "R96③:"),
         # ④ 归类函数不再是 `nonisolated`（测试 target 调不到，判据无人守）⇒ R96④ 报红。
         ("Seal/Features/Apps/AppsViewModel.swift",
-         "nonisolated static func signingFailure(for error: Error) -> ImportFailure",
-         "private static func signingFailure(for error: Error) -> ImportFailure",
+         "nonisolated static func signingFailure(\n",
+         "private static func signingFailure(\n",
          "R96④:"),
         # ④b 关键单测被改名（不变量没人守）⇒ R96④ 报红。
         ("SealTests/Renewal/DeviceChannelTransientPolicyTests.swift",

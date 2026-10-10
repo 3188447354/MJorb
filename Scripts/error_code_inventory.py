@@ -18,6 +18,14 @@ ERROR_CODE_PATTERN = re.compile(
 STANDARD_ERROR_CODE_PATTERN = re.compile(r"SEAL-(?:[A-Z0-9]+-)*[0-9]+[a-z]?")
 FAILURE_EMISSION_PATTERN = re.compile(r'\bcode\s*[:=]\s*"SEAL-')
 EVENT_MAPPING_PATTERN = re.compile(r'\b(return|rawValue|event|log|append)\b', re.IGNORECASE)
+STRUCTURED_FAILURE_FIELDS = (
+    "condition",
+    "action",
+    "route",
+    "retryDisposition",
+    "operation",
+    "origin",
+)
 
 
 class OccurrenceRole(str, Enum):
@@ -44,6 +52,7 @@ class ErrorCodeOccurrence(NamedTuple):
     line: int
     role: OccurrenceRole
     identifier_kind: IdentifierKind
+    semantic_fields: tuple[str, ...]
     source: str
 
 
@@ -78,9 +87,9 @@ def classify_identifier(code: str, role: OccurrenceRole) -> IdentifierKind:
     return IdentifierKind.DIAGNOSTIC_TAG
 
 
-def parenthesized_call_lines(lines: list[str], symbol: str) -> set[int]:
-    """Return zero-based line indexes occupied by direct calls to a Swift initializer."""
-    occupied: set[int] = set()
+def parenthesized_call_spans(lines: list[str], symbol: str) -> list[tuple[int, int]]:
+    """Return zero-based inclusive spans occupied by direct Swift initializer calls."""
+    spans: list[tuple[int, int]] = []
     needle = f"{symbol}("
     for start_index, line in enumerate(lines):
         start_offset = line.find(needle)
@@ -96,20 +105,34 @@ def parenthesized_call_lines(lines: list[str], symbol: str) -> set[int]:
             end_index = index
             if depth <= 0:
                 break
-        occupied.update(range(start_index, end_index + 1))
-    return occupied
+        spans.append((start_index, end_index))
+    return spans
+
+
+def direct_failure_contract_fields(lines: list[str]) -> dict[int, tuple[str, ...]]:
+    fields_by_line: dict[int, tuple[str, ...]] = {}
+    for start, end in parenthesized_call_spans(lines, "ImportFailure"):
+        body = "\n".join(lines[start : end + 1])
+        fields = tuple(
+            field
+            for field in STRUCTURED_FAILURE_FIELDS
+            if re.search(rf"\b{re.escape(field)}\s*:", body)
+        )
+        for line_index in range(start, end + 1):
+            fields_by_line[line_index] = fields
+    return fields_by_line
 
 
 def scan_file(path: Path) -> list[ErrorCodeOccurrence]:
     occurrences: list[ErrorCodeOccurrence] = []
     lines = path.read_text(encoding="utf-8").splitlines()
-    structured_failure_lines = parenthesized_call_lines(lines, "ImportFailure")
+    structured_failure_fields = direct_failure_contract_fields(lines)
     for line_number, line in enumerate(lines, start=1):
         context = "\n".join(lines[max(0, line_number - 9) : line_number])
         role = classify_line(
             line,
             context,
-            is_structured_failure_boundary=(line_number - 1) in structured_failure_lines,
+            is_structured_failure_boundary=(line_number - 1) in structured_failure_fields,
         )
         for code in ERROR_CODE_PATTERN.findall(line):
             occurrences.append(
@@ -119,6 +142,7 @@ def scan_file(path: Path) -> list[ErrorCodeOccurrence]:
                     line=line_number,
                     role=role,
                     identifier_kind=classify_identifier(code, role),
+                    semantic_fields=structured_failure_fields.get(line_number - 1, ()),
                     source=line.strip(),
                 )
             )
@@ -157,6 +181,7 @@ def build_inventory(
                     "line": item.line,
                     "role": item.role.value,
                     "identifierKind": item.identifier_kind.value,
+                    "semanticFields": list(item.semantic_fields),
                     "source": item.source,
                 }
             )
@@ -168,6 +193,15 @@ def build_inventory(
             "locations": locations,
         }
 
+    direct_failures = [
+        item
+        for item in occurrences
+        if item.role == OccurrenceRole.STRUCTURED_FAILURE_EMISSION
+    ]
+    direct_failures_with_semantics = [
+        item for item in direct_failures if item.semantic_fields
+    ]
+
     return {
         "schemaVersion": 1,
         "scope": "Seal/**/*.swift",
@@ -178,6 +212,11 @@ def build_inventory(
             "identifierKinds": dict(
                 sorted(Counter(item.identifier_kind.value for item in occurrences).items())
             ),
+            "structuredFailureContracts": {
+                "directOccurrences": len(direct_failures),
+                "withExplicitSemantics": len(direct_failures_with_semantics),
+                "withoutExplicitSemantics": len(direct_failures) - len(direct_failures_with_semantics),
+            },
         },
         "codes": codes,
     }

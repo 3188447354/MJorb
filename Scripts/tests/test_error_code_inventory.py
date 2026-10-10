@@ -46,6 +46,26 @@ class ErrorCodeInventoryTests(unittest.TestCase):
             error_code_inventory.OccurrenceRole.STRUCTURED_FAILURE_EMISSION,
         )
 
+    def test_records_explicit_failure_contract_fields_at_direct_boundary(self):
+        path = self.write_source(
+            'return ImportFailure(\n'
+            '    title: "x",\n'
+            '    reason: "x",\n'
+            '    recovery: "x",\n'
+            '    code: "SEAL-IPA-101",\n'
+            '    condition: .invalidArchive,\n'
+            '    action: .chooseAnotherIPA,\n'
+            '    operation: .import\n'
+            ')\n'
+        )
+
+        occurrences = error_code_inventory.scan_file(path)
+
+        self.assertEqual(
+            occurrences[0].semantic_fields,
+            ("condition", "action", "operation"),
+        )
+
     def test_classifies_comment_reference_without_treating_it_as_an_emission(self):
         path = self.write_source('// SEAL-IPA-ROLLBACK-001 is a historical reference\n')
 
@@ -128,6 +148,14 @@ class ErrorCodeInventoryTests(unittest.TestCase):
             },
         )
         self.assertEqual([location["line"] for location in entry["locations"]], [1, 2])
+        self.assertEqual(
+            inventory["summary"]["structuredFailureContracts"],
+            {
+                "directOccurrences": 1,
+                "withExplicitSemantics": 0,
+                "withoutExplicitSemantics": 1,
+            },
+        )
 
 
 if __name__ == "__main__":

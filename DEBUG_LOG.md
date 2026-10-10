@@ -24,6 +24,14 @@
 - **涉及文件**：`Scripts/verify-release-safety.py`、`SealTests/Import/FailureContractTests.swift`。
 - **验证状态**：待完整 iOS CI 重新执行发布安全守卫与 Swift 回归测试。
 
+## 2026-10-10 失败归类基础：Apple 超时被通用 500 文案吞没
+
+- **现象**：Apple 开发者服务请求超时可在单次签名、单项续签和全部续签中上抛，但多个边界会把非 `ImportFailure` 统一改写为 `SEAL-SIGN-500` 或 `SEAL-RENEW-500`，用户只能看到“未知错误”。
+- **已确认事实**：`AppleServiceFailurePolicy.isNetworkError` 已明确把 `URLError.timedOut`、DNS 和连接失败归为网络类；`ImportFailure` 已具备 `condition`、`action`、`operation`、`origin` 和 `diagnosticID` 字段。此前缺的是一个统一的原始异常分类边界，而不是新增一套基于文案/错误码前缀的猜测。
+- **本批修复**：新增 `FailureClassifier` 与 `FailureDiagnosticRecord`。分类器仅保留已确认的 `ImportFailure`，或把 Apple 限流/网络异常映射为明确语义；未确认异常保持 `unexpected + copyDiagnostics`。诊断记录使用现有隐私脱敏器并额外移除请求 URL。
+- **边界**：本批只建立和测试分类契约，尚未替换签名/续签边界的旧 500 包装；下一批会逐处接入并验证传播链。
+- **验证状态**：本机缺少 Swift/XcodeGen/Xcode 工具链，无法运行新增 Swift Testing；已检查测试在实现前引用的类型不存在，待 macOS CI 执行编译与测试。
+
 ## 2026-10-10 错误帮助的证据边界与日志错误码保留
 
 - **现象**：现有“查看解决办法”直接跳官网，离线时无法查看；日志轮次卡片提取到失败文案后会丢失原始 `SEAL-*` 错误码，导致无法可靠关联解决方案。过去把错误码直接解释成单一根因，也会把网络、设备或 Apple 限制误导成“账号失效”。

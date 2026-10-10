@@ -10,13 +10,28 @@
 
 ---
 
+## Execution environment gate
+
+This checkout intentionally contains `project.yml` rather than a checked-in `.xcodeproj`, and the current Windows host has no `xcodebuild`. Before every command below, run it on a macOS runner after generating the project with the repository's existing CI setup command. On this Windows host, source inspection, patch creation, static scans and `git diff --check` are valid; an iOS build/test result is not available and must not be claimed. Do not push merely to obtain validation unless the user explicitly requests a CI run.
+
+Mac preflight:
+
+```bash
+xcodegen generate
+xcodebuild -list -project Seal.xcodeproj
+```
+
+Expected: the generated `Seal.xcodeproj` lists the app scheme and the test scheme used by the workflow.
+
+---
+
 ## Locked file structure
 
 - Create: `Seal/Core/Import/FailureContract.swift` — condition, action, operation, origin, retry, catalog.
 - Create: `Seal/Core/Import/FailureClassifier.swift` — sole raw-error classification boundary.
 - Create: `Seal/Core/Diagnostics/FailureDiagnosticRecord.swift` — redacted structured diagnostic data.
 - Modify: `Seal/Core/Import/ImportFailure.swift` — legacy-compatible failure envelope with semantic metadata.
-- Modify: `Seal/Core/Accounts/AppleServiceFailurePolicy.swift`, `Seal/Core/Signing/ApplePortalSigningFailure.swift`, `Seal/Core/Renewal/RenewalCoordinator.swift`, `Seal/Core/Signing/SigningCoordinator.swift`, `Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`.
+- Modify: `Seal/Core/Accounts/AppleServiceFailurePolicy.swift`, `Seal/Infrastructure/Signing/ApplePortalSigningService.swift` (contains `ApplePortalSigningFailure`), `Seal/Core/Renewal/RenewalCoordinator.swift`, `Seal/Core/Signing/SigningCoordinator.swift`, `Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift`.
 - Create: `Seal/Features/Shared/FailureActionPresenter.swift`.
 - Modify: `Seal/Features/Apps/AppsViewModel.swift`, `Seal/Features/Apps/AppsRootView.swift`, `Seal/Features/Apps/AppDetailView.swift`, `Seal/Features/Apps/AppSigningSheet.swift`, `Seal/Features/Settings/SettingsViewModel.swift`, `Seal/Features/Settings/LogViewerView.swift`, `Seal/Features/Settings/InstallFailureSettingsRoute.swift`, `Seal/Features/Settings/SettingsRootView.swift`.
 - Delete: `Seal/Features/Settings/ErrorHelpView.swift`, `Seal/Core/Diagnostics/ErrorKnowledgeStore.swift`, `Seal/Resources/ErrorHelp/help-index.json`, `SealTests/Diagnostics/ErrorKnowledgeStoreTests.swift`.
@@ -134,7 +149,7 @@ git commit -m "feat: classify failures at operation boundaries"
 
 **Files:**
 - Modify: `Seal/Core/Accounts/AppleServiceFailurePolicy.swift`
-- Modify: `Seal/Core/Signing/ApplePortalSigningFailure.swift`
+- Modify: `Seal/Infrastructure/Signing/ApplePortalSigningService.swift`
 - Modify: `Seal/Features/Apps/AppsViewModel.swift`
 - Modify: `Seal/Core/Renewal/RenewalCoordinator.swift`
 - Modify: `Seal/Core/Signing/SigningCoordinator.swift`
@@ -181,7 +196,7 @@ Run: command from Step 2 plus `-only-testing:SealTests/SigningCoordinatorSignedA
 Append tested source facts to `docs/upstream-alignment.md` and `DEBUG_LOG.md`.
 
 ```powershell
-git add Seal/Core/Accounts/AppleServiceFailurePolicy.swift Seal/Core/Signing/ApplePortalSigningFailure.swift Seal/Features/Apps/AppsViewModel.swift Seal/Core/Renewal/RenewalCoordinator.swift Seal/Core/Signing/SigningCoordinator.swift SealTests docs/upstream-alignment.md DEBUG_LOG.md
+git add Seal/Core/Accounts/AppleServiceFailurePolicy.swift Seal/Infrastructure/Signing/ApplePortalSigningService.swift Seal/Features/Apps/AppsViewModel.swift Seal/Core/Renewal/RenewalCoordinator.swift Seal/Core/Signing/SigningCoordinator.swift SealTests docs/upstream-alignment.md DEBUG_LOG.md
 git commit -m "fix: preserve classified signing and renewal failures"
 ```
 

@@ -2386,6 +2386,51 @@ actor ApplePortalSigningService {
         ) {
             do {
                 try Task.checkCancellation()
+
+                // 2026-10-10: LiveContainer2 的 App ID 一次性重建。
+                // 背景：该 App ID 的 App Group 顺序是 [AltStore, SideStore]，导致与主包
+                // 的共享目录不一致。Apple 的 assign 端点不重排已有绑定，且重签时 Seal
+                // 会跳过 App ID 更新 ⇒ 唯一的根治办法是删掉重建，让 assign 按排序后的
+                // 顺序（[SideStore, AltStore]）全新绑定。
+                // 这是一次性迁移，UserDefaults 标记防止重复执行。
+                if mappedBundleID.caseInsensitiveCompare("com.kdt.LiveContainer2.seal.CT8QZ7352B") == .orderedSame,
+                   UserDefaults.standard.bool(forKey: "SealDidRebuildLC2AppIDForGroupOrder") == false,
+                   let appIDToDelete = existing.first(where: {
+                       ApplePortalAppIDResolver.matches(
+                           existingBundleIdentifier: $0.bundleIdentifier,
+                           requestedBundleIdentifier: mappedBundleID
+                       )
+                   }) {
+                    await diagnostic("签名：正在重建 LiveContainer2 的 App ID 以修复 App Group 顺序…")
+                    let deletedBox: LegacyBox<Bool> = try await withSessionRecovery("删除 App ID \(mappedBundleID)") {
+                        try await withAppleTimeout {
+                            try await withCheckedThrowingContinuation { continuation in
+                                let callback = ContinuationBox(continuation)
+                                ALTAppleAPI.shared.deleteAppID(
+                                    appIDToDelete,
+                                    for: team,
+                                    session: session
+                                ) { success, error in
+                                    Self.resume(callback, value: success, error: error)
+                                }
+                            }
+                        }
+                    }
+                    if deletedBox.value {
+                        await diagnostic("签名：旧 App ID 已删除，将重新创建（App Group 会按字母排序绑定）")
+                        UserDefaults.standard.set(true, forKey: "SealDidRebuildLC2AppIDForGroupOrder")
+                        existing.removeAll {
+                            ApplePortalAppIDResolver.matches(
+                                existingBundleIdentifier: $0.bundleIdentifier,
+                                requestedBundleIdentifier: mappedBundleID
+                            )
+                        }
+                        invalidateAppIDsCache(forTeamIdentifier: team.identifier)
+                    } else {
+                        await diagnostic("签名：旧 App ID 删除失败，继续使用现有 App ID（App Group 顺序可能仍不正确）")
+                    }
+                }
+
                 var appID: ALTAppID
                 if let found = existing.first(where: {
                     ApplePortalAppIDResolver.matches(

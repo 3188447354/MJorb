@@ -1327,12 +1327,15 @@ def violations(load=read):
          "读取证书列表（慢速路径；读操作，2026-09-18 补）"),
         ('withSessionRecovery("核验当前签名证书", retriesOnTimeout: true)',
          "profile-only 的当前签名证书核验（读操作；不确认远端仍有效就不许注入新 profile）"),
+        ('withSessionRecovery("删除 App ID \\(mappedBundleID)")',
+         "删除 App ID（2026-10-10 一次性重建 LiveContainer2 的 App ID 以修复 App Group 顺序；"
+         "在 per-bundle-ID 循环里，同样可能撞 1100）"),
     ):
         check(label in portal_source, "R24: " + why + " 必须过退避重试")
     # 注意：定义写的是 `withSessionRecovery<T>(`，不带 `<` 的计数只数得到**调用点**。
-    check(portal_source.count("withSessionRecovery(") == 8,
-          "R24: 退避重试的调用点数量变了（应为 8 个：创建 App ID / 更新应用能力 / 申请描述文件 / "
-          "创建证书 / 分配 App Group / 读取 App ID 列表 / 读取证书列表 / profile-only 当前证书核验）—— "
+    check(portal_source.count("withSessionRecovery(") == 9,
+          "R24: 退避重试的调用点数量变了（应为 9 个：创建 App ID / 更新应用能力 / 申请描述文件 / "
+          "创建证书 / 分配 App Group / 读取 App ID 列表 / 读取证书列表 / profile-only 当前证书核验 / 删除 App ID）—— "
           "新增或删除 portal 调用时请同步这里，别只改这个数字、先确认新调用是不是也在热路径上")
 
     # R24b: `applications` 字典的查询必须用 mapped ID（2026-09-18 真机日志实锤）。

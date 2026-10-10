@@ -6,6 +6,7 @@ enum FailureCondition: String, Codable, Equatable, Sendable {
     case appleRateLimited
     case credentialsRejected
     case verificationCodeRejected
+    case twoFactorAuthenticationRequired
     case fullResignRequired
     case pairingRequired
     case deviceTrustRequired
@@ -44,6 +45,7 @@ enum FailureOperation: String, Codable, Equatable, Sendable {
     case sign
     case renew
     case batchRenew
+    case authenticateAccount
     case install
     case importIPA
     case exportLog

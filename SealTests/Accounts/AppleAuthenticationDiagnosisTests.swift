@@ -74,6 +74,18 @@ struct AppleAuthenticationDiagnosisTests {
         #expect(failure.code == "SEAL-AUTH-101a")
     }
 
+    @Test
+    func twoFactorFailureCarriesTheAccountRecoveryContract() {
+        let failure = AppleAuthenticationDiagnosis.twoFactorFailure(for: twoFactorError())
+
+        #expect(failure.condition == .twoFactorAuthenticationRequired)
+        #expect(failure.action == .enterNewVerificationCode)
+        #expect(failure.route == .account)
+        #expect(failure.retryDisposition == .manual)
+        #expect(failure.operation == .authenticateAccount)
+        #expect(failure.origin == .authentication)
+    }
+
     /// 原始 Apple 现场必须留在文案里 —— 排障时导出的日志只有这一处能看到
     /// 「到底是不是 3018」。丢了它，下次再遇到就只能靠猜。
     @Test

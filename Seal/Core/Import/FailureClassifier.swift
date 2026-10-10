@@ -19,7 +19,8 @@ enum FailureClassifier {
                 reason: "Apple 开发者服务暂时无法处理请求。",
                 recovery: "稍后重试",
                 code: "SEAL-NET-503",
-                condition: .appleRateLimited,
+                // HTTP 503 只能证明 Apple 服务暂不可用；不能推断为用户当前线路被限流。
+                condition: .appleServiceUnavailable,
                 action: .waitThenRetry,
                 retryDisposition: .manual,
                 operation: operation,
@@ -59,6 +60,7 @@ enum FailureClassifier {
         case .sign: return "签名失败"
         case .renew: return "续签失败"
         case .batchRenew: return "全部续签失败"
+        case .authenticateAccount: return "添加账号失败"
         case .install: return "安装失败"
         case .importIPA: return "导入失败"
         case .exportLog: return "日志导出失败"
@@ -70,6 +72,7 @@ enum FailureClassifier {
         switch operation {
         case .sign: return "SEAL-SIGN-500"
         case .renew, .batchRenew: return "SEAL-RENEW-500"
+        case .authenticateAccount: return "SEAL-AUTH-500"
         case .install: return "SEAL-INSTALL-500"
         case .importIPA: return "SEAL-IMPORT-500"
         case .exportLog: return "SEAL-LOG-500"

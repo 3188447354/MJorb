@@ -89,7 +89,13 @@ enum AppleAuthenticationDiagnosis {
                 + detail(for: error),
             recovery: "重新添加账号，在弹出的「输入验证码」里填 Apple 发来的六位数字；"
                 + "若始终收不到验证码，先到系统「设置 → 你的名字」用这个 Apple ID 登录一次，再回来重试",
-            code: "SEAL-AUTH-101a"
+            code: "SEAL-AUTH-101a",
+            condition: .twoFactorAuthenticationRequired,
+            action: .enterNewVerificationCode,
+            route: .account,
+            retryDisposition: .manual,
+            operation: .authenticateAccount,
+            origin: .authentication
         )
     }
 }

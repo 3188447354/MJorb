@@ -30,6 +30,26 @@ struct AppleServiceFailurePolicyTests {
     }
 
     @Test
+    func serviceUnavailableCarriesWaitThenRetryInsteadOfNetworkRouteGuess() {
+        let failure = AppleServiceFailurePolicy.rateLimitedFailure(
+            underlying: NSError(
+                domain: "HTTP",
+                code: 503,
+                userInfo: [NSLocalizedDescriptionKey: "Service temporarily unavailable"]
+            )
+        )
+
+        #expect(failure.code == "SEAL-NET-503")
+        #expect(failure.condition == .appleServiceUnavailable)
+        #expect(failure.action == .waitThenRetry)
+        #expect(failure.route == nil)
+        #expect(failure.retryDisposition == .manual)
+        #expect(failure.origin == .applePortal)
+        #expect(failure.recovery.contains("海外") == false)
+        #expect(failure.recovery.contains("节点") == false)
+    }
+
+    @Test
     func onlyExplicitAuthenticationFailuresRequireReverification() {
         let authenticationFailure = ImportFailure(
             title: "账号需要重新验证",

@@ -510,8 +510,15 @@
           "line": 92,
           "path": "Seal/Infrastructure/Accounts/AppleAuthenticationDiagnosis.swift",
           "role": "structured_failure_emission",
-          "semanticFields": [],
-          "source": "code: \"SEAL-AUTH-101a\""
+          "semanticFields": [
+            "condition",
+            "action",
+            "route",
+            "retryDisposition",
+            "operation",
+            "origin"
+          ],
+          "source": "code: \"SEAL-AUTH-101a\","
         }
       ],
       "occurrenceCount": 2,
@@ -528,7 +535,7 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 88,
+          "line": 93,
           "path": "Seal/Core/Accounts/AppleServiceFailurePolicy.swift",
           "role": "internal_event_or_log",
           "semanticFields": [],
@@ -606,7 +613,7 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 71,
+          "line": 76,
           "path": "Seal/Core/Accounts/AppleServiceFailurePolicy.swift",
           "role": "comment_reference",
           "semanticFields": [],
@@ -614,7 +621,7 @@
         },
         {
           "identifierKind": "standard_error_code",
-          "line": 80,
+          "line": 85,
           "path": "Seal/Core/Accounts/AppleServiceFailurePolicy.swift",
           "role": "comment_reference",
           "semanticFields": [],
@@ -622,7 +629,7 @@
         },
         {
           "identifierKind": "standard_error_code",
-          "line": 87,
+          "line": 92,
           "path": "Seal/Core/Accounts/AppleServiceFailurePolicy.swift",
           "role": "internal_event_or_log",
           "semanticFields": [],
@@ -937,7 +944,7 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 89,
+          "line": 94,
           "path": "Seal/Core/Accounts/AppleServiceFailurePolicy.swift",
           "role": "internal_event_or_log",
           "semanticFields": [],
@@ -1082,7 +1089,7 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 69,
+          "line": 74,
           "path": "Seal/Core/Accounts/AppleServiceFailurePolicy.swift",
           "role": "comment_reference",
           "semanticFields": [],
@@ -1090,7 +1097,7 @@
         },
         {
           "identifierKind": "standard_error_code",
-          "line": 70,
+          "line": 75,
           "path": "Seal/Core/Accounts/AppleServiceFailurePolicy.swift",
           "role": "internal_event_or_log",
           "semanticFields": [],
@@ -1160,7 +1167,7 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 90,
+          "line": 95,
           "path": "Seal/Core/Accounts/AppleServiceFailurePolicy.swift",
           "role": "internal_event_or_log",
           "semanticFields": [],
@@ -1198,7 +1205,7 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 91,
+          "line": 96,
           "path": "Seal/Core/Accounts/AppleServiceFailurePolicy.swift",
           "role": "comment_reference",
           "semanticFields": [],
@@ -1765,6 +1772,26 @@
       "roles": {
         "executable_reference": 1,
         "structured_failure_emission": 1
+      }
+    },
+    "SEAL-AUTH-500": {
+      "auditStatus": "unreviewed",
+      "identifierKinds": {
+        "standard_error_code": 1
+      },
+      "locations": [
+        {
+          "identifierKind": "standard_error_code",
+          "line": 75,
+          "path": "Seal/Core/Import/FailureClassifier.swift",
+          "role": "internal_event_or_log",
+          "semanticFields": [],
+          "source": "case .authenticateAccount: return \"SEAL-AUTH-500\""
+        }
+      ],
+      "occurrenceCount": 1,
+      "roles": {
+        "internal_event_or_log": 1
       }
     },
     "SEAL-AUTH-DB-001": {
@@ -2791,7 +2818,7 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 103,
+          "line": 108,
           "path": "Seal/Core/Accounts/AppleServiceFailurePolicy.swift",
           "role": "executable_reference",
           "semanticFields": [],
@@ -4154,7 +4181,7 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 74,
+          "line": 77,
           "path": "Seal/Core/Import/FailureClassifier.swift",
           "role": "internal_event_or_log",
           "semanticFields": [],
@@ -4210,7 +4237,7 @@
         },
         {
           "identifierKind": "standard_error_code",
-          "line": 73,
+          "line": 76,
           "path": "Seal/Core/Import/FailureClassifier.swift",
           "role": "internal_event_or_log",
           "semanticFields": [],
@@ -6966,7 +6993,7 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 75,
+          "line": 78,
           "path": "Seal/Core/Import/FailureClassifier.swift",
           "role": "internal_event_or_log",
           "semanticFields": [],
@@ -7035,7 +7062,7 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 35,
+          "line": 36,
           "path": "Seal/Core/Import/FailureClassifier.swift",
           "role": "structured_failure_emission",
           "semanticFields": [
@@ -7070,11 +7097,16 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 56,
+          "line": 57,
           "path": "Seal/Core/Accounts/AppleServiceFailurePolicy.swift",
           "role": "structured_failure_emission",
-          "semanticFields": [],
-          "source": "code: \"SEAL-NET-503\""
+          "semanticFields": [
+            "condition",
+            "action",
+            "retryDisposition",
+            "origin"
+          ],
+          "source": "code: \"SEAL-NET-503\","
         },
         {
           "identifierKind": "standard_error_code",
@@ -9995,7 +10027,7 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 72,
+          "line": 74,
           "path": "Seal/Core/Import/FailureClassifier.swift",
           "role": "internal_event_or_log",
           "semanticFields": [],
@@ -10894,7 +10926,7 @@
         },
         {
           "identifierKind": "standard_error_code",
-          "line": 71,
+          "line": 73,
           "path": "Seal/Core/Import/FailureClassifier.swift",
           "role": "internal_event_or_log",
           "semanticFields": [],
@@ -11533,7 +11565,7 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 76,
+          "line": 79,
           "path": "Seal/Core/Import/FailureClassifier.swift",
           "role": "internal_event_or_log",
           "semanticFields": [],
@@ -11767,21 +11799,21 @@
     "identifierKinds": {
       "diagnostic_tag": 74,
       "legacy_error_identifier": 1,
-      "standard_error_code": 722
+      "standard_error_code": 723
     },
-    "occurrences": 797,
+    "occurrences": 798,
     "roles": {
       "comment_reference": 139,
       "executable_reference": 106,
       "failure_emission_candidate": 213,
-      "internal_event_or_log": 200,
+      "internal_event_or_log": 201,
       "structured_failure_emission": 139
     },
     "structuredFailureContracts": {
       "directOccurrences": 139,
-      "withExplicitSemantics": 23,
-      "withoutExplicitSemantics": 116
+      "withExplicitSemantics": 25,
+      "withoutExplicitSemantics": 114
     },
-    "uniqueIdentifiers": 423
+    "uniqueIdentifiers": 424
   }
 }

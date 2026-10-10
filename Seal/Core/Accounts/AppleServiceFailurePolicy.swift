@@ -37,8 +37,9 @@ enum AppleServiceFailurePolicy {
         )
     }
 
-    /// Apple 服务端返回 503（线路被限流/出口不对）。这是「线路」问题，重试也通不了，
-    /// 单独识别出来直接提示切换非国内梯子，不进入网络错误的重试循环。
+    /// Apple 服务端返回 503 或明确的暂不可用提示。
+    ///
+    /// 这只能证明服务暂时无法处理请求，不能推断用户的网络线路、地区或节点原因。
     static func isRateLimited(_ error: Error) -> Bool {
         let ns = error as NSError
         if messageIndicates503(ns.localizedDescription) { return true }
@@ -47,13 +48,17 @@ enum AppleServiceFailurePolicy {
         return false
     }
 
-    /// 503 专属失败：直接给可执行动作（切非国内梯子），不假装「检查网络后重试」。
+    /// 503 专属失败：让用户稍后重试，不把未知的网络成因伪装成确定结论。
     static func rateLimitedFailure(underlying _: Error? = nil) -> ImportFailure {
         ImportFailure(
-            title: "连不上 Apple",
-            reason: "连不上 Apple 服务器，多半是当前网络线路被限流了。",
-            recovery: "切换到非国内梯子（海外节点）后重试",
-            code: "SEAL-NET-503"
+            title: "Apple 服务暂时不可用",
+            reason: "Apple 开发者服务暂时无法处理请求。",
+            recovery: "稍后重试",
+            code: "SEAL-NET-503",
+            condition: .appleServiceUnavailable,
+            action: .waitThenRetry,
+            retryDisposition: .manual,
+            origin: .applePortal
         )
     }
 

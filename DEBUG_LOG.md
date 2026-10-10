@@ -6350,3 +6350,13 @@ CMake Error at CMakeLists.txt:394 (message):
 **修复**：新增源码审计清单生成器，逐次记录标识类型（标准错误码、遗留错误标识、诊断标签）与来源角色（失败候选、内部日志、注释、可执行引用）。任何未完成触发链审计的条目只标为 `unreviewed`，不生成用户解决办法。
 
 **验证**：新增 Python 回归测试覆盖多段标识、注释、日志 `code:` 字段、可选日志调用、遗留错误标识和直接失败合同字段；本地 10/10 通过。完整 iOS CI 待后续实际错误合同改动一并验证。
+
+## 2026-10-11 — HTTP 503 被错误推断为用户网络线路问题
+
+**症状**：`SEAL-NET-503` 在只收到 HTTP 503 或 “service temporarily unavailable” 时，提示用户切换“非国内梯子（海外节点）”。这既不是 HTTP 503 能证明的事实，也会把 Apple 服务端暂不可用误导成用户必须修改网络。
+
+**根因**：`AppleServiceFailurePolicy.isRateLimited` 的判据仅检查 `503` 与服务暂不可用文本，但旧失败工厂将该有限事实扩展成了具体线路／地区结论；`FailureClassifier` 也把同一判据标成 `.appleRateLimited`。
+
+**修复**：将这条边界收敛为已证实的 `.appleServiceUnavailable`，唯一动作为 `.waitThenRetry`，文案为“稍后重试”；没有把 Wi‑Fi、VPN、海外节点或限流当作确定原因。双重认证 `SEAL-AUTH-101a` 同时补齐了明确的 `.twoFactorAuthenticationRequired`、账户路由和“输入新验证码”动作，防止 UI 再靠错误码前缀推断。
+
+**验证**：静态合同回归测试先红后绿（2/2）；扫描基线更新为 424 个唯一标识、798 次出现、139 个直接失败出口，其中 25 个已显式合同化、114 个仍待逐条审计。macOS Swift 编译和完整 iOS CI 待本批提交后一并复核。

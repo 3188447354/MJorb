@@ -12,7 +12,7 @@
 - **修复（第一轮，119f1a8，未生效）**：`assignAppGroups` 对映射后的 group ID 排序 + Info.plist `ALTAppGroups` 落盘排序。真机验证失败：18:57 用 build 166 重签 LC2 后，二进制 entitlements 仍是 [AltStore, SideStore]。查日志发现两点：① 重签时 App ID 能力"已满足本次请求，跳过重复更新"，`assignAppGroups` 的排序对已存在的 App ID 无意义；② 即使 assign 跑了，Apple 的 `assignApplicationGroupToAppId.action` 不重排已有绑定；③ 实测证明 LiveContainer 读的是**二进制 entitlements 第 0 个**，不是 Info.plist `ALTAppGroups`（Info.plist 已被排序但 LC2 仍为空）。
 - **修复（第二轮，真正生效）**：上游签名器 `AppBundleSigner.prepare` 在把 `matchedProfile.entitlements` 序列化写进二进制之前，对 `com.apple.security.application-groups` 数组做字母排序。不依赖 Apple 侧顺序，每次签名结果确定。安全性：iOS 只校验「二进制请求的组 ⊆ 描述文件允许的组」（集合关系），Seal 自检 `ProvisioningEntitlementValue.permits` 同样按集合实现，顺序不影响安装与运行。另在 Seal 侧加一条诊断日志（仅当排序改变顺序时）：打出"描述文件原顺序 → 排序后"，方便真机核验。`assignAppGroups` 与 Info.plist 两处排序保留，保证 Apple 侧（新 App ID）与落盘侧一致。
 - **涉及文件**：`upstream/SideSign/Sources/CodeSigning/CodeSignerAPI.swift`（`prepare` 内排序）、`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`（排序生效日志）。
-- **验证状态**：本地 `Scripts/pre-push-check.py` 835 checks 0 failures；待 CI 与 MJ 真机重签 LC2 验证（预期日志出现排序诊断，二进制第 0 个变为 SideStore，共享 App 出现）。注意：本案主包第 0 个排序前后不变，已转共享的数据无需重转。
+- **验证状态**：本地 `Scripts/pre-push-check.py` 835 checks 0 failures；Fast build 167（run 38047222051）已发 MJ。**真机验证通过**：19:50:21 重签 LC2，日志出现"App Group 顺序已按字母排序后写入二进制（描述文件原顺序 AltStore、SideStore → 排序后 SideStore、AltStore）"，二进制第 0 个已翻成 SideStore。注意中间有个小插曲：MJ 第一次重签时 167 未实际生效（`[SEAL-SELF-120] 记录 167 → 运行 166`，自替换后旧进程仍在），指导彻底划掉重开确认 167 后才生效。待 MJ 确认 LC2 里共享 App 出现。本案主包第 0 个排序前后不变，已转共享的数据无需重转。
 
 ## 2026-10-10 错误帮助的证据边界与日志错误码保留
 

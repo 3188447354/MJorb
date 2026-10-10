@@ -6420,3 +6420,13 @@ CMake Error at CMakeLists.txt:394 (message):
 **修复**：将该出口结构化为 `authenticationHandshakeRejected → waitThenRetry`，操作为 `authenticateAccount`、来源为 `authentication`；用户文案只说明 Apple 拒绝认证握手并引导稍后重新添加账号。
 
 **验证**：静态合同测试先红后绿；本地 18 项 Python 审计／合同测试通过。库存为 424 个唯一标识、797 次出现、144 个直接失败出口，其中 40 个已显式合同化、104 个仍待审计。此前 CI run `38093455221` 因新推送自动取消；run `38093961809` 正在执行。
+
+## 2026-10-11 — 错误库存的审计状态全部固定为未审计
+
+**症状**：库存已经记录直接失败构造与合同字段，但每个标识仍输出 `unreviewed`；这让已具备明确条件／动作／来源的代码和纯日志标签看起来相同，审计报告无法用于安排剩余工作。
+
+**根因**：生成器只保存来源角色，没有从直接失败出口是否具备语义字段推导状态。
+
+**修复**：库存生成器现在以证据计算状态：所有直接出口有字段为 `contracted`，同码同时包含合同化与旧出口为 `mixed`，无字段的直接出口为 `unreviewed`，纯诊断标签为 `diagnostic_only`，其他无直接出口引用为 `reference_only`。该状态不生成任何用户操作，只表达源码证据完整度。
+
+**验证**：新增状态分类回归测试先红后绿；本地 19 项 Python 审计／合同测试通过。当前 424 个标识中 33 个 `contracted`、2 个 `mixed`、97 个 `unreviewed`、286 个 `reference_only`、6 个 `diagnostic_only`。完整 iOS CI run `38094053805` 仍在排队。

@@ -157,6 +157,22 @@ class ErrorCodeInventoryTests(unittest.TestCase):
             },
         )
 
+    def test_audit_status_distinguishes_contracted_mixed_and_diagnostic_identifiers(self):
+        path = self.write_source(
+            'let contracted = ImportFailure(code: "SEAL-IPA-101", condition: .x)\n'
+            'let legacy = ImportFailure(code: "SEAL-IPA-102")\n'
+            'let mixed = ImportFailure(code: "SEAL-IPA-103", action: .retry)\n'
+            'let mixedLegacy = ImportFailure(code: "SEAL-IPA-103")\n'
+            'try? await logStore.append(message: "done", code: "SEAL-OP")\n'
+        )
+
+        inventory = error_code_inventory.build_inventory(error_code_inventory.scan_file(path), path.parent)
+
+        self.assertEqual(inventory["codes"]["SEAL-IPA-101"]["auditStatus"], "contracted")
+        self.assertEqual(inventory["codes"]["SEAL-IPA-102"]["auditStatus"], "unreviewed")
+        self.assertEqual(inventory["codes"]["SEAL-IPA-103"]["auditStatus"], "mixed")
+        self.assertEqual(inventory["codes"]["SEAL-OP"]["auditStatus"], "diagnostic_only")
+
 
 if __name__ == "__main__":
     unittest.main()

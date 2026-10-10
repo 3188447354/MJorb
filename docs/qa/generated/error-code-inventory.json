@@ -1,7 +1,7 @@
 {
   "codes": {
     "SEAL-ANI-110": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -27,7 +27,7 @@
       }
     },
     "SEAL-ANI-111": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -53,7 +53,7 @@
       }
     },
     "SEAL-ANI-112": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -79,7 +79,7 @@
       }
     },
     "SEAL-ANI-113": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -105,7 +105,7 @@
       }
     },
     "SEAL-ANI-114": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -151,7 +151,7 @@
       }
     },
     "SEAL-APP-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -217,7 +217,7 @@
       }
     },
     "SEAL-APP-004": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -257,7 +257,7 @@
       }
     },
     "SEAL-APPID-301": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -381,7 +381,7 @@
       }
     },
     "SEAL-APPID-305": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -401,7 +401,7 @@
       }
     },
     "SEAL-APPID-DEVICELIMIT": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "diagnostic_tag": 4,
         "legacy_error_identifier": 1
@@ -457,7 +457,7 @@
       }
     },
     "SEAL-AUTH-100": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -477,7 +477,7 @@
       }
     },
     "SEAL-AUTH-101": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "mixed",
       "identifierKinds": {
         "standard_error_code": 4
       },
@@ -529,7 +529,7 @@
       }
     },
     "SEAL-AUTH-101a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -565,7 +565,7 @@
       }
     },
     "SEAL-AUTH-102": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -603,7 +603,7 @@
       }
     },
     "SEAL-AUTH-102a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -630,7 +630,7 @@
       }
     },
     "SEAL-AUTH-102b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -719,7 +719,7 @@
       }
     },
     "SEAL-AUTH-102d": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -739,7 +739,7 @@
       }
     },
     "SEAL-AUTH-102e": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -853,7 +853,7 @@
       }
     },
     "SEAL-AUTH-104e": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -873,7 +873,7 @@
       }
     },
     "SEAL-AUTH-104f": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -909,7 +909,7 @@
       }
     },
     "SEAL-AUTH-104g": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -945,7 +945,7 @@
       }
     },
     "SEAL-AUTH-104h": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -972,7 +972,7 @@
       }
     },
     "SEAL-AUTH-104i": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -999,7 +999,7 @@
       }
     },
     "SEAL-AUTH-105": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -1036,7 +1036,7 @@
       }
     },
     "SEAL-AUTH-105a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -1064,7 +1064,7 @@
       }
     },
     "SEAL-AUTH-105b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1084,7 +1084,7 @@
       }
     },
     "SEAL-AUTH-105c": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1104,7 +1104,7 @@
       }
     },
     "SEAL-AUTH-105d": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1124,7 +1124,7 @@
       }
     },
     "SEAL-AUTH-105e": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1144,7 +1144,7 @@
       }
     },
     "SEAL-AUTH-105f": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -1188,7 +1188,7 @@
       }
     },
     "SEAL-AUTH-105g": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1208,7 +1208,7 @@
       }
     },
     "SEAL-AUTH-105h": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1228,7 +1228,7 @@
       }
     },
     "SEAL-AUTH-106": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -1405,7 +1405,7 @@
       }
     },
     "SEAL-AUTH-107h": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1431,7 +1431,7 @@
       }
     },
     "SEAL-AUTH-107t": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -1466,7 +1466,7 @@
       }
     },
     "SEAL-AUTH-108": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1486,7 +1486,7 @@
       }
     },
     "SEAL-AUTH-109": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1506,7 +1506,7 @@
       }
     },
     "SEAL-AUTH-109a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1526,7 +1526,7 @@
       }
     },
     "SEAL-AUTH-110": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -1562,7 +1562,7 @@
       }
     },
     "SEAL-AUTH-110b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1619,7 +1619,7 @@
       }
     },
     "SEAL-AUTH-111a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1639,7 +1639,7 @@
       }
     },
     "SEAL-AUTH-111b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1717,7 +1717,7 @@
       }
     },
     "SEAL-AUTH-112b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1757,7 +1757,7 @@
       }
     },
     "SEAL-AUTH-112d": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1806,7 +1806,7 @@
       }
     },
     "SEAL-AUTH-114": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1855,7 +1855,7 @@
       }
     },
     "SEAL-AUTH-500": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1875,7 +1875,7 @@
       }
     },
     "SEAL-AUTH-DB-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1895,7 +1895,7 @@
       }
     },
     "SEAL-AUTH-DB-002": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -1924,7 +1924,7 @@
       }
     },
     "SEAL-AUTH-DB-003": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1944,7 +1944,7 @@
       }
     },
     "SEAL-BACKGROUND-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -1973,7 +1973,7 @@
       }
     },
     "SEAL-BACKGROUND-002": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -1993,7 +1993,7 @@
       }
     },
     "SEAL-BACKGROUND-003": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2013,7 +2013,7 @@
       }
     },
     "SEAL-BACKGROUND-004": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2033,7 +2033,7 @@
       }
     },
     "SEAL-BACKGROUND-006": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2053,7 +2053,7 @@
       }
     },
     "SEAL-BACKGROUND-007": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2073,7 +2073,7 @@
       }
     },
     "SEAL-BACKGROUND-008": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2093,7 +2093,7 @@
       }
     },
     "SEAL-BACKGROUND-009": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2113,7 +2113,7 @@
       }
     },
     "SEAL-BACKGROUND-010": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2133,7 +2133,7 @@
       }
     },
     "SEAL-BACKGROUND-011": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2153,7 +2153,7 @@
       }
     },
     "SEAL-BACKGROUND-012": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2173,7 +2173,7 @@
       }
     },
     "SEAL-BACKGROUND-013": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2193,7 +2193,7 @@
       }
     },
     "SEAL-BACKGROUND-014": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2213,7 +2213,7 @@
       }
     },
     "SEAL-BACKGROUND-015": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2233,7 +2233,7 @@
       }
     },
     "SEAL-BACKGROUND-016": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2253,7 +2253,7 @@
       }
     },
     "SEAL-BACKGROUND-017": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2273,7 +2273,7 @@
       }
     },
     "SEAL-BACKGROUND-018": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2313,7 +2313,7 @@
       }
     },
     "SEAL-BUNDLE-001a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2382,7 +2382,7 @@
       }
     },
     "SEAL-BUNDLE-004": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -2419,7 +2419,7 @@
       }
     },
     "SEAL-CERT-101": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2439,7 +2439,7 @@
       }
     },
     "SEAL-CERT-102": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2459,7 +2459,7 @@
       }
     },
     "SEAL-CERT-202": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2479,7 +2479,7 @@
       }
     },
     "SEAL-CERT-202a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2519,7 +2519,7 @@
       }
     },
     "SEAL-CERT-204": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 4
       },
@@ -2564,7 +2564,7 @@
       }
     },
     "SEAL-CERT-204a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -2600,7 +2600,7 @@
       }
     },
     "SEAL-CERT-204b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 10
       },
@@ -2694,7 +2694,7 @@
       }
     },
     "SEAL-CERT-204c": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -2731,7 +2731,7 @@
       }
     },
     "SEAL-CERT-204d": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -2871,7 +2871,7 @@
       }
     },
     "SEAL-CERT-204f": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2920,7 +2920,7 @@
       }
     },
     "SEAL-CERT-206": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2940,7 +2940,7 @@
       }
     },
     "SEAL-CERT-206a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2960,7 +2960,7 @@
       }
     },
     "SEAL-CERT-208": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -2980,7 +2980,7 @@
       }
     },
     "SEAL-CERT-208a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3000,7 +3000,7 @@
       }
     },
     "SEAL-CERT-209": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3020,7 +3020,7 @@
       }
     },
     "SEAL-CERT-209a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3100,7 +3100,7 @@
       }
     },
     "SEAL-CERT-210": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3120,7 +3120,7 @@
       }
     },
     "SEAL-CERT-210a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3140,7 +3140,7 @@
       }
     },
     "SEAL-CERT-211": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3160,7 +3160,7 @@
       }
     },
     "SEAL-CERT-212": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3180,7 +3180,7 @@
       }
     },
     "SEAL-CERT-215": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3200,7 +3200,7 @@
       }
     },
     "SEAL-CERT-215a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3220,7 +3220,7 @@
       }
     },
     "SEAL-CERT-215b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3240,7 +3240,7 @@
       }
     },
     "SEAL-CERT-215c": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3260,7 +3260,7 @@
       }
     },
     "SEAL-CERT-216": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3280,7 +3280,7 @@
       }
     },
     "SEAL-CERT-217": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3300,7 +3300,7 @@
       }
     },
     "SEAL-CERT-218": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3320,7 +3320,7 @@
       }
     },
     "SEAL-CERT-218a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3340,7 +3340,7 @@
       }
     },
     "SEAL-CERT-218b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3360,7 +3360,7 @@
       }
     },
     "SEAL-CERT-219": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -3396,7 +3396,7 @@
       }
     },
     "SEAL-CERT-219b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3445,7 +3445,7 @@
       }
     },
     "SEAL-CERT-221": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -3474,7 +3474,7 @@
       }
     },
     "SEAL-CERT-227": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -3503,7 +3503,7 @@
       }
     },
     "SEAL-CERT-228": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3523,7 +3523,7 @@
       }
     },
     "SEAL-CERT-229": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3543,7 +3543,7 @@
       }
     },
     "SEAL-CERT-230": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -3580,7 +3580,7 @@
       }
     },
     "SEAL-CERT-230a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -3608,7 +3608,7 @@
       }
     },
     "SEAL-CERT-231": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3628,7 +3628,7 @@
       }
     },
     "SEAL-CERT-232": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -3657,7 +3657,7 @@
       }
     },
     "SEAL-CERT-233": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3677,7 +3677,7 @@
       }
     },
     "SEAL-CERT-240": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -3714,7 +3714,7 @@
       }
     },
     "SEAL-CERT-HEALTH-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3734,7 +3734,7 @@
       }
     },
     "SEAL-CUSTOM-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3794,7 +3794,7 @@
       }
     },
     "SEAL-CUSTOM-004": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3814,7 +3814,7 @@
       }
     },
     "SEAL-CUSTOM-004a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3834,7 +3834,7 @@
       }
     },
     "SEAL-CUSTOM-004b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3854,7 +3854,7 @@
       }
     },
     "SEAL-CUSTOM-004c": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3874,7 +3874,7 @@
       }
     },
     "SEAL-DEVICE-203": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -3894,7 +3894,7 @@
       }
     },
     "SEAL-ENTITLEMENT-401": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 10
       },
@@ -3987,7 +3987,7 @@
       }
     },
     "SEAL-ENTITLEMENT-402": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -4016,7 +4016,7 @@
       }
     },
     "SEAL-ENTITLEMENT-403": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -4036,7 +4036,7 @@
       }
     },
     "SEAL-EXT-401": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -4074,7 +4074,7 @@
       }
     },
     "SEAL-EXT-401a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -4094,7 +4094,7 @@
       }
     },
     "SEAL-HISTORY-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -4134,7 +4134,7 @@
       }
     },
     "SEAL-HISTORY-004": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -4154,7 +4154,7 @@
       }
     },
     "SEAL-HISTORY-004a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -4174,7 +4174,7 @@
       }
     },
     "SEAL-HISTORY-005": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -4194,7 +4194,7 @@
       }
     },
     "SEAL-HISTORY-006": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -4214,7 +4214,7 @@
       }
     },
     "SEAL-ICON-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -4234,7 +4234,7 @@
       }
     },
     "SEAL-ICON-002": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -4254,7 +4254,7 @@
       }
     },
     "SEAL-IMPORT-500": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -4274,7 +4274,7 @@
       }
     },
     "SEAL-IMPORT-DBG": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "diagnostic_only",
       "identifierKinds": {
         "diagnostic_tag": 2
       },
@@ -4302,7 +4302,7 @@
       }
     },
     "SEAL-INSTALL-500": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 10
       },
@@ -4397,7 +4397,7 @@
       }
     },
     "SEAL-INSTALL-701": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -4518,7 +4518,7 @@
       }
     },
     "SEAL-INSTALL-702l": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 4
       },
@@ -4581,7 +4581,7 @@
       }
     },
     "SEAL-INSTALL-702s": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -4616,7 +4616,7 @@
       }
     },
     "SEAL-INSTALL-702t": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -4714,7 +4714,7 @@
       }
     },
     "SEAL-INSTALL-704": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -4835,7 +4835,7 @@
       }
     },
     "SEAL-INSTALL-706b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -4879,7 +4879,7 @@
       }
     },
     "SEAL-INSTALL-706t": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -5061,7 +5061,7 @@
       }
     },
     "SEAL-INSTALL-708": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 5
       },
@@ -5151,7 +5151,7 @@
       }
     },
     "SEAL-INSTALL-70x": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -5171,7 +5171,7 @@
       }
     },
     "SEAL-INSTALL-71": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -5199,7 +5199,7 @@
       }
     },
     "SEAL-INSTALL-710": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 6
       },
@@ -5275,7 +5275,7 @@
       }
     },
     "SEAL-INSTALL-711": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -5304,7 +5304,7 @@
       }
     },
     "SEAL-INSTALL-712": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -5333,7 +5333,7 @@
       }
     },
     "SEAL-INSTALL-713": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 4
       },
@@ -5378,7 +5378,7 @@
       }
     },
     "SEAL-INSTALL-714": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -5415,7 +5415,7 @@
       }
     },
     "SEAL-INSTALL-714a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -5452,7 +5452,7 @@
       }
     },
     "SEAL-INSTALL-715": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -5481,7 +5481,7 @@
       }
     },
     "SEAL-INSTALL-716": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -5518,7 +5518,7 @@
       }
     },
     "SEAL-INSTALL-717": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -5547,7 +5547,7 @@
       }
     },
     "SEAL-INSTALL-718": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -5576,7 +5576,7 @@
       }
     },
     "SEAL-INSTALL-719": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -5605,7 +5605,7 @@
       }
     },
     "SEAL-INSTALL-720": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -5688,7 +5688,7 @@
       }
     },
     "SEAL-INSTALL-722": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -5725,7 +5725,7 @@
       }
     },
     "SEAL-INSTALL-723": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -5754,7 +5754,7 @@
       }
     },
     "SEAL-INSTALL-724": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -5783,7 +5783,7 @@
       }
     },
     "SEAL-INSTALL-725": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -5812,7 +5812,7 @@
       }
     },
     "SEAL-INSTALL-726": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -5841,7 +5841,7 @@
       }
     },
     "SEAL-INSTALL-727": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -5870,7 +5870,7 @@
       }
     },
     "SEAL-INSTALL-728": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -5899,7 +5899,7 @@
       }
     },
     "SEAL-INSTALL-729": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -5928,7 +5928,7 @@
       }
     },
     "SEAL-INSTALL-73": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -5948,7 +5948,7 @@
       }
     },
     "SEAL-INSTALL-730": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -6043,7 +6043,7 @@
       }
     },
     "SEAL-INSTALL-738": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -6087,7 +6087,7 @@
       }
     },
     "SEAL-INSTALL-739": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -6124,7 +6124,7 @@
       }
     },
     "SEAL-INSTALL-740": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6144,7 +6144,7 @@
       }
     },
     "SEAL-INSTALL-741": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6164,7 +6164,7 @@
       }
     },
     "SEAL-INVENTORY-100": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6184,7 +6184,7 @@
       }
     },
     "SEAL-INVENTORY-100a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6204,7 +6204,7 @@
       }
     },
     "SEAL-INVENTORY-100b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6224,7 +6224,7 @@
       }
     },
     "SEAL-INVENTORY-110": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6244,7 +6244,7 @@
       }
     },
     "SEAL-INVENTORY-900": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6264,7 +6264,7 @@
       }
     },
     "SEAL-INVENTORY-900a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6284,7 +6284,7 @@
       }
     },
     "SEAL-INVENTORY-900b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6304,7 +6304,7 @@
       }
     },
     "SEAL-IPA-101": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6324,7 +6324,7 @@
       }
     },
     "SEAL-IPA-101b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6344,7 +6344,7 @@
       }
     },
     "SEAL-IPA-102": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6364,7 +6364,7 @@
       }
     },
     "SEAL-IPA-102a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6384,7 +6384,7 @@
       }
     },
     "SEAL-IPA-102b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6404,7 +6404,7 @@
       }
     },
     "SEAL-IPA-102c": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6424,7 +6424,7 @@
       }
     },
     "SEAL-IPA-103": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6444,7 +6444,7 @@
       }
     },
     "SEAL-IPA-104": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6464,7 +6464,7 @@
       }
     },
     "SEAL-IPA-105": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6484,7 +6484,7 @@
       }
     },
     "SEAL-IPA-106": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6732,7 +6732,7 @@
       }
     },
     "SEAL-IPA-211": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6930,7 +6930,7 @@
       }
     },
     "SEAL-KEYCHAIN-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6950,7 +6950,7 @@
       }
     },
     "SEAL-KEYCHAIN-002": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6970,7 +6970,7 @@
       }
     },
     "SEAL-KEYCHAIN-003": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -6990,7 +6990,7 @@
       }
     },
     "SEAL-LOG-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -7010,7 +7010,7 @@
       }
     },
     "SEAL-LOG-002": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "mixed",
       "identifierKinds": {
         "standard_error_code": 4
       },
@@ -7066,7 +7066,7 @@
       }
     },
     "SEAL-LOG-500": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -7086,7 +7086,7 @@
       }
     },
     "SEAL-MEM-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -7115,7 +7115,7 @@
       }
     },
     "SEAL-NET-101": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -7135,7 +7135,7 @@
       }
     },
     "SEAL-NET-102": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -7170,7 +7170,7 @@
       }
     },
     "SEAL-NET-503": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -7209,7 +7209,7 @@
       }
     },
     "SEAL-NOTIF-DBG": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "diagnostic_only",
       "identifierKinds": {
         "diagnostic_tag": 4
       },
@@ -7253,7 +7253,7 @@
       }
     },
     "SEAL-NOTIFY-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -7273,7 +7273,7 @@
       }
     },
     "SEAL-NOTIFY-002a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -7309,7 +7309,7 @@
       }
     },
     "SEAL-OP": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "diagnostic_only",
       "identifierKinds": {
         "diagnostic_tag": 59
       },
@@ -7853,7 +7853,7 @@
       }
     },
     "SEAL-PAIR-203": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -7881,7 +7881,7 @@
       }
     },
     "SEAL-PAIR-203a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -7901,7 +7901,7 @@
       }
     },
     "SEAL-PAIR-203b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -7928,7 +7928,7 @@
       }
     },
     "SEAL-PAIR-204": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -7948,7 +7948,7 @@
       }
     },
     "SEAL-PAIR-205": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -7984,7 +7984,7 @@
       }
     },
     "SEAL-PAIR-206": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -8033,7 +8033,7 @@
       }
     },
     "SEAL-PAIR-207": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8053,7 +8053,7 @@
       }
     },
     "SEAL-PAIR-207a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8073,7 +8073,7 @@
       }
     },
     "SEAL-PAIR-207b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8093,7 +8093,7 @@
       }
     },
     "SEAL-PAIR-208": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8113,7 +8113,7 @@
       }
     },
     "SEAL-PAIR-208a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8133,7 +8133,7 @@
       }
     },
     "SEAL-PAIR-208b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8182,7 +8182,7 @@
       }
     },
     "SEAL-PAIR-209a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8202,7 +8202,7 @@
       }
     },
     "SEAL-PAIR-210": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8222,7 +8222,7 @@
       }
     },
     "SEAL-PAIR-211": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -8258,7 +8258,7 @@
       }
     },
     "SEAL-PAIR-215": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8278,7 +8278,7 @@
       }
     },
     "SEAL-PAIR-216": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8298,7 +8298,7 @@
       }
     },
     "SEAL-PAIR-217": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8318,7 +8318,7 @@
       }
     },
     "SEAL-PAIR-218": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8338,7 +8338,7 @@
       }
     },
     "SEAL-PROFILE-303": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8358,7 +8358,7 @@
       }
     },
     "SEAL-PROFILE-304": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8378,7 +8378,7 @@
       }
     },
     "SEAL-PROFILE-305": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8418,7 +8418,7 @@
       }
     },
     "SEAL-PROFILE-310": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8438,7 +8438,7 @@
       }
     },
     "SEAL-PROFILE-311": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8458,7 +8458,7 @@
       }
     },
     "SEAL-PROFILE-312": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8478,7 +8478,7 @@
       }
     },
     "SEAL-PROFILE-313": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -8507,7 +8507,7 @@
       }
     },
     "SEAL-PROFILE-314": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8565,7 +8565,7 @@
       }
     },
     "SEAL-PROFILE-315a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -8652,7 +8652,7 @@
       }
     },
     "SEAL-PROFILE-317a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8672,7 +8672,7 @@
       }
     },
     "SEAL-PROFILE-318": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8692,7 +8692,7 @@
       }
     },
     "SEAL-PROFILE-319": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -8720,7 +8720,7 @@
       }
     },
     "SEAL-PROFILE-320": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8740,7 +8740,7 @@
       }
     },
     "SEAL-PROFILE-321": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -8768,7 +8768,7 @@
       }
     },
     "SEAL-PROFILE-322": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -8797,7 +8797,7 @@
       }
     },
     "SEAL-PROFILE-330": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8817,7 +8817,7 @@
       }
     },
     "SEAL-PROFILE-331": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8837,7 +8837,7 @@
       }
     },
     "SEAL-PROFILE-331a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8857,7 +8857,7 @@
       }
     },
     "SEAL-PROFILE-332": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -8885,7 +8885,7 @@
       }
     },
     "SEAL-PROFILE-333": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8905,7 +8905,7 @@
       }
     },
     "SEAL-PROFILE-334": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -8942,7 +8942,7 @@
       }
     },
     "SEAL-PROFILE-335": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8962,7 +8962,7 @@
       }
     },
     "SEAL-PROFILE-336": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -8982,7 +8982,7 @@
       }
     },
     "SEAL-PROFILE-337": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -9077,7 +9077,7 @@
       }
     },
     "SEAL-PROFILE-350": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -9097,7 +9097,7 @@
       }
     },
     "SEAL-PROFILE-351": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -9125,7 +9125,7 @@
       }
     },
     "SEAL-PROFILE-352": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -9154,7 +9154,7 @@
       }
     },
     "SEAL-PROFILE-353": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -9183,7 +9183,7 @@
       }
     },
     "SEAL-PROFILE-354": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -9212,7 +9212,7 @@
       }
     },
     "SEAL-PROFILE-355": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -9249,7 +9249,7 @@
       }
     },
     "SEAL-PROFILE-355a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -9327,7 +9327,7 @@
       }
     },
     "SEAL-PROFILE-360": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -9356,7 +9356,7 @@
       }
     },
     "SEAL-PROFILE-361": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -9393,7 +9393,7 @@
       }
     },
     "SEAL-PROFILE-362": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -9429,7 +9429,7 @@
       }
     },
     "SEAL-PROFILE-363": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 9
       },
@@ -9514,7 +9514,7 @@
       }
     },
     "SEAL-PROFILE-364": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -9543,7 +9543,7 @@
       }
     },
     "SEAL-PROFILE-365": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -9572,7 +9572,7 @@
       }
     },
     "SEAL-RECOVER-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -9592,7 +9592,7 @@
       }
     },
     "SEAL-RECOVER-002": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -9649,7 +9649,7 @@
       }
     },
     "SEAL-RENEW-006": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -9669,7 +9669,7 @@
       }
     },
     "SEAL-RENEW-007": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -9706,7 +9706,7 @@
       }
     },
     "SEAL-RENEW-008": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -9726,7 +9726,7 @@
       }
     },
     "SEAL-RENEW-009": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -9774,7 +9774,7 @@
       }
     },
     "SEAL-RENEW-011": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -9794,7 +9794,7 @@
       }
     },
     "SEAL-RENEW-020": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 5
       },
@@ -9847,7 +9847,7 @@
       }
     },
     "SEAL-RENEW-021": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -9867,7 +9867,7 @@
       }
     },
     "SEAL-RENEW-022": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -9887,7 +9887,7 @@
       }
     },
     "SEAL-RENEW-023": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -9907,7 +9907,7 @@
       }
     },
     "SEAL-RENEW-024": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -9927,7 +9927,7 @@
       }
     },
     "SEAL-RENEW-025": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -9947,7 +9947,7 @@
       }
     },
     "SEAL-RENEW-026": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -9967,7 +9967,7 @@
       }
     },
     "SEAL-RENEW-027": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -9987,7 +9987,7 @@
       }
     },
     "SEAL-RENEW-028": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -10015,7 +10015,7 @@
       }
     },
     "SEAL-RENEW-029": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -10043,7 +10043,7 @@
       }
     },
     "SEAL-RENEW-030": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10100,7 +10100,7 @@
       }
     },
     "SEAL-RENEW-500": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -10149,7 +10149,7 @@
       }
     },
     "SEAL-RENEW-503": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10169,7 +10169,7 @@
       }
     },
     "SEAL-RENEW-CHANNEL-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10189,7 +10189,7 @@
       }
     },
     "SEAL-RENEW-QUEUE-002": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10209,7 +10209,7 @@
       }
     },
     "SEAL-RENEW-QUEUE-003": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10229,7 +10229,7 @@
       }
     },
     "SEAL-RENEW-QUEUE-005": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10269,7 +10269,7 @@
       }
     },
     "SEAL-RENEW-ROUND": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "diagnostic_only",
       "identifierKinds": {
         "diagnostic_tag": 3
       },
@@ -10306,7 +10306,7 @@
       }
     },
     "SEAL-SELF-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10472,7 +10472,7 @@
       }
     },
     "SEAL-SELF-109": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 7
       },
@@ -10562,7 +10562,7 @@
       }
     },
     "SEAL-SELF-111": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -10591,7 +10591,7 @@
       }
     },
     "SEAL-SELF-112": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10611,7 +10611,7 @@
       }
     },
     "SEAL-SELF-113": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10631,7 +10631,7 @@
       }
     },
     "SEAL-SELF-114": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10651,7 +10651,7 @@
       }
     },
     "SEAL-SELF-115": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10671,7 +10671,7 @@
       }
     },
     "SEAL-SELF-120": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10691,7 +10691,7 @@
       }
     },
     "SEAL-SELF-130": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10711,7 +10711,7 @@
       }
     },
     "SEAL-SELF-LEGACY-UNVERIFIABLE": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "diagnostic_only",
       "identifierKinds": {
         "diagnostic_tag": 1
       },
@@ -10731,7 +10731,7 @@
       }
     },
     "SEAL-SET-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10751,7 +10751,7 @@
       }
     },
     "SEAL-SIGN-012": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10771,7 +10771,7 @@
       }
     },
     "SEAL-SIGN-401": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10791,7 +10791,7 @@
       }
     },
     "SEAL-SIGN-402": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10811,7 +10811,7 @@
       }
     },
     "SEAL-SIGN-402a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10831,7 +10831,7 @@
       }
     },
     "SEAL-SIGN-403": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10851,7 +10851,7 @@
       }
     },
     "SEAL-SIGN-404": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10871,7 +10871,7 @@
       }
     },
     "SEAL-SIGN-404a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10891,7 +10891,7 @@
       }
     },
     "SEAL-SIGN-404b": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10911,7 +10911,7 @@
       }
     },
     "SEAL-SIGN-404c": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10931,7 +10931,7 @@
       }
     },
     "SEAL-SIGN-404d": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10951,7 +10951,7 @@
       }
     },
     "SEAL-SIGN-405": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -10971,7 +10971,7 @@
       }
     },
     "SEAL-SIGN-406": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -11158,7 +11158,7 @@
       }
     },
     "SEAL-SIGN-501": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -11178,7 +11178,7 @@
       }
     },
     "SEAL-SIGN-502": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -11198,7 +11198,7 @@
       }
     },
     "SEAL-SIGN-503": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -11227,7 +11227,7 @@
       }
     },
     "SEAL-SIGN-504": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 4
       },
@@ -11280,7 +11280,7 @@
       }
     },
     "SEAL-SIGN-DB-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -11300,7 +11300,7 @@
       }
     },
     "SEAL-SIGN-SINGLE": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "diagnostic_only",
       "identifierKinds": {
         "diagnostic_tag": 1
       },
@@ -11320,7 +11320,7 @@
       }
     },
     "SEAL-STAGE-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 5
       },
@@ -11373,7 +11373,7 @@
       }
     },
     "SEAL-STORAGE-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -11393,7 +11393,7 @@
       }
     },
     "SEAL-STORAGE-001a": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -11413,7 +11413,7 @@
       }
     },
     "SEAL-STORAGE-002": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -11482,7 +11482,7 @@
       }
     },
     "SEAL-STORAGE-005": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -11510,7 +11510,7 @@
       }
     },
     "SEAL-STORAGE-006": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -11550,7 +11550,7 @@
       }
     },
     "SEAL-STORAGE-008": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 2
       },
@@ -11578,7 +11578,7 @@
       }
     },
     "SEAL-STORAGE-009": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -11598,7 +11598,7 @@
       }
     },
     "SEAL-STORAGE-010": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -11638,7 +11638,7 @@
       }
     },
     "SEAL-UNKNOWN-500": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -11658,7 +11658,7 @@
       }
     },
     "SEAL-UPDATE-DL-501": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -11678,7 +11678,7 @@
       }
     },
     "SEAL-UPDATE-DL-502": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -11698,7 +11698,7 @@
       }
     },
     "SEAL-UPDATE-DL-503": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -11718,7 +11718,7 @@
       }
     },
     "SEAL-UPDATE-DL-504": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -11738,7 +11738,7 @@
       }
     },
     "SEAL-VERIFY-500": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 3
       },
@@ -11796,7 +11796,7 @@
       }
     },
     "SEAL-VPN-001": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 4
       },
@@ -11842,7 +11842,7 @@
       }
     },
     "SEAL-VPN-003": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -11862,7 +11862,7 @@
       }
     },
     "SEAL-VPN-004": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "reference_only",
       "identifierKinds": {
         "standard_error_code": 1
       },

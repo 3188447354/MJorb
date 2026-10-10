@@ -186,7 +186,7 @@ def build_inventory(
                 }
             )
         codes[code] = {
-            "auditStatus": "unreviewed",
+            "auditStatus": audit_status(code_occurrences),
             "occurrenceCount": len(code_occurrences),
             "roles": dict(sorted(role_counts.items())),
             "identifierKinds": dict(sorted(kind_counts.items())),
@@ -220,6 +220,26 @@ def build_inventory(
         },
         "codes": codes,
     }
+
+
+def audit_status(occurrences: list[ErrorCodeOccurrence]) -> str:
+    """Derive evidence status without inventing a user-facing recovery."""
+    direct = [
+        item
+        for item in occurrences
+        if item.role == OccurrenceRole.STRUCTURED_FAILURE_EMISSION
+    ]
+    if direct:
+        with_semantics = [item for item in direct if item.semantic_fields]
+        if len(with_semantics) == len(direct):
+            return "contracted"
+        if with_semantics:
+            return "mixed"
+        return "unreviewed"
+
+    if all(item.identifier_kind == IdentifierKind.DIAGNOSTIC_TAG for item in occurrences):
+        return "diagnostic_only"
+    return "reference_only"
 
 
 def write_inventory(project_root: Path, destination: Path) -> dict[str, object]:

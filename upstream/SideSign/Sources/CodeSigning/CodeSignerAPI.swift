@@ -109,14 +109,17 @@ public struct AppBundleSigner: CodeSignerAPI, Sendable {
             // 直接 `as? [String]` 在 existential 上可能静默失败 ⇒ 必须先拆 NSArray。
             let appGroupsKey = "com.apple.security.application-groups"
             if let rawGroups = filteredEntitlements[appGroupsKey] {
-                let groups: [String]?
+                // plist 解析出的数组可能是 NSArray / [String] / [Any]，
+                // 逐个尝试，全部转成 [String] 才排序（少一个都不排，宁可不排也不排错）。
+                var groups: [String]? = nil
                 if let strings = rawGroups as? [String] {
                     groups = strings
                 } else if let nsArray = rawGroups as? NSArray {
                     let extracted = nsArray.compactMap { $0 as? String }
-                    groups = extracted.count == nsArray.count ? extracted : nil
-                } else {
-                    groups = nil
+                    if extracted.count == nsArray.count { groups = extracted }
+                } else if let anyArray = rawGroups as? [Any] {
+                    let extracted = anyArray.compactMap { $0 as? String }
+                    if extracted.count == anyArray.count { groups = extracted }
                 }
                 if let groups, groups.count > 1 {
                     filteredEntitlements[appGroupsKey] = groups.sorted()

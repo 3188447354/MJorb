@@ -93,16 +93,26 @@ def patch_main(path: pathlib.Path) -> None:
     text = replace_once(text, creation_anchor, creation_replacement, "Seal visual setup")
 
     init_anchor = "        show_logs: false,\n"
-    init_replacement = "        show_logs: false,\n        pending_seal_install: false,\n        seal_icon_texture: None,\n"
+    init_replacement = "        show_logs: false,\n        pending_seal_install: false,\n        seal_icon_texture: None,\n        seal_issue: None,\n        seal_issue_seen: Vec::new(),\n"
     text = replace_once(text, init_anchor, init_replacement, "pending Seal install init")
 
     struct_anchor = "    show_logs: bool,\n}"
-    struct_replacement = "    show_logs: bool,\n    pending_seal_install: bool,\n    seal_icon_texture: Option<egui::TextureHandle>,\n}"
+    struct_replacement = "    show_logs: bool,\n    pending_seal_install: bool,\n    seal_icon_texture: Option<egui::TextureHandle>,\n    seal_issue: Option<SealIssue>,\n    seal_issue_seen: Vec<String>,\n}"
     text = replace_once(text, struct_anchor, struct_replacement, "pending Seal install field")
 
     reset_anchor = "        self.validation_ip_input.clear();\n"
-    reset_replacement = "        self.validation_ip_input.clear();\n        self.pending_seal_install = false;\n"
+    reset_replacement = "        self.validation_ip_input.clear();\n        self.pending_seal_install = false;\n        self.seal_issue = None;\n        self.seal_issue_seen.retain(|key| {\n            !key.starts_with(\"pairing\")\n                && !key.starts_with(\"install\")\n                && !key.starts_with(\"handoff\")\n        });\n"
     text = replace_once(text, reset_anchor, reset_replacement, "pending Seal install reset")
+
+    issue_model = pathlib.Path(__file__).with_name("seal_issue_model.rs.txt").read_text(
+        encoding="utf-8"
+    )
+    text = replace_once(
+        text,
+        "fn main() {\n",
+        issue_model + "\nfn main() {\n",
+        "Seal error dialog model",
+    )
 
     helper_anchor = """    fn push_pairing_status(&mut self, status: String) {\n        self.pairing_file_message = Some(status);\n    }\n}\n"""
     helper_replacement = """    fn push_pairing_status(&mut self, status: String) {\n        self.pairing_file_message = Some(status);\n    }\n\n    fn ensure_seal_textures(&mut self, ctx: &egui::Context) {
@@ -127,6 +137,8 @@ def patch_main(path: pathlib.Path) -> None:
     apps_replacement = """                GuiCommands::InstalledApps(apps) => {\n                    self.installed_apps = Some(apps);\n                    if self.pending_seal_install && self.pairing_file.is_some() {\n                        self.install_pairing_file_to_seal_if_ready();\n                    }\n                }\n"""
     text = replace_once(text, apps_anchor, apps_replacement, "pending auto-install after installed apps")
 
+    text = patch_error_dialogs(text)
+
     ui_anchor = "        egui::CentralPanel::default().show(ctx, |ui| {\n"
     ui_template = pathlib.Path(__file__).with_name("seal_ui_tail.rs.txt").read_text(
         encoding="utf-8"
@@ -136,6 +148,313 @@ def patch_main(path: pathlib.Path) -> None:
     text = replace_tail_once(text, ui_anchor, ui_template, "Seal minimal glass UI replacement")
 
     path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def patch_error_dialogs(text: str) -> str:
+    """把所有报错来源接到弹窗上：错误只进弹窗，页面不再复述报错内容。"""
+
+    raise_helper_anchor = """    fn push_pairing_status(&mut self, status: String) {
+        self.pairing_file_message = Some(status);
+    }
+"""
+    raise_helper_replacement = """    fn push_pairing_status(&mut self, status: String) {
+        self.pairing_file_message = Some(status);
+    }
+
+    /// 让一条报错以弹窗呈现。同一个问题只弹一次，问题被解决后才允许再次弹出。
+    fn seal_raise_issue(&mut self, issue: SealIssue) {
+        if self.seal_issue_seen.iter().any(|seen| seen == &issue.key) {
+            return;
+        }
+        self.seal_issue_seen.push(issue.key.clone());
+        self.seal_issue = Some(issue);
+    }
+
+    /// 某个问题已经解决：允许它下次再次弹窗。
+    fn seal_resolve_issue(&mut self, key: &str) {
+        self.seal_issue_seen.retain(|seen| seen != key);
+    }
+"""
+    text = replace_once(
+        text, raise_helper_anchor, raise_helper_replacement, "Seal error dialog helper"
+    )
+
+    # 交接阶段（写入 Seal）的每一个失败分支
+    text = replace_once(
+        text,
+        """        else {
+            self.pending_seal_install = false;
+            self.pairing_file_message = Some("未找到当前 iPhone".to_string());
+            return false;
+        };""",
+        """        else {
+            self.pending_seal_install = false;
+            self.seal_raise_issue(seal_issue_missing_device());
+            self.pairing_file_message = Some("未找到当前 iPhone".to_string());
+            return false;
+        };""",
+        "handoff missing device dialog",
+    )
+    text = replace_once(
+        text,
+        """        let Some(pairing_file) = self.pairing_file.as_ref() else {
+            self.pending_seal_install = false;
+            self.pairing_file_message = Some("配对文件尚未生成".to_string());
+            return false;
+        };""",
+        """        let Some(pairing_file) = self.pairing_file.as_ref() else {
+            self.pending_seal_install = false;
+            self.seal_raise_issue(seal_issue_no_pairing_file());
+            self.pairing_file_message = Some("配对文件尚未生成".to_string());
+            return false;
+        };""",
+        "handoff missing pairing file dialog",
+    )
+    text = replace_once(
+        text,
+        """            Err(error) => {
+                self.pending_seal_install = false;
+                self.pairing_file_message = Some(error.to_string());
+                return false;
+            }""",
+        """            Err(error) => {
+                self.pending_seal_install = false;
+                self.seal_raise_issue(seal_issue_serialize_failed(&error.to_string()));
+                self.pairing_file_message = Some(error.to_string());
+                return false;
+            }""",
+        "handoff serialize failure dialog",
+    )
+    text = replace_once(
+        text,
+        """        let Some(installed_apps) = self
+            .installed_apps
+            .as_ref()
+            .and_then(|apps| apps.as_ref().ok())
+        else {
+            self.pending_seal_install = false;
+            self.pairing_file_message = Some("无法读取已安装应用".to_string());
+            return false;
+        };""",
+        """        let installed_apps_error = self
+            .installed_apps
+            .as_ref()
+            .and_then(|apps| apps.as_ref().err())
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "设备未返回已安装应用列表".to_string());
+
+        let Some(installed_apps) = self
+            .installed_apps
+            .as_ref()
+            .and_then(|apps| apps.as_ref().ok())
+        else {
+            self.pending_seal_install = false;
+            self.seal_raise_issue(seal_issue_apps_unreadable(&installed_apps_error));
+            self.pairing_file_message = Some("无法读取已安装应用".to_string());
+            return false;
+        };""",
+        "handoff installed apps dialog",
+    )
+    text = replace_once(
+        text,
+        """        let Some(bundle_id) = installed_apps.get("Seal").cloned() else {
+            self.pending_seal_install = false;
+            self.pairing_file_message = Some("未找到已安装的 Seal".to_string());
+            return false;
+        };""",
+        """        let Some(bundle_id) = installed_apps.get("Seal").cloned() else {
+            self.pending_seal_install = false;
+            self.seal_raise_issue(seal_issue_seal_missing());
+            self.pairing_file_message = Some("未找到已安装的 Seal".to_string());
+            return false;
+        };""",
+        "handoff missing Seal dialog",
+    )
+    text = replace_once(
+        text,
+        """        let Some(path) = self.supported_apps().get("Seal").cloned() else {
+            self.pending_seal_install = false;
+            self.pairing_file_message = Some("Seal 写入路径缺失".to_string());
+            return false;
+        };""",
+        """        let Some(path) = self.supported_apps().get("Seal").cloned() else {
+            self.pending_seal_install = false;
+            self.seal_raise_issue(seal_issue_seal_path_missing());
+            self.pairing_file_message = Some("Seal 写入路径缺失".to_string());
+            return false;
+        };""",
+        "handoff missing Seal path dialog",
+    )
+
+    # 命令通道：usbmuxd / 设备列表 / 环境检查 / 配对 / 写入
+    text = replace_once(
+        text,
+        """                    self.devices_placeholder =
+                        format!("{} {install_msg}\\n\\n{idevice_error:#?}", t!("no_usbmuxd"));""",
+        """                    self.devices_placeholder =
+                        format!("{} {install_msg}\\n\\n{idevice_error:#?}", t!("no_usbmuxd"));
+                    let install_hint = install_msg.to_string();
+                    let usbmuxd_issue =
+                        seal_issue_usbmuxd(&format!("{idevice_error:#?}"), &install_hint);
+                    self.seal_raise_issue(usbmuxd_issue);""",
+        "usbmuxd error dialog",
+    )
+    text = replace_once(
+        text,
+        """                    self.devices_placeholder =
+                        t!("get_devices_failure", error = format!("{idevice_error:?}")).to_string();""",
+        """                    self.devices_placeholder =
+                        t!("get_devices_failure", error = format!("{idevice_error:?}")).to_string();
+                    let list_issue = seal_issue_device_list(&format!("{idevice_error:?}"));
+                    self.seal_raise_issue(list_issue);""",
+        "device list error dialog",
+    )
+    text = replace_once(
+        text,
+        """                GuiCommands::EnabledWireless => self.wireless_enabled = Some(Ok(())),""",
+        """                GuiCommands::EnabledWireless => {
+                    self.wireless_enabled = Some(Ok(()));
+                    self.seal_resolve_issue("wireless");
+                }""",
+        "wireless success resolves dialog",
+    )
+    text = replace_once(
+        text,
+        """                GuiCommands::EnableWirelessFailure(idevice_error) => {
+                    self.wireless_enabled = Some(Err(idevice_error))
+                }""",
+        """                GuiCommands::EnableWirelessFailure(idevice_error) => {
+                    let issue = seal_issue_wireless(&format!("{idevice_error:?}"));
+                    self.wireless_enabled = Some(Err(idevice_error));
+                    self.seal_raise_issue(issue);
+                }""",
+        "wireless failure dialog",
+    )
+    text = replace_once(
+        text,
+        """                GuiCommands::DevMode(res) => {
+                    self.dev_mode_enabled = Some(res);
+                }""",
+        """                GuiCommands::DevMode(res) => {
+                    match &res {
+                        Ok(true) => {
+                            self.seal_resolve_issue("devmode-off");
+                            self.seal_resolve_issue("devmode-unknown");
+                        }
+                        Ok(false) => self.seal_raise_issue(seal_issue_dev_mode_off()),
+                        Err(error) => {
+                            let issue = seal_issue_dev_mode_unknown(&format!("{error:?}"));
+                            self.seal_raise_issue(issue);
+                        }
+                    }
+                    self.dev_mode_enabled = Some(res);
+                }""",
+        "developer mode dialog",
+    )
+    text = replace_once(
+        text,
+        """                GuiCommands::MountRes(res) => {
+                    self.ddi_mounted = Some(res);
+                }""",
+        """                GuiCommands::MountRes(res) => {
+                    match &res {
+                        Ok(()) => self.seal_resolve_issue("ddi"),
+                        Err(error) => {
+                            let issue = seal_issue_support_files(&format!("{error:?}"));
+                            self.seal_raise_issue(issue);
+                        }
+                    }
+                    self.ddi_mounted = Some(res);
+                }""",
+        "developer support file dialog",
+    )
+    text = replace_once(
+        text,
+        """                GuiCommands::Devices(vec) => {
+                    self.devices = Some(vec);""",
+        """                GuiCommands::Devices(vec) => {
+                    self.seal_resolve_issue("usbmuxd");
+                    self.seal_resolve_issue("device-list");
+                    self.seal_resolve_issue("backend");
+                    self.devices = Some(vec);""",
+        "device list resolves dialogs",
+    )
+    text = replace_once(
+        text,
+        """                    Ok(p) => {
+                        self.pairing_file = Some(p);
+                        self.pairing_file_string = None;
+                        self.pairing_file_message = None;
+                        if self.pending_seal_install {
+                            self.install_pairing_file_to_seal_if_ready();
+                        }
+                    }
+                    Err(e) => {
+                        self.pending_seal_install = false;
+                        self.pairing_file = None;
+                        self.pairing_file_string = None;
+                        self.pairing_file_message = Some(e.to_string());
+                    }""",
+        """                    Ok(p) => {
+                        self.pairing_file = Some(p);
+                        self.pairing_file_string = None;
+                        self.pairing_file_message = None;
+                        self.seal_issue_seen.retain(|key| !key.starts_with("pairing"));
+                        if self.pending_seal_install {
+                            self.install_pairing_file_to_seal_if_ready();
+                        }
+                    }
+                    Err(e) => {
+                        self.pending_seal_install = false;
+                        self.pairing_file = None;
+                        self.pairing_file_string = None;
+                        let issue = seal_issue_pairing_failed(&e.to_string());
+                        self.pairing_file_message = Some(e.to_string());
+                        self.seal_raise_issue(issue);
+                    }""",
+        "pairing failure dialog",
+    )
+    text = replace_once(
+        text,
+        """                    if let Some(v) = self.install_res.get_mut(&name) {
+                        *v = Some(res);
+                    }
+                    self.pairing_file_message = Some(pairing_file_message);
+                }""",
+        """                    let failure = match &res {
+                        Ok(()) => None,
+                        Err(e) => Some(seal_issue_install_failed(&name, &e.to_string())),
+                    };
+                    if let Some(v) = self.install_res.get_mut(&name) {
+                        *v = Some(res);
+                    }
+                    self.pairing_file_message = Some(pairing_file_message);
+                    match failure {
+                        Some(issue) => self.seal_raise_issue(issue),
+                        None => self.seal_resolve_issue("install-failed"),
+                    }
+                }""",
+        "install failure dialog",
+    )
+    text = replace_once(
+        text,
+        """                tokio::sync::mpsc::error::TryRecvError::Disconnected => {
+                    self.devices_placeholder = t!("backend_disconnected").to_string();
+                    if self.pairing_file_message.is_none() {
+                        self.pairing_file_message = Some(t!("backend_disconnected").to_string());
+                    }
+                }""",
+        """                tokio::sync::mpsc::error::TryRecvError::Disconnected => {
+                    self.devices_placeholder = t!("backend_disconnected").to_string();
+                    if self.pairing_file_message.is_none() {
+                        self.pairing_file_message = Some(t!("backend_disconnected").to_string());
+                    }
+                    self.seal_raise_issue(seal_issue_backend_disconnected());
+                }""",
+        "backend disconnected dialog",
+    )
+
+    return text
 
 
 def patch_locale(path: pathlib.Path, expected: str, replacement: str) -> None:
@@ -182,6 +501,24 @@ def verify(root: pathlib.Path) -> None:
         '"开发者支持文件"',
         "正在读取 iOS 版本…",
         "现在可关闭此窗口",
+        "fn seal_raise_issue",
+        "fn seal_resolve_issue",
+        "seal_issue_seen",
+        "egui::Modal::new",
+        "seal-issue-dialog",
+        "SealIssueRetry::Reprime",
+        "seal_issue_usbmuxd",
+        "seal_issue_device_list",
+        "seal_issue_wireless",
+        "seal_issue_dev_mode_off",
+        "seal_issue_dev_mode_unknown",
+        "seal_issue_support_files",
+        "seal_issue_backend_disconnected",
+        "seal_issue_pairing_failed",
+        "seal_issue_install_failed",
+        "seal_issue_seal_missing",
+        "解决办法",
+        "知道了",
     ]
     missing = [item for item in required if item not in main]
     if missing:
@@ -206,6 +543,11 @@ def verify(root: pathlib.Path) -> None:
         "IPHONE_MODEL",
         "iphone_model.rgba",
         "button_rect.center_bottom() + egui::vec2(0.0, 24.0)",
+        "Seal 未收到配对文件",
+        "notice_rect",
+        '"写入失败"',
+        '"检测失败"',
+        '"检查失败"',
     ]
     present = [item for item in forbidden if item in main]
     if present:

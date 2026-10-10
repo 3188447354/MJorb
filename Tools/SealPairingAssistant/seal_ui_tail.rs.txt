@@ -102,8 +102,8 @@
             "正在写入 Seal…".to_string()
         } else if seal_installed {
             "完成".to_string()
-        } else if seal_failed {
-            "写入失败".to_string()
+        } else if seal_failed || has_pairing_failure {
+            "未完成".to_string()
         } else if !readiness_issues.is_empty() {
             format!("需要处理 {} 项", readiness_issues.len())
         } else if environment_checking {
@@ -127,18 +127,17 @@
         } else {
             text_secondary
         };
+        // 页面只保留中性状态：失败原因与解决办法一律由弹窗说明，页面不再复述报错。
         let (intro_label, intro_title, intro_detail) = if seal_installed {
             ("已完成", "配对完成", "现在可关闭此窗口，回到 iPhone 的 Seal 继续操作。")
-        } else if pairing_rejected {
-            ("需要处理", "重新配对", "请在 iPhone 系统弹窗中选择“信任”或“允许”，然后再次发起配对。")
-        } else if seal_failed || has_pairing_failure {
-            ("交接失败", "重新生成配对文件", "保持设备连接，并在 iPhone 上打开 Seal 后重试。")
+        } else if pairing_rejected || seal_failed || has_pairing_failure {
+            ("待处理", "配对未完成", "请按弹窗提示处理后重试。")
         } else if seal_installing {
             ("正在交接", "正在发送到 iPhone", "配对文件已生成，正在发送到 Seal。")
         } else if self.pending_seal_install {
             ("正在配对", "正在生成配对文件", "请保持 iPhone 解锁和数据线连接。")
-        } else if let Some(issue) = readiness_issues.first() {
-            ("需要处理", "检查设备状态", *issue)
+        } else if !readiness_issues.is_empty() {
+            ("待处理", "检查设备状态", "请按弹窗提示完成准备项后重新检测。")
         } else if !has_device {
             ("等待连接", "连接 iPhone", "使用数据线连接并解锁 iPhone，在设备上点按“信任”。")
         } else if !has_ios_version || environment_checking {
@@ -364,19 +363,19 @@
                     None => "检测中",
                     Some(Ok(true)) => "已开启",
                     Some(Ok(false)) => "未开启",
-                    Some(Err(_)) => "检测失败",
+                    Some(Err(_)) => "未就绪",
                 };
                 let wireless_text = match &self.wireless_enabled {
                     None if !has_device => "待连接",
                     None => "检测中",
                     Some(Ok(())) => "已就绪",
-                    Some(Err(_)) => "检查失败",
+                    Some(Err(_)) => "未就绪",
                 };
                 let support_text = match &self.ddi_mounted {
                     None if !has_device => "待连接",
                     None => "检测中",
                     Some(Ok(())) => "已就绪",
-                    Some(Err(_)) => "检查失败",
+                    Some(Err(_)) => "未就绪",
                 };
                 let detail_rows = [
                     ("开发者模式", developer_text, matches!(self.dev_mode_enabled, Some(Ok(true)))),
@@ -451,47 +450,7 @@
                         if index <= current_step { text_primary } else { text_secondary },
                     );
                 }
-                let notice = if pairing_rejected {
-                    Some(("配对请求未获允许", "解锁 iPhone，在系统弹窗中选择“信任”或“允许”。", seal_red))
-                } else if seal_failed || has_pairing_failure {
-                    Some(("Seal 未收到配对文件", "保持连接并打开 Seal 后，再重新生成。", seal_red))
-                } else if let Some(issue) = readiness_issues.first() {
-                    Some(("需要处理", *issue, seal_red))
-                } else {
-                    None
-                };
-                if let Some((notice_title, notice_detail, notice_color)) = notice {
-                    let notice_rect = egui::Rect::from_min_size(
-                        egui::pos2(detail_left, detail_rect.bottom() + 12.0),
-                        egui::vec2(detail_width, 52.0),
-                    );
-                    ui.painter().rect_filled(
-                        notice_rect,
-                        10.0,
-                        Color32::from_rgb(255, 245, 245),
-                    );
-                    ui.painter().rect_stroke(
-                        notice_rect,
-                        10.0,
-                        egui::Stroke::new(1.0_f32, Color32::from_rgb(239, 205, 205)),
-                        egui::StrokeKind::Inside,
-                    );
-                    ui.painter().text(
-                        notice_rect.left_top() + egui::vec2(15.0, 15.0),
-                        egui::Align2::LEFT_CENTER,
-                        notice_title,
-                        egui::FontId::new(13.0, egui::FontFamily::Proportional),
-                        notice_color,
-                    );
-                    ui.painter().text(
-                        notice_rect.left_bottom() + egui::vec2(15.0, -13.0),
-                        egui::Align2::LEFT_CENTER,
-                        notice_detail,
-                        egui::FontId::new(12.0, egui::FontFamily::Proportional),
-                        Color32::from_rgb(124, 80, 80),
-                    );
-                }
-
+                // 报错不在页面显示：失败的具体原因与解决办法统一由 update() 末尾的弹窗呈现。
                 let button_text = if is_processing {
                     "正在处理…"
                 } else if !has_device {
@@ -618,6 +577,119 @@
                     text_secondary,
                 );
             });
+
+        // 所有报错都以弹窗呈现：写明问题、原因与解决办法；页面本身不再复述报错内容。
+        if let Some(issue) = self.seal_issue.clone() {
+            let mut dismiss = false;
+            let mut retry = false;
+            let modal = egui::Modal::new(egui::Id::new("seal-issue-dialog")).frame(
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(255, 255, 255))
+                    .corner_radius(16)
+                    .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(226, 233, 242)))
+                    .inner_margin(egui::Margin::symmetric(26, 22)),
+            );
+            let modal_response = modal.show(ctx, |ui| {
+                ui.set_width(432.0);
+                ui.label(RichText::new("需要处理").size(12.5).color(seal_red));
+                ui.add_space(3.0);
+                ui.label(
+                    RichText::new(&issue.title)
+                        .size(21.0)
+                        .strong()
+                        .color(text_primary),
+                );
+                ui.add_space(12.0);
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(255, 246, 246))
+                    .corner_radius(10)
+                    .inner_margin(egui::Margin::symmetric(14, 11))
+                    .show(ui, |ui| {
+                        ui.set_width(404.0);
+                        ui.label(RichText::new("原因").size(12.0).color(seal_red));
+                        ui.add_space(2.0);
+                        ui.label(
+                            RichText::new(&issue.cause)
+                                .size(13.0)
+                                .color(Color32::from_rgb(120, 74, 74)),
+                        );
+                    });
+                ui.add_space(14.0);
+                ui.label(RichText::new("解决办法").size(12.5).color(text_secondary));
+                ui.add_space(4.0);
+                for (index, step) in issue.fixes.iter().enumerate() {
+                    ui.label(
+                        RichText::new(format!("{}. {}", index + 1, step))
+                            .size(13.5)
+                            .color(text_primary),
+                    );
+                }
+                ui.add_space(20.0);
+                ui.horizontal(|ui| {
+                    let retry_label = match issue.retry {
+                        SealIssueRetry::Refresh => Some("重新检测"),
+                        SealIssueRetry::Reprime => Some("重新生成配对文件"),
+                        SealIssueRetry::None => None,
+                    };
+                    if let Some(label) = retry_label
+                        && ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(label).size(14.5).strong().color(Color32::WHITE),
+                                )
+                                .fill(seal_blue)
+                                .stroke(egui::Stroke::NONE)
+                                .corner_radius(8)
+                                .min_size(egui::vec2(156.0, 42.0)),
+                            )
+                            .clicked()
+                    {
+                        retry = true;
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("知道了").size(14.5).color(text_primary))
+                                .fill(Color32::from_rgb(238, 243, 248))
+                                .stroke(egui::Stroke::NONE)
+                                .corner_radius(8)
+                                .min_size(egui::vec2(110.0, 42.0)),
+                        )
+                        .clicked()
+                    {
+                        dismiss = true;
+                    }
+                });
+            });
+
+            if retry {
+                self.seal_issue = None;
+                match issue.retry {
+                    SealIssueRetry::Refresh => {
+                        if let Some(dev) = selected_device.clone() {
+                            self.refresh_device_state(dev);
+                        }
+                    }
+                    SealIssueRetry::Reprime => {
+                        if let Some(dev) = selected_device.clone() {
+                            self.reset_pairing_state();
+                            self.pending_seal_install = true;
+                            self.pairing_file_message = Some("正在生成配对文件…".to_string());
+                            let _ = self.idevice_sender.send(IdeviceCommands::InstalledApps((
+                                dev.clone(),
+                                self.supported_app_names(),
+                            )));
+                            let _ = self.idevice_sender.send(IdeviceCommands::GeneratePairingFile((
+                                dev,
+                                seal_mode_for_ios(&ios_version, self.pairing_mode),
+                            )));
+                        }
+                    }
+                    SealIssueRetry::None => {}
+                }
+            } else if dismiss || modal_response.should_close() {
+                self.seal_issue = None;
+            }
+        }
 
         if let Some((dev_name, dev)) = pending_selection.take() {
             self.select_device(dev_name, dev);

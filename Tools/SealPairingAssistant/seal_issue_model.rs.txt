@@ -1,0 +1,337 @@
+/// 一条需要以弹窗告知用户的报错：问题 + 原因 + 解决办法。
+#[derive(Clone, PartialEq, Eq)]
+struct SealIssue {
+    /// 去重键：同一个问题只弹一次，直到问题被解决后才允许再次弹出。
+    key: String,
+    /// 弹窗标题：一句话说明发生了什么。
+    title: String,
+    /// 触发原因：必要时附上底层返回的原始错误。
+    cause: String,
+    /// 解决办法：按顺序逐条列出。
+    fixes: Vec<String>,
+    /// 弹窗上可选的“立即重试”动作。
+    retry: SealIssueRetry,
+}
+
+/// 弹窗上的重试动作。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SealIssueRetry {
+    /// 只能关闭，需要用户手动处理后再点主按钮。
+    None,
+    /// 重新检测当前设备（环境类问题）。
+    Refresh,
+    /// 重新生成配对文件并交接给 Seal（配对类问题）。
+    Reprime,
+}
+
+impl SealIssue {
+    fn new(key: &str, title: &str, cause: String, fixes: &[&str], retry: SealIssueRetry) -> Self {
+        Self {
+            key: key.to_string(),
+            title: title.to_string(),
+            cause,
+            fixes: fixes.iter().map(|step| (*step).to_string()).collect(),
+            retry,
+        }
+    }
+}
+
+/// 压缩底层错误文本，避免弹窗被超长调试输出撑爆。
+fn seal_error_text(error: impl std::fmt::Display) -> String {
+    let text = error.to_string();
+    let text = text.trim();
+    if text.is_empty() {
+        return "设备未返回具体错误信息".to_string();
+    }
+    if text.chars().count() > 300 {
+        return format!("{}…", text.chars().take(300).collect::<String>());
+    }
+    text.to_string()
+}
+
+/// 连不上 usbmuxd：通常是 iTunes / Apple 移动设备服务缺失。
+fn seal_issue_usbmuxd(error: impl std::fmt::Display, install_hint: &str) -> SealIssue {
+    SealIssue::new(
+        "usbmuxd",
+        "无法连接 iPhone 服务",
+        format!("连接 usbmuxd 失败：{}", seal_error_text(error)),
+        &[
+            install_hint,
+            "安装完成后重启电脑，确保 iTunes 或「Apple 移动设备服务」正在运行。",
+            "解锁 iPhone 并重新插拔数据线，然后点按「重新检测」。",
+        ],
+        SealIssueRetry::Refresh,
+    )
+}
+
+/// 能连上 usbmuxd，但取不到设备列表。
+fn seal_issue_device_list(error: impl std::fmt::Display) -> SealIssue {
+    SealIssue::new(
+        "device-list",
+        "读取设备列表失败",
+        format!("从 usbmuxd 获取已连接设备失败：{}", seal_error_text(error)),
+        &[
+            "换一个 USB 接口，优先直连电脑主板，不要经过扩展坞或前置面板。",
+            "解锁 iPhone，在设备弹窗中点按「信任」并输入锁屏密码。",
+            "重启「Apple 移动设备服务」后点按「重新检测」。",
+        ],
+        SealIssueRetry::Refresh,
+    )
+}
+
+/// 无线调试启用失败。
+fn seal_issue_wireless(error: impl std::fmt::Display) -> SealIssue {
+    SealIssue::new(
+        "wireless",
+        "无线调试未能启用",
+        format!("启用无线调试时设备返回失败：{}", seal_error_text(error)),
+        &[
+            "解锁 iPhone 并保持数据线连接，不要中途拔线。",
+            "iPhone 弹出「信任此电脑」时选择「信任」并输入锁屏密码。",
+            "在 iPhone「设置 → 开发者」中确认无线调试可用，然后点按「重新检测」。",
+        ],
+        SealIssueRetry::Refresh,
+    )
+}
+
+/// 开发者模式处于关闭状态。
+fn seal_issue_dev_mode_off() -> SealIssue {
+    SealIssue::new(
+        "devmode-off",
+        "开发者模式未开启",
+        "iPhone 的开发者模式当前处于关闭状态，无法挂载开发者支持文件。".to_string(),
+        &[
+            "在 iPhone 打开「设置 → 隐私与安全性 → 开发者模式」。",
+            "打开开关后按系统提示重启 iPhone。",
+            "重启后重新连接数据线，点按「重新检测」。",
+        ],
+        SealIssueRetry::Refresh,
+    )
+}
+
+/// 读不到开发者模式状态。
+fn seal_issue_dev_mode_unknown(error: impl std::fmt::Display) -> SealIssue {
+    SealIssue::new(
+        "devmode-unknown",
+        "无法读取开发者模式",
+        format!("读取开发者模式状态失败：{}", seal_error_text(error)),
+        &[
+            "解锁 iPhone 并保持数据线连接。",
+            "重新插拔数据线，在设备弹窗中重新点按「信任」。",
+            "仍然失败时同时重启 iPhone 与本程序，再点按「重新检测」。",
+        ],
+        SealIssueRetry::Refresh,
+    )
+}
+
+/// 开发者支持文件（DDI）未就绪。
+fn seal_issue_support_files(error: impl std::fmt::Display) -> SealIssue {
+    SealIssue::new(
+        "ddi",
+        "开发者支持文件未就绪",
+        format!("挂载开发者磁盘映像失败：{}", seal_error_text(error)),
+        &[
+            "解锁 iPhone 并保持数据线连接。",
+            "确认 iPhone 已开启开发者模式（设置 → 隐私与安全性 → 开发者模式）。",
+            "点按「重新检测」重新挂载开发者磁盘映像。",
+        ],
+        SealIssueRetry::Refresh,
+    )
+}
+
+/// 与设备后台的连接中断。
+fn seal_issue_backend_disconnected() -> SealIssue {
+    SealIssue::new(
+        "backend",
+        "设备服务已断开",
+        "与设备后台的通信通道意外中断，后续操作无法继续。".to_string(),
+        &[
+            "保持数据线连接，不要关闭本程序。",
+            "点按「重新检测」尝试恢复。",
+            "若仍失败，请拔出数据线后重启本程序。",
+        ],
+        SealIssueRetry::Refresh,
+    )
+}
+
+/// 配对请求被设备拒绝。
+fn seal_issue_pairing_rejected() -> SealIssue {
+    SealIssue::new(
+        "pairing-rejected",
+        "配对请求未获允许",
+        "iPhone 拒绝了本次配对请求：系统弹窗中被选择了「不允许」，或弹窗被忽略。".to_string(),
+        &[
+            "解锁 iPhone 并让屏幕保持点亮。",
+            "点按「重新生成配对文件」，在 iPhone 弹窗中选择「信任」或「允许」。",
+            "如果没有看到弹窗，请先解锁屏幕，再回到本程序重试。",
+        ],
+        SealIssueRetry::Reprime,
+    )
+}
+
+/// 配对过程失败：按底层错误归类，给出对症的解决办法。
+fn seal_issue_pairing_failed(raw: &str) -> SealIssue {
+    let lowered = raw.to_ascii_lowercase();
+    if lowered.contains("rejected")
+        || lowered.contains("declined")
+        || lowered.contains("authenticate the user")
+    {
+        return seal_issue_pairing_rejected();
+    }
+    if lowered.contains("tunnelservice") || lowered.contains("untrusted tunnel") {
+        return SealIssue::new(
+            "pairing-tunnel",
+            "设备隧道服务未就绪",
+            format!("未能连接设备的非信任隧道服务：{}", seal_error_text(raw)),
+            &[
+                "解锁 iPhone 并保持数据线连接。",
+                "确认 iPhone 系统为 iOS 17.4 及以上（低于该版本请使用本机配对）。",
+                "重新插拔数据线，然后点按「重新生成配对文件」。",
+            ],
+            SealIssueRetry::Reprime,
+        );
+    }
+    if lowered.contains("coredeviceproxy") || lowered.contains("core device") {
+        return SealIssue::new(
+            "pairing-coredevice",
+            "无法连接设备核心代理",
+            format!("连接 CoreDeviceProxy 失败：{}", seal_error_text(raw)),
+            &[
+                "解锁 iPhone 并保持数据线连接，不要中途拔线。",
+                "在 iPhone 弹窗中选择「信任」，必要时输入锁屏密码。",
+                "点按「重新生成配对文件」重试。",
+            ],
+            SealIssueRetry::Reprime,
+        );
+    }
+    if lowered.contains("rsd") {
+        return SealIssue::new(
+            "pairing-rsd",
+            "RSD 握手失败",
+            format!("与设备执行 RSD 握手失败：{}", seal_error_text(raw)),
+            &[
+                "解锁 iPhone 并保持数据线连接。",
+                "重新插拔数据线，确保系统识别到设备。",
+                "点按「重新生成配对文件」重试。",
+            ],
+            SealIssueRetry::Reprime,
+        );
+    }
+    SealIssue::new(
+        "pairing-failed",
+        "配对文件生成失败",
+        format!("设备返回错误：{}", seal_error_text(raw)),
+        &[
+            "解锁 iPhone 并保持数据线连接，让屏幕保持点亮。",
+            "在 iPhone 弹窗中选择「信任」或「允许」。",
+            "点按「重新生成配对文件」重试；仍失败请换用原装数据线并更换 USB 接口。",
+        ],
+        SealIssueRetry::Reprime,
+    )
+}
+
+/// 生成阶段找不到当前设备。
+fn seal_issue_missing_device() -> SealIssue {
+    SealIssue::new(
+        "handoff-device",
+        "未找到当前 iPhone",
+        "配对文件已生成，但当前设备已从列表中消失，无法继续交接。".to_string(),
+        &[
+            "重新插拔数据线，确认设备仍连接在电脑上。",
+            "解锁 iPhone 并在弹窗中选择「信任」。",
+            "点按「重新检测」后再次发起配对。",
+        ],
+        SealIssueRetry::Refresh,
+    )
+}
+
+/// 交接时还没有配对文件。
+fn seal_issue_no_pairing_file() -> SealIssue {
+    SealIssue::new(
+        "handoff-nofile",
+        "配对文件尚未生成",
+        "交接流程已启动，但内存中还没有可写入的配对文件。".to_string(),
+        &[
+            "先点按「开始配对」完成一次配对文件生成。",
+            "生成成功后再点按「重新生成配对文件」重试交接。",
+        ],
+        SealIssueRetry::Reprime,
+    )
+}
+
+/// 配对文件序列化失败。
+fn seal_issue_serialize_failed(error: impl std::fmt::Display) -> SealIssue {
+    SealIssue::new(
+        "handoff-serialize",
+        "配对文件无法编码",
+        format!("序列化配对文件失败：{}", seal_error_text(error)),
+        &[
+            "点按「重新生成配对文件」，让设备重新下发一份配对文件。",
+            "若反复失败，请把此问题与日志一并反馈给开发者。",
+        ],
+        SealIssueRetry::Reprime,
+    )
+}
+
+/// 读不到设备上已安装的应用。
+fn seal_issue_apps_unreadable(error: impl std::fmt::Display) -> SealIssue {
+    SealIssue::new(
+        "handoff-apps",
+        "无法读取已安装应用",
+        format!("读取设备已安装应用列表失败：{}", seal_error_text(error)),
+        &[
+            "解锁 iPhone 并保持数据线连接。",
+            "确认开发者支持文件已就绪（本页三项准备项全部为「已就绪」）。",
+            "点按「重新检测」后再重试交接。",
+        ],
+        SealIssueRetry::Refresh,
+    )
+}
+
+/// 设备上没有安装 Seal。
+fn seal_issue_seal_missing() -> SealIssue {
+    SealIssue::new(
+        "handoff-noseal",
+        "设备上未找到 Seal",
+        "配对文件已生成，但在 iPhone 的已安装应用中没有检测到 Seal。".to_string(),
+        &[
+            "在 iPhone 上安装本程序配套的 Seal 版本（包名 com.mjorb.seal）。",
+            "安装完成后至少打开一次 Seal，确认可以正常启动。",
+            "回到本程序点按「重新检测」，再重新生成配对文件。",
+        ],
+        SealIssueRetry::Refresh,
+    )
+}
+
+/// 内部没有配置 Seal 的写入路径。
+fn seal_issue_seal_path_missing() -> SealIssue {
+    SealIssue::new(
+        "handoff-nopath",
+        "Seal 写入路径缺失",
+        "程序内部没有找到 Seal 的配对文件写入路径，无法完成交接。".to_string(),
+        &[
+            "确认使用的是最新版本的本程序。",
+            "若已是最新版本，请把该问题连同日志反馈给开发者。",
+        ],
+        SealIssueRetry::None,
+    )
+}
+
+/// 写入 Seal 失败。
+fn seal_issue_install_failed(name: &str, error: impl std::fmt::Display) -> SealIssue {
+    SealIssue::new(
+        "install-failed",
+        "配对文件写入 Seal 失败",
+        format!(
+            "向 {name} 写入配对文件时设备返回错误：{}",
+            seal_error_text(error)
+        ),
+        &[
+            "解锁 iPhone 并保持数据线连接。",
+            "确认 Seal 已安装，并且安装后至少打开过一次。",
+            "点按「重新生成配对文件」重试；仍失败请重启 iPhone 后再试。",
+        ],
+        SealIssueRetry::Reprime,
+    )
+}
+

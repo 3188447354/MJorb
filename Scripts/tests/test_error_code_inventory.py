@@ -65,6 +65,14 @@ class ErrorCodeInventoryTests(unittest.TestCase):
             occurrences[0].semantic_fields,
             ("condition", "action", "operation"),
         )
+        self.assertEqual(
+            occurrences[0].semantic_values,
+            (
+                ("condition", ".invalidArchive"),
+                ("action", ".chooseAnotherIPA"),
+                ("operation", ".import"),
+            ),
+        )
 
     def test_classifies_comment_reference_without_treating_it_as_an_emission(self):
         path = self.write_source('// SEAL-IPA-ROLLBACK-001 is a historical reference\n')
@@ -163,6 +171,8 @@ class ErrorCodeInventoryTests(unittest.TestCase):
             'let legacy = ImportFailure(code: "SEAL-IPA-102")\n'
             'let mixed = ImportFailure(code: "SEAL-IPA-103", action: .retry)\n'
             'let mixedLegacy = ImportFailure(code: "SEAL-IPA-103")\n'
+            'let firstConflict = ImportFailure(code: "SEAL-IPA-104", condition: .first)\n'
+            'let secondConflict = ImportFailure(code: "SEAL-IPA-104", condition: .second)\n'
             'try? await logStore.append(message: "done", code: "SEAL-OP")\n'
         )
 
@@ -171,6 +181,7 @@ class ErrorCodeInventoryTests(unittest.TestCase):
         self.assertEqual(inventory["codes"]["SEAL-IPA-101"]["auditStatus"], "contracted")
         self.assertEqual(inventory["codes"]["SEAL-IPA-102"]["auditStatus"], "unreviewed")
         self.assertEqual(inventory["codes"]["SEAL-IPA-103"]["auditStatus"], "mixed")
+        self.assertEqual(inventory["codes"]["SEAL-IPA-104"]["auditStatus"], "conflicted")
         self.assertEqual(inventory["codes"]["SEAL-OP"]["auditStatus"], "diagnostic_only")
 
 

@@ -93,7 +93,8 @@ enum InstallFailureAction: Equatable, Sendable {
 enum InstallFailureActionPolicy {
     /// 立即终止、不重试（recovery 文案各自说明后续人工动作）。
     static let acknowledgeCodes: Set<String> = [
-        "SEAL-INSTALL-702l",   // iOS 拒绝：免费账号 3 应用上限 / 完整性校验
+        "SEAL-INSTALL-702l",   // 免费账号设备级应用上限
+        "SEAL-INSTALL-702u",   // iOS 拒绝但没有可确认的具体原因
         "SEAL-INSTALL-702s",   // 设备存储空间不足
         "SEAL-INSTALL-702t",   // 安装超时：底下很可能仍在跑，重跑即并发安装
         "SEAL-INSTALL-707b",   // 安装后无法验证（通道不可信）：重装解决不了，先修通道
@@ -125,7 +126,8 @@ enum InstallFailureActionPolicy {
         "SEAL-INSTALL-728",
         "SEAL-INSTALL-729",
         "SEAL-INSTALL-730",
-        "SEAL-INSTALL-735"
+        "SEAL-INSTALL-735",
+        "SEAL-INSTALL-702v"    // 当前签名包未通过 iOS 完整性校验
     ]
 
     /// 配对族：`SEAL-INSTALL-703`（设备配对不可用）与 `707`（无法刷新已安装应用，

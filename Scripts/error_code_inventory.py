@@ -53,6 +53,7 @@ class ErrorCodeOccurrence(NamedTuple):
     role: OccurrenceRole
     identifier_kind: IdentifierKind
     semantic_fields: tuple[str, ...]
+    semantic_values: tuple[tuple[str, str], ...]
     source: str
 
 
@@ -109,8 +110,10 @@ def parenthesized_call_spans(lines: list[str], symbol: str) -> list[tuple[int, i
     return spans
 
 
-def direct_failure_contract_fields(lines: list[str]) -> dict[int, tuple[str, ...]]:
-    fields_by_line: dict[int, tuple[str, ...]] = {}
+def direct_failure_contract_fields(
+    lines: list[str],
+) -> dict[int, tuple[tuple[str, ...], tuple[tuple[str, str], ...]]]:
+    fields_by_line: dict[int, tuple[tuple[str, ...], tuple[tuple[str, str], ...]]] = {}
     for start, end in parenthesized_call_spans(lines, "ImportFailure"):
         body = "\n".join(lines[start : end + 1])
         fields = tuple(
@@ -118,21 +121,26 @@ def direct_failure_contract_fields(lines: list[str]) -> dict[int, tuple[str, ...
             for field in STRUCTURED_FAILURE_FIELDS
             if re.search(rf"\b{re.escape(field)}\s*:", body)
         )
+        values = tuple(
+            (field, match.group(1))
+            for field in fields
+            if (match := re.search(rf"\b{re.escape(field)}\s*:\s*([.A-Za-z0-9_]+)", body))
+        )
         for line_index in range(start, end + 1):
-            fields_by_line[line_index] = fields
+            fields_by_line[line_index] = (fields, values)
     return fields_by_line
 
 
 def scan_file(path: Path) -> list[ErrorCodeOccurrence]:
     occurrences: list[ErrorCodeOccurrence] = []
     lines = path.read_text(encoding="utf-8").splitlines()
-    structured_failure_fields = direct_failure_contract_fields(lines)
+    structured_failure_contracts = direct_failure_contract_fields(lines)
     for line_number, line in enumerate(lines, start=1):
         context = "\n".join(lines[max(0, line_number - 9) : line_number])
         role = classify_line(
             line,
             context,
-            is_structured_failure_boundary=(line_number - 1) in structured_failure_fields,
+            is_structured_failure_boundary=(line_number - 1) in structured_failure_contracts,
         )
         for code in ERROR_CODE_PATTERN.findall(line):
             occurrences.append(
@@ -142,7 +150,8 @@ def scan_file(path: Path) -> list[ErrorCodeOccurrence]:
                     line=line_number,
                     role=role,
                     identifier_kind=classify_identifier(code, role),
-                    semantic_fields=structured_failure_fields.get(line_number - 1, ()),
+                    semantic_fields=structured_failure_contracts.get(line_number - 1, ((), ()))[0],
+                    semantic_values=structured_failure_contracts.get(line_number - 1, ((), ()))[1],
                     source=line.strip(),
                 )
             )
@@ -182,6 +191,7 @@ def build_inventory(
                     "role": item.role.value,
                     "identifierKind": item.identifier_kind.value,
                     "semanticFields": list(item.semantic_fields),
+                    "semanticValues": dict(item.semantic_values),
                     "source": item.source,
                 }
             )
@@ -202,8 +212,10 @@ def build_inventory(
         item for item in direct_failures if item.semantic_fields
     ]
 
+    audit_status_counts = Counter(entry["auditStatus"] for entry in codes.values())
+
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "scope": "Seal/**/*.swift",
         "summary": {
             "uniqueIdentifiers": len(codes),
@@ -217,6 +229,7 @@ def build_inventory(
                 "withExplicitSemantics": len(direct_failures_with_semantics),
                 "withoutExplicitSemantics": len(direct_failures) - len(direct_failures_with_semantics),
             },
+            "auditStatuses": dict(sorted(audit_status_counts.items())),
         },
         "codes": codes,
     }
@@ -232,6 +245,16 @@ def audit_status(occurrences: list[ErrorCodeOccurrence]) -> str:
     if direct:
         with_semantics = [item for item in direct if item.semantic_fields]
         if len(with_semantics) == len(direct):
+            # Parameterized wrappers may intentionally preserve the caller's operation or
+            # origin. Only compare concrete enum values; a variable is evidence of a
+            # propagated context, not a contradictory hard-coded recovery contract.
+            concrete_values: dict[str, set[str]] = defaultdict(set)
+            for item in direct:
+                for field, value in item.semantic_values:
+                    if value.startswith("."):
+                        concrete_values[field].add(value)
+            if any(len(values) > 1 for values in concrete_values.values()):
+                return "conflicted"
             return "contracted"
         if with_semantics:
             return "mixed"

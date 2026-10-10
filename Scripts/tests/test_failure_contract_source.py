@@ -158,6 +158,27 @@ class FailureContractSourceTests(unittest.TestCase):
             self.assertIn("origin: .provisioning", failure)
             self.assertNotIn("fullResign", failure)
 
+    def test_terminal_install_outcomes_have_distinct_codes_and_actions(self) -> None:
+        source = (ROOT / "Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift").read_text(
+            encoding="utf-8"
+        )
+        app_limit = source.split("// 2) 免费账号设备级应用上限", 1)[1].split(
+            "// 3) 签名产物完整性", 1
+        )[0]
+        invalid_artifact = source.split("// 3) 签名产物完整性", 1)[1].split(
+            "// 4) `ApplicationVerificationFailed`", 1
+        )[0]
+        unknown_rejection = source.split("// 4) `ApplicationVerificationFailed`", 1)[1].split(
+            "// 5) 设备未连接", 1
+        )[0]
+
+        self.assertIn('code: "SEAL-INSTALL-702l"', app_limit)
+        self.assertIn("action: .removeInstalledApp", app_limit)
+        self.assertIn('code: "SEAL-INSTALL-702v"', invalid_artifact)
+        self.assertIn("action: .fullResign", invalid_artifact)
+        self.assertIn('code: "SEAL-INSTALL-702u"', unknown_rejection)
+        self.assertIn("action: .copyDiagnostics", unknown_rejection)
+
 
 if __name__ == "__main__":
     unittest.main()

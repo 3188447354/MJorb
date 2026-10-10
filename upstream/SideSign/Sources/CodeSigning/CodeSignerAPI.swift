@@ -104,9 +104,23 @@ public struct AppBundleSigner: CodeSignerAPI, Sendable {
             // 安全性：iOS 只校验「二进制请求的组 ⊆ 描述文件允许的组」（集合关系），
             // Seal 自检 `ProvisioningEntitlementValue.permits` 同样按集合实现，
             // 顺序不影响安装与运行。
-            if let groups = filteredEntitlements["com.apple.security.application-groups"] as? [String],
-               groups.count > 1 {
-                filteredEntitlements["com.apple.security.application-groups"] = groups.sorted()
+            //
+            // ⚠️ 类型注意：plist 解析出的数组是 NSArray（`any Sendable` 包装），
+            // 直接 `as? [String]` 在 existential 上可能静默失败 ⇒ 必须先拆 NSArray。
+            let appGroupsKey = "com.apple.security.application-groups"
+            if let rawGroups = filteredEntitlements[appGroupsKey] {
+                let groups: [String]?
+                if let strings = rawGroups as? [String] {
+                    groups = strings
+                } else if let nsArray = rawGroups as? NSArray {
+                    let extracted = nsArray.compactMap { $0 as? String }
+                    groups = extracted.count == nsArray.count ? extracted : nil
+                } else {
+                    groups = nil
+                }
+                if let groups, groups.count > 1 {
+                    filteredEntitlements[appGroupsKey] = groups.sorted()
+                }
             }
             verboseLog("[SideSign] Original profile entitlements: \(filteredEntitlements)")
 

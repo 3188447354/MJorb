@@ -535,33 +535,70 @@ final class AppleAccountClient {
 
     /// 纯函数：只做错误分类，不加锁不碰 UI 状态；
     /// 需要 nonisolated 以便从 withTimeout 的 @Sendable 闭包调用
-    private nonisolated static func failure(from error: Error) -> ImportFailure {
+    nonisolated static func failure(from error: Error) -> ImportFailure {
         if let anisetteError = error as? AnisetteV3Error {
-            let code: String
-            let reason: String
             switch anisetteError {
             case .invalidIdentifier, .invalidServerResponse:
-                code = "SEAL-ANI-110"
-                reason = "Apple 拒绝了当前的设备标识（Anisette 无效或服务器响应异常）。"
+                return ImportFailure(
+                    title: "无法获取设备环境",
+                    reason: "Apple 拒绝了当前的设备标识（Anisette 无效或服务器响应异常）。",
+                    recovery: "重试",
+                    code: "SEAL-ANI-110",
+                    condition: .authenticationEnvironmentRejected,
+                    action: .retry,
+                    retryDisposition: .manual,
+                    operation: .authenticateAccount,
+                    origin: .authentication
+                )
             case .provisioningFailed:
-                code = "SEAL-ANI-111"
-                reason = "Anisette 设备信息（provisioning）生成失败。"
+                return ImportFailure(
+                    title: "无法获取设备环境",
+                    reason: "Anisette 设备信息（provisioning）生成失败。",
+                    recovery: "重试",
+                    code: "SEAL-ANI-111",
+                    condition: .authenticationEnvironmentUnavailable,
+                    action: .retry,
+                    retryDisposition: .manual,
+                    operation: .authenticateAccount,
+                    origin: .authentication
+                )
             case .staleProvisioning:
-                code = "SEAL-ANI-112"
-                reason = "Anisette 设备信息（provisioning）已过期，请重新生成。"
+                return ImportFailure(
+                    title: "无法获取设备环境",
+                    reason: "Anisette 设备信息（provisioning）已过期，请重新生成。",
+                    recovery: "重试",
+                    code: "SEAL-ANI-112",
+                    condition: .authenticationEnvironmentUnavailable,
+                    action: .retry,
+                    retryDisposition: .manual,
+                    operation: .authenticateAccount,
+                    origin: .authentication
+                )
             case .unavailable:
-                code = "SEAL-ANI-113"
-                reason = "Anisette 服务当前不可用。"
+                return ImportFailure(
+                    title: "无法获取设备环境",
+                    reason: "Anisette 服务当前不可用。",
+                    recovery: "稍后重试",
+                    code: "SEAL-ANI-113",
+                    condition: .authenticationEnvironmentServiceUnavailable,
+                    action: .waitThenRetry,
+                    retryDisposition: .manual,
+                    operation: .authenticateAccount,
+                    origin: .authentication
+                )
             case .localGenerationFailed(let d):
-                code = "SEAL-ANI-114"
-                reason = "本机生成设备环境数据（Anisette）失败。\n\(d)"
+                return ImportFailure(
+                    title: "无法获取设备环境",
+                    reason: "本机生成设备环境数据（Anisette）失败。\n\(d)",
+                    recovery: "重试",
+                    code: "SEAL-ANI-114",
+                    condition: .authenticationEnvironmentUnavailable,
+                    action: .retry,
+                    retryDisposition: .manual,
+                    operation: .authenticateAccount,
+                    origin: .authentication
+                )
             }
-            return ImportFailure(
-                title: "无法获取设备环境",
-                reason: reason,
-                recovery: "重试",
-                code: code
-            )
         }
         // 双重认证必须排在**限流/网络之前**，与 `AppleAuthenticationFailure.make` 的
         // 顺序保持一致（两处顺序不同 = 同一个错误在两条路径上给出不同提示，

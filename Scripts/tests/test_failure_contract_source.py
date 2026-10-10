@@ -112,6 +112,22 @@ class FailureContractSourceTests(unittest.TestCase):
         self.assertIn("action: .retry", team_lookup)
         self.assertIn("operation: .authenticateAccount", team_lookup)
 
+    def test_anisette_factory_distinguishes_rejection_unavailability_and_service_wait(self) -> None:
+        source = (ROOT / "Seal/Infrastructure/Accounts/AppleAccountClient.swift").read_text(
+            encoding="utf-8"
+        )
+        factory = source.split("if let anisetteError", 1)[1].split(
+            "// 双重认证必须排在", 1
+        )[0]
+
+        self.assertIn('code: "SEAL-ANI-110",', factory)
+        self.assertIn("condition: .authenticationEnvironmentRejected", factory)
+        self.assertIn("condition: .authenticationEnvironmentUnavailable", factory)
+        self.assertIn("condition: .authenticationEnvironmentServiceUnavailable", factory)
+        self.assertIn("action: .waitThenRetry", factory)
+        self.assertIn("operation: .authenticateAccount", factory)
+        self.assertIn("origin: .authentication", factory)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -47,4 +47,15 @@ struct AppleAccountClientTests {
         #expect(failure.operation == .authenticateAccount)
         #expect(failure.origin == .applePortal)
     }
+
+    @Test
+    func anisetteFailuresKeepAuthenticationOperationAndNeverInvalidateCredentials() {
+        let failure = AppleAccountClient.failure(from: AnisetteV3Error.unavailable)
+
+        #expect(failure.condition == .authenticationEnvironmentServiceUnavailable)
+        #expect(failure.action == .waitThenRetry)
+        #expect(failure.operation == .authenticateAccount)
+        #expect(failure.origin == .authentication)
+        #expect(AppleServiceFailurePolicy.shouldRequireReverification(failure) == false)
+    }
 }

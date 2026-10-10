@@ -8,16 +8,22 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 544,
+          "line": 546,
           "path": "Seal/Infrastructure/Accounts/AppleAccountClient.swift",
-          "role": "failure_emission_candidate",
-          "semanticFields": [],
-          "source": "code = \"SEAL-ANI-110\""
+          "role": "structured_failure_emission",
+          "semanticFields": [
+            "condition",
+            "action",
+            "retryDisposition",
+            "operation",
+            "origin"
+          ],
+          "source": "code: \"SEAL-ANI-110\","
         }
       ],
       "occurrenceCount": 1,
       "roles": {
-        "failure_emission_candidate": 1
+        "structured_failure_emission": 1
       }
     },
     "SEAL-ANI-111": {
@@ -28,16 +34,22 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 547,
+          "line": 558,
           "path": "Seal/Infrastructure/Accounts/AppleAccountClient.swift",
-          "role": "failure_emission_candidate",
-          "semanticFields": [],
-          "source": "code = \"SEAL-ANI-111\""
+          "role": "structured_failure_emission",
+          "semanticFields": [
+            "condition",
+            "action",
+            "retryDisposition",
+            "operation",
+            "origin"
+          ],
+          "source": "code: \"SEAL-ANI-111\","
         }
       ],
       "occurrenceCount": 1,
       "roles": {
-        "failure_emission_candidate": 1
+        "structured_failure_emission": 1
       }
     },
     "SEAL-ANI-112": {
@@ -48,16 +60,22 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 550,
+          "line": 570,
           "path": "Seal/Infrastructure/Accounts/AppleAccountClient.swift",
-          "role": "failure_emission_candidate",
-          "semanticFields": [],
-          "source": "code = \"SEAL-ANI-112\""
+          "role": "structured_failure_emission",
+          "semanticFields": [
+            "condition",
+            "action",
+            "retryDisposition",
+            "operation",
+            "origin"
+          ],
+          "source": "code: \"SEAL-ANI-112\","
         }
       ],
       "occurrenceCount": 1,
       "roles": {
-        "failure_emission_candidate": 1
+        "structured_failure_emission": 1
       }
     },
     "SEAL-ANI-113": {
@@ -68,16 +86,22 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 553,
+          "line": 582,
           "path": "Seal/Infrastructure/Accounts/AppleAccountClient.swift",
-          "role": "failure_emission_candidate",
-          "semanticFields": [],
-          "source": "code = \"SEAL-ANI-113\""
+          "role": "structured_failure_emission",
+          "semanticFields": [
+            "condition",
+            "action",
+            "retryDisposition",
+            "operation",
+            "origin"
+          ],
+          "source": "code: \"SEAL-ANI-113\","
         }
       ],
       "occurrenceCount": 1,
       "roles": {
-        "failure_emission_candidate": 1
+        "structured_failure_emission": 1
       }
     },
     "SEAL-ANI-114": {
@@ -88,16 +112,22 @@
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 556,
+          "line": 594,
           "path": "Seal/Infrastructure/Accounts/AppleAccountClient.swift",
-          "role": "failure_emission_candidate",
-          "semanticFields": [],
-          "source": "code = \"SEAL-ANI-114\""
+          "role": "structured_failure_emission",
+          "semanticFields": [
+            "condition",
+            "action",
+            "retryDisposition",
+            "operation",
+            "origin"
+          ],
+          "source": "code: \"SEAL-ANI-114\","
         }
       ],
       "occurrenceCount": 1,
       "roles": {
-        "failure_emission_candidate": 1
+        "structured_failure_emission": 1
       }
     },
     "SEAL-ANI-115": {
@@ -469,7 +499,7 @@
         },
         {
           "identifierKind": "standard_error_code",
-          "line": 591,
+          "line": 628,
           "path": "Seal/Infrastructure/Accounts/AppleAccountClient.swift",
           "role": "structured_failure_emission",
           "semanticFields": [],
@@ -1353,7 +1383,7 @@
         },
         {
           "identifierKind": "standard_error_code",
-          "line": 591,
+          "line": 628,
           "path": "Seal/Infrastructure/Accounts/AppleAccountClient.swift",
           "role": "structured_failure_emission",
           "semanticFields": [],
@@ -11858,13 +11888,13 @@
     "roles": {
       "comment_reference": 139,
       "executable_reference": 106,
-      "failure_emission_candidate": 212,
+      "failure_emission_candidate": 207,
       "internal_event_or_log": 201,
-      "structured_failure_emission": 139
+      "structured_failure_emission": 144
     },
     "structuredFailureContracts": {
-      "directOccurrences": 139,
-      "withExplicitSemantics": 34,
+      "directOccurrences": 144,
+      "withExplicitSemantics": 39,
       "withoutExplicitSemantics": 105
     },
     "uniqueIdentifiers": 424

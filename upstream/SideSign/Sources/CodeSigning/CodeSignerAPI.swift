@@ -93,6 +93,21 @@ public struct AppBundleSigner: CodeSignerAPI, Sendable {
             }
 
             var filteredEntitlements = matchedProfile.entitlements
+            // 2026-10-10 (Seal)：App Group 数组确定性排序。
+            // 背景：Seal 把原包 group ID 映射成 `*.seal.<TeamID>` 后，Apple 门户侧
+            // App ID 上已分配组的顺序不可控（assign 端点不重排已有绑定；重签时
+            // Seal 还会因「能力已满足」跳过 App ID 更新），导致两个包的
+            // `com.apple.security.application-groups[0]` 不一致 —— LiveContainer
+            // 取第 0 个当共享目录，两边各写各的，「转共享」后另一边看不见。
+            // 修法：在写进二进制的 entitlements 里把 app-groups 按字母排序，
+            // 不依赖 Apple 侧顺序，每次签名结果确定。
+            // 安全性：iOS 只校验「二进制请求的组 ⊆ 描述文件允许的组」（集合关系），
+            // Seal 自检 `ProvisioningEntitlementValue.permits` 同样按集合实现，
+            // 顺序不影响安装与运行。
+            if let groups = filteredEntitlements["com.apple.security.application-groups"] as? [String],
+               groups.count > 1 {
+                filteredEntitlements["com.apple.security.application-groups"] = groups.sorted()
+            }
             verboseLog("[SideSign] Original profile entitlements: \(filteredEntitlements)")
 
             let applicationEntitlements = app.entitlements

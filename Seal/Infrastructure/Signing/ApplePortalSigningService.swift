@@ -3438,6 +3438,20 @@ actor ApplePortalSigningService {
                 appGroups = []
             }
 
+            // 2026-10-10：App Group 确定性排序的可见性。
+            // 上游签名器（CodeSignerAPI.prepare）在写二进制前会对 app-groups 按字母排序，
+            // 这里只在「排序改变了顺序」时打一条，方便真机核验修没修好。
+            if appGroups.count > 1 {
+                let sortedGroups = appGroups.sorted()
+                if sortedGroups != appGroups {
+                    await self.diagnostic(
+                        "签名：\(mainBundleID) 的 App Group 顺序已按字母排序后写入二进制"
+                            + "（描述文件原顺序：\(appGroups.joined(separator: "、"))；"
+                            + "排序后：\(sortedGroups.joined(separator: "、"))）"
+                    )
+                }
+            }
+
             // ⚠️ **重签前的最后一行**（2026-09-19 真机，构建 147）：
             // Seal 在 `signing` 阶段**直接闪退** ✗（两次都在同一位置，日志到此为止，
             // 没有 error、没有打包、没有安装）⇒ 导出日志里连

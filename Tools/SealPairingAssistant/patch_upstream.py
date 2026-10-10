@@ -661,12 +661,16 @@ def patch_error_dialogs(text: str) -> str:
     rt.spawn(async move {
         discover::start_discover(discover_sender).await;
     });""",
-        """    let discover_sender = idevice_sender.clone();
+        """    // 局域网发现失败后自动重试：上游一旦出错，这条后台能力就永久消失了。
+    let discover_sender = idevice_sender.clone();
     let discover_gui_sender = gui_sender.clone();
     rt.spawn(async move {
-        discover::start_discover(discover_sender, discover_gui_sender).await;
+        loop {
+            discover::start_discover(discover_sender.clone(), discover_gui_sender.clone()).await;
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
     });""",
-        "discover gui channel wiring",
+        "discover gui channel wiring and retry",
     )
     text = replace_once(
         text,

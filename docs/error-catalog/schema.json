@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Seal Error Knowledge Catalog",
+  "type": "object",
+  "required": ["entries"],
+  "properties": {
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "kind", "confidence", "summary", "actions", "source"],
+        "properties": {
+          "code": {"type": "string", "pattern": "^SEAL-[A-Z]+-[0-9]+[a-z]?$"},
+          "kind": {"enum": ["failure", "warning", "diagnostic"]},
+          "confidence": {"enum": ["confirmed", "conditional", "unknown"]},
+          "summary": {"type": "string", "minLength": 1},
+          "evidence": {"type": "array", "items": {"type": "string"}},
+          "notEvidenceOf": {"type": "array", "items": {"type": "string"}},
+          "actions": {"type": "array", "minItems": 1},
+          "source": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+        }
+      }
+    }
+  }
+}

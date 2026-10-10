@@ -6280,3 +6280,13 @@ CMake Error at CMakeLists.txt:394 (message):
 **修复**：日志页改从 `SealLogStore.exportText()` 读取唯一真实来源，Documents 镜像不再决定页面内容；清理改为直接等待 `SettingsViewModel.clearLogs()`，不再通过异步通知与手工删文件竞争；导出仍先物化并校验分享文件。导出错误区分“日志服务未就绪”和“导出文件写入失败”。
 
 **验证**：补充空日志存储也必须物化可分享文件的回归用例；Swift/iOS 编译测试待 macOS CI。
+
+## 2026-10-11 — 启动数据失败被误导为设备空间不足
+
+**症状**：Seal 启动时本地数据库或文件初始化失败，会直接提示用户检查设备剩余存储空间。
+
+**根因**：启动容器在捕获所有初始化异常后拼接旧式字符串文案；失败没有结构化语义，且“本地数据打不开”不能证明设备空间不足。
+
+**修复**：新增 `StartupFailurePolicy`，将未分类启动异常统一为 `SEAL-APP-001` / `localStorageWriteFailed` / `restartSeal`。界面只说明本地数据暂时无法读取，并给出关闭后重新打开 Seal 的操作；保留已有结构化失败，不覆盖其具体语义。
+
+**验证**：新增回归用例断言 Core Data 初始化异常不会出现“存储空间”误导文案，且已分类失败原样保留；Swift/iOS 编译测试待 macOS CI。

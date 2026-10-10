@@ -276,12 +276,7 @@ struct AppContainer {
                 logStore: logStore
             )
         } catch {
-            let failure = ImportFailure(
-                title: "无法打开数据",
-                reason: "本地存储初始化失败：\(Self.readableStartupError(error))",
-                recovery: "重启 Seal 重试；如仍失败请检查设备剩余存储空间",
-                code: "SEAL-APP-001"
-            )
+            let failure = StartupFailurePolicy.failure(for: error)
             return AppContainer(
                 appsViewModel: AppsViewModel(startupFailure: failure),
                 settingsViewModel: SettingsViewModel(startupFailure: failure),
@@ -350,10 +345,4 @@ struct AppContainer {
         return formatter.string(from: Date())
     }
 
-    private static func readableStartupError(_ error: Error) -> String {
-        if let failure = error as? ImportFailure {
-            return failure.userMessage
-        }
-        return (error as NSError).localizedDescription
-    }
 }

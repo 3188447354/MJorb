@@ -262,9 +262,14 @@ final class AppleAccountClient {
                 let underlying = (apiError as NSError).localizedDescription
                 throw ImportFailure(
                     title: "无法添加账号",
-                    reason: "Apple 拒绝了本次认证请求。常见原因：设备环境数据（Anisette）无效或系统时间偏差。\n底层错误：\(underlying)",
-                    recovery: "稍后重试；如持续失败，尝试更换网络或核对系统时间",
-                    code: "SEAL-AUTH-107h"
+                    reason: "Apple 拒绝了本次认证握手。\n底层错误：\(underlying)",
+                    recovery: "稍后重新添加账号",
+                    code: "SEAL-AUTH-107h",
+                    condition: .authenticationHandshakeRejected,
+                    action: .waitThenRetry,
+                    retryDisposition: .manual,
+                    operation: .authenticateAccount,
+                    origin: .authentication
                 )
             }
             if error is AnisetteV3Error {

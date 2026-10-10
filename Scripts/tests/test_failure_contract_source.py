@@ -128,6 +128,20 @@ class FailureContractSourceTests(unittest.TestCase):
         self.assertIn("operation: .authenticateAccount", factory)
         self.assertIn("origin: .authentication", factory)
 
+    def test_authentication_handshake_rejection_does_not_guess_network_remediation(self) -> None:
+        source = (ROOT / "Seal/Infrastructure/Accounts/AppleAccountClient.swift").read_text(
+            encoding="utf-8"
+        )
+        handshake = source.split("case .authenticationHandshakeFailed", 1)[1].split(
+            "if error is AnisetteV3Error", 1
+        )[0]
+
+        self.assertIn("condition: .authenticationHandshakeRejected", handshake)
+        self.assertIn("action: .waitThenRetry", handshake)
+        self.assertIn("operation: .authenticateAccount", handshake)
+        self.assertNotIn("更换网络", handshake)
+        self.assertNotIn("系统时间", handshake)
+
 
 if __name__ == "__main__":
     unittest.main()

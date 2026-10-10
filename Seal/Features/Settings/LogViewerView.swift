@@ -2,10 +2,8 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// 日志清空通知：LogViewerView 发出，SealLogStore 持有者监听并清空内存缓存
 /// 续签完成通知：AppsViewModel 发出，AppContainer 监听并停止后台保活（省电）
 extension Notification.Name {
-    static let sealClearLogs = Notification.Name("sealClearLogs")
     static let sealRenewalCompleted = Notification.Name("sealRenewalCompleted")
     /// Seal 自身记录更新完成（自安装重启后的结算）：应用页收到后刷新列表，
     /// "有新版本待安装"标签自动消失，不用手动切页面。
@@ -107,15 +105,7 @@ struct LogViewerView: View {
     }
 
     private func loadRounds() async {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        let logURL = docs?.appendingPathComponent("Seal-log.txt")
-        guard let url = logURL,
-              let text = try? String(contentsOf: url, encoding: .utf8),
-              !text.isEmpty else {
-            // 文件不存在或为空时清空显示，避免显示过期缓存
-            await MainActor.run { rounds = [] }
-            return
-        }
+        let text = await viewModel.logTextForViewing()
         let parsed = LogRound.parse(from: text)
         await MainActor.run {
             // 日志文件是最新的在前面，取前 50 轮直接显示（不反转）
@@ -155,16 +145,8 @@ struct LogViewerView: View {
     }
 
     private func clearLogs() async {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        let logURL = docs?.appendingPathComponent("Seal-log.txt")
-        if let url = logURL {
-            try? FileManager.default.removeItem(at: url)
-        }
-        // 通知 SealLogStore 清空内存缓存，否则下次续签写日志时旧日志会从内存镜像回来
-        NotificationCenter.default.post(name: .sealClearLogs, object: nil)
-        await MainActor.run {
-            rounds = []
-        }
+        await viewModel.clearLogs()
+        await loadRounds()
     }
 }
 

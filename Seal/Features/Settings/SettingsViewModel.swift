@@ -3092,23 +3092,48 @@ final class SettingsViewModel: ObservableObject {
     /// 日志页等待 actor 完成写入后才打开分享面板，避免首次导出读到不存在的旧文件。
     func materializeLogExport() async throws -> URL {
         guard let logStore else {
-            throw Self.failure(
+            throw ImportFailure(
                 title: "无法导出日志",
                 reason: "日志服务尚未就绪。",
                 recovery: "返回后稍候再试",
-                code: "SEAL-LOG-002"
+                code: "SEAL-LOG-002",
+                condition: .logServiceUnavailable,
+                action: .retry,
+                retryDisposition: .manual,
+                operation: .exportLog,
+                origin: .logStore
             )
         }
         do {
             return try await logStore.materializeExport()
         } catch {
-            throw Self.failure(
+            throw ImportFailure(
                 title: "无法导出日志",
                 reason: "日志文件写入失败：\(error.localizedDescription)",
                 recovery: "检查可用存储空间后重试",
-                code: "SEAL-LOG-002"
+                code: "SEAL-LOG-002",
+                condition: .logExportFileInvalid,
+                action: .retry,
+                retryDisposition: .manual,
+                operation: .exportLog,
+                origin: .logStore
             )
         }
+    }
+
+    /// 日志页与导出共享同一份 actor 缓冲，而不是要求 Documents 镜像已先一步落盘。
+    ///
+    /// `Seal-log.txt` 是给“文件”App和分享面板准备的镜像；它被节流或刚清理时不应决定
+    /// App 内能否看到已有日志。这里始终优先读取日志存储，读取失败才回退当前内存快照。
+    func logTextForViewing() async -> String {
+        let text: String
+        if let logStore, let exported = try? await logStore.exportText() {
+            text = exported
+        } else {
+            text = SealLogTextFormatter.exportText(logs)
+        }
+        logExportText = text
+        return text
     }
 
     func resetCertificate(for account: AppleAccountRecord) async {
@@ -3157,13 +3182,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     private func refreshLogExportText() async {
-        // 与 Documents/Seal-log.txt 镜像用同一个入口，保证内容一致
-        //（含「已丢弃 N 条」notice 与构建标识）。
-        if let store = logStore, let text = try? await store.exportText() {
-            logExportText = text
-        } else {
-            logExportText = SealLogTextFormatter.exportText(logs)
-        }
+        _ = await logTextForViewing()
     }
 
     static func preview() -> SettingsViewModel {

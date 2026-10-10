@@ -90,13 +90,6 @@ struct AppContainer {
             let logStore = SealLogStore(
                 fileURL: sealDirectory.appending(path: AppConfiguration.Paths.sealLogFile)
             )
-            // 监听日志清空通知：用户在日志页点清空时，同步清空内存缓存，
-            // 否则下次续签写日志时旧日志会从内存镜像回来
-            Task {
-                for await _ in NotificationCenter.default.notifications(named: .sealClearLogs) {
-                    try? await logStore.clear()
-                }
-            }
             let installChannel = MinimuxerInstallChannel(
                 pairingStore: pairingStore,
                 logDirectory: sealDirectory.appending(

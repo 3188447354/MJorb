@@ -6270,3 +6270,13 @@ CMake Error at CMakeLists.txt:394 (message):
 **处理**：按产品决定删除该页面及所有入口：设置页、签名弹层、应用详情、列表全局弹层与日志页均不再打开 `ErrorHelpView`；删除随 App 打包的错误目录、数据源、测试与项目资源引用。日志错误仍可查看与复制原始错误信息。官网目录生成器只保留网站产物，不再把同一份静态 JSON 打进 App。
 
 **验证**：错误目录 Python 单测 9/9 通过，源码检索确认 App/测试目标不再引用 `ErrorHelpView`、`ErrorKnowledgeStore` 或“查看解决办法”。
+
+## 2026-10-10 — 日志页把 Documents 镜像缺失误作无日志
+
+**症状**：日志页可能显示空白，导出时出现“日志文件不存在”。
+
+**根因**：日志页直接读取 `Documents/Seal-log.txt`；该文件只是为文件 App/分享准备的节流镜像，刚启动、刚清理或镜像未完成时可以暂不存在，即使 `SealLogStore` 的实际缓冲中已有日志。
+
+**修复**：日志页改从 `SealLogStore.exportText()` 读取唯一真实来源，Documents 镜像不再决定页面内容；清理改为直接等待 `SettingsViewModel.clearLogs()`，不再通过异步通知与手工删文件竞争；导出仍先物化并校验分享文件。导出错误区分“日志服务未就绪”和“导出文件写入失败”。
+
+**验证**：补充空日志存储也必须物化可分享文件的回归用例；Swift/iOS 编译测试待 macOS CI。

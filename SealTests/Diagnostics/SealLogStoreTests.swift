@@ -93,4 +93,24 @@ struct SealLogStoreTests {
         #expect(try String(contentsOf: exportURL, encoding: .utf8).contains("单独续签完成"))
     }
 
+    /// 即使当前没有轮次日志，导出也必须先物化一个可分享文件；日志页不能把“镜像尚未存在”
+    /// 当成导出失败或用文件存在性决定页面是否为空。
+    @Test
+    func materializeExportCreatesDocumentForAnEmptyLogStore() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "SealTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let documents = directory.appending(path: "Documents", directoryHint: .isDirectory)
+        let store = SealLogStore(
+            fileURL: directory.appending(path: "Logs.json"),
+            fileProtector: MarkerFileProtector(),
+            documentsDirectory: documents
+        )
+
+        let exportURL = try await store.materializeExport()
+
+        #expect(FileManager.default.fileExists(atPath: exportURL.path))
+        #expect((try String(contentsOf: exportURL, encoding: .utf8)).isEmpty == false)
+    }
+
 }

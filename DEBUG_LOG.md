@@ -6300,3 +6300,13 @@ CMake Error at CMakeLists.txt:394 (message):
 **修复**：R83 改为验证 UI 使用 `route(for: failure)`，变异锚点以该调用替换为 `return nil`；R96 改为正则识别 `nonisolated static signingFailure`，不依赖格式化后的单行文本，并同步变异锚点。
 
 **验证**：待完整发布守卫与 macOS CI 复核。
+
+## 2026-10-11 — 结构化导航类型混用导致 Swift 编译失败
+
+**症状**：完整 iOS CI 的 Swift 回归构建报 `Extraneous argument label 'for:' in call` 与 `Cannot convert value of type 'FailureRoute' to expected argument type 'SettingsRoute'`。
+
+**根因**：`SigningProgressView` 直接把 `ImportFailure.route`（领域层 `FailureRoute`）传给只接受界面层 `SettingsRoute` 的 `openSettings`，绕过了唯一转换边界 `InstallFailureSettingsRoute.route(for:)`。
+
+**修复**：失败恢复改为先通过 `InstallFailureSettingsRoute.route(for:)` 取得 `SettingsRoute` 再导航。同步更新发布守卫中已过期的设备连接失败文案变异锚点。
+
+**验证**：待 macOS Swift 编译、单元/UI 回归和完整发布守卫复核。

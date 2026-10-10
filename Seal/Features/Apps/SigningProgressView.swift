@@ -573,7 +573,7 @@ struct SigningProgressView: View {
     }
 
     private func performPrimaryRecovery(_ failure: ImportFailure) {
-        if let route = failure.route {
+        if let route = InstallFailureSettingsRoute.route(for: failure) {
             openSettings(route)
             return
         }

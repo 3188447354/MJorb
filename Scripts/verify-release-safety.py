@@ -9476,8 +9476,8 @@ def main():
          "R83⑧: 文案不得再提"),
         # ⑧ 把「免费账号」口径写回去 ⇒ R83⑨ 报红。
         ("Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift",
-         "设备未响应。请确认 iPhone 已解锁、已连接 Wi-Fi，并检查是否打开 LocalDevVPN（Seal 依赖外部 LocalDevVPN 软件提供本地隧道）。",
-         "设备未响应。请确认 iPhone 已解锁、已连接 Wi-Fi，并检查是否打开 LocalDevVPN（免费账号需使用外部 LocalDevVPN 软件）。",
+         "无法建立到设备的连接（超时、网络不可达或无设备）。请确认 iPhone 已解锁、已连接 Wi-Fi，并检查是否打开 LocalDevVPN（Seal 依赖外部 LocalDevVPN 软件提供本地隧道）。",
+         "无法建立到设备的连接（超时、网络不可达或无设备）。请确认 iPhone 已解锁、已连接 Wi-Fi，并检查是否打开 LocalDevVPN（免费账号需使用外部 LocalDevVPN 软件）。",
          "R83⑨: 不得再按"),
         # ⑨ 把「通道码 ⇒ VPN 页」那条单测改名 ⇒ R83⑩ 报红（不变量没人守）。
         ("SealTests/Settings/InstallFailureSettingsRouteTests.swift",

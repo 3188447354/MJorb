@@ -6310,3 +6310,13 @@ CMake Error at CMakeLists.txt:394 (message):
 **修复**：失败恢复改为先通过 `InstallFailureSettingsRoute.route(for:)` 取得 `SettingsRoute` 再导航。同步更新发布守卫中已过期的设备连接失败文案变异锚点。
 
 **验证**：待 macOS Swift 编译、单元/UI 回归和完整发布守卫复核。
+
+## 2026-10-11 — 结构化恢复标题函数调用与返回值不符合 Swift 语法
+
+**症状**：完整 iOS CI 在 `SigningProgressView` 报 `Extraneous argument label 'for:' in call`；同一函数的 `switch` 分支产生未使用字符串警告。
+
+**根因**：`semanticPrimaryRecoveryTitle` 的参数没有外部标签，却以 `for:` 调用；函数体的 `switch` 也没有作为函数返回值返回。
+
+**修复**：改为无标签调用 `semanticPrimaryRecoveryTitle(failure)`，并使用 `return switch failure.action` 返回每个用户动作对应的标题。
+
+**验证**：待 macOS Swift 编译、单元/UI 回归和完整发布守卫复核。

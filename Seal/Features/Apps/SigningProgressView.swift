@@ -555,7 +555,7 @@ struct SigningProgressView: View {
     }
 
     private func primaryRecoveryTitle(_ failure: ImportFailure) -> String {
-        if let title = semanticPrimaryRecoveryTitle(for: failure) { return title }
+        if let title = semanticPrimaryRecoveryTitle(failure) { return title }
         if isNonRetryableFailure(failure) { return "知道了" }
         if failure.code == "SEAL-CERT-204e" { return "撤销并继续签名" }
         if failure.code.hasPrefix("SEAL-NET-") { return "重新签名" }
@@ -614,7 +614,7 @@ struct SigningProgressView: View {
     /// 兼容分支；这让每个生产错误可以逐项迁移，不会因改 UI 失去旧错误的恢复能力。
     private func semanticPrimaryRecoveryTitle(_ failure: ImportFailure) -> String? {
         guard failure.hasStructuredSemantics else { return nil }
-        switch failure.action {
+        return switch failure.action {
         case .fullResign: "重新签名"
         case .repairPairing: "重新配对设备"
         case .openLocalDevVPN: "打开 LocalDevVPN"

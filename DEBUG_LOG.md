@@ -19,7 +19,8 @@
 
 - **现象**：LiveContainer2 的一次性 App ID 重建新增第二个 `invalidateAppIDsCache` 调用后，完整 iOS CI 的 `R112③b` 变异检查失败；产品代码仍包含新建 App ID 后的缓存失效逻辑。
 - **根因**：守卫的变异锚点只匹配裸调用文本，`replace(..., 1)` 先替换到新增加的“删除 App ID 后失效缓存”调用，真正要保护的“`addAppID` 成功后失效缓存”调用仍在，导致守卫无法检验自身判据。
-- **修复**：变异锚点改为 `appID = createdBox.value` 与紧随其后的缓存失效完整代码块，只命中 `addAppID` 成功路径；不改变产品 App ID 行为。
+- **首次修复为何仍失败**：变异锚点虽已改为 `addAppID` 成功块，但 R112③b 本体仍在整份文件中搜索裸 `invalidateAppIDsCache`；新增的“删除旧 App ID 后失效缓存”调用仍会满足它，因此变异依旧被放过。
+- **根治**：变异锚点保留为 `appID = createdBox.value` 与紧随其后的缓存失效完整代码块；R112③b 本体改为先截取 `addAppID` 成功到 `bundleIdentifierUnavailable` 恢复分支之间的代码区间，再只在该区间验证缓存失效调用。这样删除路径的同名调用不能再替代新建路径的安全网；不改变产品 App ID 行为。
 - **涉及文件**：`Scripts/verify-release-safety.py`、`SealTests/Import/FailureContractTests.swift`。
 - **验证状态**：待完整 iOS CI 重新执行发布安全守卫与 Swift 回归测试。
 

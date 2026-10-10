@@ -6109,7 +6109,21 @@ def violations(load=read):
           "`fetchTeams` / `fetchAppIDs` / `ensureDevice` 逐 App 重拉是纯浪费 "
           "（3 个 App = 9 次冗余 Apple RTT），一轮批量里它们对同一账号/Team 返回完全相同")
 
-    check("invalidateAppIDsCache(forTeamIdentifier: team.identifier)" in r91_portal_code
+    # `invalidateAppIDsCache` 也会在删除旧 App ID 后调用。这里必须只验证
+    # `addAppID` 成功路径，否则另一处调用会把「新建后未失效」的变异误判为安全。
+    r112_add_app_id_success_start = r91_portal_code.find("appID = createdBox.value")
+    r112_add_app_id_success_end = r91_portal_code.find(
+        "} catch ALTAppleAPIError.bundleIdentifierUnavailable",
+        r112_add_app_id_success_start
+    )
+    r112_add_app_id_success_block = (
+        r91_portal_code[r112_add_app_id_success_start:r112_add_app_id_success_end]
+        if r112_add_app_id_success_start >= 0
+        and r112_add_app_id_success_end > r112_add_app_id_success_start
+        else ""
+    )
+
+    check("invalidateAppIDsCache(forTeamIdentifier: team.identifier)" in r112_add_app_id_success_block
           and "bypassCache: true" in r91_portal_code
           and "func isPortalReadCacheFresh(" in r91_portal_code,
           "R112③b: 缓存的**安全网**缺一不可 ✗ —— "

@@ -555,6 +555,7 @@ struct SigningProgressView: View {
     }
 
     private func primaryRecoveryTitle(_ failure: ImportFailure) -> String {
+        if let title = semanticPrimaryRecoveryTitle(for: failure) { return title }
         if isNonRetryableFailure(failure) { return "知道了" }
         if failure.code == "SEAL-CERT-204e" { return "撤销并继续签名" }
         if failure.code.hasPrefix("SEAL-NET-") { return "重新签名" }
@@ -572,6 +573,11 @@ struct SigningProgressView: View {
     }
 
     private func performPrimaryRecovery(_ failure: ImportFailure) {
+        if let route = failure.route {
+            openSettings(route)
+            return
+        }
+        if performSemanticPrimaryRecovery(for: failure) { return }
         if isNonRetryableFailure(failure) {
             viewModel.dismissSigningResult()
             dismiss()
@@ -602,6 +608,46 @@ struct SigningProgressView: View {
         } else {
             viewModel.retrySigning()
         }
+    }
+
+    /// 新失败合同优先于旧错误码分支。返回 nil 表示该失败尚未迁移，才允许走下面的
+    /// 兼容分支；这让每个生产错误可以逐项迁移，不会因改 UI 失去旧错误的恢复能力。
+    private func semanticPrimaryRecoveryTitle(_ failure: ImportFailure) -> String? {
+        guard failure.hasStructuredSemantics else { return nil }
+        switch failure.action {
+        case .fullResign: "重新签名"
+        case .repairPairing: "重新配对设备"
+        case .openLocalDevVPN: "打开 LocalDevVPN"
+        case .reinstallFromSignedArtifact: "重新安装"
+        case .retry: "重新签名"
+        case .reauthenticateAccount: "重新验证 Apple ID"
+        case .enterNewVerificationCode: "输入新验证码"
+        case .waitThenRetry, .trustDevice, .freeDeviceStorage,
+             .removeInstalledApp, .checkInstallationResult, .reimportIPA, .restartSeal, .copyDiagnostics:
+            "知道了"
+        }
+    }
+
+    private func performSemanticPrimaryRecovery(for failure: ImportFailure) -> Bool {
+        guard failure.hasStructuredSemantics else { return false }
+        switch failure.action {
+        case .fullResign:
+            viewModel.retrySigningFromScratch()
+        case .reinstallFromSignedArtifact:
+            Task { await viewModel.retryInstallationForCurrentSigningSession() }
+        case .retry:
+            viewModel.retrySigning()
+        case .repairPairing, .openLocalDevVPN, .reauthenticateAccount:
+            // 这些动作应该随 `FailureRoute` 一起到达；缺少 route 时不猜测目标页面。
+            viewModel.dismissSigningResult()
+            dismiss()
+        case .waitThenRetry, .trustDevice, .freeDeviceStorage,
+             .removeInstalledApp, .checkInstallationResult, .enterNewVerificationCode,
+             .reimportIPA, .restartSeal, .copyDiagnostics:
+            viewModel.dismissSigningResult()
+            dismiss()
+        }
+        return true
     }
 
     private func userFacingReason(_ failure: ImportFailure) -> String {

@@ -67,6 +67,19 @@ extension ImportFailure: LocalizedError {
 }
 
 extension ImportFailure {
+    /// 是否已由生产边界赋予新失败合同。
+    ///
+    /// 历史构造点仍会以默认值创建 `ImportFailure`；UI 在迁移期间只能让这些旧失败
+    /// 继续走兼容逻辑，不能把默认 `.copyDiagnostics` 误当作“知道了”。
+    var hasStructuredSemantics: Bool {
+        condition != .unexpected
+            || action != .copyDiagnostics
+            || route != nil
+            || retryDisposition != .none
+            || operation != .unknown
+            || origin != .unknown
+    }
+
     var userReason: String {
         let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.isEmpty == false else { return "来源未返回明确原因。" }

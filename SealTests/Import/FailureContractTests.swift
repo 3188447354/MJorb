@@ -19,6 +19,7 @@ struct FailureContractTests {
         // 旧调用点没有声明操作边界时，不能凭错误码猜它来自签名流程。
         #expect(failure.operation == .unknown)
         #expect(failure.origin == .unknown)
+        #expect(failure.hasStructuredSemantics == false)
         #expect(failure.diagnosticID.isEmpty == false)
     }
 
@@ -33,6 +34,7 @@ struct FailureContractTests {
         #expect(failure.retryDisposition == .none)
         #expect(failure.operation == .renew)
         #expect(failure.origin == .provisioning)
+        #expect(failure.hasStructuredSemantics)
     }
 
     @Test

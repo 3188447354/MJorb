@@ -730,7 +730,13 @@ actor MinimuxerInstallChannel: InstallChannel {
                 title: "无法经本地隧道连到设备",
                 reason: "LocalDevVPN 的接口已出现，但设备服务端口不可达 —— 隧道没有真正把流量转发到设备。请确认 LocalDevVPN 已连接、网络稳定后重试。",
                 recovery: "检查是否打开 LocalDevVPN",
-                code: "SEAL-INSTALL-710"
+                code: "SEAL-INSTALL-710",
+                condition: .tunnelUnavailable,
+                action: .openLocalDevVPN,
+                route: .localDevVPN,
+                retryDisposition: .manual,
+                operation: .install,
+                origin: .deviceChannel
             )
         case .deviceMissing:
             return deviceNotRespondingFailure
@@ -949,11 +955,7 @@ actor MinimuxerInstallChannel: InstallChannel {
     /// —— 超时必须走那条路，不能用这里的文本匹配。
     static func isTerminalInstallError(_ detail: String) -> Bool {
         let lower = detail.lowercased()
-        if lower.contains("no space")
-            || lower.contains("space left")
-            || lower.contains("enospc")
-            || lower.contains("errno 28")
-            || lower.contains("code 28")
+        if isDeviceStorageExhaustion(detail)
             || lower.contains("integrity")
             || lower.contains("could not be verified")
             || lower.contains("cannot be verified")
@@ -977,6 +979,26 @@ actor MinimuxerInstallChannel: InstallChannel {
             || detail.contains("完整性")
             || detail.contains("上限")
             || detail.contains("已达")
+    }
+
+    /// 设备存储耗尽只能由安装服务明确给出的 ENOSPC 证据确认。
+    ///
+    /// 不能把裸 `code 28`、泛泛的 `space left` 或任意“空间不足”文字算进来：这些内容
+    /// 也可能来自 HTTP、重试预算或别的组件。误报会让用户无端清理手机，却无法修复安装。
+    static func isDeviceStorageExhaustion(_ detail: String) -> Bool {
+        let lower = detail.lowercased()
+        if lower.contains("no space left on device") || lower.contains("enospc") {
+            return true
+        }
+        if lower.contains("errno 28") {
+            return lower.contains("write")
+                || lower.contains("copy")
+                || lower.contains("package")
+                || lower.contains("device")
+                || lower.contains("install")
+        }
+        return detail.contains("设备存储空间不足")
+            || detail.contains("设备储存空间不足")
     }
 
     /// 安装超时 **不等于** 安装失败（R05 的核心判据）。
@@ -1570,7 +1592,12 @@ actor MinimuxerInstallChannel: InstallChannel {
                 title: "设备尚未信任",
                 reason: "当前设备尚未完成信任确认。",
                 recovery: "在 iPhone 上信任此设备后重试",
-                code: "SEAL-INSTALL-704"
+                code: "SEAL-INSTALL-704",
+                condition: .deviceTrustRequired,
+                action: .trustDevice,
+                retryDisposition: .manual,
+                operation: .install,
+                origin: .deviceChannel
             )
         }
         if normalized.contains("timeout")
@@ -1603,51 +1630,81 @@ actor MinimuxerInstallChannel: InstallChannel {
         // "No space left on device"），必须先识别具体根因，否则会被误判成"设备断开"。
 
         // 1) 存储空间不足（installd copyfile 阶段的内核 errno 28 / ENOSPC）
-        if lower.contains("no space")
-            || lower.contains("space left")
-            || lower.contains("enospc")
-            || lower.contains("errno 28")
-            || lower.contains("code 28")
-            || detail.contains("空间不足")
-            || detail.contains("储存空间")
-            || detail.contains("存储空间") {
+        if Self.isDeviceStorageExhaustion(detail) {
             return ImportFailure(
                 title: "设备存储空间不足",
                 reason: "设备在解压并复制应用时空间不足。\(detail)",
                 recovery: "删除一个或多个 App 或在系统设置中清理存储空间后重试",
-                code: "SEAL-INSTALL-702s"
+                code: "SEAL-INSTALL-702s",
+                condition: .deviceStorageFull,
+                action: .freeDeviceStorage,
+                retryDisposition: .manual,
+                operation: .install,
+                origin: .installer
             )
         }
 
-        // 2) 完整性校验失败 / 免费账号 3 应用上限（installd 的 APIInternalError /
-        //    ApplicationVerificationFailed——免费上限的设备级拒绝就是它）
+        // 2) 免费账号设备级应用上限。只有上限词才给“卸载一个应用”的动作；
+        // `ApplicationVerificationFailed` 本身并不等于上限，不能借它猜用户该卸载什么。
+        if lower.contains("maximum") || lower.contains("limit")
+            || detail.contains("应用上限") || detail.contains("已达上限") {
+            return ImportFailure(
+                title: "达到已安装应用上限",
+                reason: "iOS 拒绝继续安装，因为当前账号在这台设备上的可安装应用数量已达上限。\(detail)",
+                recovery: "卸载一个已安装的自签应用后重试",
+                code: "SEAL-INSTALL-702l",
+                condition: .deviceAppLimitReached,
+                action: .removeInstalledApp,
+                retryDisposition: .manual,
+                operation: .install,
+                origin: .installer
+            )
+        }
+
+        // 3) 签名产物完整性有明确证据时，完整重签才有意义。
         if lower.contains("integrity")
-            || lower.contains("could not be verified")
-            || lower.contains("cannot be verified")
-            || lower.contains("applicationverificationfailed")
-            || lower.contains("verificationfailed")
-            || lower.contains("failed to verify")
             || lower.contains("code signature")
             || lower.contains("signed resource")
             || lower.contains("invalidsignature")
             || lower.contains("profileexpired")
             || lower.contains("untrusted")
-            || lower.contains("maximum")
-            || lower.contains("limit")
-            || detail.contains("无法验证")
-            || detail.contains("无法安装")
-            || detail.contains("完整性")
-            || detail.contains("上限")
-            || detail.contains("已达") {
+            || detail.contains("完整性") {
             return ImportFailure(
-                title: "安装被 iOS 拒绝",
-                reason: "iOS 拒绝了安装，常见原因是免费账号已装 3 个自签应用或签名校验失败。\(detail)",
-                recovery: "卸载一个已安装的自签应用后重试，或重新签名",
-                code: "SEAL-INSTALL-702l"
+                title: "签名包未通过系统校验",
+                reason: "iOS 拒绝了当前签名包的完整性校验。\(detail)",
+                recovery: "重新签名后再安装",
+                code: "SEAL-INSTALL-702l",
+                condition: .signedArtifactInvalid,
+                action: .fullResign,
+                retryDisposition: .none,
+                operation: .install,
+                origin: .installer
             )
         }
 
-        // 3) 设备未连接/断开（精确匹配，不再用宽松的 "device" 子串，避免误伤上文）
+        // 4) `ApplicationVerificationFailed` / “无法验证”没有足够信息区分上限、签名
+        // 或系统临时状态。保留底层文本，绝不伪造具体处置动作。
+        if lower.contains("could not be verified")
+            || lower.contains("cannot be verified")
+            || lower.contains("applicationverificationfailed")
+            || lower.contains("verificationfailed")
+            || lower.contains("failed to verify")
+            || detail.contains("无法验证")
+            || detail.contains("无法安装") {
+            return ImportFailure(
+                title: "iOS 未接受此次安装",
+                reason: "系统没有返回足以确认具体原因的信息。\(detail)",
+                recovery: ImportFailure.sendLogToAuthor,
+                code: "SEAL-INSTALL-702l",
+                condition: .unexpected,
+                action: .copyDiagnostics,
+                retryDisposition: .none,
+                operation: .install,
+                origin: .installer
+            )
+        }
+
+        // 5) 设备未连接/断开（精确匹配，不再用宽松的 "device" 子串，避免误伤上文）
         if detail.contains("NoDevice") || detail.contains("no device") {
             return ImportFailure(
                 title: "与设备连接断开",
@@ -1707,7 +1764,13 @@ actor MinimuxerInstallChannel: InstallChannel {
                     title: "这台 iPhone 尚未信任当前配对",
                     reason: "设备拒绝了配对校验，通常是当前配对没有在“这台”设备上完成登记（换设备、重刷或还原后常见）。请用 Seal 配对助手重新连接这台 iPhone 完成配对，再回到 Seal 导入新配对。\(suffix)",
                     recovery: "用配对助手重新配对本机",
-                    code: "SEAL-PAIR-211"
+                    code: "SEAL-PAIR-211",
+                    condition: .pairingRequired,
+                    action: .repairPairing,
+                    route: .pairing,
+                    retryDisposition: .manual,
+                    operation: .install,
+                    origin: .deviceChannel
                 )
             case .handshake:
                 return ImportFailure(
@@ -1721,7 +1784,13 @@ actor MinimuxerInstallChannel: InstallChannel {
                     title: "无法经本地隧道连到设备",
                     reason: "LocalDevVPN 虽显示连接，但设备服务端口暂时不可达。请检查 VPN 是否正常连接、网络是否稳定后重试。\(suffix)",
                     recovery: "检查是否打开 LocalDevVPN",
-                    code: "SEAL-INSTALL-710"
+                    code: "SEAL-INSTALL-710",
+                    condition: .tunnelUnavailable,
+                    action: .openLocalDevVPN,
+                    route: .localDevVPN,
+                    retryDisposition: .manual,
+                    operation: .install,
+                    origin: .deviceChannel
                 )
             case .unknown:
                 break
@@ -1756,7 +1825,13 @@ actor MinimuxerInstallChannel: InstallChannel {
             title: "设备配对不匹配",
             reason: "当前配对信息属于另一台设备，无法用于这台 iPhone。",
             recovery: "重新配对当前设备",
-            code: "SEAL-PAIR-205"
+            code: "SEAL-PAIR-205",
+            condition: .pairingRequired,
+            action: .repairPairing,
+            route: .pairing,
+            retryDisposition: .manual,
+            operation: .install,
+            origin: .deviceChannel
         )
     }
 
@@ -1764,28 +1839,51 @@ actor MinimuxerInstallChannel: InstallChannel {
         title: "设备未配对",
         reason: "当前设备还没有完成配对。",
         recovery: "使用配对助手连接 iPhone 后重试",
-        code: "SEAL-PAIR-203b"
+        code: "SEAL-PAIR-203b",
+        condition: .pairingRequired,
+        action: .repairPairing,
+        route: .pairing,
+        retryDisposition: .manual,
+        operation: .install,
+        origin: .deviceChannel
     )
 
     private static let vpnTunnelUnavailableFailure = ImportFailure(
         title: "LocalDevVPN 未就绪",
         reason: "本地隧道未就绪，无法连接设备。Seal 不内置隧道（内置隧道已移除），一律依赖外部 LocalDevVPN 软件把流量真正转发到设备：请先安装并打开它，确认已连接 Wi-Fi 后重试。",
         recovery: "检查是否打开 LocalDevVPN",
-        code: "SEAL-INSTALL-701"
+        code: "SEAL-INSTALL-701",
+        condition: .tunnelUnavailable,
+        action: .openLocalDevVPN,
+        route: .localDevVPN,
+        retryDisposition: .manual,
+        operation: .install,
+        origin: .deviceChannel
     )
 
     private static let deviceNotRespondingFailure = ImportFailure(
         title: "设备未响应",
-        reason: "设备未响应。请确认 iPhone 已解锁、已连接 Wi-Fi，并检查是否打开 LocalDevVPN（Seal 依赖外部 LocalDevVPN 软件提供本地隧道）。",
-        recovery: "检查是否打开 LocalDevVPN",
-        code: "SEAL-INSTALL-708"
+        reason: "设备没有返回响应。当前信息不足以判断是设备状态、网络还是本地通道导致。",
+        recovery: "解锁 iPhone 后重试",
+        code: "SEAL-INSTALL-708",
+        condition: .unexpected,
+        action: .retry,
+        retryDisposition: .manual,
+        operation: .install,
+        origin: .deviceChannel
     )
 
     private static let channelNotReadyFailure = ImportFailure(
         title: "设备连接失败",
         reason: "无法建立到设备的连接（超时、网络不可达或无设备）。请确认 iPhone 已解锁、已连接 Wi-Fi，并检查是否打开 LocalDevVPN（Seal 依赖外部 LocalDevVPN 软件提供本地隧道）。",
         recovery: "检查是否打开 LocalDevVPN",
-        code: "SEAL-INSTALL-706b"
+        code: "SEAL-INSTALL-706b",
+        condition: .tunnelUnavailable,
+        action: .openLocalDevVPN,
+        route: .localDevVPN,
+        retryDisposition: .manual,
+        operation: .install,
+        origin: .deviceChannel
     )
 
     private static let profileServiceUnavailableFailure = ImportFailure(
@@ -1806,7 +1904,13 @@ actor MinimuxerInstallChannel: InstallChannel {
         title: "本地通道连接超时",
         reason: "本地隧道在限定时间内未就绪，已自动重试过。仍失败请确认已连接 Wi-Fi，并检查是否打开 LocalDevVPN（Seal 依赖外部 LocalDevVPN 软件提供本地隧道）。",
         recovery: "检查是否打开 LocalDevVPN",
-        code: "SEAL-INSTALL-706t"
+        code: "SEAL-INSTALL-706t",
+        condition: .tunnelUnavailable,
+        action: .openLocalDevVPN,
+        route: .localDevVPN,
+        retryDisposition: .manual,
+        operation: .install,
+        origin: .deviceChannel
     )
 
     /// 安装等待超时的用户提示。
@@ -1830,7 +1934,12 @@ actor MinimuxerInstallChannel: InstallChannel {
             + "所以它可能在你看到这条提示之后仍然完成安装。"
             + "若多次出现，请检查 LocalDevVPN 连接是否稳定后再试（Seal 依赖外部 LocalDevVPN 软件提供本地隧道）。",
         recovery: "先等 1–2 分钟，回列表确认这个 App 是否其实已经装上；确认没装上再重试",
-        code: "SEAL-INSTALL-702t"
+        code: "SEAL-INSTALL-702t",
+        condition: .installationStillRunning,
+        action: .checkInstallationResult,
+        retryDisposition: .waitForInFlightWork,
+        operation: .install,
+        origin: .installer
     )
 
     /// 上一笔自替换安装还没结束就来了第二笔。
@@ -1843,6 +1952,11 @@ actor MinimuxerInstallChannel: InstallChannel {
         title: "上一次安装仍在进行中",
         reason: "Seal 的自替换安装还在进行中，本次已跳过，以免同一个应用上出现两次并发安装（会导致安装失败或应用损坏）。同步安装调用没有取消机制，请完全退出并重新打开 Seal 后再试。",
         recovery: "重新启动 Seal 后再试",
-        code: "SEAL-INSTALL-738"
+        code: "SEAL-INSTALL-738",
+        condition: .installationStillRunning,
+        action: .restartSeal,
+        retryDisposition: .waitForInFlightWork,
+        operation: .install,
+        origin: .installer
     )
 }

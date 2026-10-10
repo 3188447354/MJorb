@@ -3702,7 +3702,7 @@ final class AppsViewModel: ObservableObject {
     /// （存储不足 / 免费账号上限 / DRM 残留 / 超时 / 签名包损坏 / 需重启 Seal）都送去
     /// VPN 页。**不要再把前缀判断写回这里。**
     private func settingsRoute(for failure: ImportFailure) -> SettingsRoute? {
-        InstallFailureSettingsRoute.route(forCode: failure.code)
+        InstallFailureSettingsRoute.route(for: failure)
     }
 
     /// ⚠️ 这里**不再**带 `[域 码]`：用户文案保持干净无术语（2026-10-04 MJ 要求）。

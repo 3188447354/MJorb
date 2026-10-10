@@ -10,6 +10,44 @@ import Testing
 /// 与本地隧道毫无关系的失败。用户点「恢复」后被送到一个解决不了他问题的页面。
 struct InstallFailureSettingsRouteTests {
 
+    // MARK: - 结构化失败语义
+
+    /// 设置导航必须读取失败对象携带的导航意图，而不是重新解析错误码。
+    /// 这样错误码仅保留给日志、兼容与诊断，UI 不会因为新增一个同前缀错误而误跳页。
+    @Test
+    func structuredFailureRouteMapsDirectly() {
+        let routes: [(FailureRoute, SettingsRoute)] = [
+            (.account, .account),
+            (.certificates, .certificates),
+            (.pairing, .pairing),
+            (.localDevVPN, .localDevVPN)
+        ]
+
+        for (route, expected) in routes {
+            let failure = ImportFailure(
+                title: "测试失败",
+                reason: "测试",
+                recovery: "测试",
+                code: "SEAL-LEGACY-UNRELATED",
+                route: route
+            )
+
+            #expect(InstallFailureSettingsRoute.route(for: failure) == expected)
+        }
+    }
+
+    @Test
+    func legacyCodeWithoutRouteDoesNotGuessANavigationDestination() {
+        let failure = ImportFailure(
+            title: "安装失败",
+            reason: "测试",
+            recovery: "测试",
+            code: "SEAL-INSTALL-710"
+        )
+
+        #expect(InstallFailureSettingsRoute.route(for: failure) == nil)
+    }
+
     // MARK: - 通道 / 本地隧道类：只有这些才去 VPN 页
 
     @Test(arguments: [

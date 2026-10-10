@@ -49,6 +49,9 @@ struct InstallChannelDiagnosticClassificationTests {
             detail: "UnknownErrorType(\"PairVerifyFailed\")"
         )
         #expect(failure.code == "SEAL-PAIR-211")
+        #expect(failure.condition == .pairingRequired)
+        #expect(failure.action == .repairPairing)
+        #expect(failure.route == .pairing)
         #expect(failure.reason.contains("配对助手"))
         #expect(failure.reason.contains("PairVerifyFailed"))
     }
@@ -57,6 +60,9 @@ struct InstallChannelDiagnosticClassificationTests {
     func unreachableTunnelKeepsVpnGuidance() {
         let failure = Channel.discoveryFailure(tunnelReachable: false, detail: nil)
         #expect(failure.code == "SEAL-INSTALL-701")
+        #expect(failure.condition == .tunnelUnavailable)
+        #expect(failure.action == .openLocalDevVPN)
+        #expect(failure.route == .localDevVPN)
     }
 
     @Test
@@ -66,6 +72,8 @@ struct InstallChannelDiagnosticClassificationTests {
             detail: "minimuxer (-1): weird internal state"
         )
         #expect(failure.code == "SEAL-INSTALL-708")
+        #expect(failure.action == .retry)
+        #expect(failure.route == nil)
         #expect(failure.reason.contains("底层返回"))
         #expect(failure.reason.contains("weird internal state"))
     }
@@ -124,6 +132,27 @@ struct InstallChannelDiagnosticClassificationTests {
             Channel.isTerminalInstallError(detail),
             "确定性拒绝被判成可重试 ⇒ 大包重传：\(detail)"
         )
+    }
+
+    /// `code 28` 是一个没有来源上下文的数字，不能单独等同于设备文件系统的 ENOSPC。
+    /// 过去这里过宽，导致其他组件的状态码 28 也被错误提示为“设备存储空间不足”。
+    @Test(arguments: [
+        "operation returned code 28",
+        "HTTP status code 28",
+        "space left in retry budget: 28 seconds",
+        "设备安装失败，错误码 28"
+    ])
+    func ambiguousCode28DoesNotClaimDeviceStorageIsFull(detail: String) {
+        #expect(Channel.isDeviceStorageExhaustion(detail) == false)
+    }
+
+    @Test(arguments: [
+        "No space left on device",
+        "copyfile failed: ENOSPC (28)",
+        "errno 28 writing package"
+    ])
+    func explicitDeviceStorageEvidenceIsRecognized(detail: String) {
+        #expect(Channel.isDeviceStorageExhaustion(detail))
     }
 
     /// `MissingPackagePath` 是「跨隧道会话」的可恢复错误，必须留在重试侧；
@@ -294,6 +323,9 @@ struct InstallChannelDiagnosticClassificationTests {
     func portLevelReadinessReasonMapsToReprobeCode() {
         let failure = Channel.readinessFailure(for: "tunnelUnreachable")
         #expect(failure.code == "SEAL-INSTALL-710")
+        #expect(failure.condition == .tunnelUnavailable)
+        #expect(failure.action == .openLocalDevVPN)
+        #expect(failure.route == .localDevVPN)
         #expect(
             RemotePairingPortPolicy.shouldReprobe(failureCode: failure.code),
             "端口层原因必须落进端口重查集合，否则自愈永不触发"

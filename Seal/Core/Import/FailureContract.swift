@@ -11,6 +11,7 @@ enum FailureCondition: String, Codable, Equatable, Sendable {
     case deviceTrustRequired
     case tunnelUnavailable
     case deviceStorageFull
+    case deviceAppLimitReached
     case installationStillRunning
     case signedArtifactInvalid
     case localStorageWriteFailed
@@ -30,6 +31,7 @@ enum FailureAction: String, Codable, Equatable, Sendable {
     case trustDevice
     case openLocalDevVPN
     case freeDeviceStorage
+    case removeInstalledApp
     case checkInstallationResult
     case reinstallFromSignedArtifact
     case reimportIPA

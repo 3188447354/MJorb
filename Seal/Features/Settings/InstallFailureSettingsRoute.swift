@@ -31,6 +31,20 @@ enum InstallFailureSettingsRoute {
         "SEAL-SIGN-504"       // 单应用续签：设备通道不可用（自动重试后仍未恢复）
     ]
 
+    /// 新失败合同的唯一导航入口。UI 只消费 `ImportFailure.route`，不再从 `code`
+    /// 反推问题类别；错误码仍会保留在日志中，供兼容旧记录和技术诊断使用。
+    static func route(for failure: ImportFailure) -> SettingsRoute? {
+        switch failure.route {
+        case .account: .account
+        case .certificates: .certificates
+        case .pairing: .pairing
+        case .localDevVPN: .localDevVPN
+        case nil: nil
+        }
+    }
+
+    /// 仅供旧日志、旧测试和逐步迁移中的调用点使用。新 UI 禁止调用。
+    @available(*, deprecated, message: "Use route(for: ImportFailure) and FailureRoute instead.")
     /// 返回 nil 表示这条失败**没有**对应的设置页可去 —— 调用方不应跳转，
     /// 由弹窗文案自己说明下一步（「知道了」语义）。
     static func route(forCode code: String) -> SettingsRoute? {

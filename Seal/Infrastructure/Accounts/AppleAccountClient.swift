@@ -207,14 +207,26 @@ final class AppleAccountClient {
                 title: "无法添加账号",
                 reason: "Apple 拒绝了当前验证码（验证码无效或已过期）。",
                 recovery: "获取最新验证码后重新输入",
-                code: "SEAL-AUTH-101"
+                code: "SEAL-AUTH-101",
+                condition: .verificationCodeRejected,
+                action: .enterNewVerificationCode,
+                route: .account,
+                retryDisposition: .manual,
+                operation: .authenticateAccount,
+                origin: .authentication
             )
         } catch ALTAppleAPIError.incorrectCredentials {
             throw ImportFailure(
                 title: "无法添加账号",
                 reason: "Apple 拒绝了账号 \(Self.mask(email)) 的登录凭据（Apple ID 不存在或密码错误）。",
                 recovery: "核对 Apple ID 与密码后重试；忘记密码请先到 Apple 官网重置",
-                code: "SEAL-AUTH-102a"
+                code: "SEAL-AUTH-102a",
+                condition: .credentialsRejected,
+                action: .reauthenticateAccount,
+                route: .account,
+                retryDisposition: .manual,
+                operation: .authenticateAccount,
+                origin: .authentication
             )
         } catch ALTAppleAPIError.invalidAnisetteData {
             throw ALTAppleAPIError(.invalidAnisetteData)
@@ -285,7 +297,13 @@ final class AppleAccountClient {
                 title: "Apple ID 需要重新验证",
                 reason: "Apple 已明确拒绝当前登录凭据。",
                 recovery: "重新验证 Apple ID",
-                code: "SEAL-AUTH-102b"
+                code: "SEAL-AUTH-102b",
+                condition: .credentialsRejected,
+                action: .reauthenticateAccount,
+                route: .account,
+                retryDisposition: .manual,
+                operation: .validateAccount,
+                origin: .authentication
             )
         } catch let failure as ImportFailure {
             throw failure

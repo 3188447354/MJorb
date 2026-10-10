@@ -36,6 +36,34 @@ class FailureContractSourceTests(unittest.TestCase):
         self.assertIn("operation: .authenticateAccount", factory)
         self.assertIn("origin: .authentication", factory)
 
+    def test_explicit_account_rejections_keep_their_distinct_recovery_contracts(self) -> None:
+        source = (ROOT / "Seal/Infrastructure/Accounts/AppleAccountClient.swift").read_text(
+            encoding="utf-8"
+        )
+        verification_code = source.split(
+            "catch ALTAppleAPIError.incorrectVerificationCode", 1
+        )[1].split("catch ALTAppleAPIError.incorrectCredentials", 1)[0]
+        initial_credentials = source.split(
+            "catch ALTAppleAPIError.incorrectCredentials", 1
+        )[1].split("catch ALTAppleAPIError.invalidAnisetteData", 1)[0]
+        validation_credentials = source.split(
+            "func validate(", 1
+        )[1].split("catch ALTAppleAPIError.incorrectCredentials", 1)[1].split(
+            "catch let failure as ImportFailure", 1
+        )[0]
+
+        self.assertIn("condition: .verificationCodeRejected", verification_code)
+        self.assertIn("action: .enterNewVerificationCode", verification_code)
+        self.assertIn("operation: .authenticateAccount", verification_code)
+
+        self.assertIn("condition: .credentialsRejected", initial_credentials)
+        self.assertIn("action: .reauthenticateAccount", initial_credentials)
+        self.assertIn("operation: .authenticateAccount", initial_credentials)
+
+        self.assertIn("condition: .credentialsRejected", validation_credentials)
+        self.assertIn("action: .reauthenticateAccount", validation_credentials)
+        self.assertIn("operation: .validateAccount", validation_credentials)
+
 
 if __name__ == "__main__":
     unittest.main()

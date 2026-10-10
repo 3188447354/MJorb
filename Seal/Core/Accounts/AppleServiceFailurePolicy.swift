@@ -70,6 +70,11 @@ enum AppleServiceFailurePolicy {
     static func verificationFailureReason(
         for failure: ImportFailure
     ) -> AccountVerificationFailureReason? {
+        // 新合同先于旧错误码规则：同一编号在历史日志中可能承载过不同语义，
+        // 已迁移的生产出口不能再靠前缀反推出账号状态。
+        if failure.hasStructuredSemantics {
+            return failure.condition == .credentialsRejected ? .credentialsRejected : nil
+        }
         let code = failure.code
         // SEAL-AUTH-105f 是 Team 查询失败，不代表本地凭据缺失，不得标记 needsVerification。
         if code == "SEAL-AUTH-105f" { return nil }

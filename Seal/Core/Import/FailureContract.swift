@@ -46,6 +46,7 @@ enum FailureOperation: String, Codable, Equatable, Sendable {
     case renew
     case batchRenew
     case authenticateAccount
+    case validateAccount
     case install
     case importIPA
     case exportLog

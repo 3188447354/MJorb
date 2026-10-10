@@ -135,6 +135,26 @@ struct AppleServiceFailurePolicyTests {
         #expect(AppleServiceFailurePolicy.shouldRequireReverification(failure))
     }
 
+    @Test
+    func structuredCredentialRejectionDoesNotNeedCodePrefixInference() {
+        let failure = ImportFailure(
+            title: "Apple ID 需要重新验证",
+            reason: "Apple 已明确拒绝当前登录凭据。",
+            recovery: "重新验证 Apple ID",
+            code: "SEAL-AUTH-102b",
+            condition: .credentialsRejected,
+            action: .reauthenticateAccount,
+            route: .account,
+            retryDisposition: .manual,
+            operation: .validateAccount,
+            origin: .authentication
+        )
+
+        #expect(failure.condition == .credentialsRejected)
+        #expect(failure.operation == .validateAccount)
+        #expect(AppleServiceFailurePolicy.shouldRequireReverification(failure))
+    }
+
     @Test(arguments: [
         ("SEAL-AUTH-102d", AccountVerificationFailureReason.credentialsRejected),
         ("SEAL-AUTH-105a", AccountVerificationFailureReason.localCredentialsMissing),

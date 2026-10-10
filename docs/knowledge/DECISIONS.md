@@ -2,6 +2,12 @@
 
 为什么这么做，避免重复讨论。
 
+## 2026-10-10: App Group 数组做确定性排序
+
+- **决策**：`assignAppGroups` 对映射后的 group ID 按默认字符串序（区分大小写）排序；写入 Info.plist `ALTAppGroups` 前同样排序。
+- **为什么**：原包 entitlement 里 app-groups 数组的顺序是任意的，不同构建可能不同（实证：LiveContainer 主包与 LiveContainer2 的两个组集合相同、顺序相反）。运行时取第 0 个当共享目录，顺序不同会导致两个 App 用不同的共享目录、互相看不见。entitlement 数组顺序对 iOS 无语义，排序是归一化而非特例补丁。上游对照：AltStore/SideStore 不做 Seal 式 group 映射，无等价实现可对齐（记为"不跟"）。
+- **代价**：若某 App 的第 0 个因排序翻转，其共享目录会整体迁移一次（老数据留在旧目录）。本案主包第 0 个排序前后不变，无影响。
+
 ## 2026-10-09: 证书 dismissal 只走统一入口
 
 - **决策**：`SettingsViewModel.dismissCertificate(serialNumber:accountID:persistent:)` 是唯一入口，替代 `hide` / `removeRevoked` / `filterHidden` 三套命名。撤销成功或手动隐藏 → 持久化（UserDefaults）；撤销失败 → 仅内存移除；同步时 `filterDismissedCertificates` 统一过滤。

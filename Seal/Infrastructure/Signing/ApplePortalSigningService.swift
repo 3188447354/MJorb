@@ -3131,12 +3131,18 @@ actor ApplePortalSigningService {
         guard let originalGroups = application.entitlements[.appGroups] as? [String],
               originalGroups.isEmpty == false else { return }
         // App Group 操作通过 actor 串行化；批量签名为串行循环，无并发创建风险
+        // 2026-10-10：映射后按默认字符串序排序，保证同一集合永远得到同一顺序。
+        // 背景：原包 entitlement 里 app-groups 数组的顺序是任意的（不同构建可能不同，
+        // 如 LiveContainer 主包与 LiveContainer2：两个组集合相同但顺序相反）；运行
+        // 时取第 0 个当共享目录，顺序不同会导致两个 App 用不同的共享目录、互相看不见。
+        // 注意用默认 `<`（区分大小写）：对本案即 [SideStore, AltStore]，主包第 0 个
+        // 本来就是 SideStore，排序后不变，已转共享的数据不受影响。
         let mappedIdentifiers = originalGroups.map {
             signingWorkspace.bundleIDMapper.appGroupID(
                 original: $0,
                 teamID: team.identifier
             )
-        }
+        }.sorted()
         let fetchedBox: LegacyBox<[ALTAppGroup]> =
             try await withAppleTimeout {
                 try await withCheckedThrowingContinuation { continuation in
@@ -3364,10 +3370,14 @@ actor ApplePortalSigningService {
                 }
                 if let details,
                    case let .array(values) = details.entitlements["com.apple.security.application-groups"] {
+                    // 2026-10-10：与 assignAppGroups 侧保持一致的确定性排序。
+                    // 描述文件里的数组顺序同样不可靠（Apple 原样保留 assign 顺序）；
+                    // ALTAppGroups 写入 Info.plist 的顺序决定运行时的第 0 个共享目录，
+                    // 必须与 assign 侧一致，否则两端看到的第 0 个仍可能不同。
                     groups = values.compactMap { v in
                         if case let .string(s) = v { return s }
                         return nil
-                    }
+                    }.sorted()
                 } else {
                     groups = []
                 }

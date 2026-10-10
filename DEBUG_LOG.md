@@ -5,6 +5,14 @@
 
 ---
 
+## 2026-10-10 App Group 数组顺序导致多容器共享目录不一致（LiveContainer 主包 / LiveContainer2）
+
+- **现象**：MJ 在主 LiveContainer 里把 App 转为共享 App，LiveContainer2 里看不见；LC2 提示"将 App 转换为共享 App 以在 livecontainer2 中使用"。
+- **根因**：两包 `com.apple.security.application-groups` 集合相同（`group.com.SideStore.SideStore` + `group.com.rileytestut.AltStore`，映射后均带 `.seal.<teamID>`），但原包 entitlement 数组顺序相反（主包 SideStore 在前、LC2 是 AltStore 在前）。Seal 按原包顺序原样映射进描述文件并写入 Info.plist `ALTAppGroups`；运行时取第 0 个当共享目录 ⇒ 主包用 SideStore 的目录、LC2 用 AltStore 的目录，各写各读。MJ 提供的两份签名后 entitlement plist 与 Seal 免 JIT 诊断页"App Group 名"逐字证实。
+- **修复**：`assignAppGroups` 对映射后的 group ID 做默认字符串序排序（确定性；区分大小写，对本案即 [SideStore, AltStore]，主包第 0 个本来就是 SideStore，已转共享的数据不受影响）；写入 Info.plist `ALTAppGroups` 前同样排序，保证 assign 侧与落盘侧一致。entitlement 数组顺序对 iOS 无语义，排序是归一化而非特例补丁；上游对照：AltStore/SideStore 不做 Seal 式 group 映射，无等价实现可对齐（记为"不跟"）。
+- **涉及文件**：`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`（`assignAppGroups` 映射排序、`ALTAppGroups` 落盘排序）。
+- **验证状态**：本地 `Scripts/pre-push-check.py` 835 checks 0 failures；待 MJ 说"推"后走 CI（含 swift-regression 编译），再由 MJ 真机重签 LC2 验证共享 App 出现。注意：本案主包第 0 个排序前后不变，已转共享的数据无需重转；若未来有 App 的第 0 个因排序翻转，其共享目录会整体迁移一次（老数据留在旧目录）。
+
 ## 2026-10-10 错误帮助的证据边界与日志错误码保留
 
 - **现象**：现有“查看解决办法”直接跳官网，离线时无法查看；日志轮次卡片提取到失败文案后会丢失原始 `SEAL-*` 错误码，导致无法可靠关联解决方案。过去把错误码直接解释成单一根因，也会把网络、设备或 Apple 限制误导成“账号失效”。

@@ -9008,7 +9008,7 @@
       }
     },
     "SEAL-PROFILE-340": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 1
       },
@@ -9018,8 +9018,14 @@
           "line": 21,
           "path": "Seal/Core/Renewal/ProfileOnlyRenewalRecordUpdater.swift",
           "role": "structured_failure_emission",
-          "semanticFields": [],
-          "source": "code: \"SEAL-PROFILE-340\""
+          "semanticFields": [
+            "condition",
+            "action",
+            "retryDisposition",
+            "operation",
+            "origin"
+          ],
+          "source": "code: \"SEAL-PROFILE-340\","
         }
       ],
       "occurrenceCount": 1,
@@ -9028,18 +9034,24 @@
       }
     },
     "SEAL-PROFILE-341": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 1
       },
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 31,
+          "line": 36,
           "path": "Seal/Core/Renewal/ProfileOnlyRenewalRecordUpdater.swift",
           "role": "structured_failure_emission",
-          "semanticFields": [],
-          "source": "code: \"SEAL-PROFILE-341\""
+          "semanticFields": [
+            "condition",
+            "action",
+            "retryDisposition",
+            "operation",
+            "origin"
+          ],
+          "source": "code: \"SEAL-PROFILE-341\","
         }
       ],
       "occurrenceCount": 1,
@@ -9048,18 +9060,24 @@
       }
     },
     "SEAL-PROFILE-342": {
-      "auditStatus": "unreviewed",
+      "auditStatus": "contracted",
       "identifierKinds": {
         "standard_error_code": 2
       },
       "locations": [
         {
           "identifierKind": "standard_error_code",
-          "line": 57,
+          "line": 67,
           "path": "Seal/Core/Renewal/ProfileOnlyRenewalRecordUpdater.swift",
           "role": "structured_failure_emission",
-          "semanticFields": [],
-          "source": "code: \"SEAL-PROFILE-342\""
+          "semanticFields": [
+            "condition",
+            "action",
+            "retryDisposition",
+            "operation",
+            "origin"
+          ],
+          "source": "code: \"SEAL-PROFILE-342\","
         },
         {
           "identifierKind": "standard_error_code",
@@ -11900,8 +11918,8 @@
     },
     "structuredFailureContracts": {
       "directOccurrences": 144,
-      "withExplicitSemantics": 40,
-      "withoutExplicitSemantics": 104
+      "withExplicitSemantics": 43,
+      "withoutExplicitSemantics": 101
     },
     "uniqueIdentifiers": 424
   }

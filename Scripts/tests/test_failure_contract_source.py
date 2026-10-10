@@ -142,6 +142,22 @@ class FailureContractSourceTests(unittest.TestCase):
         self.assertNotIn("更换网络", handshake)
         self.assertNotIn("系统时间", handshake)
 
+    def test_incomplete_profile_only_result_retries_instead_of_claiming_app_id_loss(self) -> None:
+        source = (ROOT / "Seal/Core/Renewal/ProfileOnlyRenewalRecordUpdater.swift").read_text(
+            encoding="utf-8"
+        )
+
+        for code in ("340", "341", "342"):
+            failure = source.split(f'code: "SEAL-PROFILE-{code}",', 1)[1].split(
+                "\n                )", 1
+            )[0]
+            self.assertIn("condition: .provisioningProfileIncomplete", failure)
+            self.assertIn("action: .retry", failure)
+            self.assertIn("retryDisposition: .manual", failure)
+            self.assertIn("operation: .renew", failure)
+            self.assertIn("origin: .provisioning", failure)
+            self.assertNotIn("fullResign", failure)
+
 
 if __name__ == "__main__":
     unittest.main()

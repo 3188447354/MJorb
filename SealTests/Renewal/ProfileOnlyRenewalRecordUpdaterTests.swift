@@ -4,6 +4,49 @@ import Testing
 
 struct ProfileOnlyRenewalRecordUpdaterTests {
 
+    @Test(arguments: [
+        ("SEAL-PROFILE-340", [String: ProvisioningProfileBinding]()),
+        ("SEAL-PROFILE-341", [
+            "com.example.demo.TEAM123456": ProvisioningProfileBinding(
+                bundleIdentifier: "com.example.demo.TEAM123456",
+                profileUUID: "MAIN",
+                profileName: "Main",
+                teamIdentifier: "TEAM123456",
+                creationDate: Date(timeIntervalSince1970: 1_850_000_000),
+                expirationDate: Date(timeIntervalSince1970: 1_900_000_000),
+                certificateSerialNumbers: ["00AABB"],
+                deviceIdentifiers: ["DEVICE-UDID"],
+                entitlements: [:]
+            )
+        ])
+    ])
+    func incompleteRenewalBindingsRetryTheProfileOnlyFlow(
+        expectedCode: String,
+        bindings: [String: ProvisioningProfileBinding]
+    ) {
+        var app = makeApp(expiry: Date(timeIntervalSince1970: 1_800_000_000))
+
+        do {
+            try ProfileOnlyRenewalRecordUpdater.apply(
+                resolvedBindings: bindings,
+                teamID: "TEAM123456",
+                certificateSerialNumber: "00AABB",
+                deviceIdentifier: "DEVICE-UDID",
+                to: &app
+            )
+            Issue.record("Expected incomplete bindings to fail.")
+        } catch let failure as ImportFailure {
+            #expect(failure.code == expectedCode)
+            #expect(failure.condition == .provisioningProfileIncomplete)
+            #expect(failure.action == .retry)
+            #expect(failure.retryDisposition == .manual)
+            #expect(failure.operation == .renew)
+            #expect(failure.origin == .provisioning)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     @Test
     func confirmedProfilesAdvanceMainAndExtensionSnapshotsTogether() throws {
         let oldExpiry = Date(timeIntervalSince1970: 1_800_000_000)

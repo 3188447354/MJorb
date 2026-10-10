@@ -6430,3 +6430,13 @@ CMake Error at CMakeLists.txt:394 (message):
 **修复**：库存生成器现在以证据计算状态：所有直接出口有字段为 `contracted`，同码同时包含合同化与旧出口为 `mixed`，无字段的直接出口为 `unreviewed`，纯诊断标签为 `diagnostic_only`，其他无直接出口引用为 `reference_only`。该状态不生成任何用户操作，只表达源码证据完整度。
 
 **验证**：新增状态分类回归测试先红后绿；本地 19 项 Python 审计／合同测试通过。当前 424 个标识中 33 个 `contracted`、2 个 `mixed`、97 个 `unreviewed`、286 个 `reference_only`、6 个 `diagnostic_only`。完整 iOS CI run `38094053805` 仍在排队。
+
+## 2026-10-11 — 描述文件目标集合不完整被误作不可操作的提示
+
+**症状**：描述文件续签在写入本地待确认快照前发现主应用、扩展或完整目标集合缺失时，`SEAL-PROFILE-340/341/342` 只显示“知道了”。这既没有告诉用户本次续签没有完成，也可能让上层继续按旧错误码分支猜测为 App ID 缺失或需要完整重签。
+
+**根因**：这三个出口位于 `ProfileOnlyRenewalRecordUpdater`，发生在同一次 profile-only 续签结果与已安装目标集合不一致时；代码没有表明它们与 `SEAL-PROFILE-337`（确认找不到 App ID，必须完整重签）是不同事实。
+
+**修复**：将三条出口统一标注为 `provisioningProfileIncomplete → retry`，操作为 `renew`、来源为 `provisioning`，且只提示“重新续签”。不把该局部结果不完整扩展成 App ID 丢失、网络故障或删除签名包。
+
+**验证**：新增 Swift 回归测试覆盖主描述文件缺失与目标集合缺失；新增静态合同测试覆盖 340/341/342 的统一语义。Python 审计／合同测试待提交前执行；完整 iOS CI 将在推送后验证 Swift 编译。

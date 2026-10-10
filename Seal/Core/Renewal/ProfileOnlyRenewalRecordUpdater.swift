@@ -15,20 +15,30 @@ enum ProfileOnlyRenewalRecordUpdater {
         guard let mainBundleIdentifier = app.mappedBundleIdentifier,
               let mainBinding = resolvedBindings[mainBundleIdentifier] else {
             throw ImportFailure(
-                title: "描述文件不完整",
+                title: "本次续签未完成",
                 reason: "续签时缺少主应用的描述文件。",
-                recovery: "知道了",
-                code: "SEAL-PROFILE-340"
+                recovery: "重新续签",
+                code: "SEAL-PROFILE-340",
+                condition: .provisioningProfileIncomplete,
+                action: .retry,
+                retryDisposition: .manual,
+                operation: .renew,
+                origin: .provisioning
             )
         }
         let installedTargets = [mainBundleIdentifier] + app.extensions.compactMap(\.mappedBundleIdentifier)
         guard Set(installedTargets).count == installedTargets.count,
               Set(installedTargets) == Set(resolvedBindings.keys) else {
             throw ImportFailure(
-                title: "描述文件不完整",
+                title: "本次续签未完成",
                 reason: "续签时缺少该应用或其扩展的描述文件。",
-                recovery: "知道了",
-                code: "SEAL-PROFILE-341"
+                recovery: "重新续签",
+                code: "SEAL-PROFILE-341",
+                condition: .provisioningProfileIncomplete,
+                action: .retry,
+                retryDisposition: .manual,
+                operation: .renew,
+                origin: .provisioning
             )
         }
 
@@ -51,10 +61,15 @@ enum ProfileOnlyRenewalRecordUpdater {
             guard let bundleIdentifier = ext.mappedBundleIdentifier,
                   let binding = resolvedBindings[bundleIdentifier] else {
                 throw ImportFailure(
-                    title: "描述文件不完整",
+                    title: "本次续签未完成",
                     reason: "续签时缺少扩展的描述文件。",
-                    recovery: "知道了",
-                    code: "SEAL-PROFILE-342"
+                    recovery: "重新续签",
+                    code: "SEAL-PROFILE-342",
+                    condition: .provisioningProfileIncomplete,
+                    action: .retry,
+                    retryDisposition: .manual,
+                    operation: .renew,
+                    origin: .provisioning
                 )
             }
             extensionSnapshots.append(

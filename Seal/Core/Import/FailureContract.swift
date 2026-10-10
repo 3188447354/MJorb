@@ -16,6 +16,7 @@ enum FailureCondition: String, Codable, Equatable, Sendable {
     case authenticationEnvironmentUnavailable
     case authenticationEnvironmentServiceUnavailable
     case authenticationHandshakeRejected
+    case provisioningProfileIncomplete
     case fullResignRequired
     case pairingRequired
     case deviceTrustRequired

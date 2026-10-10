@@ -179,6 +179,34 @@ def patch_error_dialogs(text: str) -> str:
         text, raise_helper_anchor, raise_helper_replacement, "Seal error dialog helper"
     )
 
+    # 已安装应用读取失败：无论是否在配对流程里，都要弹窗
+    text = replace_once(
+        text,
+        """                GuiCommands::InstalledApps(apps) => {
+                    self.installed_apps = Some(apps);
+                    if self.pending_seal_install && self.pairing_file.is_some() {
+                        self.install_pairing_file_to_seal_if_ready();
+                    }
+                }
+""",
+        """                GuiCommands::InstalledApps(apps) => {
+                    let failure = match &apps {
+                        Ok(_) => None,
+                        Err(error) => Some(seal_issue_apps_unreadable(&format!("{error:?}"))),
+                    };
+                    self.installed_apps = Some(apps);
+                    if self.pending_seal_install && self.pairing_file.is_some() {
+                        self.install_pairing_file_to_seal_if_ready();
+                    }
+                    match failure {
+                        Some(issue) => self.seal_raise_issue(issue),
+                        None => self.seal_resolve_issue("handoff-apps"),
+                    }
+                }
+""",
+        "installed apps failure dialog",
+    )
+
     # 交接阶段（写入 Seal）的每一个失败分支
     text = replace_once(
         text,
@@ -454,6 +482,178 @@ def patch_error_dialogs(text: str) -> str:
         "backend disconnected dialog",
     )
 
+    # 设备已在 usbmuxd 里、却读不到信息：上游只写日志，这里补上弹窗
+    text = replace_once(
+        text,
+        """                GuiCommands::GetDevicesFailure(idevice_error) => {
+                    self.devices_placeholder =
+                        t!("get_devices_failure", error = format!("{idevice_error:?}")).to_string();
+                    let list_issue = seal_issue_device_list(&format!("{idevice_error:?}"));
+                    self.seal_raise_issue(list_issue);
+                }
+""",
+        """                GuiCommands::GetDevicesFailure(idevice_error) => {
+                    self.devices_placeholder =
+                        t!("get_devices_failure", error = format!("{idevice_error:?}")).to_string();
+                    let list_issue = seal_issue_device_list(&format!("{idevice_error:?}"));
+                    self.seal_raise_issue(list_issue);
+                }
+                GuiCommands::DeviceReadFailure(idevice_error) => {
+                    let issue = seal_issue_device_read(&format!("{idevice_error:?}"));
+                    self.seal_raise_issue(issue);
+                }
+""",
+        "device read failure arm",
+    )
+    text = replace_once(
+        text,
+        "    InstallPairingFile((String, Result<(), IdeviceError>)), // name\n}",
+        "    InstallPairingFile((String, Result<(), IdeviceError>)), // name\n"
+        "    DeviceReadFailure(IdeviceError),\n}",
+        "device read failure variant",
+    )
+    text = replace_once(
+        text,
+        """                            for dev in devs {
+                                let p = dev.to_provider(UsbmuxdAddr::default(), "idevice_pair");
+                                let mut lc = match LockdownClient::connect(&p).await {
+                                    Ok(l) => l,
+                                    Err(e) => {
+                                        error!("Failed to connect to lockdown: {e:?}");
+                                        continue;
+                                    }
+                                };
+                                let values = match lc.get_value(None, None).await {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        error!("Failed to get lockdown values: {e:?}");
+                                        continue;
+                                    }
+                                };""",
+        """                            for dev in devs {
+                                let p = dev.to_provider(UsbmuxdAddr::default(), "idevice_pair");
+                                let mut lc = match LockdownClient::connect(&p).await {
+                                    Ok(l) => l,
+                                    Err(e) => {
+                                        error!("Failed to connect to lockdown: {e:?}");
+                                        gui_sender.send(GuiCommands::DeviceReadFailure(e)).unwrap();
+                                        continue;
+                                    }
+                                };
+                                let values = match lc.get_value(None, None).await {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        error!("Failed to get lockdown values: {e:?}");
+                                        gui_sender.send(GuiCommands::DeviceReadFailure(e)).unwrap();
+                                        continue;
+                                    }
+                                };""",
+        "device list probe failure dialog",
+    )
+    text = replace_once(
+        text,
+        """                                    Some(n) => n.to_string(),
+                                    _ => {
+                                        continue;
+                                    }
+                                };""",
+        """                                    Some(n) => n.to_string(),
+                                    _ => {
+                                        gui_sender
+                                            .send(GuiCommands::DeviceReadFailure(
+                                                IdeviceError::InternalError(
+                                                    "设备返回的信息缺少 DeviceName 字段".to_string(),
+                                                ),
+                                            ))
+                                            .unwrap();
+                                        continue;
+                                    }
+                                };""",
+        "missing device name dialog",
+    )
+    text = replace_once(
+        text,
+        """                    let values = match lc.get_value(None, None).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            error!("Failed to get lockdown values: {e:?}");
+                            continue;
+                        }
+                    };
+
+                    let values = match values.as_dictionary() {
+                        Some(v) => v,
+                        None => {
+                            error!("Values was not a dictionary");
+                            continue;
+                        }
+                    };""",
+        """                    let values = match lc.get_value(None, None).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            error!("Failed to get lockdown values: {e:?}");
+                            gui_sender.send(GuiCommands::DeviceReadFailure(e)).unwrap();
+                            continue;
+                        }
+                    };
+
+                    let values = match values.as_dictionary() {
+                        Some(v) => v,
+                        None => {
+                            error!("Values was not a dictionary");
+                            gui_sender
+                                .send(GuiCommands::DeviceReadFailure(
+                                    IdeviceError::InternalError(
+                                        "设备返回的信息不是字典结构".to_string(),
+                                    ),
+                                ))
+                                .unwrap();
+                            continue;
+                        }
+                    };""",
+        "device info failure dialog",
+    )
+    text = replace_once(
+        text,
+        """                    let mut lc = match LockdownClient::connect(&p).await {
+                        Ok(l) => l,
+                        Err(e) => {
+                            error!("Failed to connect to lockdown: {e:?}");
+                            continue;
+                        }
+                    };""",
+        """                    let mut lc = match LockdownClient::connect(&p).await {
+                        Ok(l) => l,
+                        Err(e) => {
+                            error!("Failed to connect to lockdown: {e:?}");
+                            gui_sender.send(GuiCommands::DeviceReadFailure(e)).unwrap();
+                            continue;
+                        }
+                    };""",
+        "device info connect failure dialog",
+    )
+    text = replace_once(
+        text,
+        """                GuiCommands::Validated(res) => match res {
+                    Ok(()) => self.validate_res = Some(Ok(())),
+                    Err(e) => self.validate_res = Some(Err(e.to_string())),
+                },""",
+        """                GuiCommands::Validated(res) => {
+                    match &res {
+                        Ok(()) => self.seal_resolve_issue("validate-failed"),
+                        Err(error) => {
+                            let issue = seal_issue_validate_failed(&format!("{error:?}"));
+                            self.seal_raise_issue(issue);
+                        }
+                    }
+                    self.validate_res = match res {
+                        Ok(()) => Some(Ok(())),
+                        Err(e) => Some(Err(e.to_string())),
+                    };
+                }""",
+        "pairing validation dialog",
+    )
+
     return text
 
 
@@ -517,6 +717,9 @@ def verify(root: pathlib.Path) -> None:
         "seal_issue_pairing_failed",
         "seal_issue_install_failed",
         "seal_issue_seal_missing",
+        "seal_issue_device_read",
+        "seal_issue_validate_failed",
+        "DeviceReadFailure",
         "解决办法",
         "知道了",
     ]

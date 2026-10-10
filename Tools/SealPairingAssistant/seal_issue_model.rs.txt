@@ -317,6 +317,36 @@ fn seal_issue_seal_path_missing() -> SealIssue {
     )
 }
 
+/// 设备已在，但读不到设备信息（列表探测或 iOS 版本读取失败）。
+fn seal_issue_device_read(error: impl std::fmt::Display) -> SealIssue {
+    SealIssue::new(
+        "device-read",
+        "无法读取 iPhone 信息",
+        format!("读取设备信息失败：{}", seal_error_text(error)),
+        &[
+            "解锁 iPhone，保持数据线连接，不要中途拔线。",
+            "在 iPhone 弹窗中点按「信任」并输入锁屏密码；若没有弹窗，请重新插拔数据线。",
+            "换一个 USB 接口（优先直连主板）后点按「重新检测」。",
+        ],
+        SealIssueRetry::Refresh,
+    )
+}
+
+/// 配对文件校验失败（当前 UI 不提供校验入口，保留用于上游重新启用后仍能弹窗）。
+fn seal_issue_validate_failed(error: impl std::fmt::Display) -> SealIssue {
+    SealIssue::new(
+        "validate-failed",
+        "配对文件校验失败",
+        format!("校验配对文件时设备返回失败：{}", seal_error_text(error)),
+        &[
+            "解锁 iPhone 并保持数据线连接。",
+            "确认设备与电脑在同一网络（局域网校验）或已用数据线连接（USB 校验）。",
+            "点按「重新生成配对文件」，生成一份新的配对文件后重试。",
+        ],
+        SealIssueRetry::Reprime,
+    )
+}
+
 /// 写入 Seal 失败。
 fn seal_issue_install_failed(name: &str, error: impl std::fmt::Display) -> SealIssue {
     SealIssue::new(

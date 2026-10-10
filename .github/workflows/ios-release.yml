@@ -45,6 +45,12 @@ jobs:
           python3 Scripts/error_catalog.py generate --root .
           git diff --exit-code -- docs/error-catalog/generated/help-index.json Seal/Resources/ErrorHelp/help-index.json
 
+      - name: Audit source error identifiers
+        run: |
+          python3 -m unittest Scripts.tests.test_error_code_inventory -v
+          python3 Scripts/error_code_inventory.py --root . --output docs/qa/generated/error-code-inventory.json
+          git diff --exit-code -- docs/qa/generated/error-code-inventory.json
+
       - name: Cache Swift Package Manager dependencies
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:

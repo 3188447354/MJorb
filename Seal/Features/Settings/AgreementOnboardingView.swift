@@ -12,7 +12,7 @@ enum AgreementOnboardingLayout {
     static let iconCornerRadius: CGFloat = 26
     static let drawerCornerRadius: CGFloat = 29
     static let horizontalInset: CGFloat = 22
-    static let initialDrawerFraction: CGFloat = 0.44
+    static let initialDrawerFraction: CGFloat = 0.38
     static let compactContentSpacing: CGFloat = 18
 }
 
@@ -40,7 +40,7 @@ struct AgreementOnboardingView: View {
 
                 // 品牌区相对较短的抽屉下移，避免顶部与底部各自独立而显得割裂。
                 VStack(spacing: 0) {
-                    Spacer().frame(height: max(geo.safeAreaInsets.top + 98, 145))
+                    Spacer().frame(height: max(geo.safeAreaInsets.top + 140, 190))
                     brandSection
                     Spacer()
                 }
@@ -75,11 +75,15 @@ struct AgreementOnboardingView: View {
             }
         }
         .alert("需要您的同意", isPresented: $showDeclineHint) {
-            Button("好的", role: .cancel) {
-                presentationState.acknowledgeDecline()
-            }
+            Button("好的", role: .cancel) {}
         } message: {
             Text("Seal 需要您同意《隐私政策》与《用户协议》才能继续使用。")
+        }
+        .onChange(of: showDeclineHint) { isPresented in
+            // `alert` 按钮的回调仍处于 sheet 关闭动画的事务中；等 alert 实际消失后
+            // 再恢复受同意门控的 sheet，避免状态写入被前一次 dismissal 吞掉。
+            guard !isPresented else { return }
+            presentationState.acknowledgeDecline()
         }
     }
 

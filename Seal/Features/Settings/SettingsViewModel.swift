@@ -10,7 +10,6 @@ enum SettingsRoute: Hashable {
     case pairing
     case localDevVPN
     case storage
-    case errorHelp
 }
 
 /// 自管理状态的展示模型：View 只读这里，不自己猜状态。

@@ -6,7 +6,6 @@ struct AppDetailView: View {
     @ObservedObject var viewModel: AppsViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var showExtensions = false
-    @State private var errorHelpFailure: ImportFailure?
 
     var body: some View {
         Group {
@@ -53,16 +52,8 @@ struct AppDetailView: View {
                 message: Text(failure.userMessage),
                 primaryButton: .default(Text(failure.recovery)) {
                     viewModel.performAlertRecovery(for: failure)
-                },
-                secondaryButton: .default(Text("查看解决办法")) {
-                    errorHelpFailure = failure
                 }
             )
-        }
-        .sheet(item: $errorHelpFailure) { failure in
-            NavigationStack {
-                ErrorHelpView(entry: ErrorKnowledgeStore.bundled().help(for: failure.code))
-            }
         }
     }
 

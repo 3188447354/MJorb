@@ -20,7 +20,6 @@ struct LogViewerView: View {
     @State private var exportDocument: LogExportDocument?
     @State private var showClearConfirm = false
     @State private var selectedError: LogRound.LogRoundItem?
-    @State private var selectedErrorHelp: ErrorKnowledgeEntry?
     @State private var exportFailure: ImportFailure?
 
     var body: some View {
@@ -84,11 +83,6 @@ struct LogViewerView: View {
                     UIPasteboard.general.string = info
                 }
             }
-            Button("查看解决办法") {
-                if let err = selectedError {
-                    selectedErrorHelp = ErrorKnowledgeStore.bundled().help(for: err.code ?? "SEAL-LOG-UNKNOWN")
-                }
-            }
         } message: {
             if let err = selectedError {
                 Text((err.reason ?? "暂无具体解决办法，可复制错误信息到社群求助。"))
@@ -109,11 +103,6 @@ struct LogViewerView: View {
         }
         .sheet(item: $exportDocument) { document in
             ShareSheet(activityItems: [document.url])
-        }
-        .sheet(item: $selectedErrorHelp) { entry in
-            NavigationStack {
-                ErrorHelpView(entry: entry)
-            }
         }
     }
 
@@ -400,7 +389,7 @@ struct RoundCard: View {
                         Button {
                             onSelectError(item)
                         } label: {
-                            Text("查看解决办法 →")
+                            Text("查看错误信息 →")
                                 .font(.system(size: 13))
                                 .foregroundColor(.accentColor)
                         }

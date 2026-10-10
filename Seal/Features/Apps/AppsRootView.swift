@@ -20,7 +20,6 @@ struct AppsRootView: View {
     @State private var installedActionApp: AppRecord?
     @State private var operationAppID: UUID?
     @State private var didResolveInitialMode = false
-    @State private var errorHelpFailure: ImportFailure?
 
     var body: some View {
         NavigationStack {
@@ -132,11 +131,6 @@ struct AppsRootView: View {
             .sheet(item: $detailApp) { app in
                 AppDetailView(appID: app.id, viewModel: viewModel)
                     .presentationDetents([.medium, .large])
-            }
-            .sheet(item: $errorHelpFailure) { failure in
-                NavigationStack {
-                    ErrorHelpView(entry: ErrorKnowledgeStore.bundled().help(for: failure.code))
-                }
             }
             .alert(deleteAlertTitle, isPresented: Binding(
                 get: { pendingDeleteApp != nil },
@@ -559,9 +553,6 @@ struct AppsRootView: View {
             message: Text(failure.userMessage),
             primaryButton: .default(Text(failure.recovery)) {
                 viewModel.performAlertRecovery(for: failure)
-            },
-            secondaryButton: .default(Text("查看解决办法")) {
-                errorHelpFailure = failure
             }
         )
     }

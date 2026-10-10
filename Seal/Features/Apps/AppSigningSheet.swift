@@ -19,7 +19,6 @@ struct AppSigningSheet: View {
     @State private var isPhotoPickerPresented = false
     @State private var isIconFileImporterPresented = false
     @State private var selectedPhotoItem: PhotosPickerItem?
-    @State private var errorHelpFailure: ImportFailure?
 
     var body: some View {
         Group {
@@ -39,11 +38,6 @@ struct AppSigningSheet: View {
         }
         .onChange(of: viewModel.verifiedAccounts) { _ in
             selectDefaultAccount()
-        }
-        .sheet(item: $errorHelpFailure) { failure in
-            NavigationStack {
-                ErrorHelpView(entry: ErrorKnowledgeStore.bundled().help(for: failure.code))
-            }
         }
         .sheet(isPresented: $isBundleIDEditorPresented) {
             if BundleIDPolicy.isEditable(workingApp) {
@@ -525,9 +519,6 @@ struct AppSigningSheet: View {
             message: Text(failure.userMessage),
             primaryButton: .default(Text(failure.recovery)) {
                 viewModel.performAlertRecovery(for: failure)
-            },
-            secondaryButton: .default(Text("查看解决办法")) {
-                errorHelpFailure = failure
             }
         )
     }

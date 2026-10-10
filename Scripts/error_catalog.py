@@ -65,7 +65,7 @@ def load_catalog(catalog_directory: Path) -> list[dict[str, Any]]:
 
 
 def generate_help_index(entries: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    """Return a stable, offline-safe payload for both the App and website."""
+    """Return a stable payload for the website help catalog."""
     ordered_entries = sorted(entries, key=lambda entry: entry["code"])
     return {
         "schemaVersion": 1,
@@ -91,9 +91,6 @@ def write_help_index(root: Path, entries: list[dict[str, Any]]) -> Path:
         sort_keys=True,
     ) + "\n"
     destination.write_text(payload, encoding="utf-8")
-    app_destination = root / "Seal" / "Resources" / "ErrorHelp" / "help-index.json"
-    app_destination.parent.mkdir(parents=True, exist_ok=True)
-    app_destination.write_text(payload, encoding="utf-8")
     return destination
 
 

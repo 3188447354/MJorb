@@ -1,3 +1,4 @@
+import json
 import unittest
 from tempfile import TemporaryDirectory
 from pathlib import Path
@@ -35,7 +36,7 @@ class ErrorCatalogGenerationTests(unittest.TestCase):
         self.assertEqual(index["schemaVersion"], 1)
         self.assertNotIn("generatedAt", index)
 
-    def test_generated_web_and_app_indexes_are_identical(self) -> None:
+    def test_generated_website_index_is_written(self) -> None:
         entries = [{
             "code": "SEAL-A-001",
             "kind": "failure",
@@ -50,9 +51,8 @@ class ErrorCatalogGenerationTests(unittest.TestCase):
             write_help_index(root, entries)
 
             web_index = root / "docs/error-catalog/generated/help-index.json"
-            app_index = root / "Seal/Resources/ErrorHelp/help-index.json"
             self.assertTrue(web_index.is_file())
-            self.assertEqual(web_index.read_bytes(), app_index.read_bytes())
+            self.assertEqual(json.loads(web_index.read_text(encoding="utf-8"))["entries"], entries)
 
 
 if __name__ == "__main__":

@@ -15,6 +15,14 @@
 - **修复（第三轮，根治）**：MJ 明确要求"直接从根上排"。既然 Apple 侧 App ID 的组顺序改不了（assign 不重排），且上游签名器排序三轮均未生效，改为**删除重建 LC2 的 App ID**：下次签名 LC2 时，Seal 自动删除旧 App ID（一次性，UserDefaults 标记防重复），随后流程按新 App ID 走——`assignAppGroups` 不再被跳过，我的字母排序在全新绑定时生效，Apple 侧顺序从根上就是 [SideStore, AltStore]。涉及文件：`Seal/Infrastructure/Signing/ApplePortalSigningService.swift`（App ID 准备循环内的一次性重建逻辑，`withSessionRecovery` 包裹，R24 守卫已同步到 9 个调用点）。
 - **验证状态**：本地 `Scripts/pre-push-check.py` 836 checks 0 failures；待 CI 出包、MJ 真机重签 LC2（日志应出现"正在重建 LiveContainer2 的 App ID…"），然后确认共享 App 出现。
 
+## 2026-10-10 发布安全守卫未绑定 App ID 新建缓存失效调用点
+
+- **现象**：LiveContainer2 的一次性 App ID 重建新增第二个 `invalidateAppIDsCache` 调用后，完整 iOS CI 的 `R112③b` 变异检查失败；产品代码仍包含新建 App ID 后的缓存失效逻辑。
+- **根因**：守卫的变异锚点只匹配裸调用文本，`replace(..., 1)` 先替换到新增加的“删除 App ID 后失效缓存”调用，真正要保护的“`addAppID` 成功后失效缓存”调用仍在，导致守卫无法检验自身判据。
+- **修复**：变异锚点改为 `appID = createdBox.value` 与紧随其后的缓存失效完整代码块，只命中 `addAppID` 成功路径；不改变产品 App ID 行为。
+- **涉及文件**：`Scripts/verify-release-safety.py`、`SealTests/Import/FailureContractTests.swift`。
+- **验证状态**：待完整 iOS CI 重新执行发布安全守卫与 Swift 回归测试。
+
 ## 2026-10-10 错误帮助的证据边界与日志错误码保留
 
 - **现象**：现有“查看解决办法”直接跳官网，离线时无法查看；日志轮次卡片提取到失败文案后会丢失原始 `SEAL-*` 错误码，导致无法可靠关联解决方案。过去把错误码直接解释成单一根因，也会把网络、设备或 Apple 限制误导成“账号失效”。

@@ -10026,7 +10026,11 @@ def main():
          "R112①:"),
         # ③b addAppID 成功后不再失效缓存（后一个 App 拿旧列表匹配）⇒ R112③b 报红。
         ("Seal/Infrastructure/Signing/ApplePortalSigningService.swift",
+         "                        appID = createdBox.value\n"
+         "                        // 批量缓存失效：新建的 App ID 已落地，同一批量里后一个 App\n"
+         "                        // 不能拿着缺它的旧列表去匹配（见文件头 MARK 注释）。\n"
          "                        invalidateAppIDsCache(forTeamIdentifier: team.identifier)",
+         "                        appID = createdBox.value\n"
          "                        // cache invalidation removed",
          "R112③b:"),
         # ③c 恢复性重拉不再 bypass（拿缓存糊弄「再看一眼」）⇒ R112③b 报红。

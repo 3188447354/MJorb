@@ -16,7 +16,8 @@ struct FailureContractTests {
         #expect(failure.action == .copyDiagnostics)
         #expect(failure.route == nil)
         #expect(failure.retryDisposition == .none)
-        #expect(failure.operation == .sign)
+        // 旧调用点没有声明操作边界时，不能凭错误码猜它来自签名流程。
+        #expect(failure.operation == .unknown)
         #expect(failure.origin == .unknown)
         #expect(failure.diagnosticID.isEmpty == false)
     }

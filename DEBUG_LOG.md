@@ -6390,3 +6390,13 @@ CMake Error at CMakeLists.txt:394 (message):
 **修复**：`104f` 设为 `accountVerificationRequired → reauthenticateAccount → account`；`104g` 设为 `recordedSigningIdentityUnavailable → addAccount → account`，两条均标注为 `renew` / `authentication`。文案明确后者需要添加原团队 Apple ID，而不是换任意账号继续。
 
 **验证**：静态回归测试先红后绿；本地 15 项 Python 审计／合同测试通过。库存为 424 个唯一标识、797 次出现、139 个直接失败出口，其中 32 个已显式合同化、107 个仍待审计。Swift 编译和完整 iOS CI 尚未执行。
+
+## 2026-10-11 — 添加账号超时与团队查询失败包含未经证实的网络推断
+
+**症状**：`SEAL-AUTH-107t` 在认证超时时直接要求检查或更换网络；`SEAL-AUTH-105f`（验证码已接受但团队查询未返回）也没有明确的失败合同。这两条都可能被旧 UI 按 AUTH 前缀误作账号失效。
+
+**根因**：前者唯一可靠事实是 `HardTimeout.TimeoutError` 在 240 秒内先返回，无法从该信号确认 Wi‑Fi、VPN、线路或 Anisette 的具体责任；后者来自认证成功之后的 team lookup 失败，与“Apple ID 没有开发团队”的空列表分支不同。
+
+**修复**：超时改为 `authenticationTimedOut → waitThenRetry`，仅提示等待后重新添加账号；团队查询失败改为 `developerTeamLookupFailed → retry`。两条均标明 `authenticateAccount` 操作与实际来源，不再让用户修改未经证实的网络设置。
+
+**验证**：静态合同测试先红后绿；本地 16 项 Python 审计／合同测试通过。库存为 424 个唯一标识、797 次出现、139 个直接失败出口，其中 34 个已显式合同化、105 个仍待审计。完整 iOS CI run `38093455221` 正在执行 Swift 回归和 IPA 构建。

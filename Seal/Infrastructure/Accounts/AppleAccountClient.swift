@@ -36,7 +36,12 @@ enum AppleAuthenticationFailure {
                 title: "无法添加账号",
                 reason: "验证码已接受，但 Apple 没有返回可用的开发团队。",
                 recovery: "重试",
-                code: "SEAL-AUTH-105f"
+                code: "SEAL-AUTH-105f",
+                condition: .developerTeamLookupFailed,
+                action: .retry,
+                retryDisposition: .manual,
+                operation: .authenticateAccount,
+                origin: .applePortal
             )
         }
     }
@@ -108,9 +113,14 @@ final class AppleAccountClient {
             // 会把超时改写成误导性的“Apple ID 验证失败”。
             throw ImportFailure(
                 title: "添加账号超时",
-                reason: "Apple 认证在 \(Int(error.seconds)) 秒内没有完成。常见原因：当前网络无法访问 Apple 服务器，或本地签名内核生成设备环境时卡住。",
-                recovery: "检查网络后重试；如多次超时，尝试更换网络（需可访问国际网络）",
-                code: "SEAL-AUTH-107t"
+                reason: "Apple 认证在 \(Int(error.seconds)) 秒内没有完成。",
+                recovery: "等待片刻后重新添加账号",
+                code: "SEAL-AUTH-107t",
+                condition: .authenticationTimedOut,
+                action: .waitThenRetry,
+                retryDisposition: .manual,
+                operation: .authenticateAccount,
+                origin: .authentication
             )
         }
     }

@@ -10,6 +10,8 @@ enum FailureCondition: String, Codable, Equatable, Sendable {
     case signingAccountUnavailable
     case accountVerificationRequired
     case recordedSigningIdentityUnavailable
+    case authenticationTimedOut
+    case developerTeamLookupFailed
     case fullResignRequired
     case pairingRequired
     case deviceTrustRequired

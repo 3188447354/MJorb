@@ -94,6 +94,24 @@ class FailureContractSourceTests(unittest.TestCase):
         self.assertIn("action: .addAccount", missing_original)
         self.assertIn("operation: .renew", missing_original)
 
+    def test_authentication_timeout_and_team_lookup_keep_distinct_facts(self) -> None:
+        source = (ROOT / "Seal/Infrastructure/Accounts/AppleAccountClient.swift").read_text(
+            encoding="utf-8"
+        )
+        timeout = source.split("catch let error as HardTimeout.TimeoutError", 1)[1].split(
+            "    }\n\n    /// 自动重新登录", 1
+        )[0]
+        team_lookup = source.split("case .teamLookup:", 1)[1].split("    }\n}", 1)[0]
+
+        self.assertIn("condition: .authenticationTimedOut", timeout)
+        self.assertIn("action: .waitThenRetry", timeout)
+        self.assertIn("operation: .authenticateAccount", timeout)
+        self.assertNotIn("更换网络", timeout)
+
+        self.assertIn("condition: .developerTeamLookupFailed", team_lookup)
+        self.assertIn("action: .retry", team_lookup)
+        self.assertIn("operation: .authenticateAccount", team_lookup)
+
 
 if __name__ == "__main__":
     unittest.main()

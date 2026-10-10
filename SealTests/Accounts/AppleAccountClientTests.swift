@@ -32,4 +32,19 @@ struct AppleAccountClientTests {
         #expect(failure.reason.contains("Developer services are unavailable") == false)
         #expect(failure.reason.contains("开发团队"))
     }
+
+    @Test
+    func teamLookupFailureHasRetryOnlyAccountContract() {
+        let failure = AppleAuthenticationFailure.make(
+            stage: .teamLookup,
+            error: NSError(domain: "ApplePortal", code: 500)
+        )
+
+        #expect(failure.condition == .developerTeamLookupFailed)
+        #expect(failure.action == .retry)
+        #expect(failure.route == nil)
+        #expect(failure.retryDisposition == .manual)
+        #expect(failure.operation == .authenticateAccount)
+        #expect(failure.origin == .applePortal)
+    }
 }

@@ -1,0 +1,21 @@
+{
+  "entries": [
+    {
+      "code": "SEAL-PROFILE-363",
+      "kind": "diagnostic",
+      "confidence": "conditional",
+      "summary": "只更新描述文件前的设备端身份核验未确认；Seal 仍会继续注入并在注入后读回验证。",
+      "notEvidenceOf": ["描述文件注入失败", "不能仅凭此码认定当前应用需要完整重签。"],
+      "actions": [
+        {"title": "等待本次续签完成，以最终结果和后续读回验证为准"},
+        {"title": "若最终失败，再按最终错误码处理"},
+        {"title": "持续出现时导出日志"}
+      ],
+      "supportData": ["该码后续的 SEAL-PROFILE-354 或最终续签结果", "设备通道诊断"],
+      "source": [
+        "Seal/Core/Signing/SigningCoordinator.swift:signAndInstall",
+        "Seal/Infrastructure/Renewal/ProfileOnlyProvisioningProfileInstaller.swift:installAndVerify"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "entries": [
+    {
+      "code": "SEAL-SELF-109",
+      "kind": "failure",
+      "confidence": "unknown",
+      "summary": "Seal 自更新的安装事务遇到未分类错误而中止；底层诊断已写入脱敏日志。",
+      "notEvidenceOf": ["不能仅凭此码认定证书失效。", "不能仅凭此码认定当前 Seal 已无法打开。"],
+      "actions": [
+        {"title": "重新打开 Seal 后确认当前版本仍可使用"},
+        {"title": "再次自更新前先导出日志"},
+        {"title": "若重复发生，使用已验证的安装方式恢复 Seal"}
+      ],
+      "supportData": ["SEAL-SELF-109 底层诊断", "自更新前后的安装阶段日志"],
+      "source": ["Seal/Core/Signing/SigningCoordinator.swift:installSignedIPA"]
+    }
+  ]
+}

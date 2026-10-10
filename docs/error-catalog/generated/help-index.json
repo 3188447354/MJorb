@@ -58,6 +58,118 @@
     {
       "actions": [
         {
+          "title": "在 iPhone“设置 > 通用 > iPhone 储存空间”清理可用空间"
+        },
+        {
+          "title": "返回 Seal 后重新安装"
+        }
+      ],
+      "code": "SEAL-INSTALL-702s",
+      "confidence": "confirmed",
+      "evidence": [
+        "ENOSPC",
+        "errno 28",
+        "No space left"
+      ],
+      "kind": "failure",
+      "source": [
+        "Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift:installationFailure"
+      ],
+      "summary": "设备在解压并复制应用时存储空间不足。",
+      "supportData": [
+        "错误码后的设备返回详情"
+      ]
+    },
+    {
+      "actions": [
+        {
+          "title": "先等待 1–2 分钟，再回已安装列表确认应用是否已出现"
+        },
+        {
+          "title": "确认未安装后再重试"
+        },
+        {
+          "title": "多次发生时导出日志并检查 LocalDevVPN 连接稳定性"
+        }
+      ],
+      "code": "SEAL-INSTALL-702t",
+      "confidence": "conditional",
+      "kind": "failure",
+      "notEvidenceOf": [
+        "安装未完成",
+        "不能仅凭此码认定 LocalDevVPN 已断开。"
+      ],
+      "source": [
+        "Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift:installTimeoutFailure",
+        "Seal/Core/Installation/InstallChannelDiagnostic.swift:InstallFailureActionPolicy"
+      ],
+      "summary": "Seal 等待设备安装超过上限而停止等待；底层同步安装调用可能仍在继续。",
+      "supportData": [
+        "超时前后的安装日志",
+        "IPA 大小",
+        "是否随后在已安装列表中出现"
+      ]
+    },
+    {
+      "actions": [
+        {
+          "title": "等待本次续签完成，以最终结果和后续读回验证为准"
+        },
+        {
+          "title": "若最终失败，再按最终错误码处理"
+        },
+        {
+          "title": "持续出现时导出日志"
+        }
+      ],
+      "code": "SEAL-PROFILE-363",
+      "confidence": "conditional",
+      "kind": "diagnostic",
+      "notEvidenceOf": [
+        "描述文件注入失败",
+        "不能仅凭此码认定当前应用需要完整重签。"
+      ],
+      "source": [
+        "Seal/Core/Signing/SigningCoordinator.swift:signAndInstall",
+        "Seal/Infrastructure/Renewal/ProfileOnlyProvisioningProfileInstaller.swift:installAndVerify"
+      ],
+      "summary": "只更新描述文件前的设备端身份核验未确认；Seal 仍会继续注入并在注入后读回验证。",
+      "supportData": [
+        "该码后续的 SEAL-PROFILE-354 或最终续签结果",
+        "设备通道诊断"
+      ]
+    },
+    {
+      "actions": [
+        {
+          "title": "重新打开 Seal 后确认当前版本仍可使用"
+        },
+        {
+          "title": "再次自更新前先导出日志"
+        },
+        {
+          "title": "若重复发生，使用已验证的安装方式恢复 Seal"
+        }
+      ],
+      "code": "SEAL-SELF-109",
+      "confidence": "unknown",
+      "kind": "failure",
+      "notEvidenceOf": [
+        "不能仅凭此码认定证书失效。",
+        "不能仅凭此码认定当前 Seal 已无法打开。"
+      ],
+      "source": [
+        "Seal/Core/Signing/SigningCoordinator.swift:installSignedIPA"
+      ],
+      "summary": "Seal 自更新的安装事务遇到未分类错误而中止；底层诊断已写入脱敏日志。",
+      "supportData": [
+        "SEAL-SELF-109 底层诊断",
+        "自更新前后的安装阶段日志"
+      ]
+    },
+    {
+      "actions": [
+        {
           "title": "重新尝试签名一次"
         },
         {
@@ -77,6 +189,55 @@
       "supportData": [
         "错误码后的详情行",
         "IPA 的来源与大小"
+      ]
+    },
+    {
+      "actions": [
+        {
+          "title": "稍后在“我的 > 存储与维护”重试清理"
+        },
+        {
+          "title": "持续发生时导出日志"
+        }
+      ],
+      "code": "SEAL-STORAGE-004",
+      "confidence": "unknown",
+      "kind": "failure",
+      "notEvidenceOf": [
+        "不能仅凭此码认定用户应用数据已被删除。",
+        "不能仅凭此码认定已安装应用无法续签。"
+      ],
+      "source": [
+        "Seal/Infrastructure/Storage/AppFileStore.swift:temporaryCleanupFailure"
+      ],
+      "summary": "Seal 未能清理本地临时签名工作区；底层文件系统原因会保留在原始诊断中。",
+      "supportData": [
+        "临时清理的底层错误详情",
+        "可用本地存储空间"
+      ]
+    },
+    {
+      "actions": [
+        {
+          "title": "下次打开 Seal 后等待维护自动继续"
+        },
+        {
+          "title": "持续发生时导出日志"
+        }
+      ],
+      "code": "SEAL-STORAGE-007",
+      "confidence": "unknown",
+      "kind": "warning",
+      "notEvidenceOf": [
+        "不能仅凭此码认定用户应用数据已损坏。"
+      ],
+      "source": [
+        "Seal/Core/Maintenance/AppMaintenanceJob.swift:unexpectedFailure"
+      ],
+      "summary": "后台维护在某一步遇到未预期错误而停止；未完成步骤会在下次启动或空闲时再尝试。",
+      "supportData": [
+        "维护阶段名称",
+        "对应底层错误"
       ]
     }
   ],

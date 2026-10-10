@@ -1,0 +1,30 @@
+{
+  "entries": [
+    {
+      "code": "SEAL-STORAGE-004",
+      "kind": "failure",
+      "confidence": "unknown",
+      "summary": "Seal 未能清理本地临时签名工作区；底层文件系统原因会保留在原始诊断中。",
+      "notEvidenceOf": ["不能仅凭此码认定用户应用数据已被删除。", "不能仅凭此码认定已安装应用无法续签。"],
+      "actions": [
+        {"title": "稍后在“我的 > 存储与维护”重试清理"},
+        {"title": "持续发生时导出日志"}
+      ],
+      "supportData": ["临时清理的底层错误详情", "可用本地存储空间"],
+      "source": ["Seal/Infrastructure/Storage/AppFileStore.swift:temporaryCleanupFailure"]
+    },
+    {
+      "code": "SEAL-STORAGE-007",
+      "kind": "warning",
+      "confidence": "unknown",
+      "summary": "后台维护在某一步遇到未预期错误而停止；未完成步骤会在下次启动或空闲时再尝试。",
+      "notEvidenceOf": ["不能仅凭此码认定用户应用数据已损坏。"],
+      "actions": [
+        {"title": "下次打开 Seal 后等待维护自动继续"},
+        {"title": "持续发生时导出日志"}
+      ],
+      "supportData": ["维护阶段名称", "对应底层错误"],
+      "source": ["Seal/Core/Maintenance/AppMaintenanceJob.swift:unexpectedFailure"]
+    }
+  ]
+}

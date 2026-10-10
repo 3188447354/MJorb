@@ -1,0 +1,34 @@
+{
+  "entries": [
+    {
+      "code": "SEAL-INSTALL-702s",
+      "kind": "failure",
+      "confidence": "confirmed",
+      "summary": "设备在解压并复制应用时存储空间不足。",
+      "evidence": ["ENOSPC", "errno 28", "No space left"],
+      "actions": [
+        {"title": "在 iPhone“设置 > 通用 > iPhone 储存空间”清理可用空间"},
+        {"title": "返回 Seal 后重新安装"}
+      ],
+      "supportData": ["错误码后的设备返回详情"],
+      "source": ["Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift:installationFailure"]
+    },
+    {
+      "code": "SEAL-INSTALL-702t",
+      "kind": "failure",
+      "confidence": "conditional",
+      "summary": "Seal 等待设备安装超过上限而停止等待；底层同步安装调用可能仍在继续。",
+      "notEvidenceOf": ["安装未完成", "不能仅凭此码认定 LocalDevVPN 已断开。"],
+      "actions": [
+        {"title": "先等待 1–2 分钟，再回已安装列表确认应用是否已出现"},
+        {"title": "确认未安装后再重试"},
+        {"title": "多次发生时导出日志并检查 LocalDevVPN 连接稳定性"}
+      ],
+      "supportData": ["超时前后的安装日志", "IPA 大小", "是否随后在已安装列表中出现"],
+      "source": [
+        "Seal/Infrastructure/Installation/MinimuxerInstallChannel.swift:installTimeoutFailure",
+        "Seal/Core/Installation/InstallChannelDiagnostic.swift:InstallFailureActionPolicy"
+      ]
+    }
+  ]
+}

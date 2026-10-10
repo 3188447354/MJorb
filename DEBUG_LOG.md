@@ -21,6 +21,14 @@
 - **涉及文件**：`AgreementOnboardingView`、`AgreementOnboardingPresentationState`、`AgreementOnboardingLayoutTests`。
 - **验证状态**：待完整 iOS CI 与真机检查切换动画。
 
+## 2026-10-10 欢迎页品牌区比例与文案收敛
+
+- **现象**：预览稿容易把官方图标和品牌字放大，欢迎抽屉标题又重复出现 Seal，首屏层级显得拥挤。
+- **根因**：品牌尺寸与文案没有作为布局契约集中管理，视图中保留旧的 112pt 图标、旧标语与重复标题。
+- **修复**：将真实设备尺寸集中为 92pt 官方 Icon、46pt Seal、20pt 标语；标语统一为“让应用始终可用”，抽屉标题为“欢迎使用”，并降低蓝色光斑强度。
+- **涉及文件**：`AgreementOnboardingView`、`AgreementOnboardingLayoutTests`。
+- **验证状态**：Windows 无 Xcode，待完整 iOS CI 编译、单测及真机视觉验收。
+
 ## 2026-10-10 Profile-only 续签回归断言语义对齐
 
 - **现象**：完整 iOS CI 的两个 `ProfileOnlyRenewalPolicyTests` 失败；实际判定为 `incompleteSigningIdentity`，旧断言仍期待 `missingInstalledArtifact`。

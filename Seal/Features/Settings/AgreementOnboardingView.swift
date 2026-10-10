@@ -8,18 +8,23 @@ enum AgreementVersion {
 
 /// 首次协议页与签名抽屉保持同一组几何尺度，避免两个入口出现不同的抽屉语言。
 enum AgreementOnboardingLayout {
-    static let iconSize: CGFloat = 112
-    static let iconCornerRadius: CGFloat = 26
+    /// 真机首屏品牌区采用实际 point 尺寸，不随预览稿放大。
+    static let iconSize: CGFloat = 92
+    static let iconCornerRadius: CGFloat = 22
     static let drawerCornerRadius: CGFloat = 29
     static let horizontalInset: CGFloat = 22
     static let initialDrawerFraction: CGFloat = 0.38
     static let compactContentSpacing: CGFloat = 18
+    static let brandNamePointSize: CGFloat = 46
+    static let brandTaglinePointSize: CGFloat = 20
+    static let brandTagline = "让应用始终可用"
+    static let consentTitle = "欢迎使用"
 }
 
 /// 首次启动（或协议更新后）的协议同意页。
 ///
-/// 视觉（2026-10-09 新设计）：白色背景 + 低饱和蓝色光斑 → 品牌区（112pt 官方图标 + 渐变标题）
-/// → 系统原生确认抽屉 → "欢迎使用 Seal" → 协议说明 → "同意并继续" / "暂不使用"。
+/// 视觉（2026-10-10）：白色背景 + 极低饱和蓝色光斑 → 品牌区（92pt 官方图标）
+/// → 系统原生确认抽屉 → "欢迎使用" → 协议说明 → "同意并继续" / "暂不使用"。
 ///
 /// 约束：只改视觉层。协议门控（SealApp.swift）、AgreementVersion、
 /// 协议正文（PrivacyNoticeView / UserAgreementView）、签名功能一律不动。
@@ -102,13 +107,13 @@ struct AgreementOnboardingView: View {
             Color.white
 
             Circle()
-                .fill(Color(red: 0.57, green: 0.83, blue: 1.0).opacity(0.30))
+                .fill(Color(red: 0.57, green: 0.83, blue: 1.0).opacity(0.18))
                 .frame(width: 370, height: 370)
                 .blur(radius: 70)
                 .offset(y: -125)
 
             Circle()
-                .fill(Color(red: 0.82, green: 0.94, blue: 1.0).opacity(0.55))
+                .fill(Color(red: 0.82, green: 0.94, blue: 1.0).opacity(0.35))
                 .frame(width: 290, height: 290)
                 .blur(radius: 60)
                 .offset(x: 115, y: 170)
@@ -122,11 +127,11 @@ struct AgreementOnboardingView: View {
     }
 
     private var brandSection: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 12) {
             sealIcon
 
             Text("Seal")
-                .font(.system(size: 48, weight: .bold, design: .rounded))
+                .font(.system(size: AgreementOnboardingLayout.brandNamePointSize, weight: .bold, design: .rounded))
                 .minimumScaleFactor(0.7)
                 .foregroundStyle(
                     LinearGradient(
@@ -139,8 +144,8 @@ struct AgreementOnboardingView: View {
                     )
                 )
 
-            Text("为你的应用保持可用")
-                .font(.title3)
+            Text(AgreementOnboardingLayout.brandTagline)
+                .font(.system(size: AgreementOnboardingLayout.brandTaglinePointSize, weight: .regular))
                 .foregroundStyle(Color(red: 0.22, green: 0.29, blue: 0.46))
 
         }
@@ -189,7 +194,7 @@ private struct AgreementConsentSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Text("欢迎使用 Seal")
+            Text(AgreementOnboardingLayout.consentTitle)
                 .font(.title.weight(.bold))
                 .foregroundStyle(Color(red: 0.02, green: 0.07, blue: 0.17))
                 .padding(.top, 24)

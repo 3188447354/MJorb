@@ -3,11 +3,16 @@ import XCTest
 
 final class AgreementOnboardingLayoutTests: XCTestCase {
     func testMatchesTheSealDrawerGeometry() {
-        XCTAssertEqual(AgreementOnboardingLayout.iconSize, 112)
+        XCTAssertEqual(AgreementOnboardingLayout.iconSize, 92)
+        XCTAssertEqual(AgreementOnboardingLayout.iconCornerRadius, 22)
         XCTAssertEqual(AgreementOnboardingLayout.drawerCornerRadius, 29)
         XCTAssertEqual(AgreementOnboardingLayout.horizontalInset, 22)
         XCTAssertEqual(AgreementOnboardingLayout.initialDrawerFraction, 0.38)
         XCTAssertEqual(AgreementOnboardingLayout.compactContentSpacing, 18)
+        XCTAssertEqual(AgreementOnboardingLayout.brandNamePointSize, 46)
+        XCTAssertEqual(AgreementOnboardingLayout.brandTaglinePointSize, 20)
+        XCTAssertEqual(AgreementOnboardingLayout.brandTagline, "让应用始终可用")
+        XCTAssertEqual(AgreementOnboardingLayout.consentTitle, "欢迎使用")
     }
 
     func testAcknowledgingDeclineRestoresTheConsentDrawerAfterTheAlertDismisses() {

@@ -6311,6 +6311,16 @@ CMake Error at CMakeLists.txt:394 (message):
 
 **验证**：待 macOS Swift 编译、单元/UI 回归和完整发布守卫复核。
 
+## 2026-10-11 — 单操作错误弹窗使用了不完整的 SwiftUI 构造器
+
+**症状**：完整 iOS CI 在 `AppDetailView.swift:55`、`AppSigningSheet.swift:522` 和 `AppsRootView.swift:556` 报 `missing argument for parameter 'secondaryButton' in call`，测试与 IPA 构建均无法继续。
+
+**根因**：这三处单操作错误弹窗使用 `Alert(primaryButton:)`；SwiftUI 的该重载要求同时传入 `secondaryButton`，而这里只需要一个会执行恢复动作的按钮。
+
+**修复**：统一改用单按钮的 `dismissButton:` 重载，保留原有恢复动作；新增静态回归测试，禁止三处重新使用不完整的 `primaryButton:` 调用。
+
+**验证**：Python 静态回归测试已先红后绿；待完整 iOS CI 复核 Swift 编译、单元/UI 回归与 IPA 构建。
+
 ## 2026-10-11 — 结构化恢复标题函数调用与返回值不符合 Swift 语法
 
 **症状**：完整 iOS CI 在 `SigningProgressView` 报 `Extraneous argument label 'for:' in call`；同一函数的 `switch` 分支产生未使用字符串警告。
